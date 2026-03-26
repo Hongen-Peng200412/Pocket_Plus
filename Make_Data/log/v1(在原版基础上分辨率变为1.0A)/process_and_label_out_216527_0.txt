@@ -1,0 +1,401 @@
+========================================================
+Full Pipeline Array Job Started
+========================================================
+Main Job ID: 216527
+Array Task ID: 0
+Total Array Tasks: 3
+Mode: full
+Host: cnode04
+========================================================
+[Lock] Pre-lock: pal_pre_lock_216527
+[Start] Lock released!
+[Run] Task 0 / 3
+[Run] Mode: full | Input: /storage/chenzhaoyang/cryo_em/PDB_3.5/ | ClassName: five_class
+======================================================================
+Full Pipeline / 全流程处理脚本
+======================================================================
+Mode:   full
+Input:  /storage/chenzhaoyang/cryo_em/PDB_3.5/
+Output: /home/penghongen/My_Project/Data/DATA_v1/parsed_pdb/
+Shard:  1/3
+Jobs:   8
+Filter: five_class
+======================================================================
+Total PDB/CIF files found: 11040
+Items in this shard: 3680
+[Cleanup] Removed sample dir for 7jsx: /home/penghongen/My_Project/Data/DATA_v1/parsed_pdb/7jsx (No ligand remained after filtering)
+[Cleanup] Removed sample dir for 7jn4: /home/penghongen/My_Project/Data/DATA_v1/parsed_pdb/7jn4 (No ligand remained after filtering)
+[Cleanup] Removed sample dir for 7rtb: /home/penghongen/My_Project/Data/DATA_v1/parsed_pdb/7rtb (No ligand remained after filtering)
+[Cleanup] Removed sample dir for 7wra: /home/penghongen/My_Project/Data/DATA_v1/parsed_pdb/7wra (No binding site after ligand filtering)
+[Cleanup] Removed sample dir for 7jfo: /home/penghongen/My_Project/Data/DATA_v1/parsed_pdb/7jfo (No ligand remained after filtering)
+======================================================================
+Processing Complete / 处理完成
+======================================================================
+Total:    3680
+Success:  3324
+Failed:   356
+Time:     15229.33s (4.138s/item)
+======================================================================
+Failed samples:
+  - 5iqr: Parse failed
+  - 5k0z: Parse failed
+  - 5k12: Parse failed
+  - 5lzs: Parse failed
+  - 5mdv: Parse failed
+  - 5mdw: Parse failed
+  - 5mdy: Parse failed
+  - 5mdz: Parse failed
+  - 5n61: Parse failed
+  - 5ngm: Parse failed
+  - 5t5h: Parse failed
+  - 5u9f: Parse failed
+  - 5u9g: Parse failed
+  - 5uq8: Parse failed
+  - 5uym: Parse failed
+  - 5xb1: Parse failed
+  - 6a95: Parse failed
+  - 6az0: >1 model
+  - 6az1: Parse failed
+  - 6az3: Parse failed
+  - 6c4i: Parse failed
+  - 6ebl: Parse failed
+  - 6ek0: Parse failed
+  - 6et5: Parse failed
+  - 6eu2: Parse failed
+  - 6fai: Parse failed
+  - 6fyy: Parse failed
+  - 6gml: Parse failed
+  - 6gyu: Parse failed
+  - 6hma: Parse failed
+  - 6hrm: Parse failed
+  - 6icz: Parse failed
+  - 6id0: Parse failed
+  - 6id1: Parse failed
+  - 6ijj: Parse failed
+  - 6ijo: Parse failed
+  - 6khj: Parse failed
+  - 6m18: Parse failed
+  - 6m52: Parse failed
+  - 6m54: Parse failed
+  - 6nbb: >1 model
+  - 6nbc: >1 model
+  - 6nbd: >1 model
+  - 6o90: Parse failed
+  - 6oer: Parse failed
+  - 6of2: Parse failed
+  - 6of3: Parse failed
+  - 6om6: Parse failed
+  - 6ore: Parse failed
+  - 6p7m: Parse failed
+  - 6p9x: Parse failed
+  - 6ppe: Parse failed
+  - 6ppf: Parse failed
+  - 6pvk: Parse failed
+  - 6qdv: Parse failed
+  - 6r6p: Parse failed
+  - 6rd6: Parse failed
+  - 6rde: Parse failed
+  - 6re1: Parse failed
+  - 6re2: Parse failed
+  - 6re3: Parse failed
+  - 6re4: Parse failed
+  - 6re5: Parse failed
+  - 6re6: Parse failed
+  - 6re7: Parse failed
+  - 6s0k: Parse failed
+  - 6s0x: Parse failed
+  - 6s0z: Parse failed
+  - 6sg9: Parse failed
+  - 6sga: Parse failed
+  - 6sgb: Parse failed
+  - 6t0n: Parse failed
+  - 6t0r: Parse failed
+  - 6t4q: Parse failed
+  - 6tdv: Parse failed
+  - 6ucb: Parse failed
+  - 6ud4: Parse failed
+  - 6ud8: Parse failed
+  - 6uvn: Parse failed
+  - 6v20: >1 model
+  - 6v21: >1 model
+  - 6v9q: Parse failed
+  - 6vbw: Parse failed
+  - 6vlz: Parse failed
+  - 6vmi: Parse failed
+  - 6vpc: Parse failed
+  - 6vsa: Parse failed
+  - 6wlz: Parse failed
+  - 6wm3: Parse failed
+  - 6wmr: Parse failed
+  - 6woo: Parse failed
+  - 6wr2: Parse failed
+  - 6wtz: Parse failed
+  - 6x18: Parse failed
+  - 6x6c: Parse failed
+  - 6x6t: Parse failed
+  - 6x7k: Parse failed
+  - 6y0g: Parse failed
+  - 6y6x: Parse failed
+  - 6ybq: Parse failed
+  - 6ybw: Parse failed
+  - 6ykm: Parse failed
+  - 6ykp: Parse failed
+  - 6ykr: Parse failed
+  - 6yxy: Parse failed
+  - 6z3t: Parse failed
+  - 6z6l: Parse failed
+  - 6z6m: Parse failed
+  - 6z6n: Parse failed
+  - 6zgl: Parse failed
+  - 6zhx: Parse failed
+  - 6zj3: Parse failed
+  - 6zm7: Parse failed
+  - 6zme: Parse failed
+  - 6zmi: Parse failed
+  - 6zmo: Parse failed
+  - 6zow: Parse failed
+  - 6ztj: Parse failed
+  - 6ztm: Parse failed
+  - 6zto: Parse failed
+  - 6ztp: Parse failed
+  - 6zu1: Parse failed
+  - 6zvh: Parse failed
+  - 6zym: Parse failed
+  - 7ac7: Parse failed
+  - 7acj: Parse failed
+  - 7acr: Parse failed
+  - 7aoz: Parse failed
+  - 7asm: Parse failed
+  - 7azy: Parse failed
+  - 7b9v: Parse failed
+  - 7bg7: Parse failed
+  - 7c7q: Parse failed
+  - 7cpu: Parse failed
+  - 7d68: Parse failed
+  - 7dco: Parse failed
+  - 7dvq: Parse failed
+  - 7dy0: Parse failed
+  - 7dz7: Parse failed
+  - 7dz8: Parse failed
+  - 7e26: Parse failed
+  - 7ej0: Parse failed
+  - 7ejk: Parse failed
+  - 7ejx: Parse failed
+  - 7epx: Parse failed
+  - 7ezx: Parse failed
+  - 7f5s: Parse failed
+  - 7f92: Parse failed
+  - 7fgi: Parse failed
+  - 7fiy: Parse failed
+  - 7fjo: Parse failed
+  - 7jfo: No ligand after filtering (8 candidates, all excluded)
+  - 7jil: Parse failed
+  - 7jn4: No ligand after filtering (8 candidates, all excluded)
+  - 7jsx: No ligand after filtering (8 candidates, all excluded)
+  - 7k0j: No binding site
+  - 7k5c: Parse failed
+  - 7k9j: Parse failed
+  - 7ki1: No ligand after filtering (3 candidates, all excluded)
+  - 7kod: Parse failed
+  - 7l08: Parse failed
+  - 7l20: Parse failed
+  - 7l2n: Parse failed
+  - 7l2t: Parse failed
+  - 7l49: Parse failed
+  - 7ld4: Parse failed
+  - 7ld5: Parse failed
+  - 7ldd: Parse failed
+  - 7lg6: Parse failed
+  - 7lgq: Parse failed
+  - 7lim: Parse failed
+  - 7ls1: Parse failed
+  - 7ls2: Parse failed
+  - 7m5d: Parse failed
+  - 7m5y: Parse failed
+  - 7m6a: Parse failed
+  - 7ml0: Parse failed
+  - 7mpg: Parse failed
+  - 7mpi: Parse failed
+  - 7mpj: Parse failed
+  - 7msx: Parse failed
+  - 7myn: Parse failed
+  - 7mze: Parse failed
+  - 7n06: Parse failed
+  - 7n0c: Parse failed
+  - 7n75: Parse failed
+  - 7n76: Parse failed
+  - 7n8b: Parse failed
+  - 7nfx: Parse failed
+  - 7ni4: Parse failed
+  - 7njk: Parse failed
+  - 7nkh: Parse failed
+  - 7nkx: Parse failed
+  - 7nky: Parse failed
+  - 7nnu: Parse failed
+  - 7nsg: Parse failed
+  - 7nvu: Parse failed
+  - 7nwi: Parse failed
+  - 7nwt: Parse failed
+  - 7nww: Parse failed
+  - 7o19: Parse failed
+  - 7o6p: Parse failed
+  - 7o6q: Parse failed
+  - 7o7y: Parse failed
+  - 7o7z: Parse failed
+  - 7o80: Parse failed
+  - 7o81: Parse failed
+  - 7obr: Parse failed
+  - 7oe0: Parse failed
+  - 7oe2: Parse failed
+  - 7ogk: Parse failed
+  - 7ogl: Parse failed
+  - 7oi0: Parse failed
+  - 7oia: Parse failed
+  - 7oif: Parse failed
+  - 7oig: Parse failed
+  - 7oii: Parse failed
+  - 7oj8: Parse failed
+  - 7ojn: Parse failed
+  - 7ot5: Parse failed
+  - 7p48: Parse failed
+  - 7p63: Parse failed
+  - 7php: Parse failed
+  - 7pkn: Parse failed
+  - 7pnz: Parse failed
+  - 7po3: Parse failed
+  - 7ppo: Parse failed
+  - 7pqu: Parse failed
+  - 7q0f: Parse failed
+  - 7qcu: Parse failed
+  - 7qep: Parse failed
+  - 7qgg: Parse failed
+  - 7qix: Parse failed
+  - 7qn8: Parse failed
+  - 7qnb: Parse failed
+  - 7qnd: Parse failed
+  - 7qsl: Parse failed
+  - 7qtt: Parse failed
+  - 7qwq: Parse failed
+  - 7qwr: Parse failed
+  - 7qws: Parse failed
+  - 7r45: Parse failed
+  - 7r4d: Parse failed
+  - 7r4x: Parse failed
+  - 7r5s: Parse failed
+  - 7r8a: Parse failed
+  - 7rhh: Parse failed
+  - 7rhi: Parse failed
+  - 7rhj: Parse failed
+  - 7rja: Parse failed
+  - 7rjd: Parse failed
+  - 7rlc: Parse failed
+  - 7rqv: Parse failed
+  - 7rr5: Parse failed
+  - 7rtb: No ligand after filtering (2 candidates, all excluded)
+  - 7s1g: Parse failed
+  - 7s3d: Parse failed
+  - 7sa4: Parse failed
+  - 7see: Parse failed
+  - 7sf7: Parse failed
+  - 7si3: Parse failed
+  - 7sj4: Parse failed
+  - 7smk: Parse failed
+  - 7snv: Parse failed
+  - 7sqo: Parse failed
+  - 7sqv: Parse failed
+  - 7st9: Parse failed
+  - 7stb: Parse failed
+  - 7sva: Parse failed
+  - 7swl: Parse failed
+  - 7t10: Parse failed
+  - 7tf5: Parse failed
+  - 7tfc: Parse failed
+  - 7tm3: Parse failed
+  - 7toq: Parse failed
+  - 7tor: Parse failed
+  - 7ttt: Parse failed
+  - 7tz6: Parse failed
+  - 7u0h: Parse failed
+  - 7u5i: Parse failed
+  - 7u5j: Parse failed
+  - 7u5k: Parse failed
+  - 7ua4: Parse failed
+  - 7ub0: Parse failed
+  - 7ug7: Parse failed
+  - 7uk4: Parse failed
+  - 7ukh: Parse failed
+  - 7unq: Parse failed
+  - 7unr: Parse failed
+  - 7unu: Parse failed
+  - 7utd: Parse failed
+  - 7uwr: Parse failed
+  - 7uxa: Parse failed
+  - 7uzs: Parse failed
+  - 7uzu: Parse failed
+  - 7uzv: Parse failed
+  - 7v0m: Parse failed
+  - 7v0q: Parse failed
+  - 7v0t: Parse failed
+  - 7v0u: Parse failed
+  - 7v0y: Parse failed
+  - 7v81: Parse failed
+  - 7vav: Parse failed
+  - 7vbl: Parse failed
+  - 7vbp: Parse failed
+  - 7vc0: Parse failed
+  - 7vfd: Parse failed
+  - 7vvl: Parse failed
+  - 7vwl: Parse failed
+  - 7vxs: Parse failed
+  - 7vy1: Parse failed
+  - 7vy9: Parse failed
+  - 7vye: Parse failed
+  - 7vyg: Parse failed
+  - 7vyi: Parse failed
+  - 7vys: Parse failed
+  - 7vz8: Parse failed
+  - 7vzv: Parse failed
+  - 7vzw: Parse failed
+  - 7w0h: Parse failed
+  - 7w0r: Parse failed
+  - 7w0y: Parse failed
+  - 7w1p: Parse failed
+  - 7w1t: Parse failed
+  - 7w1u: Parse failed
+  - 7w1v: Parse failed
+  - 7w1z: Parse failed
+  - 7w20: Parse failed
+  - 7w2k: Parse failed
+  - 7w2l: Parse failed
+  - 7w2r: Parse failed
+  - 7w2u: Parse failed
+  - 7w2y: Parse failed
+  - 7w31: Parse failed
+  - 7w32: Parse failed
+  - 7w35: Parse failed
+  - 7w4c: Parse failed
+  - 7w4d: Parse failed
+  - 7w4e: Parse failed
+  - 7w4f: Parse failed
+  - 7w4g: Parse failed
+  - 7w4j: Parse failed
+  - 7w4k: Parse failed
+  - 7w4l: Parse failed
+  - 7w4m: Parse failed
+  - 7w4n: Parse failed
+  - 7w4q: Parse failed
+  - 7w7g: Parse failed
+  - 7wlz: Parse failed
+  - 7wra: No binding site
+  - 7wwl: Parse failed
+  - 7x1w: Parse failed
+  - 7x8s: Parse failed
+  - 7xdk: Parse failed
+  - 7xic: Parse failed
+  - 7xl8: Parse failed
+
+Error logs saved to: /home/penghongen/My_Project/Data/DATA_v1/error_logs
+[Cleanup] Removed sample dir for 7k0j: /home/penghongen/My_Project/Data/DATA_v1/parsed_pdb/7k0j (No binding site after ligand filtering)
+[Cleanup] Removed sample dir for 7ki1: /home/penghongen/My_Project/Data/DATA_v1/parsed_pdb/7ki1 (No ligand remained after filtering)
+[Success] Task 0 finished.
+[Exit] Task 0 finished.

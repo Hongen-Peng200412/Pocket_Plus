@@ -1,0 +1,111 @@
+# =============================================================================
+# 处理好数据的批量推断与评估配置 (Batch Inference & Evaluation Configuration)
+# =============================================================================
+# 此文件供 src/inference/run.py 使用，通过 Hydra 加载:
+#   python src/inference/run.py --config-name=batch +ckpt_path="..."
+#
+# 该模式会根据提供的 split JSON 文件全速扫过整个测试集/验证集，记录所有 IoU/F1 等指标并汇总到 Excel。
+# =============================================================================
+
+# --- 运行模式 ---
+# mode: str, 标量
+#   传入: run.py main() 分流执行 _run_batch_mode() 函数
+#   作用: 运行模式。指定代码将执行针对预处理 BOX 数据的批量推断与汇总评估逻辑。
+mode: "batch"
+
+
+# --- 数据路径 ---
+# all_data_path: str, 标量
+#   传入: parse_input.prepare_data_entries() 及 load_from_npz_dirs()
+#   作用: 预处理数据集总目录。定位所有可能的 BOX 样本名及具体数据加载的基站。
+all_data_path: "/storage/penghongen/Pocket_classic/v_0"
+
+# data_folder_names: list[str]
+#   传入: run.py 传递给解析模块，控制加载流
+#   作用: 特征/标签源文件夹列表。定义样本特征拼接构成，若进行评估则 "pdb_label_BOX" 必填。
+data_folder_names: ["emdb_BOX", "pdb_feature_BOX", "pdb_label_BOX"]
+
+# class_folder_names: list[str]
+#   传入: parse_input.prepare_data_entries(class_folder_names=...)
+#   作用: 待测试类别列表。指定批量模式下需迭代遍历的类别名称，评估结果按此聚类汇总。
+class_folder_names: ["small_molecule", "metal_ion", "peptide", "nucleic"]
+
+# class_mapping: list[int] | null
+#   传入: parse_input.load_from_npz_dirs(class_mapping=...)
+#   作用: 类别聚合映射方案。规定如何将原始标签类别替换/聚合为输出维度（如多分类转二分类）。
+class_mapping: [0, 1, 1, 1, 1]
+
+
+# --- 批量控制 ---
+# split_files: list[str] | null
+#   传入: parse_input.prepare_data_entries(split_files=...)
+#   作用: 样本子集白名单 (JSON)。决定在哪个特定划分（test/val）上执行批量推断。
+#         需与 class_folder_names 长度匹配。若为 null 则全量测试文件夹下所有文件。
+split_files: [
+  "/storage/penghongen/Pocket_classic/v_0/split/split_0/small_molecule/test.json",
+  "/storage/penghongen/Pocket_classic/v_0/split/split_0/metal_ion/test.json",
+  "/storage/penghongen/Pocket_classic/v_0/split/split_0/peptide/test.json",
+  "/storage/penghongen/Pocket_classic/v_0/split/split_0/nucleic/test.json"
+]
+
+
+# --- 模型权重 ---
+# ckpt_path: str, 标量
+#   传入: run.py main() 提取并传给 get_pred.load_model(ckpt_path=...)
+#   作用: 模型权重路径。指定载入训练好的参数以进行预测，通常需在命令行由 `+ckpt_path=...` 覆盖。
+ckpt_path: "/home/penghongen/My_Project/feedback/logs/RAUNet-MyDatasets_half_1-none/half_1____2026-03-04_17-35-26/checkpoints/last.ckpt"
+
+# backbone_override: dict | null
+#   传入: get_pred.load_model(backbone_override=...)
+#   作用: 模型结构硬覆盖。手动干预设定网络超参，解决 checkpoint 架构元数据缺失问题。
+backbone_override: null
+
+
+# --- 计算设备 ---
+# device: str, 标量
+#   传入: run.py 主逻辑解析并送入各计算模块
+#   作用: 调度资源。控制推断过程发生在哪块 GPU 或 CPU 上。
+device: "cuda:0"
+
+
+# --- 输出路径 ---
+# output_root: str, 标量
+#   传入: run.py _run_batch_mode()
+#   作用: 批量结果汇集根目录。保存汇总报告 results.xlsx 及各个样本的预测结果（若开启保存）。
+output_root: "inference_output/batch_test"
+
+
+# --- 滑窗推断参数 ---
+# batch_size: int, 标量
+#   传入: get_pred.run_inference(batch_size=...)
+#   作用: 推理块批大小。控制多 3D Block 并行推理的规模，用于加速推理或节省显存。
+batch_size: 2
+
+# stride: int, 标量 (像素单位)
+#   传入: get_pred.run_inference() 子函数
+#   作用: 切割滑行步幅。控制立体网格的重叠密度，较小步幅可提升精度但会降低速度。
+stride: 48
+
+# windows_size: int, 标量 (像素单位)
+#   传入: get_pred.run_inference() 子函数
+#   作用: 窗口尺寸。定义输入神经网络的立方体三维边长。
+windows_size: 48
+
+# core_offset: int, 标量 (像素单位)
+#   传入: get_pred.run_inference() -> map_reconstruction
+#   作用: 边界废料带厚度。丢弃单个 Block 边缘不稳定的体素，仅依核心区进行整体预测图重建。
+core_offset: 2
+
+
+# --- 后处理参数 ---
+# threshold: float, 标量
+#   传入: postprocess.semantic_segment(threshold=...)
+#   作用: 切割概率阈值。设定从 0~1 的实数概率图转换为二值物理口罩（口袋）的判定基准。
+#         此值应根据 param_search 阶段获得的最佳值进行硬编码设定。
+threshold: 0.5
+
+
+# --- Hydra 行为控制 ---
+hydra:
+  job:
+    chdir: false

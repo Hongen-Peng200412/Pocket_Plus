@@ -1,0 +1,7 @@
+# ============================================================
+# 后处理配置: 无后处理 (No Post-Processing)
+# 此文件的配置项以 cfg.post_process.* 的形式被 train.py 使用
+# ============================================================
+name: none                # str, 后处理算法名称标识
+                          # → ExperimentManager: 作为 hard_params_keys 之一参与实验目录命名
+                          # → train.py L435: 打印启动信息 cfg.post_process.name

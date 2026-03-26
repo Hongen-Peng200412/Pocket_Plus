@@ -1,0 +1,389 @@
+========================================================
+Full Pipeline Array Job Started
+========================================================
+Main Job ID: 216527
+Array Task ID: 2
+Total Array Tasks: 3
+Mode: full
+Host: cnode02
+========================================================
+[Run] Task 2 / 3
+[Run] Mode: full | Input: /storage/chenzhaoyang/cryo_em/PDB_3.5/ | ClassName: five_class
+======================================================================
+Full Pipeline / 全流程处理脚本
+======================================================================
+Mode:   full
+Input:  /storage/chenzhaoyang/cryo_em/PDB_3.5/
+Output: /home/penghongen/My_Project/Data/DATA_v1/parsed_pdb/
+Shard:  3/3
+Jobs:   8
+Filter: five_class
+======================================================================
+Total PDB/CIF files found: 11040
+Items in this shard: 3680
+[Cleanup] Removed sample dir for 8xir: /home/penghongen/My_Project/Data/DATA_v1/parsed_pdb/8xir (No ligand remained after filtering)
+[Cleanup] Removed sample dir for 8ymp: /home/penghongen/My_Project/Data/DATA_v1/parsed_pdb/8ymp (No binding site after ligand filtering)
+[Cleanup] Removed sample dir for 9e0m: /home/penghongen/My_Project/Data/DATA_v1/parsed_pdb/9e0m (No ligand remained after filtering)
+[Cleanup] Removed sample dir for 9jo2: /home/penghongen/My_Project/Data/DATA_v1/parsed_pdb/9jo2 (No binding site after ligand filtering)
+======================================================================
+Processing Complete / 处理完成
+======================================================================
+Total:    3680
+Success:  3331
+Failed:   349
+Time:     12408.46s (3.372s/item)
+======================================================================
+Failed samples:
+  - 8uq2: Parse failed
+  - 8uql: Parse failed
+  - 8ur0: Parse failed
+  - 8urm: Parse failed
+  - 8ury: Parse failed
+  - 8uxg: Parse failed
+  - 8uxy: Parse failed
+  - 8uy7: Parse failed
+  - 8v4s: Parse failed
+  - 8v5r: Parse failed
+  - 8v8s: Parse failed
+  - 8v91: Parse failed
+  - 8v9d: Parse failed
+  - 8vah: Parse failed
+  - 8ves: Parse failed
+  - 8vg0: Parse failed
+  - 8vg1: Parse failed
+  - 8vgi: Parse failed
+  - 8vgj: Parse failed
+  - 8vgk: Parse failed
+  - 8vjj: Parse failed
+  - 8vjk: Parse failed
+  - 8vk3: Parse failed
+  - 8voo: Parse failed
+  - 8vpn: Parse failed
+  - 8vtb: Parse failed
+  - 8vv2: Parse failed
+  - 8vv4: Parse failed
+  - 8vvq: Parse failed
+  - 8vvr: Parse failed
+  - 8vwp: Parse failed
+  - 8vwq: Parse failed
+  - 8w2g: Parse failed
+  - 8w2n: Parse failed
+  - 8w4a: Parse failed
+  - 8wb4: Parse failed
+  - 8wby: Parse failed
+  - 8wbz: Parse failed
+  - 8wj0: Parse failed
+  - 8wj3: Parse failed
+  - 8wk0: Parse failed
+  - 8wog: Parse failed
+  - 8wp1: Parse failed
+  - 8wrb: Parse failed
+  - 8wsa: Parse failed
+  - 8wv6: Parse failed
+  - 8wvz: Parse failed
+  - 8wyu: Parse failed
+  - 8wzi: Parse failed
+  - 8x0g: Parse failed
+  - 8x7j: Parse failed
+  - 8x94: Parse failed
+  - 8xdd: Parse failed
+  - 8xdh: Parse failed
+  - 8xgm: Parse failed
+  - 8xh8: Parse failed
+  - 8xhs: Parse failed
+  - 8xi2: Parse failed
+  - 8xir: No ligand after filtering (4 candidates, all excluded)
+  - 8xk4: Parse failed
+  - 8xl4: Parse failed
+  - 8xl6: Parse failed
+  - 8xl7: Parse failed
+  - 8xmc: Parse failed
+  - 8xnr: Parse failed
+  - 8xog: Parse failed
+  - 8xp2: Parse failed
+  - 8xp3: Parse failed
+  - 8xpu: Parse failed
+  - 8xsx: Parse failed
+  - 8xsy: Parse failed
+  - 8xsz: Parse failed
+  - 8xtp: Parse failed
+  - 8xvk: Parse failed
+  - 8xvv: Parse failed
+  - 8xxl: Parse failed
+  - 8xxm: Parse failed
+  - 8xxp: Parse failed
+  - 8y2e: Parse failed
+  - 8y36: Parse failed
+  - 8y37: Parse failed
+  - 8y38: Parse failed
+  - 8y6w: Parse failed
+  - 8y7z: Parse failed
+  - 8y80: Parse failed
+  - 8y8f: Parse failed
+  - 8y9c: Parse failed
+  - 8y9g: Parse failed
+  - 8y9y: Parse failed
+  - 8yag: Parse failed
+  - 8ymp: No binding site
+  - 8yoo: Parse failed
+  - 8yop: Parse failed
+  - 8yqz: Parse failed
+  - 8yuq: Parse failed
+  - 8yvp: Parse failed
+  - 8ywa: Parse failed
+  - 8ywt: Parse failed
+  - 8z3k: Parse failed
+  - 8z4l: Parse failed
+  - 8z6b: Parse failed
+  - 8z9d: Parse failed
+  - 8z9e: Parse failed
+  - 8zap: Parse failed
+  - 8zc9: Parse failed
+  - 8zdr: Parse failed
+  - 8ze3: Parse failed
+  - 8zf0: Parse failed
+  - 8zfm: Parse failed
+  - 8zi1: Parse failed
+  - 8zir: Parse failed
+  - 8zkr: Parse failed
+  - 8zpb: Parse failed
+  - 8zpl: Parse failed
+  - 8zri: Parse failed
+  - 8zxk: Parse failed
+  - 8zym: Parse failed
+  - 8zyq: Parse failed
+  - 8zyw: Parse failed
+  - 8zz0: Parse failed
+  - 9asm: Parse failed
+  - 9au5: Parse failed
+  - 9avv: Parse failed
+  - 9axl: Parse failed
+  - 9axv: Parse failed
+  - 9ayj: Parse failed
+  - 9azc: Parse failed
+  - 9azn: Parse failed
+  - 9azs: Parse failed
+  - 9b0e: Parse failed
+  - 9b0f: Parse failed
+  - 9b0g: Parse failed
+  - 9b0h: Parse failed
+  - 9b0i: Parse failed
+  - 9b0j: Parse failed
+  - 9b0l: Parse failed
+  - 9b0n: Parse failed
+  - 9b0o: Parse failed
+  - 9b0p: Parse failed
+  - 9b0q: Parse failed
+  - 9b0r: Parse failed
+  - 9b0u: Parse failed
+  - 9b0w: Parse failed
+  - 9b0y: Parse failed
+  - 9b11: Parse failed
+  - 9b14: Parse failed
+  - 9b16: Parse failed
+  - 9b1k: Parse failed
+  - 9b1y: Parse failed
+  - 9b2m: Parse failed
+  - 9b3u: Parse failed
+  - 9b4z: Parse failed
+  - 9b50: Parse failed
+  - 9b6d: Parse failed
+  - 9b6g: Parse failed
+  - 9b6l: Parse failed
+  - 9b77: Parse failed
+  - 9b7j: Parse failed
+  - 9baq: Parse failed
+  - 9bdg: Parse failed
+  - 9bkv: Parse failed
+  - 9bn5: Parse failed
+  - 9bnd: Parse failed
+  - 9bq3: Parse failed
+  - 9bu2: Parse failed
+  - 9buz: Parse failed
+  - 9bwb: Parse failed
+  - 9bwe: Parse failed
+  - 9bwt: Parse failed
+  - 9byk: Parse failed
+  - 9byo: Parse failed
+  - 9bzp: Parse failed
+  - 9c0k: Parse failed
+  - 9c44: Parse failed
+  - 9c45: Parse failed
+  - 9c4g: Parse failed
+  - 9c6i: Parse failed
+  - 9c6j: Parse failed
+  - 9c7h: Parse failed
+  - 9c9t: Parse failed
+  - 9c9y: Parse failed
+  - 9cai: Parse failed
+  - 9cat: Parse failed
+  - 9cay: Parse failed
+  - 9cb0: Parse failed
+  - 9cet: Parse failed
+  - 9ceu: Parse failed
+  - 9cey: Parse failed
+  - 9cgp: Parse failed
+  - 9ck5: Parse failed
+  - 9cku: Parse failed
+  - 9ckv: Parse failed
+  - 9cmf: Parse failed
+  - 9cn3: Parse failed
+  - 9cop: Parse failed
+  - 9cp1: Parse failed
+  - 9cp2: Parse failed
+  - 9cp3: Parse failed
+  - 9crp: Parse failed
+  - 9crq: Parse failed
+  - 9cts: Parse failed
+  - 9cus: Parse failed
+  - 9cyh: Parse failed
+  - 9czm: Parse failed
+  - 9d2b: Parse failed
+  - 9d2i: Parse failed
+  - 9d3e: Parse failed
+  - 9d47: Parse failed
+  - 9d49: Parse failed
+  - 9dd6: Parse failed
+  - 9det: Parse failed
+  - 9df0: Parse failed
+  - 9dgz: Parse failed
+  - 9dkv: Parse failed
+  - 9dkw: Parse failed
+  - 9dmu: Parse failed
+  - 9dnz: Parse failed
+  - 9dtq: Parse failed
+  - 9dz8: Parse failed
+  - 9e01: Parse failed
+  - 9e0m: No ligand after filtering (10 candidates, all excluded)
+  - 9e11: Parse failed
+  - 9e1a: Parse failed
+  - 9e1c: Parse failed
+  - 9e2w: Parse failed
+  - 9e3c: Parse failed
+  - 9e9s: Parse failed
+  - 9ed0: Parse failed
+  - 9eda: Parse failed
+  - 9eh2: Parse failed
+  - 9eih: Parse failed
+  - 9er2: Parse failed
+  - 9erl: Parse failed
+  - 9es0: Parse failed
+  - 9es4: Parse failed
+  - 9es8: Parse failed
+  - 9eup: Parse failed
+  - 9exq: Parse failed
+  - 9ey2: Parse failed
+  - 9ezy: Parse failed
+  - 9f1b: Parse failed
+  - 9f1d: Parse failed
+  - 9f9p: Parse failed
+  - 9f9t: Parse failed
+  - 9fci: Parse failed
+  - 9fd2: Parse failed
+  - 9fgq: Parse failed
+  - 9fgy: Parse failed
+  - 9fh9: Parse failed
+  - 9fs6: Parse failed
+  - 9ftz: Parse failed
+  - 9fy0: Parse failed
+  - 9g2d: Parse failed
+  - 9g2m: Parse failed
+  - 9g30: Parse failed
+  - 9g8m: Parse failed
+  - 9gbc: Parse failed
+  - 9gbk: Parse failed
+  - 9geo: Parse failed
+  - 9gf0: Parse failed
+  - 9ggg: Parse failed
+  - 9ghh: Parse failed
+  - 9gi1: Parse failed
+  - 9gkk: Parse failed
+  - 9gr1: Parse failed
+  - 9gut: Parse failed
+  - 9gy0: Parse failed
+  - 9h1l: Parse failed
+  - 9h1q: Parse failed
+  - 9h9n: Parse failed
+  - 9hcf: Parse failed
+  - 9hj3: Parse failed
+  - 9hjt: Parse failed
+  - 9hkv: Parse failed
+  - 9hm7: Parse failed
+  - 9hms: Parse failed
+  - 9hn7: Parse failed
+  - 9hn9: Parse failed
+  - 9hpk: Parse failed
+  - 9i54: Parse failed
+  - 9i8y: Parse failed
+  - 9ibh: Parse failed
+  - 9ij3: Parse failed
+  - 9ikc: Parse failed
+  - 9isq: Parse failed
+  - 9ium: Parse failed
+  - 9iuy: Parse failed
+  - 9iz9: Parse failed
+  - 9iza: Parse failed
+  - 9j8q: Parse failed
+  - 9j8r: Parse failed
+  - 9ja5: Parse failed
+  - 9jo2: No binding site
+  - 9jpu: Parse failed
+  - 9jqb: Parse failed
+  - 9jqc: Parse failed
+  - 9jqd: Parse failed
+  - 9jr2: Parse failed
+  - 9jub: Parse failed
+  - 9jxm: Parse failed
+  - 9k07: Parse failed
+  - 9k1i: Parse failed
+  - 9k1o: Parse failed
+  - 9k1y: Parse failed
+  - 9k3q: Parse failed
+  - 9kca: Parse failed
+  - 9klq: Parse failed
+  - 9kpt: Parse failed
+  - 9l1x: Parse failed
+  - 9l22: Parse failed
+  - 9l5r: Parse failed
+  - 9lha: Parse failed
+  - 9lhd: Parse failed
+  - 9lht: Parse failed
+  - 9liz: Parse failed
+  - 9lmq: Parse failed
+  - 9lxc: Parse failed
+  - 9miv: Parse failed
+  - 9mor: Parse failed
+  - 9mq4: Parse failed
+  - 9mr4: Parse failed
+  - 9msg: Parse failed
+  - 9mvu: Parse failed
+  - 9my8: Parse failed
+  - 9mzt: Parse failed
+  - 9n0q: Parse failed
+  - 9n0r: Parse failed
+  - 9n82: Parse failed
+  - 9no7: Parse failed
+  - 9o4n: Parse failed
+  - 9oci: Parse failed
+  - 9of1: Parse failed
+  - 9ofd: Parse failed
+  - 9oq2: Parse failed
+  - 9oq3: Parse failed
+  - 9p4v: Parse failed
+  - 9pln: Parse failed
+  - 9ps1: Parse failed
+  - 9q1b: Parse failed
+  - 9q1d: Parse failed
+  - 9qeg: Parse failed
+  - 9qeh: Parse failed
+  - 9qh0: Parse failed
+  - 9qiw: Parse failed
+  - 9qqb: Parse failed
+  - 9qwu: Parse failed
+  - 9qx1: Parse failed
+  - 9s35: Parse failed
+  - 9ui4: Parse failed
+
+Error logs saved to: /home/penghongen/My_Project/Data/DATA_v1/error_logs
+[Success] Task 2 finished.
+[Exit] Task 2 finished.

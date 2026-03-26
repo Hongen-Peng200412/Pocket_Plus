@@ -1,0 +1,9 @@
+defaults:
+  - fused
+  - _self_
+
+
+
+name: unfused
+
+data_folder_names: ["emdb_BOX", "pdb_label_BOX"]

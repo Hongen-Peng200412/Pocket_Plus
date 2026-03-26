@@ -1,0 +1,23 @@
+defaults:
+  - dense
+  - _self_
+
+name: zeros
+
+
+
+backbone:
+  point_backbone:
+    backend: zeros
+
+  voxel_backbone:
+    return_feature_keys: []
+
+  point_fusion_map:
+    point_enc2: null
+    point_enc3: null
+    point_enc4: null
+    point_feat: null
+
+  point_fusion_modes: []
+  sampler_modes: []

@@ -1,0 +1,17 @@
+# 主配置入口点 (Main Configuration Entry Point)
+
+defaults:
+  - sparse_h100
+  - override train: default_h100
+  - override model: zeros
+  - _self_
+
+
+
+
+
+name: non_a800
+tag: "无"
+project_name: PV_无
+
+

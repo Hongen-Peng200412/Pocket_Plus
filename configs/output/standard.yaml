@@ -1,0 +1,16 @@
+# ============================================================
+# 输出控制配置 (Output Control)
+# 此文件的所有配置项以 cfg.output.* 的形式被 train.py 使用
+# ============================================================
+
+save_top_k: 5             # int, ModelCheckpoint 保存的最佳模型数量 (按 monitor_metric 排序)
+                          # → train.py: ModelCheckpoint(save_top_k=cfg.output.save_top_k)
+
+save_every_n_epochs: 5   # int 或 null, 独立周期性保存模型机制 (每经过 10 个 epoch 保存一次且永久保留)
+                          # → train.py: 生成以 PERIODIC_epoch 为前缀的模型文件
+# --- 可视化回调 (可选功能) ---
+# visualization 整个子配置是可选的; 开关为 visualization.enabled
+# → train.py: if cfg.output.get("visualization", {}).get("enabled", False): 启用 VisualizationCallback
+visualization:
+  enabled: false          # bool, 是否启用训练过程中的可视化回调
+                          # → train.py: 若为 true, 实例化 VisualizationCallback(run_dir, vis_config, dataset_config, model_path)

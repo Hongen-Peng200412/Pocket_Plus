@@ -1,0 +1,18 @@
+# 主配置入口点 (Main Configuration Entry Point)
+
+defaults:
+  - sparse_h100
+  - override train: default_h200
+  - override model: dense
+  - _self_
+
+
+
+
+
+
+name: dense_h200
+tag: "密集"
+project_name: PV_密集
+
+

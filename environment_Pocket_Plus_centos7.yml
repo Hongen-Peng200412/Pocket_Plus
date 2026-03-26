@@ -1,0 +1,52 @@
+name: Pocket_Plus_centos7
+
+channels:
+  - conda-forge
+  - nodefaults
+
+dependencies:
+  # Keep the compiled torch/CUDA stack out of conda on CentOS 7.
+  # We install it in a second phase via pip wheels / source build to
+  # avoid the GLIBC_2.27 issue seen with conda + pytorch-cuda packages.
+  - python=3.10.13
+  - pip=24.3.*
+  - setuptools<75
+  - wheel
+  - ninja
+  - packaging
+  - git
+
+  # Numeric / data processing
+  - numpy=1.26.4
+  - scipy=1.11.*
+  - pandas=2.2.*
+  - biopython=1.83
+  - mrcfile=1.5.*
+  - openpyxl=3.1.*
+  - joblib=1.4.*
+  - tqdm=4.66.*
+
+  # Training / config / logging
+  - lightning=2.2.*
+  - torchmetrics=1.3.*
+  - hydra-core=1.3.2
+  - omegaconf=2.3.0
+  - wandb=0.17.*
+  - rich=13.9.*
+
+  # Model-side python deps used by the repo
+  - einops=0.8.*
+  - timm=0.9.16
+  - addict=2.4.0
+
+  - pip:
+      - rootutils==1.0.7
+
+# Usage:
+#   conda env create -f environment_Pocket_Plus_centos7.yml -n Pocket_Plus_centos7
+#   bash setup_env_centos7.sh environment_Pocket_Plus_centos7.yml Pocket_Plus_centos7
+#
+# Why a second phase is required:
+# 1. flash-attn expects torch to already be installed before it is built/installed.
+# 2. On CentOS 7 / glibc 2.17, the pip torch wheels are a better fit than the
+#    conda pytorch-cuda runtime packages that pulled in libcurand requiring GLIBC_2.27.

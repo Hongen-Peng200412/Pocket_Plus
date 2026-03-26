@@ -1,0 +1,66 @@
+name: Pocket_Plus
+
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+  - nodefaults
+
+dependencies:
+  - python=3.10.13
+  - pip=24.3.*
+  - setuptools<75
+  - wheel
+  - ninja
+  - packaging
+
+  # Linux server torch stack selected for FlashAttention compatibility.
+  - pytorch=2.4.1
+  - torchvision=0.19.1
+  - torchaudio=2.4.1
+  - pytorch-cuda=12.1
+
+  # Numeric / data processing
+  - numpy=1.26.4
+  - scipy=1.11.*
+  - pandas=2.2.*
+  - biopython=1.83
+  - mrcfile=1.5.*
+  - openpyxl=3.1.*
+  - joblib=1.4.*
+  - tqdm=4.66.*
+
+  # Training / config / logging
+  - lightning=2.2.*
+  - torchmetrics=1.3.*
+  - hydra-core=1.3.2
+  - omegaconf=2.3.0
+  - wandb=0.17.*
+  - rich=13.9.*
+
+  # Model-side python deps used by the repo
+  - einops=0.8.*
+  - timm=0.9.16
+  - addict=2.4.0
+
+  - pip:
+      - rootutils==1.0.7
+      - spconv-cu120==2.3.6
+      - "--find-links https://data.pyg.org/whl/torch-2.4.0+cu121.html"
+      - torch-scatter==2.1.2
+      - torch-cluster
+      - "flash-attn @ https://github.com/Dao-AILab/flash-attention/releases/download/v2.8.3/flash_attn-2.8.3+cu12torch2.4cxx11abiFALSE-cp310-cp310-linux_x86_64.whl"
+
+# Linux-only notes
+# 1. This file is intentionally Linux x86_64 only and is tuned for NVIDIA Ampere/Ada/Hopper GPUs.
+# 2. FlashAttention is treated as a required dependency and is installed from an upstream wheel,
+#    so the environment does not depend on building `flash-attn` from source during creation.
+# 3. `torch-scatter` and `torch-cluster` are installed from the official PyG wheel index matched to torch 2.4 + cu121.
+# 4. `spconv-cu120==2.3.6` is used because that is the latest published `spconv-cu120` wheel on PyPI,
+#    and it works with
+#    the selected torch CUDA runtime in this server-oriented setup.
+#
+# Create on Linux:
+#   conda config --set channel_priority strict
+#   conda env create -f ./environment_Pocket_Plus.yml -n Pocket_Plus     , or:
+#   conda env create --solver libmamba -f ./environment_Pocket_Plus.yml -n Pocket_Plus

@@ -1,0 +1,56 @@
+# 主配置入口点 (Main Configuration Entry Point)
+
+defaults:
+  # Hardest param (Architecture) / 最硬参数 (架构)
+  # 决定网络主体结构
+  - model: sparse
+  
+  # Hard param (Data Source) / 硬参数 (数据源)
+  # 决定数据读取方式
+  - dataset: fused
+  
+  # Hard param (Algo selection) / 硬参数 (算法选择)
+  # 决定后处理/聚类算法
+  - post_process: none
+  
+  # Output control / 输出控制
+  # 决定保存和日志行为
+  - output: standard
+  
+  # Soft params (Optimization) / 软参数 (优化)
+  # 决定 batch_size, LR, optim 等
+  - train: default_h100
+  
+  # _self_ means this config's parameters overwrite defaults
+  # 表示本文件的参数优先级高于 defaults 列表中导入的参数
+  - _self_
+
+
+
+
+
+# Global Tags
+# 全局标签
+
+# String, 实验标签，会出现在文件夹名中(位于feedback/logs/); 也会出现在wandb的run name中:f"{cfg.model.name}-{cfg.dataset.name}-{cfg.tag}"
+tag: "稀疏"
+
+# String, WandB 项目名称
+project_name: PV_稀疏
+
+
+
+# int (seconds), 最小保留时长。如果运行短于此时间将被自动删除 (防止垃圾实验)
+min_duration: 0
+# 如果尽管成功, 但运行时间较短且参数配置中 keep_short_runs=False, 那么就直接抹除所有记录
+keep_short_runs: true
+# bool, 是否开启离线模式 (不上传 WandB)
+offline: false
+# 报错时是否迁移日志
+migrate_slurm_logs: false
+hydra:
+  output_subdir: null
+  run:
+    dir: .
+  job:
+    chdir: false

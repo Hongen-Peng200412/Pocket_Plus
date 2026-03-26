@@ -1,0 +1,32 @@
+[
+    {
+        "cif_gt_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/7UZS.cif",
+        "cif_path": "/home/penghongen/My_Project/Data/cryatom_output_cif/7uzs.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_26917.map"
+    },
+    {
+        "cif_gt_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/7ZL1.cif",
+        "cif_path": "/home/penghongen/My_Project/Data/cryatom_output_cif/7zl1.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_14774.map"
+    },
+    {
+        "cif_gt_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/7XJP.cif",
+        "cif_path": "/home/penghongen/My_Project/Data/cryatom_output_cif/7xjp.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_33233.map"
+    },
+    {
+        "cif_gt_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/8CT2.cif",
+        "cif_path": "/home/penghongen/My_Project/Data/cryatom_output_cif/8ct2.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_26978.map"
+    },
+    {
+        "cif_gt_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/8DQV.cif",
+        "cif_path": "/home/penghongen/My_Project/Data/cryatom_output_cif/8dqv.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_27661.map"
+    },
+    {
+        "cif_gt_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/7UZQ.cif",
+        "cif_path": "/home/penghongen/My_Project/Data/cryatom_output_cif/7uzq.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_26916.map"
+    }
+]

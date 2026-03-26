@@ -1,0 +1,62 @@
+# ============================================================
+# 训练超参数配置 (Training Hyperparameters)
+# 此文件的所有配置项以 cfg.train.* 的形式被 train.py 和 Wrapper 使用
+# ============================================================
+
+# --- DataLoader 相关 ---
+batch_size: 3                 # int, 每张 GPU 的 batch size
+                              # → train.py: UnifiedDataModule._get_dataloader(batch_size=cfg.train.batch_size)
+num_workers: 20                # int, DataLoader 子进程数 (期望值); train.py 会取 min(此值, CPU核心数) 作为实际值
+                              # → train.py: 动态修正后传入 DataLoader(num_workers=...)
+dataloader_backend: auto      # str, DataLoader 后端选择: "auto"(自动探测) / "pyg"(PyG) / "torch"(原生)
+                              # → train.py: UnifiedDataModule._get_dataloader() 根据此值决定使用 torch_geometric.loader 还是 torch.utils.data.DataLoader
+pin_memory: true              # bool, 是否启用 pin_memory 加速 GPU 传输 (Windows 下被 train.py 强制设为 false)
+                              # → train.py: DataLoader(pin_memory=...) (Windows 系统自动禁用)
+
+
+# --- Trainer 相关 ---
+max_epochs: 100                # int, 最大训练轮数
+                              # → train.py: pl.Trainer(max_epochs=cfg.train.max_epochs)
+accelerator: auto             # str, 硬件加速器: "auto" / "gpu" / "cpu" 等
+                              # → train.py: pl.Trainer(accelerator=cfg.train.accelerator)
+ddp_find_unused_parameters: false  # bool, DDP 是否查找未使用参数。若模型每步都会用到全部参数，建议设为 false 以减少额外开销(已经跑过了,日志里面写着可以用false)
+precision: "bf16-mixed"       # str, 训练精度: "32" / "16-mixed" / "bf16-mixed" 等
+                              # → train.py: pl.Trainer(precision=cfg.train.precision)
+gradient_clip_val: 0.5        # float, 梯度裁剪阈值 (防止梯度爆炸)
+                              # → train.py: pl.Trainer(gradient_clip_val=cfg.train.gradient_clip_val)
+accumulate_grad_batches: 12    # int, 梯度累积步数; 等效 batch_size = batch_size × accumulate_grad_batches    #NOTE: 我们先默认36(用单卡a800/h100训练)
+                              # → train.py: pl.Trainer(accumulate_grad_batches=cfg.train.accumulate_grad_batches)
+check_val_every_n_epoch: 1    # int, 每隔几个 epoch 执行一次验证
+                              # → train.py: pl.Trainer(check_val_every_n_epoch=cfg.train.check_val_every_n_epoch)
+log_every_n_steps: 3          # int, wandb每隔多少个global_step记录一次日志（画图指标）
+                              # → train.py: pl.Trainer(log_every_n_steps=cfg.train.log_every_n_steps)
+
+
+
+# --- 优化器 (Optimizer) ---
+# 通过 Hydra 的 _partial_: true 机制，生成 functools.partial 对象而非直接实例化
+# → train.py L289: hydra.utils.instantiate(cfg.model, optimizer=cfg.train.optimizer, ...)
+#   将此配置作为参数传入 Wrapper.__init__，存入 self.hparams.optimizer
+# → Wrapper.configure_optimizers(): 从 self.hparams.optimizer 取出并调用 partial(params=trainable_params) 完成实例化
+optimizer:
+  _target_: torch.optim.AdamW
+  _partial_: true
+  lr: 2.0e-5                  # float, 初始学习率
+  weight_decay: 0.01           # float, L2 正则化权重衰减
+
+
+
+
+# --- 学习率调度器 (LR Scheduler) ---
+# 同样通过 _partial_: true 机制生成 partial 对象
+# → 传递路径与 optimizer 相同，最终在 Wrapper.configure_optimizers() 中调用 partial(optimizer=optimizer) 完成实例化
+# → 调度器的更新行为 (interval/frequency/monitor) 由 cfg.model 中的 interval、frequency、monitor_metric 统一控制
+scheduler:
+  _target_: torch.optim.lr_scheduler.ReduceLROnPlateau
+  _partial_: true
+  mode: max                   # str, "max" 表示指标越大越好 (与 cfg.model.monitor_mode 语义一致, 但此处是 ReduceLROnPlateau 的内部参数)
+  factor: 0.5                 # float, 学习率衰减因子; 触发时 new_lr = old_lr × factor
+  patience: 10                # int, 容忍多少个 epoch 指标不提升后才触发衰减
+  threshold: 0.001            # float, 指标提升的最小幅度 (低于此值视为未提升)
+  threshold_mode: rel         # str, "rel"(相对) 或 "abs"(绝对); threshold 的比较方式
+  min_lr: 1.0e-7              # float, 学习率下限
