@@ -4,6 +4,7 @@ defaults:
   - sparse_h100
   - override train: default_h200
   - override model: dense
+  - override dataset: unfused
   - _self_
 
 
@@ -11,8 +12,8 @@ defaults:
 
 
 
-name: dense_h200
-tag: "密集"
-project_name: PV_dense_fused
+name: dense_unfused_h200
+tag: "密集_非融合"
+project_name: PV_dense_unfused
 
 

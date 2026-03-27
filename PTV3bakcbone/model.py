@@ -726,12 +726,12 @@ class SerializedAttention(PointModule):
             - unpad: torch.Tensor, (N,), 对于填充前的点云来说, 目前(填充前)点云的第i个元素, 是填充后点云的第unpad[i]个元素;  | (或等价地)对于填充后的点云来说, 代表所有"原本就是真实点"在填充后点云中的索引; 取值为 0~N_pad-1
             - cu_seqlens_key: torch.Tensor, (num_patches + 1,), 累积序列长度, 表示 Flash Attention 中每个 patch 的边界索引
         """
-        # str, 存储填充索引的键名
-        pad_key = "pad"
+        # str, 存储填充索引的键名; 包含 patch_size 以避免不同 stage 之间缓存冲突
+        pad_key = f"pad_{self.patch_size}"
         # str, 存储逆填充索引的键名
-        unpad_key = "unpad"
+        unpad_key = f"unpad_{self.patch_size}"
         # str, 存储 Flash Attention 累积长度的键名
-        cu_seqlens_key = "cu_seqlens_key"
+        cu_seqlens_key = f"cu_seqlens_{self.patch_size}"
         # 如果这些处理索引尚未计算, 则进行计算并缓存
         if (
             pad_key not in point.keys()

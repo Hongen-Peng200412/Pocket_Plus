@@ -31,12 +31,13 @@ defaults:
 
 # Global Tags
 # 全局标签
+name: sparse_h100
 
 # String, 实验标签，会出现在文件夹名中(位于feedback/logs/); 也会出现在wandb的run name中:f"{cfg.model.name}-{cfg.dataset.name}-{cfg.tag}"
 tag: "稀疏"
 
 # String, WandB 项目名称
-project_name: PV_稀疏
+project_name: PV_sparse_fused
 
 
 

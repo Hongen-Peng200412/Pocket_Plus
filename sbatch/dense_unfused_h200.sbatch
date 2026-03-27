@@ -1,17 +1,17 @@
 #!/bin/bash
 #SBATCH -o /home/penghongen/My_Project/feedback_plus/logs/_temp_slurm/%x_%j.out
 #SBATCH -e /home/penghongen/My_Project/feedback_plus/logs/_temp_slurm/%x_%j.err
-#SBATCH -p h100
-#SBATCH --qos=h100g2
-#SBATCH --job-name=sparse
+#SBATCH -p h200
+#SBATCH --qos=h200g2
+#SBATCH --job-name=dense
 #SBATCH --nodes=1
-#SBATCH --gres=gpu:h100:1
+#SBATCH --gres=gpu:h200:1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=24
 
 set -euo pipefail
 
-CONFIG_NAME="sparse_h100"
+CONFIG_NAME="dense_unfused_h200"
 PROJECT_ROOT="/home/penghongen/My_Project"
 CONDA_BASE="/home/penghongen/anaconda3"
 CONDA_ENV_NAME="${Pocket_Plus_CONDA_ENV_NAME:-Pocket_Plus_centos7}"

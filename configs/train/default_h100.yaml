@@ -15,6 +15,10 @@ pin_memory: true              # bool, 是否启用 pin_memory 加速 GPU 传输 
 
 
 # --- Trainer 相关 ---
+nnodes: 1                     # int, 节点数; sbatch 可通过 CLI 覆盖
+                              # → train.py: pl.Trainer(num_nodes=cfg.train.nnodes)
+devices: 1                    # int, 每节点 GPU 数; sbatch 可通过 CLI 覆盖
+                              # → train.py: pl.Trainer(devices=cfg.train.devices)
 max_epochs: 100                # int, 最大训练轮数
                               # → train.py: pl.Trainer(max_epochs=cfg.train.max_epochs)
 accelerator: auto             # str, 硬件加速器: "auto" / "gpu" / "cpu" 等

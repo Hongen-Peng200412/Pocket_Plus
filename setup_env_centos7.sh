@@ -6,10 +6,14 @@ ENV_FILE="${1:-environment_Pocket_Plus_centos7.yml}"
 ENV_NAME="${2:-Pocket_Plus_centos7}"
 STACK="${POCKET_TORCH_STACK:-torch24-cu121}"
 MAX_JOBS="${MAX_JOBS:-4}"
+FLASH_ONLY="${POCKET_FLASH_ONLY:-0}"
+FLASH_REINSTALL="${POCKET_FLASH_REINSTALL:-1}"
+POCKET_TORCH_CUDA_ARCH_LIST="${POCKET_TORCH_CUDA_ARCH_LIST:-9.0}"
 PIP_DEFAULT_TIMEOUT="${PIP_DEFAULT_TIMEOUT:-1200}"
 PIP_RETRIES="${PIP_RETRIES:-8}"
 PIP_INSTALL_RETRY_ROUNDS="${PIP_INSTALL_RETRY_ROUNDS:-3}"
 POCKET_UPGRADE_PIP="${POCKET_UPGRADE_PIP:-0}"
+CUDA_HOME_DEFAULT="${CUDA_HOME:-}"
 
 if ! command -v conda >/dev/null 2>&1; then
     echo "[Env] conda was not found in PATH."
@@ -34,6 +38,32 @@ conda activate "${ENV_NAME}"
 
 export PIP_DISABLE_PIP_VERSION_CHECK=1
 export PIP_DEFAULT_TIMEOUT
+
+write_runtime_hooks() {
+    local activate_dir deactivate_dir
+    activate_dir="${CONDA_PREFIX}/etc/conda/activate.d"
+    deactivate_dir="${CONDA_PREFIX}/etc/conda/deactivate.d"
+    mkdir -p "${activate_dir}" "${deactivate_dir}"
+
+    cat > "${activate_dir}/pocket_plus_runtime.sh" <<EOF
+export _POCKET_PLUS_OLD_LD_LIBRARY_PATH="\${LD_LIBRARY_PATH:-}"
+export _POCKET_PLUS_OLD_LD_PRELOAD="\${LD_PRELOAD:-}"
+export CUDA_HOME="${CUDA_HOME_DEFAULT}"
+export PATH="\${CUDA_HOME}/bin:\${PATH}"
+export LD_LIBRARY_PATH="/usr/lib64:\${CUDA_HOME}/lib64"
+if [ -n "\${_POCKET_PLUS_OLD_LD_LIBRARY_PATH:-}" ]; then
+    export LD_LIBRARY_PATH="\${LD_LIBRARY_PATH}:\${_POCKET_PLUS_OLD_LD_LIBRARY_PATH}"
+fi
+export LD_PRELOAD="\${CONDA_PREFIX}/lib/libstdc++.so.6:\${CONDA_PREFIX}/lib/libgcc_s.so.1"
+EOF
+
+    cat > "${deactivate_dir}/pocket_plus_runtime.sh" <<'EOF'
+export LD_LIBRARY_PATH="${_POCKET_PLUS_OLD_LD_LIBRARY_PATH:-}"
+export LD_PRELOAD="${_POCKET_PLUS_OLD_LD_PRELOAD:-}"
+unset _POCKET_PLUS_OLD_LD_LIBRARY_PATH
+unset _POCKET_PLUS_OLD_LD_PRELOAD
+EOF
+}
 
 pip_install_retry() {
     local round=1
@@ -61,6 +91,7 @@ else
     echo "[Env] Skipping pip self-upgrade (set POCKET_UPGRADE_PIP=1 to enable)"
 fi
 
+declare -a CUDA_HOME_CANDIDATES=()
 case "${STACK}" in
     torch24-cu121)
         TORCH_INDEX_URL="https://download.pytorch.org/whl/cu121"
@@ -69,6 +100,7 @@ case "${STACK}" in
         SPCONV_SPEC="spconv-cu121==2.3.8"
         FLASH_ATTN_SPEC="flash-attn==2.8.3"
         MIN_CUDA_VERSION="12.0"
+        CUDA_HOME_CANDIDATES=("/usr/local/cuda-12.1" "/usr/local/cuda")
         ;;
     torch21-cu118)
         TORCH_INDEX_URL="https://download.pytorch.org/whl/cu118"
@@ -77,6 +109,7 @@ case "${STACK}" in
         SPCONV_SPEC="spconv-cu118==2.3.8"
         FLASH_ATTN_SPEC="flash-attn==2.5.8"
         MIN_CUDA_VERSION="11.6"
+        CUDA_HOME_CANDIDATES=("/usr/local/cuda-11.8" "/usr/local/cuda")
         ;;
     *)
         echo "[Env] Unknown POCKET_TORCH_STACK='${STACK}'. Supported values: torch24-cu121, torch21-cu118"
@@ -84,18 +117,55 @@ case "${STACK}" in
         ;;
 esac
 
-echo "[Env] Installing PyTorch stack: ${STACK}"
-pip_install_retry --index-url "${TORCH_INDEX_URL}" ${TORCH_SPEC}
+if [ -z "${CUDA_HOME_DEFAULT}" ]; then
+    for candidate in "${CUDA_HOME_CANDIDATES[@]}"; do
+        if [ -d "${candidate}" ]; then
+            CUDA_HOME_DEFAULT="${candidate}"
+            break
+        fi
+    done
+    CUDA_HOME_DEFAULT="${CUDA_HOME_DEFAULT:-/usr/local/cuda}"
+fi
+echo "[Env] Using CUDA_HOME default: ${CUDA_HOME_DEFAULT}"
 
-echo "[Env] Installing PyG runtime packages"
-pip_install_retry \
-    "torch-scatter==2.1.2" \
-    "torch-cluster==1.6.3" \
-    -f "${PYG_WHL_URL}"
-pip_install_retry "torch-geometric==2.6.1"
+if [ "${FLASH_ONLY}" != "1" ]; then
+    echo "[Env] Installing PyTorch stack: ${STACK}"
+    pip_install_retry --index-url "${TORCH_INDEX_URL}" ${TORCH_SPEC}
 
-echo "[Env] Installing spconv"
-pip_install_retry "${SPCONV_SPEC}"
+    echo "[Env] Installing PyG runtime packages"
+    pip_install_retry \
+        "torch-scatter==2.1.2" \
+        "torch-cluster==1.6.3" \
+        -f "${PYG_WHL_URL}"
+    pip_install_retry "torch-geometric==2.6.1"
+
+    echo "[Env] Installing spconv"
+    pip_install_retry "${SPCONV_SPEC}"
+else
+    echo "[Env] POCKET_FLASH_ONLY=1, skipping torch / PyG / spconv reinstall."
+fi
+
+echo "[Env] Writing Pocket_Plus runtime activation hooks"
+write_runtime_hooks
+source "${CONDA_PREFIX}/etc/conda/activate.d/pocket_plus_runtime.sh"
+
+echo "[Env] Verifying compiler toolchain for flash-attn"
+if [ -x "${CONDA_PREFIX}/bin/x86_64-conda-linux-gnu-gcc" ]; then
+    export CC="${CONDA_PREFIX}/bin/x86_64-conda-linux-gnu-gcc"
+    export CXX="${CONDA_PREFIX}/bin/x86_64-conda-linux-gnu-g++"
+elif [ -x "${CONDA_PREFIX}/bin/x86_64-conda-linux-gnu-cc" ]; then
+    export CC="${CONDA_PREFIX}/bin/x86_64-conda-linux-gnu-cc"
+    export CXX="${CONDA_PREFIX}/bin/x86_64-conda-linux-gnu-c++"
+else
+    echo "[Env] Conda GCC toolchain was not found under ${CONDA_PREFIX}/bin."
+    exit 1
+fi
+export CUDAHOSTCXX="${CXX}"
+echo "[Env] CC=${CC}"
+echo "[Env] CXX=${CXX}"
+echo "[Env] CUDAHOSTCXX=${CUDAHOSTCXX}"
+${CC} --version | head -n 1
+${CXX} --version | head -n 1
 
 if [ -z "${CUDA_HOME:-}" ] && [ -d "/usr/local/cuda" ]; then
     export CUDA_HOME="/usr/local/cuda"
@@ -126,8 +196,15 @@ print(f"[Env] nvcc {nvcc} satisfies minimum CUDA toolkit requirement {minimum}."
 PY
 
 echo "[Env] Installing flash-attn from source for glibc 2.17 safety"
-FLASH_ATTENTION_FORCE_BUILD=TRUE MAX_JOBS="${MAX_JOBS}" \
-    pip_install_retry "${FLASH_ATTN_SPEC}" --no-build-isolation
+export TORCH_CUDA_ARCH_LIST="${POCKET_TORCH_CUDA_ARCH_LIST}"
+echo "[Env] TORCH_CUDA_ARCH_LIST=${TORCH_CUDA_ARCH_LIST}"
+if [ "${FLASH_REINSTALL}" = "1" ]; then
+    echo "[Env] Removing existing flash-attn wheel before rebuild"
+    python -m pip uninstall -y flash-attn flash_attn || true
+fi
+FLASH_ATTENTION_FORCE_BUILD=TRUE MAX_JOBS="${MAX_JOBS}" TORCH_CUDA_ARCH_LIST="${TORCH_CUDA_ARCH_LIST}" \
+    CC="${CC}" CXX="${CXX}" CUDAHOSTCXX="${CUDAHOSTCXX}" \
+    pip_install_retry "${FLASH_ATTN_SPEC}" --no-build-isolation --no-cache-dir --force-reinstall
 
 echo "[Env] Running import smoke test"
 python - <<'PY'
@@ -146,6 +223,21 @@ print("spconv:", getattr(spconv, "__version__", "<unknown>"))
 print("torch_geometric:", torch_geometric.__version__)
 print("torch_scatter:", getattr(torch_scatter, "__version__", "<unknown>"))
 print("torch_cluster:", getattr(torch_cluster, "__version__", "<unknown>"))
+if torch.cuda.is_available():
+    device = torch.device("cuda")
+    print("cuda.device_name:", torch.cuda.get_device_name(device))
+    print("cuda.device_capability:", torch.cuda.get_device_capability(device))
+    qkv = torch.randn(128, 3, 4, 64, device=device, dtype=torch.bfloat16)
+    cu_seqlens = torch.tensor([0, 64, 128], device=device, dtype=torch.int32)
+    out = flash_attn.flash_attn_varlen_qkvpacked_func(
+        qkv,
+        cu_seqlens,
+        64,
+        0.0,
+        causal=False,
+    )
+    torch.cuda.synchronize()
+    print("flash_attn_varlen_qkvpacked_func:", tuple(out.shape))
 PY
 
 echo "[Env] Done."

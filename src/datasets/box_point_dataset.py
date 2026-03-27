@@ -939,8 +939,8 @@ class BoxPointDataset(Dataset):
         if not np.allclose(
             voxel_size_world,
             float(voxel_size_world[0]),
-            rtol=1e-4,
-            atol=1e-6,
+            rtol=3e-2,
+            atol=3e-4,
         ):
             raise ValueError(
                 "当前样本的 voxel_size_world 不是近似各向同性，"

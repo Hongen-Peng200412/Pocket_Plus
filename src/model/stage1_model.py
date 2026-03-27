@@ -594,7 +594,7 @@ class VolumePointStage1Model(nn.Module):
                 fusion_mode=fusion_mode,
                 sampler_mode=sampler_mode,
             )
-            sampled_feat[point_mask] = sampled_feat_one_box
+            sampled_feat[point_mask] = sampled_feat_one_box.to(dtype=sampled_feat.dtype)
 
         return sampled_feat
 

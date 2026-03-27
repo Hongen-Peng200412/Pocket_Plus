@@ -12,6 +12,6 @@ defaults:
 
 name: unfused_h100
 tag: "不混合"
-project_name: PV_不混合(sparse)
+project_name: PV_sparse_unfused
 
 
