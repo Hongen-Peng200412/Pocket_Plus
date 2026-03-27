@@ -39,7 +39,7 @@ from PDB_processor.features.atom_features import compute_atom_features, save_ato
 from PDB_processor.features.residue_features import compute_residue_features, save_residues_npz
 from PDB_processor.geometry.local_frames import compute_local_frames
 from PDB_processor.geometry.graph_builder import save_graph_npz
-from PDB_processor.ligand_candidates import save_candidates_npz, load_candidates_npz
+from PDB_processor.ligand_candidates import save_candidates_npz, load_candidates_npz, compute_contact_attributes
 from PDB_processor.error_logger import (
     ProcessingError,
     return_error_info,
@@ -150,9 +150,20 @@ def label_single_sample(
         parsed_data.atom_coords = atom_coords
 
 
-        # ===== 3. 筛选 + 分类 / Filter and classify =====
+        # ===== 3. 计算接触属性 / Compute contact attributes =====
+        # float, 接触阈值 (取所有规则的最大 binding_threshold)
+        contact_threshold = max(r.binding_threshold for r in filter_config.rules)
+        compute_contact_attributes(
+            candidates=candidates,
+            receptor_coords=atom_coords,
+            receptor_res_indices=atoms_data['res_indices'],
+            threshold=contact_threshold,
+        )
+
+
+        # ===== 4. 筛选 + 分类 / Filter and classify =====
         # list[LigandCandidate], 通过筛选的候选
-        # dict[int, tuple[int, str]], candidate_id → (class_id, class_name)
+        # dict[int, tuple[int, str, float]], candidate_id → (class_id, class_name, binding_threshold)
         # list[tuple[int, str]], 被排除的候选及原因
         selected, pocket_class_map, excluded = filter_and_classify(candidates, filter_config)
         if require_ligand and len(selected) == 0:
@@ -306,9 +317,20 @@ def process_and_label_single_file(
 
 
 
-        # ===== 7.筛选配体 + 分配口袋类别 / Filter candidates + assign pocket classes =====
+        # ===== 7. 计算接触属性 / Compute contact attributes =====
+        # float, 接触阈值 (取所有规则的最大 binding_threshold)
+        contact_threshold = max(r.binding_threshold for r in filter_config.rules)
+        compute_contact_attributes(
+            candidates=parsed_data.ligand_candidates,
+            receptor_coords=parsed_data.atom_coords,
+            receptor_res_indices=parsed_data.atom_res_indices,
+            threshold=contact_threshold,
+        )
+
+
+        # ===== 8. 筛选配体 + 分配口袋类别 / Filter candidates + assign pocket classes =====
         # list[LigandCandidate], 通过筛选的候选
-        # dict[int, tuple[int, str]], candidate_id → (class_id, class_name)
+        # dict[int, tuple[int, str, float]], candidate_id → (class_id, class_name, binding_threshold)
         # list[tuple[int, str]], 被排除的候选及原因
         selected, pocket_class_map, excluded = filter_and_classify(
             parsed_data.ligand_candidates, filter_config
@@ -752,7 +774,9 @@ water_count                                         # int, 被排除的水分子
 resnames                                            # np.ndarray, (N_cand,), str,   CCD 残基名 (按 candidate_id 升序, 与下方各字段一一对应)
 chain_ids                                           # np.ndarray, (N_cand,), str,   链 ID
 res_ids                                             # np.ndarray, (N_cand,), int32, 残基序号
+insertion_codes                                     # np.ndarray, (N_cand,), str,   插入码
 n_heavy_atoms                                       # np.ndarray, (N_cand,), int32, 重原子数
+molecular_weight                                    # np.ndarray, (N_cand,), float32, 重原子分子量 (Da, Biopython atom.mass)
 is_metal_ion                                        # np.ndarray, (N_cand,), bool,  金属离子标志
 is_peptide_like                                     # np.ndarray, (N_cand,), bool,  标准 AA 类 HETATM
 is_nucleotide_like                                  # np.ndarray, (N_cand,), bool,  标准核苷酸类 HETATM
@@ -760,6 +784,7 @@ is_covalent                                         # np.ndarray, (N_cand,), boo
 polymer_length                                      # np.ndarray, (N_cand,), int32, 聚合物链长
 centers                                             # np.ndarray, (N_cand, 3), float32, 候选配体重心
 candidate_coords_{i}                                # np.ndarray, (M_i, 3), float32, 第 i 个候选配体的原子坐标 (i = candidate_id, 例如 candidate_coords_0)
+# 注: n_contact_receptor_atoms 和 n_contact_receptor_residues 不存入 npz, 由 Part 2 的 compute_contact_attributes() 现场计算
 
 
 

@@ -17,20 +17,24 @@ Part 1 core module:
 当前已实现的属性 / Currently implemented attributes:
   - 基本标识 (candidate_id, resname, chain_id, res_id, ...)
   - 坐标与几何 (coords, center, n_heavy_atoms)
-  - 分类标志: is_metal_ion, is_peptide_like, is_nucleotide_like, is_covalent
+  - 大小: molecular_weight(n_heavy_atoms)
+  - 分类标志: is_metal_ion, is_peptide_like, is_nucleotide_like
+  - 接触属性: is_covalent, n_contact_receptor_atoms, n_contact_receptor_residues
   - 聚合物链长: polymer_length
 
-后续将增加的属性 (接口已预留) / Planned future attributes (interface ready):
-  - molecular_weight, element_counts, has_only_organic_elements
+后续将可能添加的属性 / Planned future attributes:
+  - element_counts, has_only_organic_elements
   - 排除列表命中标志 (AF3, BioLiP, ...)
-  - 受体接触属性 (n_contact_atoms, n_contact_residues, ...)
   - 冗余度 (resname_count_in_structure)
 ================================================================================
 """
 
+
+
 import numpy as np
 from dataclasses import dataclass, field
 from typing import List, Dict, Optional, Set, Tuple
+from scipy.spatial import cKDTree
 from Bio.PDB.Atom import DisorderedAtom
 
 from .config import (
@@ -175,27 +179,31 @@ class LigandCandidate:
     坐标与几何 / Coordinates & Geometry:
         - coords:        np.ndarray, (M, 3), float32, 全部重原子坐标
         - center:        np.ndarray, (3,), float32, 重心坐标
-        - n_heavy_atoms: int, 重原子数目
 
-    分类标志 / Classification Flags (bool → 存储时编码为 0/1):
+    -----------------------------------------------------------------------
+    1. 大小 / Size:
+        - n_heavy_atoms: int, 重原子数目
+        - molecular_weight: float, 配体所有重原子的质量之和 (Da, Biopython atom.mass)
+
+    2. 类别 / Classification Flags (bool → 存储时编码为 0/1):
         - is_metal_ion:       bool, 金属离子 (单原子且元素 ∈ METAL_ELEMENTS)
         - is_peptide_like:    bool, 标准氨基酸类型的 HETATM
         - is_nucleotide_like: bool, 标准核苷酸类型的 HETATM
-        - is_covalent:        bool, 与主链共价连接
 
-    聚合物链长 / Polymer Chain Length:
+    3. 接触属性 / Contact Properties:
+        - is_covalent:        bool, 与主链共价连接
+        - n_contact_receptor_atoms: int, 在 binding_threshold 内接触到的受体重原子数 (Part2, 也就是从候选配体中挑选合格配体时, 由 def compute_contact_attributes 现场计算, 不存入 candidates.npz————因为binding_threshold由用户现场指定)
+        - n_contact_receptor_residues: int, 接触受体残基数: 某残基与配体至少 2 次接触才计入 (Part2, 也就是从候选配体中挑选合格配体时, 由 def compute_contact_attributes 现场计算, 不存入 candidates.npz)
+
+    4. 聚合物链长 / Polymer Chain Length:
         - polymer_length: int, 所属连续 HETATM 聚合链的长度 (聚合物=多肽/核酸; 非聚合物=1; 太长会过滤)
+
 
     ============================== 保留接口 ==============================
     以下属性在当前版本不计算 (值为 None)，后续版本可能会填充:
-        - molecular_weight:         Optional[float], 近似分子量
         - has_only_organic_elements: Optional[bool], 是否仅含有机元素
         - in_af3_ligand_exclusion:  Optional[bool], AF3 排除列表命中
         - in_af3_ion_list:          Optional[bool], AF3 离子列表命中
-        - n_contact_atoms_4p5:      Optional[int], 4.5Å 接触原子数
-        - n_contact_residues_4p5:   Optional[int], 4.5Å 接触残基数
-        - n_contact_atoms_6p5:      Optional[int], 6.5Å 接触原子数
-        - n_contact_residues_6p5:   Optional[int], 6.5Å 接触残基数
         - min_dist_to_receptor:     Optional[float], 最小到受体距离
         - resname_count_in_structure: Optional[int], 同 resname 在结构中出现次数
     """
@@ -215,36 +223,40 @@ class LigandCandidate:
     # int, 重原子数目
     n_heavy_atoms: int
 
-    # ========================= 分类标志 =========================
+    # ========================= 1. 大小 =========================
+    # float, 配体所有重原子的质量之和 (Da, 来自 Biopython atom.mass)
+    molecular_weight: float = 0.0
+
+    # ========================= 2. 分类标志 =========================
     # bool, 金属离子
     is_metal_ion: bool = False
     # bool, 标准氨基酸类型的 HETATM
     is_peptide_like: bool = False
     # bool, 标准核苷酸类型的 HETATM
     is_nucleotide_like: bool = False
+
+    # ========================= 3. 接触属性 =========================
     # bool, 与主链共价连接
     is_covalent: bool = False
+    # int, 在 binding_threshold 内接触到的受体重原子数 (Part 2 就地填充, 不存入 npz)
+    n_contact_receptor_atoms: int = 0
+    # int, 接触受体残基数: 某残基与配体至少 2 次接触才计入 (Part 2 就地填充, 不存入 npz)
+    n_contact_receptor_residues: int = 0
 
-    # ========================= 聚合物链长 =========================
+    # ========================= 4. 聚合物链长 =========================
     # int, 所属连续 HETATM 聚合链长度 (非聚合物=1)
     polymer_length: int = 1
 
     # ========================= 保留接口 (值为 None 表示未计算) =========================
-    molecular_weight: Optional[float] = None
     has_only_organic_elements: Optional[bool] = None
     in_af3_ligand_exclusion: Optional[bool] = None
     in_af3_ion_list: Optional[bool] = None
-    n_contact_atoms_4p5: Optional[int] = None
-    n_contact_residues_4p5: Optional[int] = None
-    n_contact_atoms_6p5: Optional[int] = None
-    n_contact_residues_6p5: Optional[int] = None
     min_dist_to_receptor: Optional[float] = None
     resname_count_in_structure: Optional[int] = None
 
 
-# ============================================================================
-# 辅助函数 / Helper Functions
-# ============================================================================
+
+# ---------------------------------------------- 辅助函数 / Helper Functions ----------------------------------------------
 
 def _get_heavy_atom_coords(residue) -> np.ndarray:
     """
@@ -277,7 +289,6 @@ def _get_heavy_atom_coords(residue) -> np.ndarray:
         return np.zeros((0, 3), dtype=np.float32)
     return np.array(coords_list, dtype=np.float32)
 
-
 def _get_atom_element(atom) -> Optional[str]:
     """
     获取原子的元素符号（大写）。
@@ -293,6 +304,96 @@ def _get_atom_element(atom) -> Optional[str]:
     return None
 
 
+def _are_covalently_bonded_pair(res1, res2, threshold: float = COVALENT_BOND_THRESHOLD) -> bool:
+    """
+    判断两个相邻残基之间是否存在共价键。
+    Check if two adjacent residues are covalently bonded.
+
+    检查肽键 (C-N ≤ threshold) 和核酸键 (O3'-P ≤ threshold)。
+
+    输入参数 / Input:
+        - res1: Bio.PDB.Residue, 前一个残基
+        - res2: Bio.PDB.Residue, 后一个残基
+        - threshold: float, 共价键距离阈值 (默认 1.8Å)
+
+    输出 / Output:
+        - bool, 是否共价连接
+    """
+    # 检查序号是否连续
+    seq1 = res1.id[1]
+    seq2 = res2.id[1]
+    diff = seq2 - seq1
+    if diff != 0 and diff != 1:
+        return False
+
+    # 肽键: C-N
+    if 'C' in res1 and 'N' in res2:
+        try:
+            dist = res1['C'] - res2['N']
+            if dist < threshold:
+                return True
+        except Exception:
+            pass
+
+    # 核酸键: O3'-P
+    for o3_name in ["O3'", "O3*", "O3"]:
+        if o3_name in res1 and 'P' in res2:
+            try:
+                dist = res1[o3_name] - res2['P']
+                if dist < threshold:
+                    return True
+            except Exception:
+                pass
+
+    return False
+
+# ---------------------------------------------- 辅助函数 / Helper Functions ----------------------------------------------
+
+
+
+
+
+
+
+
+
+
+
+
+
+# ========================================================================================================================================
+# =============================================================== 属性计算 ================================================================
+
+# 1. 大小
+def _compute_molecular_weight(residue) -> float:
+    """
+    计算一个残基中所有重原子的质量之和。
+
+    输入参数:
+        - residue: Bio.PDB.Residue, Biopython 残基对象
+
+    输出:
+        - float, 重原子总质量 (Da), 若无重原子则返回 0.0
+    """
+    # float, 累计质量
+    total_mass = 0.0
+    for atom in residue:
+        # str, 原子名称
+        atom_name = atom.get_name().strip().upper()
+        # 跳过氢原子
+        if atom_name and atom_name[0] == 'H':
+            continue
+        if len(atom_name) > 1 and atom_name[0].isdigit() and atom_name[1] == 'H':
+            continue
+        # 对 DisorderedAtom 取第一个选择位
+        if isinstance(atom, DisorderedAtom):
+            total_mass += atom.disordered_get_list()[0].mass
+        else:
+            total_mass += atom.mass
+    return total_mass
+
+
+# 2. 类别(核酸和蛋白配体易识别, 当场处理而不加函数)
 def _is_single_atom_metal(residue) -> bool:
     """
     判断一个 HETATM 残基是否为单原子金属离子。
@@ -327,6 +428,73 @@ def _is_single_atom_metal(residue) -> bool:
     return element in METAL_ELEMENTS
 
 
+
+
+# 3. 接触属性: 只有这个函数不参与存入 candidates.npz, 因为 binding_threshold 由用户现场指定
+def compute_contact_attributes(
+    candidates: List['LigandCandidate'],
+    receptor_coords: np.ndarray,
+    receptor_res_indices: np.ndarray,
+    threshold: float,
+) -> None:
+    """
+    就地填充每个候选配体的 n_contact_receptor_atoms 和 n_contact_receptor_residues。
+
+    逻辑:
+        - 用 cKDTree 对受体原子坐标建树
+        - 对每个配体的每个重原子, query_ball_point(threshold) 获取邻近受体原子
+        - n_contact_receptor_atoms = 被命中的不重复受体原子数
+        - 对每个受体残基, 统计命中原子数; 命中 ≥ 2 的残基计为 binding residue
+        - n_contact_receptor_residues = binding residue 数
+
+    输入参数:
+        - candidates: list[LigandCandidate], 候选配体列表 (就地修改)
+        - receptor_coords: np.ndarray, (N_rec, 3), float32, 受体重原子坐标
+        - receptor_res_indices: np.ndarray, (N_rec,), int32, 受体原子→残基索引
+        - threshold: float, 接触距离阈值 (Å), 目前将会是 Pocket\Make_Data\labels\filter_config.py 里面各类配体自带的 binding_threshold 取最大值:, 即= max(r.binding_threshold for r in filter_config.rules)
+
+    输出:
+        - None (就地修改 candidates)
+    """
+    if len(candidates) == 0 or len(receptor_coords) == 0:
+        return
+
+    # cKDTree, 受体原子的空间索引
+    receptor_tree = cKDTree(receptor_coords)
+
+    for candidate in candidates:
+        # np.ndarray, (M, 3), float32, 配体重原子坐标
+        lig_coords = candidate.coords
+        if lig_coords.shape[0] == 0:
+            candidate.n_contact_receptor_atoms = 0
+            candidate.n_contact_receptor_residues = 0
+            continue
+
+        # list[list[int]], 每个配体原子在 threshold 内的受体原子索引列表
+        neighbor_lists = receptor_tree.query_ball_point(lig_coords, r=threshold)
+
+        # set[int], 被命中的不重复受体原子索引
+        contacted_atom_indices = set()
+        for neighbors in neighbor_lists:
+            contacted_atom_indices.update(neighbors)
+
+        # int, 接触受体重原子数
+        candidate.n_contact_receptor_atoms = len(contacted_atom_indices)
+
+        # dict[int, int], 受体残基索引 → 被命中的原子计数
+        residue_hit_counts: Dict[int, int] = {}
+        for atom_idx in contacted_atom_indices:
+            # int, 该受体原子所属的残基索引
+            res_idx = int(receptor_res_indices[atom_idx])
+            residue_hit_counts[res_idx] = residue_hit_counts.get(res_idx, 0) + 1
+
+        # int, binding residue 数 (命中原子数 ≥ 2 的残基)
+        candidate.n_contact_receptor_residues = sum(
+            1 for count in residue_hit_counts.values() if count >= 2
+        )
+
+
+# 4. 聚合物链长
 def _compute_polymer_segments(model) -> Dict[Tuple, int]:
     """
     计算结构中所有 HETATM 聚合物链段的长度。
@@ -398,58 +566,23 @@ def _compute_polymer_segments(model) -> Dict[Tuple, int]:
 
     return polymer_lengths
 
+# ========================================================================================================================================
+# =============================================================== 属性计算 ================================================================
 
 
-def _are_covalently_bonded_pair(res1, res2, threshold: float = COVALENT_BOND_THRESHOLD) -> bool:
-    """
-    判断两个相邻残基之间是否存在共价键。
-    Check if two adjacent residues are covalently bonded.
 
-    检查肽键 (C-N ≤ threshold) 和核酸键 (O3'-P ≤ threshold)。
 
-    输入参数 / Input:
-        - res1: Bio.PDB.Residue, 前一个残基
-        - res2: Bio.PDB.Residue, 后一个残基
-        - threshold: float, 共价键距离阈值 (默认 1.8Å)
 
-    输出 / Output:
-        - bool, 是否共价连接
-    """
-    # 检查序号是否连续
-    seq1 = res1.id[1]
-    seq2 = res2.id[1]
-    diff = seq2 - seq1
-    if diff != 0 and diff != 1:
-        return False
 
-    # 肽键: C-N
-    if 'C' in res1 and 'N' in res2:
-        try:
-            dist = res1['C'] - res2['N']
-            if dist < threshold:
-                return True
-        except Exception:
-            pass
 
-    # 核酸键: O3'-P
-    for o3_name in ["O3'", "O3*", "O3"]:
-        if o3_name in res1 and 'P' in res2:
-            try:
-                dist = res1[o3_name] - res2['P']
-                if dist < threshold:
-                    return True
-            except Exception:
-                pass
 
-    return False
 
 
 
 
 # ============================================================================
-# 主函数 / Main Functions
+# 主函数 / Main Functions(将被 Pocket\Make_Data\PDB_processor\parser.py 调用以保存候选配体信息 candidates.npz)
 # ============================================================================
-
 def find_all_hetatm_candidates(model) -> Tuple[List[LigandCandidate], int]:
     """
     从结构模型中提取所有 HETATM 候选配体，并计算其属性。
@@ -542,6 +675,10 @@ def find_all_hetatm_candidates(model) -> Tuple[List[LigandCandidate], int]:
             poly_len = polymer_lengths.get(res_key, 1)
 
 
+            # ------ 分子量 ------
+            # float, 配体重原子总质量 (Da)
+            mw = _compute_molecular_weight(residue)
+
             # ------ 构造候选 ------
             candidate = LigandCandidate(
                 candidate_id=global_id,
@@ -552,6 +689,7 @@ def find_all_hetatm_candidates(model) -> Tuple[List[LigandCandidate], int]:
                 coords=coords,
                 center=center,
                 n_heavy_atoms=n_heavy,
+                molecular_weight=mw,
                 is_metal_ion=is_metal,
                 is_peptide_like=is_pep,
                 is_nucleotide_like=is_nuc,
@@ -565,10 +703,8 @@ def find_all_hetatm_candidates(model) -> Tuple[List[LigandCandidate], int]:
 
 
 
-# ============================================================================
-# 序列化 / Serialization
-# ============================================================================
 
+# 序列化 / Serialization
 def save_candidates_npz(
     candidates: List[LigandCandidate],
     water_count: int,
@@ -619,6 +755,7 @@ def save_candidates_npz(
     save_dict['is_nucleotide_like'] = np.array([c.is_nucleotide_like for c in candidates], dtype=bool)
     save_dict['is_covalent'] = np.array([c.is_covalent for c in candidates], dtype=bool)
     save_dict['polymer_length'] = np.array([c.polymer_length for c in candidates], dtype=np.int32)
+    save_dict['molecular_weight'] = np.array([c.molecular_weight for c in candidates], dtype=np.float32)
     save_dict['insertion_codes'] = np.array([c.insertion_code for c in candidates], dtype=object)
     save_dict['centers'] = np.array([c.center for c in candidates], dtype=np.float32)
 
@@ -654,6 +791,8 @@ def load_candidates_npz(path: str) -> Tuple[List[LigandCandidate], int]:
     for i in range(n):
         # np.ndarray, (M_i, 3), float32, 第 i 个候选的原子坐标
         coords = data[f'candidate_coords_{i}']
+        # float, 分子量 (兼容旧版 npz 不含此字段的情况)
+        mw = float(data['molecular_weight'][i]) if 'molecular_weight' in data else 0.0
         candidate = LigandCandidate(
             candidate_id=i,
             resname=str(data['resnames'][i]),
@@ -663,6 +802,7 @@ def load_candidates_npz(path: str) -> Tuple[List[LigandCandidate], int]:
             coords=coords,
             center=data['centers'][i],
             n_heavy_atoms=int(data['n_heavy_atoms'][i]),
+            molecular_weight=mw,
             is_metal_ion=bool(data['is_metal_ion'][i]),
             is_peptide_like=bool(data['is_peptide_like'][i]),
             is_nucleotide_like=bool(data['is_nucleotide_like'][i]),

@@ -3,13 +3,14 @@
 统一预处理系统 - PDB/mmCIF 解析器 / Unified Preprocessing System - Parser
 ================================================================================
 
-使用 Biopython 解析 PDB 和 mmCIF 文件，提取原子、残基和骨架信息。
-Parse PDB and mmCIF files using Biopython, extract atom, residue, and backbone info.
+使用 Biopython 解析 PDB 和 mmCIF 文件，提取原子、残基、骨架和候选配体信息。
+Parse PDB and mmCIF files using Biopython, extract atom, residue, backbone,
+and candidate ligand info.
 
 支持 / Supports:
 1. 蛋白质 (20种标准氨基酸 + 常见修饰残基映射)
 2. 核酸 (RNA/DNA + 常见修饰核苷酸映射)
-3. 配体检测 (复用 Make_Primary_Label.py 的逻辑)
+3. 候选配体检测 (由 ligand_candidates.py 的 find_all_hetatm_candidates 完成)
 ================================================================================
 """
 
@@ -48,8 +49,12 @@ class ParsedStructure:
     解析后的结构数据
     Parsed structure data
     
-    包含原子级、残基级、配体级数据
-    Contains atom-level, residue-level, and ligand-level data
+    包含原子级、残基级、骨架级、候选配体级数据。
+    Contains atom-level, residue-level, backbone-level, and candidate ligand data.
+
+    候选配体说明:
+        - ligand_candidates 由 find_all_hetatm_candidates() 填充, 但 n_contact_receptor_atoms 和 n_contact_receptor_residues 由 Part 2 的compute_contact_attributes() 在筛选前就地填充 (依赖 binding_threshold)
+        - 每个 LigandCandidate 包含: 基本标识、坐标、大小(molecular_weight)、分类标志(is_metal_ion 等)、接触属性(is_covalent)、聚合物链长
     """
     
     # ========================= 原子级数据 / Atom-level data =========================
@@ -109,8 +114,9 @@ class ParsedStructure:
 
 
     # ========================= 候选配体数据 / Candidate Ligand data =========================
-    # list[LigandCandidate], 全量候选配体列表（仅排除水分子）
-    # 每个候选包含完整属性记录，供 Part 2 筛选使用
+    # list[LigandCandidate], 全量候选配体列表（仅排除水分子 + HETATM_EXCLUSION_LIST + 共价连接的修饰残基）
+    # 每个候选包含: 坐标、大小(n_heavy_atoms, molecular_weight)、分类标志、共价标志、聚合物链长
+    # 注: n_contact_receptor_atoms / n_contact_receptor_residues 由 Part 2 就地填充, 不在此处计算
     ligand_candidates: List[LigandCandidate] = field(default_factory=list)
     # int, 被永久排除的水分子总数
     water_count: int = 0
@@ -243,8 +249,11 @@ def parse_structure(
     # =========================================================================
     # 检测候选配体 / Detect candidate ligands (Part 1: 全量解析)
     # =========================================================================
-    # 使用新的全量候选配体系统
+    # 使用 ligand_candidates.py 的全量候选配体系统
     # （排除水分子 + HETATM_EXCLUSION_LIST + 与主链共价连接的 Modified_Residues）
+    # 此处计算的属性: coords, center, n_heavy_atoms, molecular_weight, is_metal_ion,
+    #                is_peptide_like, is_nucleotide_like, is_covalent, polymer_length
+    # 注: n_contact_receptor_atoms / n_contact_receptor_residues 由 Part 2 就地计算
     # list[LigandCandidate], 全量候选列表
     # int, 被排除的水分子总数
     ligand_candidates, water_count = find_all_hetatm_candidates(model)

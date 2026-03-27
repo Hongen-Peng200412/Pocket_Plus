@@ -107,15 +107,27 @@ FIVE_CLASS_5_PRESET = LigandFilterConfig(
     ]
 )
 
-CRYOEM_BROAD_PRESET = LigandFilterConfig(
+THREE_CLASS_PRESET = LigandFilterConfig(   # 优先使用前面的
     rules=[
-        PocketClassRule(
+        PocketClassRule(                
             class_id=1,
-            class_name="cryoem_site",
-            binding_threshold=4.0,
+            class_name="molecule",
+            binding_threshold=5.0,
+            require_metal_ion=False,
+            require_covalent=False, 
+            min_contact_residues=2
+        ),
+        PocketClassRule(
+            class_id=2,
+            class_name="metal",
+            binding_threshold=5.0,
+            require_metal_ion=True,
+            require_covalent=False,
+            min_contact_residues=2
         ),
     ]
 )
+
 
 
 # ============================================================================
@@ -200,7 +212,6 @@ __all__ = [
     "PocketClassRule",
     "BINARY_PRESET",
     "THREE_CLASS_PRESET",
-    "CRYOEM_BROAD_PRESET",
     "get_filter_presets",
     "list_filter_preset_names",
     "get_filter_preset",

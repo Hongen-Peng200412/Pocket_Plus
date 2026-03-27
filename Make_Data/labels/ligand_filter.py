@@ -44,7 +44,9 @@ class PocketClassRule:
     分类标签 / Classification Label:
         - class_id:   int, 口袋类别 ID (>0; 0 保留给背景/非口袋)
         - class_name: str, 类别名称 (如 'druggable', 'metal_ion')
-        - binding_threshold: float, 结合位点距离阈值 (埃)。含义: 距最近配体该距离内的蛋白原子视为属于结合口袋。
+        - binding_threshold: float, 结合位点距离阈值 (埃)
+            1. 标签计算: 距最近配体该距离内的受体原子视为属于结合口袋
+            2. 接触属性: 也作为 compute_contact_attributes() 的接触判定阈值(process_and_label.py 取所有规则的 max 作为统一阈值)
 
     布尔标志三值开关 / Boolean Flag Three-way Switches:
         每个开关均为 Optional[bool]，语义如下：
@@ -64,12 +66,17 @@ class PocketClassRule:
         - min_nucleic_length: Optional[int], 最小核苷酸聚合链长
         - max_nucleic_length: Optional[int], 最大核苷酸聚合链长
 
+    接触与大小约束 / Contact & Size Constraints:
+        基于 LigandCandidate 的预计算属性进行约束（None=不约束）。
+        - n_contact_receptor_atoms 、n_contact_receptor_residues: 由 compute_contact_attributes() 在筛选前就地填充。
+        - min_contact_atoms:    Optional[int], 最小接触受体重原子数
+        - min_contact_residues: Optional[int], 最小接触受体残基数 (每个 binding residue 要求 ≥2 次接触)
+        - min_mw:               Optional[float], 最小重原子分子量 (Da)
+        - max_mw:               Optional[float], 最大重原子分子量 (Da)
+
     保留接口 (当前不生效) / Reserved (currently inactive):
-        - min_mw / max_mw:                Optional[float], 分子量范围
-        - min_heavy_atoms / max_heavy_atoms: Optional[int], 重原子数范围
         - require_organic_only:           bool, 仅含有机元素
         - use_af3_ligand_exclusion:       bool, 使用 AF3 排除列表
-        - min_contact_residues:           Optional[int], 最小接触残基数
         - max_resname_occurrences:        Optional[int], 最大 resname 出现次数
     """
 
@@ -81,7 +88,7 @@ class PocketClassRule:
 
     # float, 结合位点距离阈值 (埃)
     # 含义: 距最近配体该距离内的蛋白原子视为属于结合口袋
-    binding_threshold: float = 4.0
+    binding_threshold: float = None
 
     # ========================= 布尔标志三值开关 =========================
     # Optional[bool], 金属离子约束 (True=必须是, False=必须不是, None=不约束)
@@ -103,15 +110,17 @@ class PocketClassRule:
     # Optional[int], 最大允许的核酸链长度; None=不限; 仅对 is_nucleotide_like=True 的候选生效
     max_nucleic_length: Optional[int] = None
 
-    # # ========================= 保留接口 (当前不生效) =========================
-    # min_mw: Optional[float] = None
-    # max_mw: Optional[float] = None
-    # min_heavy_atoms: Optional[int] = None
-    # max_heavy_atoms: Optional[int] = None
-    # require_organic_only: bool = False
-    # use_af3_ligand_exclusion: bool = False
-    # min_contact_residues: Optional[int] = None
-    # max_resname_occurrences: Optional[int] = None
+    # ========================= 接触与大小约束 =========================
+    # Optional[int], 最小接触受体重原子数; None=不约束
+    min_contact_atoms: Optional[int] = None
+    # Optional[int], 最小接触受体残基数 (每个 binding residue 要求 ≥2 次接触); None=不约束
+    min_contact_residues: Optional[int] = None
+    # Optional[float], 最小重原子分子量 (Da); None=不约束
+    min_mw: Optional[float] = None
+    # Optional[float], 最大重原子分子量 (Da); None=不约束
+    max_mw: Optional[float] = None
+
+
 
     def accepts(self, candidate: LigandCandidate) -> Optional[str]:
         """
@@ -153,11 +162,21 @@ class PocketClassRule:
                 return (f"rule[{self.class_name}] reject: nucleic polymer_length="
                         f"{candidate.polymer_length} > max={self.max_nucleic_length}")
 
-        # # ------ 保留接口 (当前不生效) ------
-        # if self.min_mw is not None and candidate.molecular_weight is not None:
-        #     if candidate.molecular_weight < self.min_mw:
-        #         return f"rule[{self.class_name}] reject: MW < min_mw"
-        # ...
+        # ------ 接触与大小约束 ------
+        if self.min_contact_atoms is not None:
+            if candidate.n_contact_receptor_atoms < self.min_contact_atoms:
+                return (f"rule[{self.class_name}] reject: n_contact_receptor_atoms="
+                        f"{candidate.n_contact_receptor_atoms} < min={self.min_contact_atoms}")
+        if self.min_contact_residues is not None:
+            if candidate.n_contact_receptor_residues < self.min_contact_residues:
+                return (f"rule[{self.class_name}] reject: n_contact_receptor_residues="
+                        f"{candidate.n_contact_receptor_residues} < min={self.min_contact_residues}")
+        if self.min_mw is not None and candidate.molecular_weight < self.min_mw:
+            return (f"rule[{self.class_name}] reject: MW={candidate.molecular_weight:.1f}"
+                    f" < min_mw={self.min_mw}")
+        if self.max_mw is not None and candidate.molecular_weight > self.max_mw:
+            return (f"rule[{self.class_name}] reject: MW={candidate.molecular_weight:.1f}"
+                    f" > max_mw={self.max_mw}")
 
         # 全部通过，接受
         return None

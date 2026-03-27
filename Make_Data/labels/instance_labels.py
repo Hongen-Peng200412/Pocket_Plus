@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-Part 2 操作：
-  - 接受 Pocket_classic\Make_Data\PDB_processor\ligand_candidates.py 产生的 List[LigandCandidate] , 应用 Pocket_classic\Make_Data\labels\ligand_filter.py 筛选, 对原子打标签
-  - 用 candidate.candidate_id 作为实例 ID（它们是唯一的）, 输出多类别的口袋实例分割标签 + 背景
+Part 2 操作（标签计算）:
+  - 接受 PDB_processor\ligand_candidates.py 产生的 List[LigandCandidate]
+  - 经 PDB_processor\ligand_candidates.py 的 compute_contact_attributes() 填充接触属性后,  由 labels\ligand_filter.py 的 filter_and_classify() 筛选
+  - 最后对受体原子打标签: 用 candidate_id 作为实例 ID，输出多类别的口袋实例分割标签 + 背景
 
 输出标签语义：
   - instance_ids[i] = candidate_id  → 原子 i 属于该候选配体定义的口袋
@@ -35,7 +36,7 @@ def compute_binding_labels(
     计算多类别实例分割标签。
 
     输入参数 / Input:
-        - parsed_data: ParsedStructure, Pocket_classic\Make_Data\PDB_processor\parser.py产生, 解析后的结构数据（提供蛋白/核酸原子坐标）
+        - parsed_data: ParsedStructure, PDB_processor\parser.py 产生, 解析后的结构数据（提供受体原子坐标 atom_coords）
         - selected_candidates: list[LigandCandidate], 经 filter_and_classify 筛选后的候选列表
         - pocket_class_map: dict[int, tuple[int, str, float]], candidate_id → (class_id, class_name, binding_threshold)
           由 filter_and_classify() 返回
