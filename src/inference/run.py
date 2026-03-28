@@ -19,7 +19,7 @@ run.py - 推断与评估的统一入口
 启动命令示例:
     # 单样本推断 (有 GT 评估)
     python src/inference/run.py --config=infer \\
-        +class_folder="small_molecule" +sample_name="9dic_2_0_17_20" \\
+        +class_folder="small_molecule" +sample_name="9f3f_0_0_0_0_C" \\
         +ckpt_path="feedback/logs/.../last.ckpt"
 
     # 批量推断 + 评估
@@ -1045,7 +1045,7 @@ def _run_raw_param_search_mode(cfg_dict, model, device, base_params, output_root
     # ---- 4. 排序 + 写 Excel + 打印最优 ----
     summary.sort(key=lambda r: r["avg_F1"], reverse=True)
     best = summary[0]
-    write_param_search_excel(summary, param_names, output_root)
+    write_param_search_excel(summary, param_names, output_root, output_name=cfg_dict.get("output_name"))
     print("\n" + "=" * 60)
     print("  [raw_param_search] 🏆 最优参数组合:")
     for k, v in best.items():

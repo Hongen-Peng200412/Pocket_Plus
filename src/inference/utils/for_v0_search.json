@@ -118,5 +118,685 @@
     {
         "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/9CTQ.cif",
         "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_45915.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/8I24.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_35131.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/7UC2.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_26442.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/9BC6.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_44425.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/8WQY.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_37758.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/8Z1Y.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_39740.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/7K0P.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_22606.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/7KCB.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_22807.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/8K91.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_36971.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/8FPL.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_29368.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/8WUX.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_37863.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/6WQQ.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_21873.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/6X1Q.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_21995.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/7YZO.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_14391.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/8RMF.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_19360.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/9DSO.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_47148.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/8IQ4.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_35657.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/7QVI.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_14178.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/6UKS.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_20811.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/8BMP.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_16120.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/8WBD.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_37421.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/8ZGO.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_60085.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/7YJ2.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_33869.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/8VE0.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_43160.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/8GG1.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_29991.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/7PKG.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_13471.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/8OO9.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_17007.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/8H6H.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_34504.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/9BI9.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_44577.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/8G7M.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_29816.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/8Z0I.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_39704.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/8SHT.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_40494.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/8YN2.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_39412.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/7NAF.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_24271.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/6XIW.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_22203.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/8K0M.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_36774.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/8EYI.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_28690.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/8SNN.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_40630.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/8Z1W.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_39738.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/9GU9.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_51605.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/7F6I.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_31481.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/7SSS.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_25413.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/9CQZ.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_45828.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/8SG8.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_40452.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/8UDR.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_42151.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/8I3V.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_35157.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/8XTW.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_38651.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/8HH4.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_34751.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/7UO9.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_26642.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/9GQZ.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_51515.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/8PMJ.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_17761.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/6RKO.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_4908.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/8BHT.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_16069.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/9CRA.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_45856.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/9GSI.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_51549.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/8SI7.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_40501.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/7PBT.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_13302.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/9JSP.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_61780.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/7P5C.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_13198.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/7L7I.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_23213.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/8EVU.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_28637.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/9C48.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_45177.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/9LRE.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_63327.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/8IZD.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_35862.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/6KOU.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_0740.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/7UZE.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_26886.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/9CQP.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_45818.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/7UK5.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_26575.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/9CQN.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_45816.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/8RN5.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_19387.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/8OX8.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_17260.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/6K7M.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_9941.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/8DCR.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_27328.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/8FQF.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_29386.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/8UYI.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_42807.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/8G3Z.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_29711.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/9DKJ.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_46959.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/8GE6.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_29958.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/6RDN.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_4824.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/7WLM.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_32588.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/8WDU.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_37465.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/8QXM.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_18732.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/6UWF.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_20922.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/9BYP.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_45041.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/7VCX.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_31899.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/7K37.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_22652.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/7PRU.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_13610.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/8HN8.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_34908.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/6RAH.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_4775.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/6K7L.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_9939.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/7O0Y.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_12683.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/8D67.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_27219.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/8BL8.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_16103.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/6RDO.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_4825.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/9CD3.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_45461.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/6SMQ.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_10245.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/8POK.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_17793.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/7DRX.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_30829.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/7ZDW.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_14675.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/7M3G.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_23654.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/9CEW.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_45521.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/9MD4.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_48167.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/7TJI.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_25926.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/9C4O.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_45192.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/7T4X.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_25691.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/8Q91.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_18267.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/7PIU.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_13453.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/8R9Z.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_19017.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/8WRE.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_37775.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/7YER.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_33775.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/8W6N.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_37329.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/6OQT.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_20169.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/6WXU.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_21963.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/9J0X.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_61061.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/7XKT.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_33270.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/9KBG.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_62224.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/8J8G.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_36069.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/7V2P.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_31659.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/7YAI.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_33713.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/9KC9.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_62246.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/8WA5.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_37391.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/7Z84.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_14542.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/7E0K.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_30935.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/7PQT.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_13604.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/8WUC.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_37853.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/7BOG.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_12242.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/9FR1.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_50677.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/8I4A.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_35167.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/9B3Z.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_44161.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/7RQX.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_24639.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/7YJK.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_33873.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/6VYI.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_21461.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/8UFH.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_42207.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/8BDC.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_15981.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/9EO4.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_19845.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/8GKA.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_40181.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/8IRT.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_35685.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/8JO3.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_36454.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/8I47.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_35163.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/9C9M.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_45364.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/7KY6.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_23069.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/7Y3E.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_33592.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/8Y02.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_38801.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/9G9V.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_51158.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/8GGQ.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_40017.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/8I35.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_35144.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/8AVY.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_15687.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/7MIN.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_23857.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/8K9R.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_36996.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/7PXE.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_13700.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/9CAD.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_45387.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/8R7Q.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_18988.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/7NVN.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_12607.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/8K3Q.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_36856.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/9DYN.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_47310.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/6TW1.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_10603.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/8VG4.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_43199.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/9K0N.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_61948.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/8K8J.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_36951.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/9FG7.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_50387.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/8IAM.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_35310.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/8T4S.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_41039.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/9JNP.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_61624.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/8IAZ.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_35323.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/9BHW.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_44555.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/8JMN.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_36424.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/8FND.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_29309.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/8VPQ.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_43413.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/7LPC.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_23476.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/7UM6.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_26598.map"
+    },
+    {
+        "cif_path": "/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore/9GBV.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc/emd_51222.map"
     }
 ]

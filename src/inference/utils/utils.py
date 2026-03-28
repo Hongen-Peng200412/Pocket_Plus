@@ -87,7 +87,7 @@ def write_batch_excel(results: list, output_root: str) -> str:
 
  
 def write_param_search_excel(
-    summary: list, param_names: list, output_root: str
+    summary: list, param_names: list, output_root: str, output_name: str = None
 ) -> str:
     """
     将 param_search 汇总结果写入 Excel。
@@ -96,6 +96,7 @@ def write_param_search_excel(
         - summary:     list[dict], 按 F1 降序排列的汇总结果
         - param_names: list[str],  被 sweep 的参数名
         - output_root: str,        Excel 写出目录
+        - output_name: str | None, Excel 文件名(不含 .xlsx 后缀); None 时使用 "param_search_results"
 
     Returns:
         - excel_path: str
@@ -156,7 +157,9 @@ def write_param_search_excel(
             ws_ps.column_dimensions[col[0].column_letter].width = max_len + 4
 
     os.makedirs(output_root, exist_ok=True)
-    excel_path = os.path.join(output_root, "param_search_results.xlsx")
+    # str, Excel 文件名(不含后缀); 未指定则默认 "param_search_results"
+    _fname = output_name if output_name else "param_search_results"
+    excel_path = os.path.join(output_root, f"{_fname}.xlsx")
     wb.save(excel_path)
     print(f"[ParamSearch] ✅ Excel 已保存: {excel_path}")
     return excel_path

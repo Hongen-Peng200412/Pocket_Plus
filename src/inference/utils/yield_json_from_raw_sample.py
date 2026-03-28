@@ -231,6 +231,7 @@ def generate_sample_json(
         if cif_path is None or not os.path.exists(cif_path):
             missing_files_count += 1
             continue
+        cif_gt_path = None
         if pdb_gt_folder is not None:
             cif_gt_path = pdb_gt_dict.get(pdb_id)
             if cif_gt_path is None or not os.path.exists(cif_gt_path):
@@ -293,26 +294,26 @@ if __name__ == "__main__":
     default="/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc")   # 更全的在: /storage/chenzhaoyang/cryo_em/EMDB, 用于生成for_cryoAtom_hard  !! 目前映射关系不全，无法真正完成！！
 
 
-    # parser.add_argument("--pdb_folder", type=str, help="结构根目录（用于提取模型输入特征，如 AF3/CryoAtom 输出目录）", 
-    # default="/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore")
-    parser.add_argument("--pdb_folder", type=str, help="结构根目录", 
-    default="/home/penghongen/My_Project/Data/cryatom_output_cif/")
+    parser.add_argument("--pdb_folder", type=str, help="结构根目录（用于提取模型输入特征，如 AF3/CryoAtom 输出目录）", 
+    default="/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore")
+    # parser.add_argument("--pdb_folder", type=str, help="结构根目录", 
+    # default="/home/penghongen/My_Project/Data/cryatom_output_cif/")
 
 
 
-    # parser.add_argument("--pdb_gt_folder", type=str, default=None,
-    # help="可选，真实结构根文件夹（实验解析PDB结构目录，用于 GT 评估）。"
-    #      "若提供，则在输出 JSON 中为每个样本额外添加 cif_gt_path 字段。")
-    parser.add_argument("--pdb_gt_folder", type=str, default="/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore",
+    parser.add_argument("--pdb_gt_folder", type=str, default=None,
     help="可选，真实结构根文件夹（实验解析PDB结构目录，用于 GT 评估）。"
          "若提供，则在输出 JSON 中为每个样本额外添加 cif_gt_path 字段。")
+    # parser.add_argument("--pdb_gt_folder", type=str, default="/storage/chenzhaoyang/cryo_em/PDB_3.5_cc_qscore",
+    # help="可选，真实结构根文件夹（实验解析PDB结构目录，用于 GT 评估）。"
+    #      "若提供，则在输出 JSON 中为每个样本额外添加 cif_gt_path 字段。")
 
 
 
-    # parser.add_argument("--valid_json_path", type=str, help="约束可选集合列表的 json 参照字典路径 (必须传入)", 
-    # default="/home/penghongen/My_Project/Data/split/3.5_cc_qscore_v0/test.json")   # test/val 在这里切换
     parser.add_argument("--valid_json_path", type=str, help="约束可选集合列表的 json 参照字典路径 (必须传入)", 
-    default="/home/penghongen/My_Project/Data/raw.json")
+    default="/home/penghongen/My_Project/Data/split/3.5_cc_qscore_v0/val.json")   # test/val 在这里切换
+    # parser.add_argument("--valid_json_path", type=str, help="约束可选集合列表的 json 参照字典路径 (必须传入)", 
+    # default="/home/penghongen/My_Project/Data/raw.json")
 
 
 
@@ -320,7 +321,7 @@ if __name__ == "__main__":
     default="/home/penghongen/My_Project/Pocket/src/inference/utils")
 
     parser.add_argument("--output_json_name", type=str, help="生成的 json 文件名称", 
-    default="for_cryoAtom_eval_hard.json")
+    default="for_v0_search.json")
 
 
 
@@ -328,7 +329,7 @@ if __name__ == "__main__":
 
     # -------------------------- 参数 --------------------------
     parser.add_argument("--max_scan", type=int, default=None, help="从全部样本里随机选取验证扫描的最多个数")
-    parser.add_argument("--max_accept", type=int, default=None, help="只要扫描出这么多合规的就算成功并且退出运行")
+    parser.add_argument("--max_accept", type=int, default=200, help="只要扫描出这么多合规的就算成功并且退出运行")
     parser.add_argument("--min_nucleic_ratio", type=float, default=None, help="核酸数目/蛋白数目的比率阈值下限(none则不限制)")
     parser.add_argument("--max_nucleic_ratio", type=float, default=None, help="核酸数目/蛋白数目的比率阈值上限(none则不限制)")
     

@@ -23,14 +23,14 @@ mode: "raw_param_search"
 #   作用: 输入数据名单。JSON 中每项包含 {"cif_path": ..., "map_path": ...[, "cif_gt_path": ...]}。
 #         可通过 src/inference/utils/yield_json_from_raw_sample.py 生成。
 #         支持场景B：使用 cif_path 提特征，cif_gt_path 提 GT 标签进行评估。
-raw_pairs: "/home/penghongen/My_Project/Pocket/src/inference/utils/for_cryoAtom_eval_easy.json"
+raw_pairs: "/home/penghongen/My_Project/Pocket/src/inference/utils/for_v0_search.json"
 
 
 # --- 动态数据处理特征 ---
 # target_voxel_size: float, 标量 (Å)
 #   传入: parse_input.load_from_raw_cif() 的重采样函数 make_model_grid(target_voxel_size=...)
 #   作用: 实时重采样目标体素大小。控制 .map 体素精度分辨率强制统一定位至该数值，决定生成网格的物理分辨率尺寸。
-target_voxel_size: 0.7
+target_voxel_size: 1.0
 
 # compute_density: bool, 标量
 #   传入: parse_input.load_from_raw_cif() -> get_features_when_infer(compute_density=...)
@@ -92,12 +92,12 @@ device: "cuda:0"
 # output_root: str, 标量
 #   传入: run.py _run_raw_param_search_mode() 的数据汇总环节
 #   作用: 扫参结果输出根目录。存放 param_search_results.xlsx 及日志的地点。
-output_root: "/home/penghongen/My_Project/feedback/infer_out/v0_half1_search" #NOTE
+output_root: "/home/penghongen/My_Project/feedback/infer_out/v0_half1_search_10" #NOTE
 
 # npz_root_path: str, 标量
 #   传入: run.py _run_raw_param_search_mode() 
 #   作用: .npz 存放的根目录。在单纯只调后处理参数时，所有的推断结果或中间结果(体素pred,hardmask,atom_coords等)将以 .npz 未压缩格式储存在该路径内
-npz_root_path: "/home/penghongen/My_Project/feedback/infer_out/npz/CryoAtom"  #NOTE
+npz_root_path: "/home/penghongen/My_Project/feedback/infer_out/npz_10"  #NOTE
 
 # delete_cache: bool, 标量
 #   传入: run.py _run_raw_param_search_mode() 
@@ -115,11 +115,11 @@ vis_enable: true
 # vis_output_root: str | null
 #   传入: _build_vis_bundle_safe()
 #   作用: 可视化输出路径。建议设置为 "${output_root}/vis"。未设置则跳过可视化。
-vis_output_root: "/home/penghongen/My_Project/feedback/infer_out/v0_half1_vis/"   #NOTE
+vis_output_root: "/home/penghongen/My_Project/feedback/infer_out/v0_half1_vis_10/"   #NOTE
 # vis_subdir: str | null
 #   传入: _build_vis_bundle_safe()
 #   作用: 可视化输出子目录。如果存在, 那么输出目录就变为 os.path.join(vis_output_root, vis_subdir) 而不是 vis_output_root
-vis_subdir: "CryoAtom"                                                            #NOTE
+vis_subdir: "val100"                                                            #NOTE
 # vis_after_search: bool
 #   传入: run.py 在扫参结束后的处理逻辑
 #   作用: 搜索后可视化开关。若开启，则在获得最优解后对样本进行最终可视化生成。
@@ -201,7 +201,7 @@ excel_sample_n: 10
 #         若仅扫 threshold，代码会自动开启概率图缓存以极速完成搜索。
 param_sweep:
   - name: threshold
-    min: 0.35
+    min: 0.30
     max: 0.50
     step: 0.01
   # - name: point_assign_radius

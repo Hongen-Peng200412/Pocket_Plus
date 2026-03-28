@@ -11,11 +11,17 @@ get_pred.py - 模型加载与推断模块
 
 import os
 import sys
+from pathlib import Path
 from typing import Optional
 import numpy as np
 import torch
 import tqdm
-from utils.network_tools import map_segmentation, map_reconstruction
+
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from Pocket.utils.network_tools import map_segmentation, map_reconstruction
 
 
 # =============================================================================

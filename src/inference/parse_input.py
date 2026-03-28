@@ -10,7 +10,7 @@ parse_input.py - 数据加载与特征整合模块
     all_data_path/
     ├── emdb_BOX/            ← 密度图特征 (CDHW)
     │   ├── small_molecule/
-    │   │   ├── 9dic_2_0_17_20.npz(具体样本)
+    │   │   ├── 9f3f_0_0_0_0_C.npz(具体样本)
     │   │   └── ...
     │   └── metal_ion/ ...
     ├── pdb_feature_BOX/     ← 原子特征 (CDHW)
@@ -27,10 +27,11 @@ from pathlib import Path
 _INFERENCE_DIR = Path(__file__).resolve().parent       # Pocket/src/inference/
 _SRC_DIR       = _INFERENCE_DIR.parent                 # Pocket/src/
 _POCKET_ROOT   = _SRC_DIR.parent                       # Pocket/
+_PROJECT_ROOT  = _POCKET_ROOT.parent                   # My_Project/
 _MAKE_DATA_DIR = _POCKET_ROOT / "Make_Data"            # Pocket/Make_Data/
 _BINDER_DIR    = _POCKET_ROOT / "processedPDB_EMDB_binder"  # Pocket/processedPDB_EMDB_binder/
 
-for _p in [str(_POCKET_ROOT), str(_MAKE_DATA_DIR), str(_BINDER_DIR)]:
+for _p in [str(_PROJECT_ROOT), str(_POCKET_ROOT), str(_MAKE_DATA_DIR), str(_BINDER_DIR)]:
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
@@ -128,7 +129,7 @@ def load_from_raw_cif(
         3. 拼接 EMDB 密度图通道 + PDB 特征通道 → grid (C=50, D, H, W)
         4. 计算 hardmask（复用 _compute_hardmask()）
     """
-    from utils.mrc_tools import load_map, make_model_grid
+    from Pocket.utils.mrc_tools import load_map, make_model_grid
     from processedPDB_EMDB_binder.bind import bind_AtomsFeature_to_EMDB
     # str, 样本名（不含扩展名）
     sample_name = Path(cif_path).stem

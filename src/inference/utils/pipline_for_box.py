@@ -132,7 +132,7 @@ def load_from_npz_dirs(
         - data_folder_names: list[str], 数据文件夹列表, 默认 ["emdb_BOX", "pdb_feature_BOX", "pdb_label_BOX"]。
                              see me: 1.含 "label" 字段的文件夹被视为标签, 含 "emdb" 字段的文件夹做 z-score 归一化, 其余直接拼接为特征。
                                    2.含 "emdb" 的文件夹必须排在所有特征文件夹之前，否则 hardmask 将会被错误计算
-        - sample_name:       str,       样本名（不含 .npz 后缀，如 "9dic_2_0_17_20"）
+        - sample_name:       str,       样本名（不含 .npz 后缀，如 "9f3f_0_0_0_0_C"）
         - class_mapping:     list[int] | None, 标签类别映射表, 例如 [0, 1, 1, 1, 1] 将 4 类口袋合并为 1 类。
 
     Returns:
@@ -703,7 +703,7 @@ def run_single_mode(cfg_dict, model, device, all_data_path,
     if not class_folder or not sample_name:
         raise ValueError(
             "[错误] mode=single 需要指定 class_folder 和 sample_name。"
-            "用法: +class_folder=\"small_molecule\" +sample_name=\"9dic_2_0_17_20\""
+            "用法: +class_folder=\"small_molecule\" +sample_name=\"9f3f_0_0_0_0_C\""
         )
     result = run_single_pipeline(
         model=model,

@@ -36,7 +36,7 @@ class_folder: "small_molecule"
 # sample_name: str, 标量
 #   传入: parse_input.load_from_npz_dirs(sample_name=...)
 #   作用: 样本标识符。指定待加载的特定 .npz 数据文件名（不含后缀）。
-sample_name: "9dic_2_0_17_20"
+sample_name: "9f3f_0_0_0_0_C"
 
 
 # --- 模型权重 ---
