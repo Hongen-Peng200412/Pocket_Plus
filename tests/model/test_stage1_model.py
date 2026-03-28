@@ -111,6 +111,10 @@ def test_volume_point_stage1_skips_point_forward_when_backend_is_zeros() -> None
         max_recycles=1,
         randomize_recycles=False,
         detach_recycle_states=False,
+        act_layer_name="gelu",
+        ffn_type="mlp",
+        atom_head_ffn_type="none",
+        atom_head_mlp_ratio=4,
     )
     attention_stack = _DummyAttentionStack()
     model.atom_token_proj = nn.Identity()

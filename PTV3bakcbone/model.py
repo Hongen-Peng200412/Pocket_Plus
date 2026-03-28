@@ -587,9 +587,73 @@ class MLP(nn.Module):
         return x
 
 
+# ----------------------------------------------- 激活函数解析 -----------------------------------------------
+# dict[str, type], 支持的激活函数名到 nn.Module 类的映射
+_ACT_LAYER_MAP = {
+    "gelu": nn.GELU,
+    "silu": nn.SiLU,
+    "relu": nn.ReLU,
+    "leakyrelu": nn.LeakyReLU,
+}
+
+def resolve_act_layer(act_layer_name: str):
+    """
+    将激活函数名称字符串解析为对应的 nn.Module 类。
+
+    输入参数:
+        - act_layer_name: str, 激活函数名称, 支持 "gelu", "silu", "relu", "leakyrelu"
+
+    输出:
+        - act_cls: type, 对应的 nn.Module 类(如 nn.GELU)
+    """
+    key = str(act_layer_name).lower()
+    if key not in _ACT_LAYER_MAP:
+        raise ValueError(f"不支持的 act_layer_name='{act_layer_name}', 可选: {list(_ACT_LAYER_MAP)}")
+    return _ACT_LAYER_MAP[key]
 
 
+class GatedTransition(nn.Module):
+    """
+    门控通道混合模块（SwiGLU 风格 FFN），不含内部残差: y = w3( act(w1(x)) * w2(x) ) → Dropout
+    残差和归一化由外层 Block.forward 负责。
 
+    输入参数:
+        - in_channels: int, 输入输出通道数
+        - mlp_ratio: int, 隐藏层膨胀倍率
+        - act_layer: callable, 门控激活函数类
+        - drop: float, 输出 dropout 概率
+
+    前向输入:
+        - x: torch.Tensor, (N, in_channels)
+
+    前向输出:
+        - y: torch.Tensor, (N, in_channels)
+    """
+    def __init__(self, in_channels: int, mlp_ratio: int, act_layer, drop: float):
+        super().__init__()
+        # int, 隐藏通道数 = in_channels * mlp_ratio
+        hidden = int(in_channels) * int(mlp_ratio)
+        # nn.Linear, (in_channels -> hidden), 门控分支 1
+        self.w1 = nn.Linear(in_channels, hidden, bias=False)
+        # nn.Linear, (in_channels -> hidden), 门控分支 2
+        self.w2 = nn.Linear(in_channels, hidden, bias=False)
+        # nn.Linear, (hidden -> in_channels), 输出投影
+        self.w3 = nn.Linear(hidden, in_channels, bias=False)
+        # nn.Module, 门控激活函数
+        self.act = act_layer()
+        # nn.Dropout, 输出 dropout
+        self.drop = nn.Dropout(drop)
+
+    def forward(self, x):
+        """
+        输入参数:
+            - x: torch.Tensor, (N, in_channels), 输入特征
+        输出:
+            - y: torch.Tensor, (N, in_channels), 门控混合后的特征(不含残差)
+        """
+        # torch.Tensor, (N, in_channels), 门控混合: act(w1(x)) * w2(x) → w3 → drop
+        y = self.w3(self.act(self.w1(x)) * self.w2(x))
+        return self.drop(y)
 
 
 # ----------------------------------------------- 5大核心模块 -----------------------------------------------
@@ -1067,6 +1131,7 @@ class Block(PointModule):
         enable_flash=True,
         upcast_attention=True,
         upcast_softmax=True,
+        ffn_type="mlp",
     ):
         """
             初始化Block。
@@ -1094,6 +1159,7 @@ class Block(PointModule):
                 - enable_flash: bool, 是否启用Flash Attention,默认True
                 - upcast_attention: bool, 是否在注意力计算时上转为float,默认True
                 - upcast_softmax: bool, 是否在softmax时上转为float,默认True
+                - ffn_type: str, FFN 类型, "mlp"(经典两层MLP) 或 "gated"(GatedTransition 门控FFN), 默认 "mlp"
         """
         super().__init__()
         # int, 特征通道数
@@ -1150,16 +1216,26 @@ class Block(PointModule):
         )
         # PointSequential, 第二个归一化层
         self.norm2 = PointSequential(norm_layer(channels))
-        # PointSequential, MLP层
-        self.mlp = PointSequential(
-            MLP(
-                in_channels=channels,
-                hidden_channels=int(channels * mlp_ratio),
-                out_channels=channels,
-                act_layer=act_layer,
-                drop=proj_drop,
+        # PointSequential, FFN 层(经典 MLP 或门控 GatedTransition)
+        if ffn_type == "gated":
+            self.mlp = PointSequential(
+                GatedTransition(
+                    in_channels=channels,
+                    mlp_ratio=int(mlp_ratio),
+                    act_layer=act_layer,
+                    drop=proj_drop,
+                )
             )
-        )
+        else:
+            self.mlp = PointSequential(
+                MLP(
+                    in_channels=channels,
+                    hidden_channels=int(channels * mlp_ratio),
+                    out_channels=channels,
+                    act_layer=act_layer,
+                    drop=proj_drop,
+                )
+            )
         # PointSequential, 随机深度层
         self.drop_path = PointSequential(
             DropPath(drop_path) if drop_path > 0.0 else nn.Identity()
@@ -1470,7 +1546,7 @@ class SerializedUnpooling(PointModule):
 
 
 
-
+# 仿照上面 class PointConvCPE(PointModule)
 class PointConvEmbedding(PointModule):
     def __init__(
         self,
@@ -1678,18 +1754,18 @@ class PointTransformerV3(PointModule):
         pointconv_embed_max_neighbors=64,
         pointconv_block_max_neighbors=32,
         enc_cpe_kernel_size=(5, 5, 5, 5, 5),
-        dec_cpe_kernel_size=(5, 5, 5, 5),
+        dec_cpe_kernel_size=(5, 5, 5, 5, 5),
         enc_cpe_receptive_field=(2.0, 4.0, 8.0, 12.0, 16.0),
-        dec_cpe_receptive_field=(2.0, 4.0, 8.0, 12.0),  # 注意先池化/反池化, 之后才CPE、算attn, 所以 dec_cpe_receptive_field 和 enc 是对称的
+        dec_cpe_receptive_field=(2.0, 4.0, 8.0, 12.0, 16.0),  # 注意先池化/反池化, 之后才CPE、算attn
 
         enc_depths=(2, 2, 2, 6, 2),
         enc_channels=(64, 64, 128, 256, 512),
         enc_num_head=(2, 4, 8, 16, 32),
         enc_patch_size=(256, 128, 96, 72, 64),
-        dec_depths=(2, 2, 2, 2),
-        dec_channels=(64, 64, 128, 256),
-        dec_num_head=(4, 4, 8, 16),
-        dec_patch_size=(128, 96, 72, 64),
+        dec_depths=(2, 2, 2, 2, 2),         # see me: s最后一项为 dec4(最低分辨率、不做 unpooling); 若设为 0 则回退到旧版无 dec4 行为
+        dec_channels=(64, 64, 128, 256, 512),
+        dec_num_head=(4, 4, 8, 16, 32),
+        dec_patch_size=(128, 96, 72, 64, 64),
 
         mlp_ratio=4,
         qkv_bias=True,
@@ -1710,6 +1786,8 @@ class PointTransformerV3(PointModule):
         pdnorm_adaptive=False,
         pdnorm_affine=True,
         pdnorm_conditions=("ScanNet", "S3DIS", "Structured3D"),
+        act_layer_name="gelu",
+        ffn_type="mlp",
     ):
         """
             初始化 PointTransformerV3。
@@ -1738,12 +1816,12 @@ class PointTransformerV3(PointModule):
 
                 - enc/dec 参数：
                     - enc_depths: tuple[int], 每个编码器阶段的Transformer Block数量,长度=num_stages,默认(2,2,2,6,2)
-                    - enc_channels: tuple[int], 每个编码器阶段的特征通道数,长度=num_stages,默认(32,64,128,256,512)
+                    - enc_channels: tuple[int], 每个编码器的输出特征通道数,长度=num_stages,默认(32,64,128,256,512)
                     - enc_num_head: tuple[int], 每个编码器阶段的注意力头数,长度=num_stages,默认(2,4,8,16,32)
                     - enc_patch_size: tuple[int], 每个编码器阶段的patch大小(注意力窗口),长度=num_stages,默认(1024,1024,1024,1024,1024)
 
                     - dec_depths: tuple[int], 每个解码器阶段的Transformer Block数量,长度=num_stages-1,默认(2,2,2,2)
-                    - dec_channels: tuple[int], 每个解码器阶段的特征通道数,长度=num_stages-1,默认(64,64,128,256)
+                    - dec_channels: tuple[int], 每个解码器的输出特征通道数,长度=num_stages-1,默认(64,64,128,256)
                     - dec_num_head: tuple[int], 每个解码器阶段的注意力头数,长度=num_stages-1,默认(4,4,8,16)
                     - dec_patch_size: tuple[int], 每个解码器阶段的patch大小,长度=num_stages-1,默认(1024,1024,1024,1024)
 
@@ -1793,15 +1871,15 @@ class PointTransformerV3(PointModule):
         assert self.num_stages == len(enc_cpe_receptive_field), (
             f"enc_cpe_receptive_field 长度({len(enc_cpe_receptive_field)})必须等于 num_stages({self.num_stages})"
         )
-        assert self.cls_mode or self.num_stages == len(dec_depths) + 1
-        assert self.cls_mode or self.num_stages == len(dec_channels) + 1
-        assert self.cls_mode or self.num_stages == len(dec_num_head) + 1
-        assert self.cls_mode or self.num_stages == len(dec_patch_size) + 1
-        assert self.cls_mode or self.num_stages == len(dec_cpe_kernel_size) + 1, (
-            f"dec_cpe_kernel_size 长度({len(dec_cpe_kernel_size)})必须等于 num_stages-1({self.num_stages - 1})"
+        assert self.cls_mode or self.num_stages == len(dec_depths)
+        assert self.cls_mode or self.num_stages == len(dec_channels)
+        assert self.cls_mode or self.num_stages == len(dec_num_head)
+        assert self.cls_mode or self.num_stages == len(dec_patch_size)
+        assert self.cls_mode or self.num_stages == len(dec_cpe_kernel_size), (
+            f"dec_cpe_kernel_size 长度({len(dec_cpe_kernel_size)})必须等于 num_stages({self.num_stages})"
         )
-        assert self.cls_mode or self.num_stages == len(dec_cpe_receptive_field) + 1, (
-            f"dec_cpe_receptive_field 长度({len(dec_cpe_receptive_field)})必须等于 num_stages-1({self.num_stages - 1})"
+        assert self.cls_mode or self.num_stages == len(dec_cpe_receptive_field), (
+            f"dec_cpe_receptive_field 长度({len(dec_cpe_receptive_field)})必须等于 num_stages({self.num_stages})"
         )
 
         # 参数校验
@@ -1851,8 +1929,8 @@ class PointTransformerV3(PointModule):
         else:
             # 使用标准LayerNorm
             ln_layer = nn.LayerNorm
-        # 激活函数层
-        act_layer = nn.GELU
+        # 激活函数层: 通过 act_layer_name 统一配置
+        act_layer = resolve_act_layer(act_layer_name)
 
         # Embedding, 嵌入层
         self.embedding = Embedding(
@@ -1866,7 +1944,8 @@ class PointTransformerV3(PointModule):
             act_layer=act_layer,
         )
 
-        # 编码器
+
+        # -------------------------------------------------- 编码器 -------------------------------------------------
         # list[float], 编码器随机深度drop路径
         enc_drop_path = [x.item() for x in torch.linspace(start=0, end=drop_path, steps=sum(enc_depths))]
         # PointSequential, 编码器容器
@@ -1915,6 +1994,7 @@ class PointTransformerV3(PointModule):
                         enable_flash=enable_flash,
                         upcast_attention=upcast_attention,
                         upcast_softmax=upcast_softmax,
+                        ffn_type=ffn_type,
                     ),
                     name=f"block{i}",
                 )
@@ -1922,18 +2002,26 @@ class PointTransformerV3(PointModule):
             if len(enc) != 0:
                 self.enc.add(module=enc, name=f"enc{s}")
 
-        # 解码器
+
+
+        # -------------------------------------------------- 解码器 -------------------------------------------------
         if not self.cls_mode:
+            # dec_depths 长度 = num_stages; 最后一项 dec_depths[-1] 对应 dec4(最低分辨率层, 不做 unpooling)。
+            # 当 dec_depths[-1] == 0 时, 该阶段初始化为恒等映射(nn.Identity), 等价于无 dec4 行为。
             # list[float], 解码器随机深度drop路径
             dec_drop_path = [
                 x.item() for x in torch.linspace(0, drop_path, sum(dec_depths))
             ]
             # PointSequential, 解码器容器
             self.dec = PointSequential()
-            # list[int], 解码器通道数(加上编码器最后一层)
-            dec_channels = list(dec_channels) + [enc_channels[-1]]
+            # list[int], 解码器输出通道数
+            dec_channels = list(dec_channels)
             # 反向遍历解码器阶段(从低分辨率到高分辨率)
-            for s in reversed(range(self.num_stages - 1)):
+            for s in reversed(range(self.num_stages)):
+                if int(dec_depths[s]) == 0:
+                    # depth=0: 该阶段为恒等映射, 不执行任何计算
+                    self.dec.add(module=nn.Identity(), name=f"dec{s}")
+                    continue
                 # list[float], 当前阶段的drop路径
                 dec_drop_path_ = dec_drop_path[
                     sum(dec_depths[:s]) : sum(dec_depths[: s + 1])
@@ -1942,17 +2030,25 @@ class PointTransformerV3(PointModule):
                 dec_drop_path_.reverse()
                 # PointSequential, 当前阶段容器
                 dec = PointSequential()
-                # 添加上采样层
-                dec.add(
-                    SerializedUnpooling(
-                        in_channels=dec_channels[s + 1],
-                        skip_channels=enc_channels[s],
-                        out_channels=dec_channels[s],
-                        norm_layer=bn_layer,
-                        act_layer=act_layer,
-                    ),
-                    name="up",
-                )
+
+                if s == self.num_stages - 1:
+                    # dec4: 最低分辨率阶段, 不做 unpooling, 只做通道投影 + Block
+                    if enc_channels[-1] != dec_channels[s]:
+                        dec.add(nn.Linear(enc_channels[-1], dec_channels[s]), name="proj")
+                        dec.add(ln_layer(dec_channels[s]), name="proj_norm")
+                else:
+                    # dec3–dec0: 正常 unpooling。in_channels 取上一层(更低分辨率)的输出通道。
+                    up_in_channels = dec_channels[s + 1]
+                    dec.add(
+                        SerializedUnpooling(
+                            in_channels=up_in_channels,
+                            skip_channels=enc_channels[s],
+                            out_channels=dec_channels[s],
+                            norm_layer=bn_layer,
+                            act_layer=act_layer,
+                        ),
+                        name="up",
+                    )
                 # 添加当前阶段的Transformer块
                 for i in range(dec_depths[s]):
                     dec.add(
@@ -1979,6 +2075,7 @@ class PointTransformerV3(PointModule):
                             enable_flash=enable_flash,
                             upcast_attention=upcast_attention,
                             upcast_softmax=upcast_softmax,
+                            ffn_type=ffn_type,
                         ),
                         name=f"block{i}",
                     )

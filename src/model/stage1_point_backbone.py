@@ -88,6 +88,8 @@ class Stage1PointBackbone(nn.Module):
         pdnorm_adaptive: bool,  # False
         pdnorm_affine: bool,  # True
         pdnorm_conditions: Sequence[str],  # ("ScanNet", "S3DIS", "Structured3D")
+        act_layer_name: str,  # "gelu"
+        ffn_type: str,  # "mlp"
     ) -> None:
         """
             Stage1 点分支。
@@ -233,6 +235,8 @@ class Stage1PointBackbone(nn.Module):
                 pdnorm_adaptive=bool(pdnorm_adaptive),
                 pdnorm_affine=bool(pdnorm_affine),
                 pdnorm_conditions=tuple(str(value) for value in pdnorm_conditions),
+                act_layer_name=str(act_layer_name),
+                ffn_type=str(ffn_type),
             )
         elif self.backend == "zeros":
             self.point_encoder = None

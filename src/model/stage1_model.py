@@ -9,10 +9,13 @@ from torch import nn
 
 _PTV3_HEAD_IMPORT_ERROR: Exception | None = None
 try:
-    from PTV3bakcbone.model import Point, SerializedAttention
-except Exception as exc:  # pragma: no cover - 依赖当前本地环境
+    from PTV3bakcbone.model import Point, SerializedAttention, GatedTransition, MLP, resolve_act_layer
+except Exception as exc:
     Point = None
     SerializedAttention = None
+    GatedTransition = None
+    MLP = None
+    resolve_act_layer = None
     _PTV3_HEAD_IMPORT_ERROR = exc
 
 
@@ -31,9 +34,12 @@ class Stage1SerializedAttentionLayer(nn.Module):
         enable_flash: bool,
         upcast_attention: bool,
         upcast_softmax: bool,
+        atom_head_ffn_type: str,
+        mlp_ratio: int,
+        act_layer,
     ) -> None:
         """
-            Stage1 atom head 的单层残差 SerializedAttention。
+            Stage1 atom head 的单层残差 SerializedAttention + 可选 FFN。
 
             输入参数:
                 - channels: int, token 特征通道数
@@ -48,6 +54,9 @@ class Stage1SerializedAttentionLayer(nn.Module):
                 - enable_flash: bool, 是否启用 flash attention
                 - upcast_attention: bool, 是否在注意力计算前上转精度
                 - upcast_softmax: bool, 是否在 softmax 前上转精度
+                - atom_head_ffn_type: str, atom head FFN 类型, "mlp"(经典MLP) / "gated"(GatedTransition) / "none"(无FFN)
+                - mlp_ratio: int, FFN 隐藏层膨胀倍率(仅 atom_head_ffn_type != "none" 时生效)
+                - act_layer: callable, 激活函数类(仅 atom_head_ffn_type != "none" 时生效)
 
             输出:
                 - point: Point, `point.feat` 已更新后的点对象
@@ -72,21 +81,52 @@ class Stage1SerializedAttentionLayer(nn.Module):
             upcast_softmax=bool(upcast_softmax),
         )
 
+        # 可选 FFN: "mlp"(经典两层MLP)、"gated"(GatedTransition 门控FFN)、"none"(无FFN, 兼容旧版)
+        self.atom_head_ffn_type = str(atom_head_ffn_type).lower()
+        if self.atom_head_ffn_type == "gated":
+            self.ffn_norm = nn.LayerNorm(int(channels))
+            self.ffn = GatedTransition(
+                in_channels=int(channels),
+                mlp_ratio=int(mlp_ratio),
+                act_layer=act_layer,
+                drop=float(proj_drop),
+            )
+        elif self.atom_head_ffn_type == "mlp":
+            self.ffn_norm = nn.LayerNorm(int(channels))
+            self.ffn = MLP(
+                in_channels=int(channels),
+                hidden_channels=int(int(channels) * int(mlp_ratio)),
+                out_channels=int(channels),
+                act_layer=act_layer,
+                drop=float(proj_drop),
+            )
+        elif self.atom_head_ffn_type == "none":
+            self.ffn_norm = None
+            self.ffn = None
+        else:
+            raise ValueError(f"不支持的 atom_head_ffn_type='{atom_head_ffn_type}', 可选: 'mlp', 'gated', 'none'")
+
     def forward(self, point: Any) -> Any:
         """
-        对当前 token 执行一层残差 SerializedAttention。
+        对当前 token 执行一层残差 SerializedAttention + 可选 FFN。
 
         输入参数:
             - point: Point, 当前点对象；`point.feat` 形状为 `(N, C)`
 
         输出:
-            - point: Point, 执行一层注意力后的点对象
+            - point: Point, 执行一层注意力(+FFN)后的点对象
         """
+        # 注意力 + 残差
         # torch.Tensor, `(N, C)`，残差分支的输入特征。
         residual_feat = point.feat
         point.feat = self.norm(point.feat)
         point = self.attn(point)
         point.feat = residual_feat + point.feat
+        # FFN + 残差(若启用)
+        if self.ffn is not None:
+            residual_feat = point.feat
+            point.feat = self.ffn_norm(point.feat)
+            point.feat = residual_feat + self.ffn(point.feat)
         return point
 
 
@@ -107,6 +147,9 @@ class Stage1SerializedAttentionStack(nn.Module):
         enable_flash: bool,
         upcast_attention: bool,
         upcast_softmax: bool,
+        atom_head_ffn_type: str,
+        mlp_ratio: int,
+        act_layer,
     ) -> None:
         """
         由 k 层残差 SerializedAttention 组成的 atom head。
@@ -150,6 +193,9 @@ class Stage1SerializedAttentionStack(nn.Module):
                     enable_flash=bool(enable_flash),
                     upcast_attention=bool(upcast_attention),
                     upcast_softmax=bool(upcast_softmax),
+                    atom_head_ffn_type=str(atom_head_ffn_type),
+                    mlp_ratio=int(mlp_ratio),
+                    act_layer=act_layer,
                 )
                 for layer_idx in range(int(num_layers))
             ]
@@ -225,6 +271,10 @@ class VolumePointStage1Model(nn.Module):
         max_recycles: int,
         randomize_recycles: bool,
         detach_recycle_states: bool,   # True!
+        act_layer_name: str,           # "gelu"
+        ffn_type: str,                 # "mlp" | "gated", 控制 PTV3 backbone Block 的 FFN 类型(已透传给 point_backbone)
+        atom_head_ffn_type: str,       # "mlp" | "gated" | "none", 控制 atom head 内的可选 FFN
+        atom_head_mlp_ratio: int,      # 4, atom head FFN 隐藏层膨胀倍率(仅 atom_head_ffn_type != "none" 生效)
     ) -> None:
         """
             Stage1 总装配模型。
@@ -359,6 +409,11 @@ class VolumePointStage1Model(nn.Module):
             if fusion_mode != "concat_linear":
                 raise ValueError(f"Unsupported point fusion mode={fusion_mode}")
 
+            # type, 激活函数类: 由 act_layer_name 统一配置
+            if resolve_act_layer is None:
+                raise ImportError("解析激活函数需要 PTV3 相关依赖。") from _PTV3_HEAD_IMPORT_ERROR
+            act_cls = resolve_act_layer(str(act_layer_name))
+
             fusion_input_dim = point_channels + voxel_channels
             fusion_hidden_dim = max(
                 point_channels,
@@ -367,7 +422,7 @@ class VolumePointStage1Model(nn.Module):
             self.point_fusion_modules[point_name] = nn.Sequential(
                 nn.Linear(fusion_input_dim, fusion_hidden_dim),
                 nn.LayerNorm(fusion_hidden_dim),
-                nn.GELU(),   # NOTE: 未来可能需要灵活化激活函数
+                act_cls(),
                 nn.Dropout(float(fusion_proj_drop)),
                 nn.Linear(fusion_hidden_dim, point_channels),
             )
@@ -379,7 +434,7 @@ class VolumePointStage1Model(nn.Module):
         self.atom_token_proj = nn.Sequential(
             nn.Linear(atom_token_input_dim, int(atom_head_hidden_dim)),
             nn.LayerNorm(int(atom_head_hidden_dim)),
-            nn.GELU(),
+            act_cls(),
         )
         self.atom_attention_stack = Stage1SerializedAttentionStack(
             channels=int(atom_head_hidden_dim),
@@ -396,10 +451,13 @@ class VolumePointStage1Model(nn.Module):
             enable_flash=bool(atom_head_enable_flash),
             upcast_attention=bool(atom_head_upcast_attention),
             upcast_softmax=bool(atom_head_upcast_softmax),
+            atom_head_ffn_type=str(atom_head_ffn_type),
+            mlp_ratio=int(atom_head_mlp_ratio),
+            act_layer=act_cls,
         )
         self.atom_logit_head = nn.Sequential(
             nn.Linear(int(atom_head_hidden_dim), int(atom_head_hidden_dim)),
-            nn.GELU(),
+            act_cls(),
             nn.Linear(int(atom_head_hidden_dim), int(atom_logit_dim)),
         )
 
