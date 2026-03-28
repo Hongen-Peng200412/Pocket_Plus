@@ -137,6 +137,8 @@ class Stage1PointBackbone(nn.Module):
         self.cls_mode = bool(cls_mode)
         self.enc_channels = tuple(int(value) for value in enc_channels)
         self.dec_channels = tuple(int(value) for value in dec_channels)
+        self.dec_depths = tuple(int(value) for value in dec_depths)
+        self.act_layer_name = str(act_layer_name)
 
         # 编码器阶段名称("point_enc0"(无下采样), "point_enc1", "point_enc2", "point_enc3", "point_enc4")
         self.enc_stage_names = tuple(f"point_enc{stage_idx}" for stage_idx in range(len(self.enc_channels)))
@@ -163,12 +165,15 @@ class Stage1PointBackbone(nn.Module):
                 for feature_name, channel_count in zip(self.enc_stage_names, self.enc_channels)
             }
         )
-        feature_channels_by_name.update(
-            {
-                feature_name: int(channel_count)
-                for feature_name, channel_count in zip(self.dec_stage_names, reversed(self.dec_channels))
-            }
-        )
+        # 解码器阶段通道数: 当 dec_depths[s]==0 时, PTV3 使用 nn.Identity(), 实际输出维度等于 enc_channels[s] 而非 dec_channels[s]
+        for dec_name, dec_ch, enc_ch, dd in zip(
+            self.dec_stage_names,
+            reversed(self.dec_channels),
+            reversed(self.enc_channels),
+            reversed(self.dec_depths),
+        ):
+            actual_ch = int(enc_ch) if int(dd) == 0 else int(dec_ch)
+            feature_channels_by_name[dec_name] = actual_ch
         feature_channels_by_name["point_feat"] = int(self.enc_channels[-1] if self.cls_mode else self.dec_channels[0])
         self.feature_channels_by_name = feature_channels_by_name
 
@@ -183,11 +188,13 @@ class Stage1PointBackbone(nn.Module):
 
 
         # 组件
+        from PTV3bakcbone.model import resolve_act_layer as _resolve_act
+        _act_cls = _resolve_act(self.act_layer_name)
         # nn.Sequential, `(sumN, C_input=49 + C_recycle) -> (sumN, C_input=49)`，输入到点主干前的原子特征投影。
         self.atom_input_proj = nn.Sequential(
             nn.Linear(self.atom_feature_dim + self.recycle_feature_dim, int(input_embed_hidden_dim)),
             nn.LayerNorm(int(input_embed_hidden_dim)),
-            nn.GELU(),
+            _act_cls(),
             nn.Linear(int(input_embed_hidden_dim), self.input_embed_dim),
         )
         if self.backend == "ptv3":

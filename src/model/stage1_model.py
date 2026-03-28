@@ -9,125 +9,17 @@ from torch import nn
 
 _PTV3_HEAD_IMPORT_ERROR: Exception | None = None
 try:
-    from PTV3bakcbone.model import Point, SerializedAttention, GatedTransition, MLP, resolve_act_layer
+    from PTV3bakcbone.model import Point, SerializedAttention, GatedTransition, MLP, resolve_act_layer, Block
 except Exception as exc:
     Point = None
     SerializedAttention = None
     GatedTransition = None
     MLP = None
     resolve_act_layer = None
+    Block = None
     _PTV3_HEAD_IMPORT_ERROR = exc
 
 
-class Stage1SerializedAttentionLayer(nn.Module):
-    def __init__(
-        self,
-        channels: int,
-        num_heads: int,
-        patch_size: int,
-        order_index: int,
-        qkv_bias: bool,
-        qk_scale: float | None,
-        attn_drop: float,
-        proj_drop: float,
-        enable_rpe: bool,
-        enable_flash: bool,
-        upcast_attention: bool,
-        upcast_softmax: bool,
-        atom_head_ffn_type: str,
-        mlp_ratio: int,
-        act_layer,
-    ) -> None:
-        """
-            Stage1 atom head 的单层残差 SerializedAttention + 可选 FFN。
-
-            输入参数:
-                - channels: int, token 特征通道数
-                - num_heads: int, 注意力头数
-                - patch_size: int, SerializedAttention 的 patch size
-                - order_index: int, 当前层使用的序列化顺序索引
-                - qkv_bias: bool, QKV 线性层是否带 bias
-                - qk_scale: float | None, QK 缩放因子
-                - attn_drop: float, 注意力 dropout
-                - proj_drop: float, 输出投影 dropout
-                - enable_rpe: bool, 是否启用相对位置编码
-                - enable_flash: bool, 是否启用 flash attention
-                - upcast_attention: bool, 是否在注意力计算前上转精度
-                - upcast_softmax: bool, 是否在 softmax 前上转精度
-                - atom_head_ffn_type: str, atom head FFN 类型, "mlp"(经典MLP) / "gated"(GatedTransition) / "none"(无FFN)
-                - mlp_ratio: int, FFN 隐藏层膨胀倍率(仅 atom_head_ffn_type != "none" 时生效)
-                - act_layer: callable, 激活函数类(仅 atom_head_ffn_type != "none" 时生效)
-
-            输出:
-                - point: Point, `point.feat` 已更新后的点对象
-        """
-        super().__init__()
-        if SerializedAttention is None:
-            raise ImportError("Stage1SerializedAttentionLayer 需要 PTV3 相关依赖。") from _PTV3_HEAD_IMPORT_ERROR
-
-        self.norm = nn.LayerNorm(int(channels))
-        self.attn = SerializedAttention(
-            channels=int(channels),
-            num_heads=int(num_heads),
-            patch_size=int(patch_size),
-            qkv_bias=bool(qkv_bias),
-            qk_scale=qk_scale,
-            attn_drop=float(attn_drop),
-            proj_drop=float(proj_drop),
-            order_index=int(order_index),
-            enable_rpe=bool(enable_rpe),
-            enable_flash=bool(enable_flash),
-            upcast_attention=bool(upcast_attention),
-            upcast_softmax=bool(upcast_softmax),
-        )
-
-        # 可选 FFN: "mlp"(经典两层MLP)、"gated"(GatedTransition 门控FFN)、"none"(无FFN, 兼容旧版)
-        self.atom_head_ffn_type = str(atom_head_ffn_type).lower()
-        if self.atom_head_ffn_type == "gated":
-            self.ffn_norm = nn.LayerNorm(int(channels))
-            self.ffn = GatedTransition(
-                in_channels=int(channels),
-                mlp_ratio=int(mlp_ratio),
-                act_layer=act_layer,
-                drop=float(proj_drop),
-            )
-        elif self.atom_head_ffn_type == "mlp":
-            self.ffn_norm = nn.LayerNorm(int(channels))
-            self.ffn = MLP(
-                in_channels=int(channels),
-                hidden_channels=int(int(channels) * int(mlp_ratio)),
-                out_channels=int(channels),
-                act_layer=act_layer,
-                drop=float(proj_drop),
-            )
-        elif self.atom_head_ffn_type == "none":
-            self.ffn_norm = None
-            self.ffn = None
-        else:
-            raise ValueError(f"不支持的 atom_head_ffn_type='{atom_head_ffn_type}', 可选: 'mlp', 'gated', 'none'")
-
-    def forward(self, point: Any) -> Any:
-        """
-        对当前 token 执行一层残差 SerializedAttention + 可选 FFN。
-
-        输入参数:
-            - point: Point, 当前点对象；`point.feat` 形状为 `(N, C)`
-
-        输出:
-            - point: Point, 执行一层注意力(+FFN)后的点对象
-        """
-        # 注意力 + 残差
-        # torch.Tensor, `(N, C)`，残差分支的输入特征。
-        residual_feat = point.feat
-        point.feat = self.norm(point.feat)
-        point = self.attn(point)
-        point.feat = residual_feat + point.feat
-        # FFN + 残差(若启用)
-        if self.ffn is not None:
-            residual_feat = point.feat
-            point.feat = self.ffn_norm(point.feat)
-            point.feat = residual_feat + self.ffn(point.feat)
-        return point
 
 
 class Stage1SerializedAttentionStack(nn.Module):
@@ -150,41 +42,59 @@ class Stage1SerializedAttentionStack(nn.Module):
         atom_head_ffn_type: str,
         mlp_ratio: int,
         act_layer,
+        cpe_impl: str,
+        cpe_kernel_size: int,
+        cpe_receptive_field: float,
+        pointconv_block_max_neighbors: int,
+        drop_path: float,
+        pre_norm: bool,
     ) -> None:
         """
-        由 k 层残差 SerializedAttention 组成的 atom head。
+        由 k 层 Block(cpe_impl 可配) 组成的 atom head 注意力堆叠。
 
         输入参数:
-            - channels: int, token 特征通道数。
-            - num_heads: int, 多头注意力头数。
-            - patch_size: int, SerializedAttention 的 patch 大小。
-            - num_layers: int, 堆叠层数。
-            - serialization_orders: Sequence[str], 允许使用的序列化顺序列表。
-            - shuffle_orders: bool, 是否在每次 forward 开始时随机打乱序列化顺序列表。
-            - qkv_bias: bool, QKV 线性层是否使用 bias。
-            - qk_scale: float | None, QK 缩放因子。
-            - attn_drop: float, 注意力 dropout 概率。
-            - proj_drop: float, 输出投影 dropout 概率。
-            - enable_rpe: bool, 是否启用相对位置编码。
-            - enable_flash: bool, 是否启用 flash attention。
-            - upcast_attention: bool, 是否在注意力计算前上转精度。
-            - upcast_softmax: bool, 是否在 softmax 前上转精度。
+            - channels: int, token 特征通道数
+            - num_heads: int, 多头注意力头数
+            - patch_size: int, SerializedAttention 的 patch 大小
+            - num_layers: int, 堆叠层数
+            - serialization_orders: Sequence[str], 允许使用的序列化顺序列表
+            - shuffle_orders: bool, 是否在每次 forward 开始时随机打乱序列化顺序列表
+            - qkv_bias: bool, QKV 线性层是否使用 bias
+            - qk_scale: float | None, QK 缩放因子
+            - attn_drop: float, 注意力 dropout 概率
+            - proj_drop: float, 输出投影 dropout 概率
+            - enable_rpe: bool, 是否启用相对位置编码
+            - enable_flash: bool, 是否启用 flash attention
+            - upcast_attention: bool, 是否在注意力计算前上转精度
+            - upcast_softmax: bool, 是否在 softmax 前上转精度
+            - atom_head_ffn_type: str, FFN 类型 "mlp"/"gated"/"none"
+            - mlp_ratio: int, FFN 隐藏层膨胀倍率
+            - act_layer: callable, 激活函数类
+            - cpe_impl: str, CPE 实现方式 "none"/"sparseconv"/"pointconv"
+            - cpe_kernel_size: int, sparseconv CPE 卷积核大小
+            - cpe_receptive_field: float, pointconv CPE 世界坐标感受野半径(Å)
+            - pointconv_block_max_neighbors: int, pointconv CPE 每个点最大邻居数
+            - drop_path: float, 随机深度 drop 概率
+            - pre_norm: bool, 是否使用预归一化
 
         输出:
-            - token_feat: torch.Tensor, `(sumN, C)`，经过 k 层 attention 后的 atom token 特征。
+            - token_feat: torch.Tensor, `(sumN, C)`, 经过 k 层 attention 后的 atom token 特征
         """
         super().__init__()
+        if Block is None:
+            raise ImportError("Stage1SerializedAttentionStack 需要 PTV3 相关依赖。") from _PTV3_HEAD_IMPORT_ERROR
         self.channels = int(channels)
         self.serialization_orders = tuple(str(order_name) for order_name in serialization_orders)
         self.shuffle_orders = bool(shuffle_orders)
 
         self.layers = nn.ModuleList(
             [
-                Stage1SerializedAttentionLayer(
+                Block(
                     channels=self.channels,
                     num_heads=int(num_heads),
                     patch_size=int(patch_size),
                     order_index=int(layer_idx % len(self.serialization_orders)),
+                    cpe_impl=str(cpe_impl),
                     qkv_bias=bool(qkv_bias),
                     qk_scale=qk_scale,
                     attn_drop=float(attn_drop),
@@ -193,9 +103,14 @@ class Stage1SerializedAttentionStack(nn.Module):
                     enable_flash=bool(enable_flash),
                     upcast_attention=bool(upcast_attention),
                     upcast_softmax=bool(upcast_softmax),
-                    atom_head_ffn_type=str(atom_head_ffn_type),
+                    ffn_type=str(atom_head_ffn_type),
                     mlp_ratio=int(mlp_ratio),
                     act_layer=act_layer,
+                    pre_norm=bool(pre_norm),
+                    drop_path=float(drop_path),
+                    cpe_kernel_size=int(cpe_kernel_size),
+                    cpe_receptive_field=float(cpe_receptive_field),
+                    pointconv_block_max_neighbors=int(pointconv_block_max_neighbors),
                 )
                 for layer_idx in range(int(num_layers))
             ]
@@ -204,7 +119,7 @@ class Stage1SerializedAttentionStack(nn.Module):
 
     def forward(self, point_state: dict[str, Any], token_feat: torch.Tensor) -> torch.Tensor:
         """
-            执行完整的 k 层 SerializedAttention。
+            执行完整的 k 层 Block 注意力。
 
             输入参数:
                 - point_state: dict[str, Any], 点分支输出的点状态
@@ -218,7 +133,7 @@ class Stage1SerializedAttentionStack(nn.Module):
         if Point is None:
             raise ImportError("Stage1SerializedAttentionStack 需要 PTV3 相关依赖。") from _PTV3_HEAD_IMPORT_ERROR
 
-        # dict[str, Any]，用点状态与当前 token 特征重建的 Point 字典。
+        # dict[str, Any], 用点状态与当前 token 特征重建的 Point 字典
         point_dict = {
             "feat": token_feat,
             "coord": point_state["coord"],
@@ -229,17 +144,18 @@ class Stage1SerializedAttentionStack(nn.Module):
         if "grid_coord" in point_state:
             point_dict["grid_coord"] = point_state["grid_coord"]
 
-        # Point, `(sumN, C)` + 点坐标/批次/网格信息，atom head 注意力的直接输入对象。
+        # Point, `(sumN, C)` + 点坐标/批次/网格信息, atom head 注意力的直接输入对象
         point = Point(point_dict)
-        # Point, 序列化后的点对象；后续每层注意力将按这里确定的顺序处理 token。
+        # Point, 序列化后的点对象; 后续每层注意力将按这里确定的顺序处理 token
         point.serialization(order=self.serialization_orders, shuffle_orders=self.shuffle_orders)
 
         for layer in self.layers:
-            # Point, 当前层残差 SerializedAttention 更新后的点对象。
+            # Point, 当前层 Block 更新后的点对象
             point = layer(point)
 
-        # torch.Tensor, `(sumN, C)`，stack 末尾 LayerNorm 后的 atom token 特征。
+        # torch.Tensor, `(sumN, C)`, stack 末尾 LayerNorm 后的 atom token 特征
         return self.output_norm(point.feat)
+
 
 
 class VolumePointStage1Model(nn.Module):
@@ -275,6 +191,13 @@ class VolumePointStage1Model(nn.Module):
         ffn_type: str,                 # "mlp" | "gated", 控制 PTV3 backbone Block 的 FFN 类型(已透传给 point_backbone)
         atom_head_ffn_type: str,       # "mlp" | "gated" | "none", 控制 atom head 内的可选 FFN
         atom_head_mlp_ratio: int,      # 4, atom head FFN 隐藏层膨胀倍率(仅 atom_head_ffn_type != "none" 生效)
+        atom_head_cpe_impl: str,       # "none" | "pointconv", atom head Block 的 CPE 实现方式
+        atom_head_cpe_kernel_size: int,  # 5, atom head Block 的 sparseconv CPE 卷积核大小
+        atom_head_cpe_receptive_field: float,  # 2.0, atom head Block 的 pointconv CPE 感受野半径(Å)
+        atom_head_pointconv_max_neighbors: int,  # 16, atom head Block 的 pointconv CPE 最大邻居数
+        atom_head_drop_path: float,    # 0.0, atom head Block 的随机深度 drop 概率
+        atom_head_pre_norm: bool,      # True, atom head Block 是否使用预归一化
+        embed_head: nn.Module | Any | None = None,  # embed head 模块或 Hydra 配置; None 时不启用
     ) -> None:
         """
             Stage1 总装配模型。
@@ -326,6 +249,13 @@ class VolumePointStage1Model(nn.Module):
                     - `"recycle_passes_used"`: int, 本次 forward 实际使用的 recycle 次数
         """
         super().__init__()
+
+        # nn.Module | None, embed head 前置模块; 允许直接传模块实例、Hydra 配置对象或 None(不启用)
+        # embed head 永远在 recycle 循环外只执行一次
+        if embed_head is not None:
+            self.embed_head = embed_head if isinstance(embed_head, nn.Module) else instantiate(embed_head)
+        else:
+            self.embed_head = None
 
         # nn.Module, 体素分支模块；允许直接传模块实例或 Hydra 配置对象。
         self.voxel_backbone = voxel_backbone if isinstance(voxel_backbone, nn.Module) else instantiate(voxel_backbone)
@@ -454,6 +384,12 @@ class VolumePointStage1Model(nn.Module):
             atom_head_ffn_type=str(atom_head_ffn_type),
             mlp_ratio=int(atom_head_mlp_ratio),
             act_layer=act_cls,
+            cpe_impl=str(atom_head_cpe_impl),
+            cpe_kernel_size=int(atom_head_cpe_kernel_size),
+            cpe_receptive_field=float(atom_head_cpe_receptive_field),
+            pointconv_block_max_neighbors=int(atom_head_pointconv_max_neighbors),
+            drop_path=float(atom_head_drop_path),
+            pre_norm=bool(atom_head_pre_norm),
         )
         self.atom_logit_head = nn.Sequential(
             nn.Linear(int(atom_head_hidden_dim), int(atom_head_hidden_dim)),
@@ -461,6 +397,17 @@ class VolumePointStage1Model(nn.Module):
             nn.Linear(int(atom_head_hidden_dim), int(atom_logit_dim)),
         )
 
+        # --- embed head 残差加和融合(仅 embed head 有点云相关输出时创建) ---
+        if self.embed_head is not None and self.embed_head.has_point_output:
+            # nn.Linear, (atom_feature_dim -> embed_point_out_channels), 将原始原子特征投影到 embed 表示空间
+            _atom_feat_dim = int(self.point_backbone.atom_feature_dim)
+            _embed_point_dim = int(self.embed_head.embed_point_out_channels)
+            self.embed_point_add_proj = nn.Linear(_atom_feat_dim, _embed_point_dim)
+            # nn.Parameter, 标量, 可学习的残差缩放门; 初始化为小值以稳定训练初期
+            self.embed_point_gate = nn.Parameter(torch.tensor(0.01))
+        else:
+            self.embed_point_add_proj = None
+            self.embed_point_gate = None
 
 
 
@@ -528,12 +475,17 @@ class VolumePointStage1Model(nn.Module):
     def set_input_channels(self, in_channels: int) -> None:
         """
         将输入通道设置请求透传给体素分支。
+        当 embed head 启用时, 自动加上 embed_voxel_out_channels。
 
         输入参数:
-            - in_channels: int, 体素输入通道数
+            - in_channels: int, 数据集返回的 voxel_grid 通道数(不含 embed head 贡献)
         """
+        # int, 实际输入通道 = 数据通道 + embed head 体素通道(若启用)
+        actual_in_channels = int(in_channels)
+        if self.embed_head is not None:
+            actual_in_channels += int(self.embed_head.embed_voxel_out_channels)
         if hasattr(self.voxel_backbone, "set_input_channels"):
-            self.voxel_backbone.set_input_channels(int(in_channels))
+            self.voxel_backbone.set_input_channels(actual_in_channels)
 
 
 
@@ -582,7 +534,7 @@ class VolumePointStage1Model(nn.Module):
             voxel_size_world=voxel_size_world_one_box,
             box_shape_zyx=box_shape_zyx_one_box,
         )
-        #  `(N_i, 3)`，按原始几何定义换算得到的 `grid_sample` 坐标(可能略微超出[-1,1]), 这里保持坐标变换本身不做 clamp
+        #  `(N_i, 3)`，按原始几何定义换算得到的 `grid_sample` 坐标(可能略微超出[-1,1]), 函数本身不做 clamp
         grid_xyz = self._voxel_xyz_to_grid_sample_xyz(
             point_coord_local_voxel=point_coord_local_voxel,
             box_shape_zyx=box_shape_zyx_one_box,
@@ -729,18 +681,58 @@ class VolumePointStage1Model(nn.Module):
         voxel_recycle_in: torch.Tensor | None = None
         point_recycle_in: torch.Tensor | None = None
 
+        # ---- embed head (永远在 recycle 循环外只执行一次) ----
+        # dict[str, Any] | None, embed head 输出(含裁剪后的 atom 字段与体素嵌入网格)
+        embed_output: dict[str, Any] | None = None
+        if self.embed_head is not None:
+            embed_output = self.embed_head(
+                atom_feat=batch["atom_feat"],
+                atom_coord_centered_world=batch["atom_coord_centered_world"],
+                atom_batch_index=batch["atom_batch_index"],
+                atom_offsets=batch["atom_offsets"],
+                atom_coord_local_voxel=batch["atom_coord_local_voxel"],
+                box_shape_zyx=batch["box_shape_zyx"],
+                voxel_size_world=batch["voxel_size_world"],
+                atom_is_in_core_box=batch["atom_is_in_core_box"],
+            )
+            # ---- filter: 用裁剪后的原子字段替换 batch(不改原 dict, shallow copy) ----
+            batch = {**batch}
+            # torch.Tensor, (sumN',), bool, 从原始 sumN 到裁剪后长度的全局掩码
+            global_keep_mask = embed_output["global_keep_mask"]
+            batch["atom_feat"] = embed_output["atom_feat"]
+            batch["atom_coord_centered_world"] = embed_output["atom_coord_centered_world"]
+            batch["atom_batch_index"] = embed_output["atom_batch_index"]
+            batch["atom_offsets"] = embed_output["atom_offsets"]
+            batch["atom_coord_local_voxel"] = embed_output["atom_coord_local_voxel"]
+            batch["atom_is_in_core_box"] = embed_output["atom_is_in_core_box"]
+            # 同步裁剪所有 per-atom 监督与辅助字段
+            for _key in ("atom_label", "atom_valid_mask", "atom_coord_world"):
+                if _key in batch and batch[_key] is not None:
+                    batch[_key] = batch[_key][global_keep_mask]
+
+            # ---- 残差加和: 原始 atom_feat 投影到 embed 表示空间后与 embed_point_feat 相加 ----
+            if self.embed_point_add_proj is not None and embed_output.get("embed_point_feat") is not None:
+                # torch.Tensor, (sumN', embed_point_out_channels), 原始原子特征投影到 embed 空间
+                projected_atom = self.embed_point_add_proj(batch["atom_feat"])
+                # torch.Tensor, (sumN', embed_point_out_channels), 投影后的原子特征 + gated embed 特征
+                batch["atom_feat"] = projected_atom + self.embed_point_gate * embed_output["embed_point_feat"]
+
         final_output_dict: dict[str, Any] = {}
         for _ in range(recycle_steps):
+            # ---- 组装体素输入: 数据通道 + embed head 体素通道(若启用) ----
+            if embed_output is not None:
+                # torch.Tensor, (B, C_data + C_embed, D, H, W), 数据通道与 embed head 输出拼接
+                voxel_input = torch.cat([batch["voxel_grid"], embed_output["voxel_pdb_embed_grid"]], dim=1)
+            else:
+                voxel_input = batch["voxel_grid"]
+
             # ------------------------------------- 体素分支 -------------------------------------
             # dict[str, Any], 当前轮体素分支原始输出，包含命名体素特征、辅助 logits 与 recycle 输出。
             voxel_output_dict = self.voxel_backbone(
-                voxel_grid=batch["voxel_grid"],
+                voxel_grid=voxel_input,
                 recycle_in=voxel_recycle_in,
                 return_feature_keys=self.voxel_feature_names_to_return,
             )
-
-
-
 
             # ------------------------------------- 点分支与融合 -------------------------------------
             # dict[str, torch.Tensor], 记录每个命名点变量实际采样到的体素特征，仅用于可视化与调试。
@@ -763,6 +755,7 @@ class VolumePointStage1Model(nn.Module):
                         batch=batch,
                         sampled_point_fusion_feat_dict=sampled_point_fusion_feat_dict,
                     )
+
                 # dict[str, Any], 当前轮点分支原始输出，包含点特征、点状态与中间命名点变量。
                 point_output_dict = self.point_backbone(
                     atom_feat=batch["atom_feat"],
@@ -823,6 +816,9 @@ class VolumePointStage1Model(nn.Module):
                 "voxel_logits_aux": voxel_output_dict["voxel_logits_aux"],
                 "voxel_outputs": voxel_output_dict,
                 "point_outputs": point_output_dict,
+
+                # embed head 输出(若启用)
+                "embed_output": embed_output,
 
                 # 下2个变量仅作为辅助, 返回的时候不管(所以注释里只写了前8个)
                 "voxel_recycle_out": voxel_output_dict["voxel_recycle_out"],        # 体素分支这一轮的体素特征

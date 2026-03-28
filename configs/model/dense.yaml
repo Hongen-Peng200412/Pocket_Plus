@@ -38,7 +38,7 @@ backbone:
     enc_channels: [64, 64, 128, 256, 512]
     enc_num_head: [2, 4, 8, 16, 32]
     enc_patch_size: [256, 128, 96, 72, 64]
-    dec_depths: [2, 2, 2, 2, 2]           # 最后一项为 dec4(最低分辨率, 不做 unpooling); # see me: 只要设为 0, 就回退到旧版无 dec4 行为了
+    dec_depths: [2, 2, 2, 2, 0]           # 最后一项为 dec4(最低分辨率, 不做 unpooling); # see me: 只要设为 0, 就回退到旧版无 dec4 行为了
     dec_channels: [64, 64, 128, 256, 512]
     dec_num_head: [4, 4, 8, 16, 32]
     dec_patch_size: [128, 96, 72, 64, 64]
@@ -94,6 +94,12 @@ backbone:
   ffn_type: "mlp"                  # str, PTV3 backbone Block FFN 类型
   atom_head_ffn_type: "none"       # str, atom head FFN 类型, "mlp"/"gated"/"none"
   atom_head_mlp_ratio: 4           # int, atom head FFN 隐藏层膨胀倍率(仅 atom_head_ffn_type != "none" 生效)
+  atom_head_cpe_impl: "none"       # str, atom head Block 的 CPE 实现方式, "none"/"sparseconv"/"pointconv"
+  atom_head_cpe_kernel_size: 5     # int, atom head sparseconv CPE 卷积核大小(仅 atom_head_cpe_impl="sparseconv" 时生效)
+  atom_head_cpe_receptive_field: 2.0  # float, atom head pointconv CPE 感受野半径(Å)(仅 atom_head_cpe_impl="pointconv" 时生效)
+  atom_head_pointconv_max_neighbors: 16  # int, atom head pointconv CPE 每个点最大邻居数(仅 atom_head_cpe_impl="pointconv" 时生效)
+  atom_head_drop_path: 0.0         # float, atom head Block 随机深度 drop 概率
+  atom_head_pre_norm: true         # bool, atom head Block 是否使用预归一化(pre-LN)
 
 atom_loss:
   _target_: src.modules.losses.BinaryFocalLossWithAlpha

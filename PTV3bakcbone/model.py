@@ -1141,7 +1141,7 @@ class Block(PointModule):
                 - num_heads: int, 注意力头数
                 - patch_size: int, patch大小,默认48
                 - cpe_kernel_size: int, Block 内 CPE 稀疏卷积的卷积核大小(仅 sparseconv 模式)
-                - cpe_impl: str, CPE 实现方式, "sparseconv" 或 "pointconv"
+                - cpe_impl: str, CPE 实现方式, "sparseconv" / "pointconv" / "none"(不使用CPE)
                 - cpe_receptive_field: float, 世界坐标感受野半径(Å)(仅 pointconv 模式)
                 - pointconv_block_max_neighbors: int, 点云卷积 CPE 最大邻居数(仅 pointconv 模式)
                 - mlp_ratio: float, MLP隐藏层通道数比例,默认4.0
@@ -1159,7 +1159,7 @@ class Block(PointModule):
                 - enable_flash: bool, 是否启用Flash Attention,默认True
                 - upcast_attention: bool, 是否在注意力计算时上转为float,默认True
                 - upcast_softmax: bool, 是否在softmax时上转为float,默认True
-                - ffn_type: str, FFN 类型, "mlp"(经典两层MLP) 或 "gated"(GatedTransition 门控FFN), 默认 "mlp"
+                - ffn_type: str, FFN 类型, "mlp"(经典两层MLP) / "gated"(GatedTransition 门控FFN) / "none"(无FFN), 默认 "mlp"
         """
         super().__init__()
         # int, 特征通道数
@@ -1172,7 +1172,10 @@ class Block(PointModule):
         self.pre_norm = pre_norm
 
         # 条件位置编码(CPE): 根据 cpe_impl 选择实现
-        if self.cpe_impl == "sparseconv":
+        if self.cpe_impl == "none":
+            # None, 不使用 CPE(用于 embed head / atom head 等无稀疏卷积场景)
+            self.cpe = None
+        elif self.cpe_impl == "sparseconv":
             # PointSequential, 稀疏卷积 CPE: SubMConv3d -> Linear -> Norm
             self.cpe = PointSequential(
                 spconv.SubMConv3d(
@@ -1195,7 +1198,7 @@ class Block(PointModule):
                 norm_layer=norm_layer,
             )
         else:
-            raise ValueError(f"Block: cpe_impl 必须是 'sparseconv' 或 'pointconv', 当前为 '{self.cpe_impl}'")
+            raise ValueError(f"Block: cpe_impl 必须是 'sparseconv'/'pointconv'/'none', 当前为 '{self.cpe_impl}'")
 
         # PointSequential, 第一个归一化层
         self.norm1 = PointSequential(norm_layer(channels))
@@ -1214,10 +1217,13 @@ class Block(PointModule):
             upcast_attention=upcast_attention,
             upcast_softmax=upcast_softmax,
         )
-        # PointSequential, 第二个归一化层
-        self.norm2 = PointSequential(norm_layer(channels))
-        # PointSequential, FFN 层(经典 MLP 或门控 GatedTransition)
-        if ffn_type == "gated":
+        # FFN 层: "mlp"(经典两层MLP)、"gated"(GatedTransition 门控FFN)、"none"(无FFN)
+        self.ffn_type = str(ffn_type).lower()
+        if self.ffn_type == "none":
+            self.norm2 = None
+            self.mlp = None
+        elif self.ffn_type == "gated":
+            self.norm2 = PointSequential(norm_layer(channels))
             self.mlp = PointSequential(
                 GatedTransition(
                     in_channels=channels,
@@ -1227,6 +1233,8 @@ class Block(PointModule):
                 )
             )
         else:
+            # 默认 "mlp"
+            self.norm2 = PointSequential(norm_layer(channels))
             self.mlp = PointSequential(
                 MLP(
                     in_channels=channels,
@@ -1252,19 +1260,22 @@ class Block(PointModule):
             - point: Point, 处理后的点云数据
         
         运算过程:
-            1. CPE + 残差连接
+            1. CPE + 残差连接(若 cpe_impl != "none")
             2. 归一化 + 注意力 + 残差连接
-            3. 归一化 + MLP + 残差连接
+            3. 归一化 + MLP + 残差连接(若 ffn_type != "none")
         """
-        # torch.Tensor, (N, C), 保存快捷连接
-        shortcut = point.feat
-        # Point, 应用条件位置编码(CPE)
-        point = self.cpe(point)
-        # torch.Tensor, (N, C), CPE残差连接
-        point.feat = shortcut + point.feat
+        # --- CPE + 残差(若启用) ---
+        if self.cpe is not None:
+            # torch.Tensor, (N, C), 保存快捷连接
+            shortcut = point.feat
+            # Point, 应用条件位置编码(CPE)
+            point = self.cpe(point)
+            # torch.Tensor, (N, C), CPE残差连接
+            point.feat = shortcut + point.feat
+
+        # --- Attention + 残差 ---
         # torch.Tensor, (N, C), 更新快捷连接
         shortcut = point.feat
-
         if self.pre_norm:
             point = self.norm1(point)
         # Point, 应用注意力(带"随机深度"：本次运算有一定概率退化为恒等映射)
@@ -1274,18 +1285,22 @@ class Block(PointModule):
         if not self.pre_norm:
             point = self.norm1(point)
 
-        # torch.Tensor, (N, C), 更新快捷连接
-        shortcut = point.feat
-        if self.pre_norm:
-            point = self.norm2(point)
-        # Point, 应用MLP(带随机深度)
-        point = self.drop_path(self.mlp(point))
-        # torch.Tensor, (N, C), MLP残差连接
-        point.feat = shortcut + point.feat
-        if not self.pre_norm:
-            point = self.norm2(point)
-        # 更新稀疏卷积特征
-        point.sparse_conv_feat = point.sparse_conv_feat.replace_feature(point.feat)
+        # --- FFN + 残差(若启用) ---
+        if self.mlp is not None:
+            # torch.Tensor, (N, C), 更新快捷连接
+            shortcut = point.feat
+            if self.pre_norm:
+                point = self.norm2(point)
+            # Point, 应用MLP(带随机深度)
+            point = self.drop_path(self.mlp(point))
+            # torch.Tensor, (N, C), MLP残差连接
+            point.feat = shortcut + point.feat
+            if not self.pre_norm:
+                point = self.norm2(point)
+
+        # 更新稀疏卷积特征(仅在有 sparse_conv_feat 时)
+        if hasattr(point, "keys") and "sparse_conv_feat" in point.keys():
+            point.sparse_conv_feat = point.sparse_conv_feat.replace_feature(point.feat)
         return point
 
 
