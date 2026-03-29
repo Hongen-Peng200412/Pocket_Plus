@@ -1,21 +1,7 @@
-defaults:
-  - dense
-  - _self_
-
-
+# ============================================================
+# sparse 模型配置 (稀疏融合变体)
+# ============================================================
+# 仅定义 name; 具体差异通过根入口选择不同的 fusion/voxel config group 实现
+# ============================================================
 
 name: sparse
-
-
-backbone:
-  voxel_backbone:
-    return_feature_keys: ["voxel_c4", "voxel_final"]
-
-  point_fusion_map:
-    point_enc2: null
-    point_enc3: null
-    point_enc4: voxel_c4
-    point_feat: voxel_final
-
-  point_fusion_modes: ["concat_linear", "concat_linear"]
-  sampler_modes: ["trilinear", "trilinear"]

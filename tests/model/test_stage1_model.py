@@ -115,6 +115,12 @@ def test_volume_point_stage1_skips_point_forward_when_backend_is_zeros() -> None
         ffn_type="mlp",
         atom_head_ffn_type="none",
         atom_head_mlp_ratio=4,
+        atom_head_cpe_impl="none",
+        atom_head_cpe_kernel_size=5,
+        atom_head_cpe_receptive_field=2.0,
+        atom_head_pointconv_max_neighbors=16,
+        atom_head_drop_path=0.0,
+        atom_head_pre_norm=True,
     )
     attention_stack = _DummyAttentionStack()
     model.atom_token_proj = nn.Identity()

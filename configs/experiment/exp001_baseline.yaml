@@ -1,0 +1,17 @@
+# @package _global_
+# 实验入口: exp001_baseline — 复现历史最佳(原 dense_h200)
+defaults:
+  - override /model: dense
+  - override /voxel: raunet_64
+  - override /point: ptv3_dense
+  - override /fusion: dense_4hook
+  - override /atom_head: 4layer
+  - override /pseudo_atom: none
+  - override /embed_head: none
+  - override /loss: focal_default
+  - override /dataset: fused
+  - override /train: default_h200
+
+name: exp001_baseline
+tag: "baseline-dense-h200"
+project_name: PV_dense_fused

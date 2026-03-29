@@ -1,0 +1,25 @@
+# @package model
+
+# --- Atom 分类损失 ---
+atom_loss:
+  _target_: src.modules.losses.BinaryFocalLossWithAlpha
+  gamma: 2.0                     # float, Focal Loss 聚焦参数
+  ignore_index: null
+  eps: 1.0e-6
+  scale: 1.0
+  alpha_tune: [0.75, 0.25]      # list[float], [背景, 前景] 权重
+  use_adaptive_alpha: false
+
+atom_loss_weight: 1.0            # float, atom 损失总权重
+
+# --- 体素辅助损失 ---
+voxel_aux_loss:
+  _target_: src.modules.losses.BinaryFocalLossWithAlpha
+  gamma: 2.0
+  ignore_index: null
+  eps: 1.0e-6
+  scale: 1.0
+  alpha_tune: [0.75, 0.25]
+  use_adaptive_alpha: false
+
+voxel_aux_loss_weight: 0.2       # float, 体素辅助损失权重

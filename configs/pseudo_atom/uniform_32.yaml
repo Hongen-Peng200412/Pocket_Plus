@@ -1,0 +1,15 @@
+# @package model
+backbone:
+  pseudo_atom_cfg:
+    base_count: 32               # int, 固定基数
+    scale_factor: 0.5            # float, 比例系数 k
+    max_sample_rounds: 3         # int, 采样-删除循环最大轮次
+    init_feat_mode: "zero"       # str, 初始特征模式
+    init_feat_noise_std: 0.0
+    neighbor_radius: 3.0
+    enable_density_weighting: false
+    density_channel_index: 0
+    density_prob_base: 0.1
+    delete_too_close_radius: 0.0
+    delete_too_far_radius: 0.0
+    lifecycle: [false, true, true]

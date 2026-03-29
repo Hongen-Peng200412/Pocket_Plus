@@ -7,6 +7,8 @@ import torch.nn.functional as F
 from hydra.utils import instantiate
 from torch import nn
 
+from src.model.pseudo_atoms import PseudoAtomGenerator
+
 _PTV3_HEAD_IMPORT_ERROR: Exception | None = None
 try:
     from PTV3bakcbone.model import Point, SerializedAttention, GatedTransition, MLP, resolve_act_layer, Block
@@ -198,6 +200,7 @@ class VolumePointStage1Model(nn.Module):
         atom_head_drop_path: float,    # 0.0, atom head Block 的随机深度 drop 概率
         atom_head_pre_norm: bool,      # True, atom head Block 是否使用预归一化
         embed_head: nn.Module | Any | None = None,  # embed head 模块或 Hydra 配置; None 时不启用
+        pseudo_atom_cfg: dict | None = None,  # 伪原子配置; None 时不启用
     ) -> None:
         """
             Stage1 总装配模型。
@@ -249,6 +252,12 @@ class VolumePointStage1Model(nn.Module):
                     - `"recycle_passes_used"`: int, 本次 forward 实际使用的 recycle 次数
         """
         super().__init__()
+
+        # PseudoAtomGenerator | None, 伪原子生成器; None 时不启用
+        if pseudo_atom_cfg is not None:
+            self.pseudo_atom_gen = PseudoAtomGenerator(**pseudo_atom_cfg)
+        else:
+            self.pseudo_atom_gen = None
 
         # nn.Module | None, embed head 前置模块; 允许直接传模块实例、Hydra 配置对象或 None(不启用)
         # embed head 永远在 recycle 循环外只执行一次
@@ -681,7 +690,23 @@ class VolumePointStage1Model(nn.Module):
         voxel_recycle_in: torch.Tensor | None = None
         point_recycle_in: torch.Tensor | None = None
 
-        # ---- embed head (永远在 recycle 循环外只执行一次) ----
+
+        # -------------------------------- 伪原子生成 (recycle 循环外只生成一次) --------------------------------
+        # dict[str, Any] | None, 伪原子数据
+        pseudo_dict: dict[str, Any] | None = None
+        # list[tuple[int, int]] | None, 每个 BOX 的 (n_real, n_pseudo)
+        split_info: list[tuple[int, int]] | None = None
+        # list[bool], 伪原子生存期 [embed_head, point_backbone, atom_head]
+        lifecycle: list[bool] = [False, False, False]
+        if self.pseudo_atom_gen is not None:
+            pseudo_dict = self.pseudo_atom_gen.generate(batch)
+            lifecycle = self.pseudo_atom_gen.lifecycle
+
+
+        # -------------------------------- embed head (永远在 recycle 循环外只执行一次) --------------------------------
+        # 注入伪原子(若 lifecycle[0])
+        if lifecycle[0] and pseudo_dict is not None:
+            batch, split_info = self.pseudo_atom_gen.inject(batch, pseudo_dict)
         # dict[str, Any] | None, embed head 输出(含裁剪后的 atom 字段与体素嵌入网格)
         embed_output: dict[str, Any] | None = None
         if self.embed_head is not None:
@@ -710,6 +735,10 @@ class VolumePointStage1Model(nn.Module):
                 if _key in batch and batch[_key] is not None:
                     batch[_key] = batch[_key][global_keep_mask]
 
+            # 若 embed head 裁剪了原子, 同步更新 split_info 与 atom_counts
+            if split_info is not None:
+                split_info = self._update_split_info_after_trim(split_info, global_keep_mask)
+
             # ---- 残差加和: 原始 atom_feat 投影到 embed 表示空间后与 embed_point_feat 相加 ----
             if self.embed_point_add_proj is not None and embed_output.get("embed_point_feat") is not None:
                 # torch.Tensor, (sumN', embed_point_out_channels), 原始原子特征投影到 embed 空间
@@ -717,6 +746,15 @@ class VolumePointStage1Model(nn.Module):
                 # torch.Tensor, (sumN', embed_point_out_channels), 投影后的原子特征 + gated embed 特征
                 batch["atom_feat"] = projected_atom + self.embed_point_gate * embed_output["embed_point_feat"]
 
+        # embed head 阶段结束: 若 lifecycle[0] 但 lifecycle[1] 为 False, 移除伪原子
+        if lifecycle[0] and not lifecycle[1] and split_info is not None:
+            batch = self.pseudo_atom_gen.remove(batch, split_info)
+            split_info = None
+
+
+
+
+        # ----------------------------------------------------------------------------------------------------------------
         final_output_dict: dict[str, Any] = {}
         for _ in range(recycle_steps):
             # ---- 组装体素输入: 数据通道 + embed head 体素通道(若启用) ----
@@ -726,7 +764,9 @@ class VolumePointStage1Model(nn.Module):
             else:
                 voxel_input = batch["voxel_grid"]
 
-            # ------------------------------------- 体素分支 -------------------------------------
+
+
+            # ------------------------------------- voxel backbone -------------------------------------
             # dict[str, Any], 当前轮体素分支原始输出，包含命名体素特征、辅助 logits 与 recycle 输出。
             voxel_output_dict = self.voxel_backbone(
                 voxel_grid=voxel_input,
@@ -734,7 +774,12 @@ class VolumePointStage1Model(nn.Module):
                 return_feature_keys=self.voxel_feature_names_to_return,
             )
 
-            # ------------------------------------- 点分支与融合 -------------------------------------
+
+
+            # ------------------------------------- point backbone -------------------------------------
+            # point backbone 阶段: 注入伪原子(若 lifecycle[1] 且尚未注入)
+            if lifecycle[1] and not lifecycle[0] and pseudo_dict is not None and split_info is None:
+                batch, split_info = self.pseudo_atom_gen.inject(batch, pseudo_dict)
             # dict[str, torch.Tensor], 记录每个命名点变量实际采样到的体素特征，仅用于可视化与调试。
             sampled_point_fusion_feat_dict: dict[str, torch.Tensor] = {}
             if getattr(self.point_backbone, "backend", None) == "zeros":
@@ -755,7 +800,6 @@ class VolumePointStage1Model(nn.Module):
                         batch=batch,
                         sampled_point_fusion_feat_dict=sampled_point_fusion_feat_dict,
                     )
-
                 # dict[str, Any], 当前轮点分支原始输出，包含点特征、点状态与中间命名点变量。
                 point_output_dict = self.point_backbone(
                     atom_feat=batch["atom_feat"],
@@ -768,11 +812,83 @@ class VolumePointStage1Model(nn.Module):
                 )
             # torch.Tensor, `(sumN, C_point)`, 注意, 最后的点融合也自动完成
             fused_point_feat = point_output_dict["point_feat"]
+            # point backbone 阶段结束: 若 lifecycle[1] 但 lifecycle[2] 为 False, 移除伪原子
+            if lifecycle[1] and not lifecycle[2] and split_info is not None:
+                # torch.Tensor, (sumN_real + sumM,), bool, 真实原子掩码
+                real_mask = self.pseudo_atom_gen.build_real_mask(split_info).to(device=fused_point_feat.device)
+                fused_point_feat = fused_point_feat[real_mask]
+                # 同步裁剪 point_state
+                ps = point_output_dict["point_state"]
+                ps["coord"] = ps["coord"][real_mask]
+                ps["batch"] = ps["batch"][real_mask]
+                n_real_total = int(real_mask.sum().item())
+                batch_size = int(batch["box_shape_zyx"].shape[0])
+                real_counts = torch.tensor([nr for nr, _ in split_info], dtype=torch.long)
+                ps["offset"] = torch.cumsum(real_counts, dim=0).to(device=fused_point_feat.device)
+                if "grid_coord" in ps and ps["grid_coord"] is not None:
+                    ps["grid_coord"] = ps["grid_coord"][real_mask]
+                point_output_dict["point_feat"] = fused_point_feat
+                # recycle 输出也裁剪
+                if point_output_dict.get("point_recycle_out") is not None:
+                    point_output_dict["point_recycle_out"] = point_output_dict["point_recycle_out"][real_mask]
+                batch = self.pseudo_atom_gen.remove(batch, split_info)
+                split_info = None
 
 
 
 
-            # ------------------------------------- atom head -------------------------------------
+            # ---------------------------------------------- atom head ---------------------------------------------------
+            # 注入伪原子(若 lifecycle[2] 且尚未注入), 由于 atom head 不只吃 batch 变量(比如还有额外的 fused_point_feat), 所以要人工写一遍逻辑
+            if lifecycle[2] and not lifecycle[1] and pseudo_dict is not None and split_info is None:
+                batch, split_info = self.pseudo_atom_gen.inject(batch, pseudo_dict)
+                # 同步扩展 fused_point_feat: 伪原子部分填零
+                n_pseudo_total = int(pseudo_dict["pseudo_counts"].sum().item())
+                pseudo_feat_pad = fused_point_feat.new_zeros((n_pseudo_total, fused_point_feat.shape[-1]))
+                # 交错拼接
+                batch_size = int(batch["box_shape_zyx"].shape[0])
+                real_counts = pseudo_dict["pseudo_counts"].new_tensor(
+                    [si[0] for si in split_info], dtype=torch.long
+                )
+                pseudo_counts = pseudo_dict["pseudo_counts"]
+                chunks = []
+                r_offset, p_offset = 0, 0
+                for i in range(batch_size):
+                    nr = int(real_counts[i].item())
+                    np_ = int(pseudo_counts[i].item())
+                    if nr > 0:
+                        chunks.append(fused_point_feat[r_offset:r_offset + nr])
+                    r_offset += nr
+                    if np_ > 0:
+                        chunks.append(pseudo_feat_pad[p_offset:p_offset + np_])
+                    p_offset += np_
+                fused_point_feat = torch.cat(chunks, dim=0) if chunks else fused_point_feat
+                # 同步扩展 point_state
+                ps = point_output_dict["point_state"]
+                pseudo_coord = pseudo_dict["pseudo_coord_centered_world"].to(device=ps["coord"].device)
+                ps_chunks_coord, ps_chunks_batch = [], []
+                r_off, p_off = 0, 0
+                real_batch_idx = ps["batch"]
+                for i in range(batch_size):
+                    nr = int(real_counts[i].item())
+                    np_ = int(pseudo_counts[i].item())
+                    r_start = r_off
+                    r_off += nr
+                    p_start = p_off
+                    p_off += np_
+                    if nr > 0:
+                        ps_chunks_coord.append(ps["coord"][r_start:r_off])
+                    if np_ > 0:
+                        ps_chunks_coord.append(pseudo_coord[p_start:p_off])
+                    if nr > 0:
+                        ps_chunks_batch.append(ps["batch"][r_start:r_off])
+                    if np_ > 0:
+                        ps_chunks_batch.append(torch.full((np_,), i, dtype=torch.long, device=ps["batch"].device))
+                ps["coord"] = torch.cat(ps_chunks_coord, dim=0) if ps_chunks_coord else ps["coord"]
+                ps["batch"] = torch.cat(ps_chunks_batch, dim=0) if ps_chunks_batch else ps["batch"]
+                new_total_counts = real_counts.to(device=ps["coord"].device) + pseudo_counts.to(device=ps["coord"].device)
+                ps["offset"] = torch.cumsum(new_total_counts, dim=0)
+
+            # atom head 正式 forward
             # torch.Tensor, `(sumN, C_point + 3 + 1)`, atom head 输入 token，由点特征、中心化世界坐标与 atom 有效标记拼接而成。
             atom_tokens = torch.cat(
                 [
@@ -791,6 +907,30 @@ class VolumePointStage1Model(nn.Module):
             )
             # torch.Tensor, `(sumN, C_logit)`，atom 分类 logits。
             atom_logits = self.atom_logit_head(atom_hidden)
+
+            # atom head 阶段结束: 移除伪原子, 只保留真实原子的输出
+            if lifecycle[2] and split_info is not None:
+                real_mask = self.pseudo_atom_gen.build_real_mask(split_info).to(device=atom_logits.device)
+                atom_logits = atom_logits[real_mask]
+                atom_hidden = atom_hidden[real_mask]
+                atom_tokens = atom_tokens[real_mask]
+                fused_point_feat = fused_point_feat[real_mask]
+                batch = self.pseudo_atom_gen.remove(batch, split_info)
+                # 恢复 point_state
+                ps = point_output_dict["point_state"]
+                ps["coord"] = ps["coord"][real_mask]
+                ps["batch"] = ps["batch"][real_mask]
+                real_counts_t = torch.tensor([nr for nr, _ in split_info], dtype=torch.long, device=ps["coord"].device)
+                ps["offset"] = torch.cumsum(real_counts_t, dim=0)
+                if "grid_coord" in ps and ps["grid_coord"] is not None:
+                    ps["grid_coord"] = ps["grid_coord"][real_mask]
+                # point_recycle_out 仅在 lifecycle[1]=True 时被扩展, 此时才需按 real_mask 裁剪
+                if point_output_dict.get("point_recycle_out") is not None:
+                    prc = point_output_dict["point_recycle_out"]
+                    if prc.shape[0] == real_mask.shape[0]:
+                        point_output_dict["point_recycle_out"] = prc[real_mask]
+                split_info = None
+
 
 
 
@@ -828,3 +968,33 @@ class VolumePointStage1Model(nn.Module):
         # int, 本次 forward 实际执行的 recycle 轮数。
         final_output_dict["recycle_passes_used"] = recycle_steps
         return final_output_dict
+
+
+
+    @staticmethod
+    def _update_split_info_after_trim(
+        split_info: list[tuple[int, int]],
+        global_keep_mask: torch.Tensor,
+    ) -> list[tuple[int, int]]:
+        """
+        当 embed head 的 global_keep_mask 裁剪了原子时, 同步更新 split_info。
+
+        输入参数:
+            - split_info: list[tuple[int, int]], 裁剪前每个 BOX 的 (n_real, n_pseudo)
+            - global_keep_mask: torch.Tensor, (sumN+sumM,), bool, True 表示保留
+
+        输出:
+            - new_split_info: list[tuple[int, int]], 裁剪后每个 BOX 的 (n_real, n_pseudo)
+        """
+        # torch.Tensor, (sumN+sumM,), bool, CPU 版本
+        mask_cpu = global_keep_mask.cpu()
+        new_split_info: list[tuple[int, int]] = []
+        offset = 0
+        for nr, np_ in split_info:
+            # bool, 当前 BOX 的 real 部分保留数
+            real_kept = int(mask_cpu[offset : offset + nr].sum().item())
+            # bool, 当前 BOX 的 pseudo 部分保留数
+            pseudo_kept = int(mask_cpu[offset + nr : offset + nr + np_].sum().item())
+            new_split_info.append((real_kept, pseudo_kept))
+            offset += nr + np_
+        return new_split_info

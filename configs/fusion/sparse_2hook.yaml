@@ -1,0 +1,13 @@
+# @package model
+# 融合逻辑配置: Sparse 2-hook — 仅 enc4 + final 两层融合
+backbone:
+  point_fusion_map:
+    point_enc2: null
+    point_enc3: null
+    point_enc4: voxel_c4
+    point_feat: voxel_final
+
+  point_fusion_modes: ["concat_linear", "concat_linear"]
+  sampler_modes: ["trilinear", "trilinear"]
+  fusion_mlp_ratio: 2.0
+  fusion_proj_drop: 0.2

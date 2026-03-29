@@ -1,0 +1,4 @@
+# @package model
+# 伪原子配置: 关闭 (默认)
+backbone:
+  pseudo_atom_cfg: null            # dict|null, null 时不启用伪原子

@@ -1,0 +1,59 @@
+# @package model
+backbone:
+  point_backbone:
+    _target_: src.model.stage1_point_backbone.Stage1PointBackbone
+
+    backend: ptv3                  # str, 点云骨干类型: "ptv3" / "zeros"
+    atom_feature_dim: 49           # int, 原子原始特征维度; 必须与数据集一致
+    point_grid_size: 0.25          # float, 离散化粒度(Å)
+    input_embed_dim: 64            # int, 输入嵌入层输出维度
+    input_embed_hidden_dim: 128    # int, 输入嵌入层隐藏维度
+    out_channels: 64               # int, 点分支最终输出通道数
+    recycle_feature_dim: 64        # int, recycle 特征维度
+
+    serialization_orders: ["z", "z-trans", "hilbert", "hilbert-trans"]
+    shuffle_orders: true           # bool, 训练时是否随机打乱序列化顺序
+
+    stride: [4, 2, 2, 2]          # list[int], 各层下采样步幅
+    enc_depths: [2, 2, 2, 6, 2]   # list[int], 编码器每层 Block 数
+    enc_channels: [64, 64, 128, 256, 512]
+    enc_num_head: [2, 4, 8, 16, 32]
+    enc_patch_size: [256, 128, 96, 72, 64]
+    dec_depths: [2, 2, 2, 2, 0]   # list[int], 解码器每层 Block 数; dec4=0 表示无最低分辨率解码
+    dec_channels: [64, 64, 128, 256, 512]
+    dec_num_head: [4, 4, 8, 16, 32]
+    dec_patch_size: [128, 96, 72, 64, 64]
+
+    embedding_kernel_size: 5       # int, sparseconv 嵌入层卷积核大小
+    embedding_impl: pointconv      # str, 嵌入层实现: "sparseconv" / "pointconv"
+    embedding_receptive_field: 5.0 # float, pointconv 嵌入层感受野(Å)
+    pointconv_embed_max_neighbors: 64
+
+    cpe_impl: pointconv            # str, Block CPE 实现: "sparseconv" / "pointconv"
+    pointconv_block_max_neighbors: 32
+    enc_cpe_kernel_size: [5, 5, 5, 5, 5]
+    dec_cpe_kernel_size: [5, 5, 5, 5, 5]
+    enc_cpe_receptive_field: [2.0, 2.0, 8.0, 12.0, 16.0]
+    dec_cpe_receptive_field: [2.0, 2.0, 8.0, 12.0, 16.0]
+
+    mlp_ratio: 4                   # int, FFN 膨胀倍率
+    qkv_bias: true
+    qk_scale: null
+    attn_drop: 0.2
+    proj_drop: 0.2
+    drop_path: 0.3                 # float, 随机深度 drop 概率
+    pre_norm: true
+    enable_rpe: false
+    enable_flash: false
+    upcast_attention: false
+    upcast_softmax: false
+
+    cls_mode: false
+    pdnorm_bn: false
+    pdnorm_ln: false
+    pdnorm_decouple: true
+    pdnorm_adaptive: false
+    pdnorm_affine: true
+    pdnorm_conditions: ["ScanNet", "S3DIS", "Structured3D"]
+    act_layer_name: "gelu"         # str, 激活函数: "gelu"/"silu"/"relu"/"leakyrelu"
+    ffn_type: "mlp"                # str, FFN 类型: "mlp" / "gated"

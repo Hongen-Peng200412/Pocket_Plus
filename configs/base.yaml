@@ -1,0 +1,26 @@
+# @package model
+# 模型公共基础配置 (不常调的参数)
+
+_target_: src.wrappers.voxel_point_stage1.VoxelPointStage1Wrapper
+
+backbone:
+  _target_: src.model.stage1_model.VolumePointStage1Model
+
+  atom_logit_dim: 1              # int, atom 分类 logit 维度; 二分类=1
+
+  # --- Recycle ---
+  enable_recycling: true         # bool, 是否启用 recycle 循环
+  max_recycles: 3                # int, 最大 recycle 轮数
+  randomize_recycles: true       # bool, 训练时随机选择轮数
+  detach_recycle_states: true    # bool, 跨轮截断梯度
+
+  # --- 统一激活函数 ---
+  act_layer_name: "gelu"         # str, 全局激活函数: "gelu"/"silu"/"relu"/"leakyrelu"
+  ffn_type: "mlp"                # str, PTV3 Block FFN: "mlp" / "gated"
+
+# --- 调度器行为 ---
+interval: "epoch"
+frequency: 1
+monitor_metric: val/atom_pr_auc
+monitor_mode: max
+compile: false
