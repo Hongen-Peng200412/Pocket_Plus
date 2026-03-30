@@ -55,12 +55,10 @@ optimizer:
 # 同样通过 _partial_: true 机制生成 partial 对象
 # → 传递路径与 optimizer 相同，最终在 Wrapper.configure_optimizers() 中调用 partial(optimizer=optimizer) 完成实例化
 # → 调度器的更新行为 (interval/frequency/monitor) 由 cfg.model 中的 interval、frequency、monitor_metric 统一控制
-scheduler:
-  _target_: torch.optim.lr_scheduler.ReduceLROnPlateau
-  _partial_: true
-  mode: max                   # str, "max" 表示指标越大越好 (与 cfg.model.monitor_mode 语义一致, 但此处是 ReduceLROnPlateau 的内部参数)
-  factor: 0.5                 # float, 学习率衰减因子; 触发时 new_lr = old_lr × factor
-  patience: 10                # int, 容忍多少个 epoch 指标不提升后才触发衰减
-  threshold: 0.001            # float, 指标提升的最小幅度 (低于此值视为未提升)
-  threshold_mode: rel         # str, "rel"(相对) 或 "abs"(绝对); threshold 的比较方式
-  min_lr: 1.0e-7              # float, 学习率下限
+scheduler: null
+  # _target_: torch.optim.lr_scheduler.OneCycleLR
+  # _partial_: true
+  # max_lr: 2.0e-5              # float, 与 optimizer的 lr 保持一致
+  # total_steps: 100000         # int, 总步数 (或者在 Wrapper中根据 len(dataloader) 和 max_epochs 推算)
+  # pct_start: 0.05             # float, warmup 阶段占比
+  # anneal_strategy: "cos"      # str, cosine annealing

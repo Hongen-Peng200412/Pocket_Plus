@@ -2,7 +2,8 @@
 # ============================================================
 # A100 双卡单节点训练 (2 GPU, 32 核 CPU)
 # ============================================================
-# 用法: sbatch sbatch/a100/2gpu_1node.sbatch CONFIG_NAME ["HYDRA_OVERRIDES"]
+# 用法 (推荐): sbatch sbatch/a100/2gpu_1node.sbatch "+experiment=exp001_baseline"
+# 用法 (旧配置): sbatch sbatch/a100/2gpu_1node.sbatch CONFIG_NAME ["HYDRA_OVERRIDES"]
 # ============================================================
 #SBATCH -o /home/penghongen/My_Project/feedback_plus/logs/_temp_slurm/%x_%j.out
 #SBATCH -e /home/penghongen/My_Project/feedback_plus/logs/_temp_slurm/%x_%j.err

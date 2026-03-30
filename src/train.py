@@ -55,7 +55,7 @@ def _get_config_name() -> str:
     """
     import argparse
     parser = argparse.ArgumentParser(add_help=False)
-    parser.add_argument("--config", type=str, default="default",
+    parser.add_argument("--config", type=str, default="base",
                         help="Hydra config file name (without .yaml)")
     args, _ = parser.parse_known_args()
     # 从 sys.argv 中移除 --config 及其值，防止 Hydra 解析时报错

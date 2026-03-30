@@ -1,0 +1,5 @@
+# @package _global_
+# 伪原子: 关闭 (基线)
+model:
+  backbone:
+    pseudo_atom_cfg: null          # dict|null, null=不启用伪原子

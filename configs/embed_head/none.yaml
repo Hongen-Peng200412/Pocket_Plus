@@ -1,4 +1,0 @@
-# @package model
-# Embed Head 配置: 关闭 (默认)
-backbone:
-  embed_head: null                 # Module|null, null 时不启用 embed head

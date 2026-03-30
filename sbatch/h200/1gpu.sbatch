@@ -2,7 +2,9 @@
 # ============================================================
 # H200 单卡训练 (1 GPU, 24 核 CPU)
 # ============================================================
-# 用法:
+# 用法 (推荐):
+#   sbatch sbatch/h200/1gpu.sbatch "+experiment=exp001_baseline"
+# 用法 (旧配置):
 #   sbatch sbatch/h200/1gpu.sbatch CONFIG_NAME ["HYDRA_OVERRIDES"]
 # 示例:
 #   sbatch sbatch/h200/1gpu.sbatch sparse_h100

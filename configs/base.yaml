@@ -1,26 +1,55 @@
-# @package model
-# 模型公共基础配置 (不常调的参数)
+# ============================================================
+# Hydra 根配置 (所有实验的基础)
+# ============================================================
+# 此文件是 Hydra 的顶层入口, 即使使用 sbatch 脚本也必须存在
+# 用法:
+#   python Pocket_Plus/src/train.py +experiment=exp001_baseline
+#   sbatch sbatch/h200/1gpu.sbatch "+experiment=exp001_baseline"
+# ============================================================
 
-_target_: src.wrappers.voxel_point_stage1.VoxelPointStage1Wrapper
+defaults:
+  # --- 模型骨架 ---
+  - model: default                             # Wrapper/_target_/recycle 等结构参数
 
-backbone:
-  _target_: src.model.stage1_model.VolumePointStage1Model
+  # --- 模型子模块 (各自独立可替换) ---
+  - model/voxel_backbone: raunet_64            # 体素分支
+  - model/point_backbone: ptv3_dense           # 点云分支
+  - model/fusion: dense_4hook                  # 融合逻辑
+  - model/atom_head: 4layer                    # atom head
+  - model/pseudo_atom: none                    # 伪原子(默认关闭)
+  - model/embed_head: none                     # embed head(默认关闭)
 
-  atom_logit_dim: 1              # int, atom 分类 logit 维度; 二分类=1
+  # --- 损失函数 ---
+  - loss: focal_default                        # Focal Loss
 
-  # --- Recycle ---
-  enable_recycling: true         # bool, 是否启用 recycle 循环
-  max_recycles: 3                # int, 最大 recycle 轮数
-  randomize_recycles: true       # bool, 训练时随机选择轮数
-  detach_recycle_states: true    # bool, 跨轮截断梯度
+  # --- 数据 / 后处理 / 输出 ---
+  - dataset: fused
+  - post_process: none
+  - output: standard
 
-  # --- 统一激活函数 ---
-  act_layer_name: "gelu"         # str, 全局激活函数: "gelu"/"silu"/"relu"/"leakyrelu"
-  ffn_type: "mlp"                # str, PTV3 Block FFN: "mlp" / "gated"
+  # --- 训练超参数 ---
+  - train: default_h100
 
-# --- 调度器行为 ---
-interval: "epoch"
-frequency: 1
-monitor_metric: val/atom_pr_auc
-monitor_mode: max
-compile: false
+  - _self_
+
+
+# --- 全局标签(由 experiment 覆盖) ---
+name: base
+tag: "默认"
+project_name: PV_default
+
+# --- 运行控制 ---
+min_duration: 0
+keep_short_runs: true
+offline: false
+migrate_slurm_logs: false
+
+hydra:
+  output_subdir: null
+  run:
+    dir: .
+  job:
+    chdir: false
+  sweep:
+    dir: multirun/${now:%Y-%m-%d}/${now:%H-%M-%S}
+    subdir: ${hydra.job.override_dirname}

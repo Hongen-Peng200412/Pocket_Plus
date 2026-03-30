@@ -1,17 +1,47 @@
 # @package _global_
-# 实验入口: exp001_baseline — 复现历史最佳(原 dense_h200)
-defaults:
-  - override /model: dense
-  - override /voxel: raunet_64
-  - override /point: ptv3_dense
-  - override /fusion: dense_4hook
-  - override /atom_head: 4layer
-  - override /pseudo_atom: none
-  - override /embed_head: none
-  - override /loss: focal_default
-  - override /dataset: fused
-  - override /train: default_h200
+# ============================================================
+# 实验 001: Baseline — 复现历史最佳 (原 dense_h200)
+# ============================================================
+# 架构:
+#   体素: RAUNet-64 | 点云: PTV3 dec_depths=[2,2,2,2,0](dec4=0 等价旧版 4 层)
+#   融合: 4 层 concat_linear | Atom Head: 4 层 128 维
+#   伪原子: 关闭 | Embed Head: 关闭
+#   损失: BinaryFocalLoss gamma=2.0 alpha=[0.75,0.25]
+#   训练: H200 batch_size=6 accumulate=6 lr=2e-5
+#
+# 用法:
+#   sbatch sbatch/h200/1gpu.sbatch base "+experiment=exp001_baseline"
+# ============================================================
 
+defaults:
+  - override /model/voxel_backbone: raunet_64       # 体素分支: RAUNet-64
+  - override /model/point_backbone: ptv3_dense      # 点云分支: PTV3 Dense
+  - override /model/fusion: dense_4hook             # 融合: 4 层级全融合
+  - override /model/atom_head: 4layer               # Atom Head: 4 层
+  - override /model/pseudo_atom: none               # 伪原子: 关闭
+  - override /model/embed_head: none                # Embed Head: 关闭
+  - override /loss: focal_default                   # 损失: Focal Loss
+  - override /dataset: fused                        # 数据集: fused
+  - override /train: default_h200                   # 训练: H200 参数
+
+# --- 实验标识 ---
 name: exp001_baseline
 tag: "baseline-dense-h200"
 project_name: PV_dense_fused
+
+# --- 模型总体参数 ---
+model:
+  backbone:
+    # --- Logit 输出 ---
+    atom_logit_dim: 1                # int, atom 分类 logit 维度; 二分类=1
+
+    # --- Recycle 机制 ---
+    enable_recycling: true           # bool, 启用 recycle 循环(多轮迭代精化)
+    max_recycles: 3                  # int, 最大 recycle 轮数
+    randomize_recycles: true         # bool, 训练时在 [1, max_recycles] 内随机
+    detach_recycle_states: true      # bool, 跨轮截断梯度
+
+    # --- 统一激活函数 (全局源头, 子模块通过插值引用) ---
+    act_layer_name: "gelu"           # str, "gelu"/"silu"/"relu"/"leakyrelu"
+    ffn_type: "mlp"                  # str, PTV3 Block FFN: "mlp" / "gated"
+    atom_head_ffn_type: "none"       # str, atom head 可选 FFN: "mlp" / "gated" / "none"

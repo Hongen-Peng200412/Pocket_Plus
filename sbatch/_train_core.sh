@@ -10,11 +10,14 @@
 #   $4 = HYDRA_OVERRIDES (可选), Hydra 覆盖参数, 空格分隔
 # ============================================================
 
-CONFIG_NAME="${1:?ERROR: 必须提供 CONFIG_NAME 作为第一个参数}"
-NNODES="${2:?ERROR: 必须提供 NNODES 作为第二个参数}"
-DEVICES="${3:?ERROR: 必须提供 DEVICES 作为第三个参数}"
-HYDRA_OVERRIDES="${4:-}"
-
+# 智能参数解析: 若 $1 以 '+' 开头, 视为 HYDRA_OVERRIDES, CONFIG_NAME 默认 "base"
+if [[ "${1:-}" == +* ]]; then
+    CONFIG_NAME="base"
+    HYDRA_OVERRIDES="${1:-}"
+else
+    CONFIG_NAME="${1:-base}"
+    HYDRA_OVERRIDES="${4:-}"
+fi
 LOCK_PRE="/home/penghongen/pre_lock_${SLURM_JOB_ID}"
 # touch "${LOCK_PRE}"
 echo "[Status] pre_Lock created: ${LOCK_PRE}"

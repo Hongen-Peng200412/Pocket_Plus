@@ -1,0 +1,23 @@
+# ============================================================
+# 模型骨架配置 (结构性参数)
+# ============================================================
+# 此文件由 base.yaml 的 defaults 中 "- model: default" 引用
+# 即使使用 sbatch 脚本也必须存在, 它为 Hydra 提供模型的结构参数
+# 所有可调的子模块参数由 config group 文件提供, 不在此处定义
+# ============================================================
+
+name: default
+
+# _target_: str, Wrapper 类; Hydra 据此实例化 Wrapper
+_target_: src.wrappers.voxel_point_stage1.VoxelPointStage1Wrapper
+
+backbone:
+  # _target_: str, 骨干网络类
+  _target_: src.model.stage1_model.VolumePointStage1Model
+
+# --- 调度器行为 ---  # TODO: 调度器已改为 warmup+cosine，请确保 train configs 中的 scheduler 配置对应支持
+interval: "step"                   # str, 调度器更新间隔
+frequency: 1                       # int, 更新频率
+monitor_metric: val/atom_pr_auc    # str, 监控指标
+monitor_mode: max                  # str, "max" / "min"
+compile: false                     # bool, torch.compile

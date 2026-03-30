@@ -1,0 +1,15 @@
+# @package _global_
+# 融合逻辑变体: Dense 4-hook (基线) — 4 层级全融合
+model:
+  backbone:
+    point_fusion_map:
+      point_enc2: voxel_ds_2       # 编码器第 2 层
+      point_enc3: voxel_ds_3       # 编码器第 3 层
+      point_enc4: voxel_c4         # 编码器第 4 层
+      point_feat: voxel_final      # 最终输出
+    point_fusion_modes: ["concat_linear", "concat_linear", "concat_linear", "concat_linear"]
+                                   # list[str], "concat_linear"=拼接后过线性层
+    sampler_modes: ["trilinear", "trilinear", "trilinear", "trilinear"]
+                                   # list[str], "trilinear"=三线性插值采样
+    fusion_mlp_ratio: 2.0         # float, 融合 MLP 膨胀倍率
+    fusion_proj_drop: 0.2         # float, 融合层 dropout
