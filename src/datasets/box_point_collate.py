@@ -57,6 +57,7 @@ def box_point_collate(batch: list[dict[str, Any]]) -> dict[str, Any]:
                - "box_origin_world": torch, (B, 3),          float32, 各样本 BOX 在世界坐标系下的基准原点 (x, y, z)
                - "voxel_size_world": torch, (B, 3),          float32, 各样本 BOX 每个体素在世界坐标系下的物理空间大小 (x, y, z)
                - "box_shape_zyx":    torch, (B, 3),          int64,   各样本 BOX 的网格形状，顺序为 (Z, Y, X) 对应 (depth, height, width)
+
             2. atom 部分 (变长序列展平):
                - "atom_coord_world":          torch, (sumN, 3), float32, 展平后的全部点云在世界坐标系下的坐标 (x, y, z)
                - "atom_coord_local_voxel":    torch, (sumN, 3), float32, 展平后的全部点云的体素级坐标(距离 BOX 左下角原点多少个 voxel)
@@ -65,10 +66,12 @@ def box_point_collate(batch: list[dict[str, Any]]) -> dict[str, Any]:
                - "atom_label":                torch, (sumN,),   int64,   展平后的全部原子的分类真值标签
                - "atom_is_in_core_box":       torch, (sumN,),   bool,    标记每个原子是否处于各自的 BOX 内(另一部分是buffer扩展区域)
                - "atom_valid_mask":           torch, (sumN,),   bool,    标记每个原子在训练期间是否参与损失监督
+
             3. 索引辅助字段:
                - "atom_batch_index": torch, (sumN,), long,  指明展平的点云序列中，每个点属于当前 batch 内哪个样本 (0 ~ B-1)
                - "atom_counts":      torch, (B,),    long,  当前 batch 内每个样本分别拥有多少个原子
                - "atom_offsets":     torch, (B,),    long,  当前 batch 内每个样本的原子组在总数 (sumN) 的展平序列中的结束偏移位置, 第 i 个样本区间为 [start_i, atom_offsets[i]), 其中 start_i = 0 if i == 0 else atom_offsets[i-1]
+
             4. 元信息字段:
                - 包括 sample_name / pdb_id / class_name / instance_id 等, 保留为长度为 B 的 Python list, 供调试和输出用
 

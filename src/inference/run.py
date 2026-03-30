@@ -1,23 +1,14 @@
 """
-run.py - 推断与评估的统一入口
+run.py — 推断与评估的统一入口 (点云推断版): # see me: 只要不调 stride, 那么保存的的BOX级别的.npz总可以复用
 
 通过 Hydra 管理所有配置参数, 串联 parse_input → get_pred → postprocess → evaluator 四个模块。
 
-支持的运行模式 (mode):
-    - "single":       单样本推断 + 可选评估 (已处理的 BOX .npz 文件)
-    - "batch":        批量推断 + 可选评估 + Excel 汇总
-    - "param_search":     使用BOX, 进行网格调参搜索 + Excel 对比
-
-    - "raw_single":       单样本原始文件推断 (直接读取 .cif + .map, 无需预处理)
-    - "raw_batch":        批量原始文件推断 + 可选评估 + Excel 汇总
-    - "raw_param_search": 使用原始数据, 进行网格调参搜索 + Excel 对比
-
-支持两种评估场景:
-    场景A : cif_path = 真实结构，cif_gt_path = None, 模型输入特征和 GT 标签均来自同一 .cif 文件
+支持两种评估场景————只有在 eval_gt=True 时才试图提取 cif_gt_path:
+    场景A : cif_path = 真实结构，cif_gt_path = None, 那么后者会回退到 cif_path，即模型输入特征和 GT 标签均来自同一 .cif 文件
     场景B (分离): cif_path = 建模结构（AF3/CryoAtom 等），cif_gt_path = 真实实验解析结构. 模型输入特征来自 cif_path，GT 标签来自 cif_gt_path
 
 启动命令示例:
-    # 单样本推断 (有 GT 评估)
+    # 单样本推断 (可以选择后续再评估也可以不评估)
     python src/inference/run.py --config=infer \\
         +class_folder="small_molecule" +sample_name="9f3f_0_0_0_0_C" \\
         +ckpt_path="feedback/logs/.../last.ckpt"
@@ -29,16 +20,22 @@ run.py - 推断与评估的统一入口
     # 网格调参搜索
     python src/inference/run.py --config=search_best_param \\
         mode=param_search +ckpt_path="..."
+
+支持的运行模式 (mode):
+    - "raw_single":       单样本原始文件推断 (直接读取 .cif + .map, 全模型点云推断)
+    - "raw_batch":        批量原始文件推断 + 可选评估 + Excel 汇总
+    - "raw_param_search": 使用原始数据, 进行网格调参搜索 + Excel 对比
+
+    - "legacy_*":     旧版体素推断入口 (从 legacy/ 加载)
+
+旧版体素推断逻辑已迁移至 src/inference/legacy/run_voxel.py
 """
 
 import os
 import sys
 import argparse
-import itertools 
 import numpy as np
 import torch
-import openpyxl
-from openpyxl.styles import PatternFill, Font
 import hydra
 from omegaconf import DictConfig, OmegaConf
 import rootutils
@@ -51,6 +48,27 @@ if str(POCKET_ROOT) in sys.path:
 sys.path.insert(0, str(POCKET_ROOT))
 
 
+# --- 导入推断模块 ---
+from src.inference.parse_input import (
+    load_from_raw_cif, load_gt_from_structure,
+    load_atom_features_from_raw, split_volume_to_boxes, prepare_batched_boxes,
+)
+from src.inference.get_pred import load_model, run_point_inference, move_batch_to_device
+from src.inference.postprocess import (
+    init_box_spatial_weights, merge_box_atom_results, point_semantic_segment,
+)
+from src.inference.evaluator import semantic_evaluate, print_metrics
+from src.inference.utils.utils import (
+    write_batch_excel,
+    write_param_search_excel,
+    generate_param_grid,
+    build_infer_vis_bundle,
+)
+
+
+# =============================================================================
+# 可视化安全封装 (复用旧版逻辑)
+# =============================================================================
 def _build_vis_bundle_safe(
     cfg_dict: dict,
     output_root: str,   # 没用; （可视化根目录由 vis_output_root 显式指定）
@@ -62,10 +80,11 @@ def _build_vis_bundle_safe(
     filter_preset: str,
     class_mapping: list,
     select_first_model: bool,
-    pdb_id: str = None,
+    pdb_id: str,
 ) -> dict:
     """
-    安全封装可视化生成流程：统一处理开关、输出路径与异常捕获。    
+    安全封装可视化生成流程：统一处理开关、输出路径与异常捕获。
+
     输入参数:
         - cfg_dict: dict, 当前 Hydra 配置的扁平字典
         - output_root: str, 推断主输出目录（可视化根目录由 vis_output_root 显式指定）
@@ -78,6 +97,7 @@ def _build_vis_bundle_safe(
         - class_mapping: list | None, 标签类别映射
         - select_first_model: bool | None, 是否仅使用第一个 model
         - pdb_id: str | None, 样本 ID（为空则自动从路径推断）
+
     输出:
         - result: dict | None, build_infer_vis_bundle 的返回汇总；失败或关闭时为 None
     """
@@ -104,18 +124,15 @@ def _build_vis_bundle_safe(
         return None
 
     try:
-        _pred_atom_coords = pred_atom_coords
-        _class_mapping = class_mapping
-
         result = build_infer_vis_bundle(
             output_root=vis_output_root,
             cif_path=cif_path,
             map_path=map_path,
             cif_gt_path=cif_gt_path,
-            pred_atom_coords=_pred_atom_coords,
+            pred_atom_coords=pred_atom_coords,
             prob_threshold=prob_threshold,
             filter_preset=filter_preset,
-            class_mapping=_class_mapping,
+            class_mapping=class_mapping,
             pdb_id=pdb_id,
             select_first_model=select_first_model,
         )
@@ -127,6 +144,11 @@ def _build_vis_bundle_safe(
         return None
 
 
+
+
+# =============================================================================
+# 辅助函数
+# =============================================================================
 def _get_config_name() -> str:
     """
     从命令行参数中解析 --config 参数，用于指定 Hydra 配置文件名。
@@ -151,27 +173,56 @@ def _get_config_name() -> str:
     sys.argv = cleaned
     return args.config
 
-
 _CONFIG_NAME = _get_config_name()
-# 导入推断模块
-from src.inference.parse_input import (
-    load_from_raw_cif, load_gt_from_structure,
-)
-from src.inference.get_pred import load_model, run_inference
-from src.inference.postprocess import assign_prob_to_atoms, point_semantic_segment
-from src.inference.evaluator import semantic_evaluate, print_metrics
-from src.inference.utils.utils import (
-    write_batch_excel,
-    write_param_search_excel,
-    generate_param_grid,
-    build_infer_vis_bundle,
-)
 
-from src.inference.utils.pipline_for_box import (
-    run_single_mode,
-    run_batch_mode,
-    run_param_search_mode,
-)
+
+def _unpack_batch_results(batch_dict: dict, atom_logits: torch.Tensor) -> list:
+    """
+    将一个 batch 的模型输出拆分回逐 BOX 的结果列表。
+
+    输入参数:
+        - batch_dict: dict, box_point_collate 产出的 batch dict
+            含 _box_meta, atom_counts, atom_is_in_core_box, atom_coord_local_voxel, box_shape_zyx
+        - atom_logits: torch.Tensor, (sumN, C), 模型输出的原始 logits
+
+    输出:
+        - box_results: list[dict], 每个 dict 含:
+            - global_atom_indices, atom_logits, atom_is_in_core, atom_coord_local_voxel, box_shape_zyx
+    """
+    # list[dict], 每个 BOX 的推断专用元信息
+    box_meta_list = batch_dict["_box_meta"]
+    # torch.Tensor, (B,), long, 每个 BOX 的原子数
+    atom_counts = batch_dict["atom_counts"]
+    # torch.Tensor, (sumN,), bool
+    atom_is_in_core = batch_dict["atom_is_in_core_box"].cpu().numpy()
+    # torch.Tensor, (sumN, 3), float32
+    atom_coord_local = batch_dict["atom_coord_local_voxel"].cpu().numpy()
+    # torch.Tensor, (B, 3), int64
+    box_shapes = batch_dict["box_shape_zyx"].cpu().numpy()
+
+    # np.ndarray, (sumN, C=1) 或 (sumN,), float32
+    logits_np = atom_logits.cpu().numpy()
+    if logits_np.ndim == 2:
+        if logits_np.shape[1] == 1:
+            logits_np = logits_np[:, 0]
+        else:
+            raise ValueError(f"atom_logits has unexpected shape: {logits_np.shape}")
+
+    box_results = []
+    offset = 0
+    for i, count in enumerate(atom_counts.tolist()):
+        count = int(count)
+        box_results.append({
+            "global_atom_indices": box_meta_list[i]["global_atom_indices"],
+            "atom_logits": logits_np[offset:offset + count].copy(),
+            "atom_is_in_core": atom_is_in_core[offset:offset + count].copy(),
+            "atom_coord_local_voxel": atom_coord_local[offset:offset + count].copy(),
+            "box_shape_zyx": box_shapes[i].copy(),
+        })
+        offset += count
+
+    return box_results
+
 
 
 
@@ -182,94 +233,83 @@ from src.inference.utils.pipline_for_box import (
 
 
 # =============================================================================
-# 二. 对于原始样本
+# 点云推断核心管线
 # =============================================================================
-# 原始样本推断（直接读 .cif + .map）
-def run_raw_pipeline(
+def run_raw_point_pipeline(
     model: torch.nn.Module,
     device: torch.device,
     cif_path: str,
     map_path: str,
-    cif_gt_path: str = None,  # 可选，真实结构路径（仅用于 GT 标签提取评估）；None 则回退到 cif_path
+    cif_gt_path: str,           # 如果为 None 且要求评估, 则回退到 cif_path
 
-    target_voxel_size: float = None,  # 0.7
-    compute_density: bool = None,     # True
-    select_first_model: bool = None,  # True
-    eval_gt: bool = None,             # False
-    filter_preset: str = None,        # "five_class"
-    class_mapping: list = None,       # half模式下为 [0,1,0,0,1]
-    threshold: float = None,          # 0.5, 对点概率截断的阈值
-    dist_threshold: float = None,     # 3.0, hit的容忍阈值
+    target_voxel_size: float,   # 建议值 1.0
+    compute_density: bool,
+    select_first_model: bool,
+    eval_gt: bool,
+    filter_preset: str,         # None 表示不筛选
+    class_mapping: list,        # None 表示不做映射
+    threshold: float,           # 建议值 0.5
+    dist_threshold: float,      # 建议值 3.0
 
-    point_assign_radius: float = None,        # 1.5
-    point_assign_sigma: float = None,         # 1.0（ #NOTE？）
-    point_cat_weight_home: float = None,      # 0.5
-    point_cat_weight_has_atom: float = None,  # 0.35
-    point_cat_weight_no_atom: float = None,   # 0.15
+    core_decay_mode: str,       # "hard" / "linear" / "none", 建议值 "linear"
+    core_offset: int,           # 建议值 2
+    atom_buffer_radius: float,  # 建议值 4.0
+    valid_crop_margin: int,     # 建议值 0
+    box_spatial_weight_sigma_ratio: float,  # 建议值 0.5
 
-    stride: int = None,               # 36
-    windows_size: int = None,         # 72
-    batch_size: int = None,           # 3
-    core_offset: int = None,          # 12
-    output_dir: str = None,
-    show_progress: bool = True,
-    error_dir: str = None,
+    stride: int,                # 建议值 36
+    windows_size: int,          # 建议值 80
+    batch_size: int,            # 建议值 3
+    output_dir: str,            # None 则不保存
+    show_progress: bool,
+    error_dir: str,             # None 则不记录
 ) -> dict:
     """
-    单样本原始文件推断流水线: load_from_raw_cif → get_pred → postprocess → (可选)evaluator。
-    与 run_single_pipeline() 逻辑完全对齐，不同之处在于数据来源是原始 .cif + .map。
+    单样本点云推断完整流水线。
 
-    支持两种评估场景:
-      场景A : cif_path = 真实结构，cif_gt_path = None, 模型输入特征和 GT 标签均来自同一 .cif 文件
-      场景B (分离): cif_path = 建模结构（AF3/CryoAtom 等），cif_gt_path = 真实实验解析结构. 模型输入特征来自 cif_path，GT 标签来自 cif_gt_path
+    流程: load_from_raw_cif → split_volume_to_boxes → 逐 batch run_point_inference
+          → merge_box_atom_results → point_semantic_segment  →  (可选) evaluator
 
-    Args:
-        - model:               nn.Module,    已加载的 backbone
-        - device:              torch.device, 推断设备
-        - cif_path:            str,          原始 .cif / .pdb 文件路径（用于提取模型输入特征）
-        - map_path:            str,          对应的 EMDB 密度图路径 (.map / .mrc)
-        - cif_gt_path:         str | None,   可选，真实结构文件路径（仅用于决定合格的配体）. 若为 None，则 GT 提取时回退使用 cif_path（即场景A）。
+    输入参数:
+        - model: nn.Module, eval 模式的 VolumePointStage1Model
+        - device: torch.device, 推断设备
+        - cif_path: str, 原始结构文件路径 (.cif/.pdb)
+        - map_path: str, 对应的 EMDB 密度图路径
+        - cif_gt_path: str | None, 真实结构路径（仅用于 GT 标签提取评估）
 
-        - target_voxel_size:   float,        重采样目标体素大小 (Å)
-        - compute_density:     bool,         是否计算原子局部密度特征
-        - select_first_model:  bool,         多模型 CIF 时是否仅取第一个
-        - eval_gt:             bool,         是否提取 GT 标签进行评估
-        - filter_preset:       str,          配体筛选预设名 (用于 GT 提取)
-        - class_mapping:       list[int]|None, 标签类别映射表
-        - threshold:           float,        语义分割阈值
-        - dist_threshold:      float,        点云评估(hit)距离阈值 (Å)
+        - target_voxel_size: float, 重采样目标体素大小 (Å), 建议值 1.0
+        - compute_density: bool, 是否计算原子局部密度特征
+        - select_first_model: bool, 多模型 CIF 时是否仅取第一个
+        - eval_gt: bool, 是否提取 GT 标签进行评估
+        - filter_preset: str, 配体筛选预设名 (用于 GT 提取)
+        - class_mapping: list[int] | None, 标签类别映射表
+        - threshold: float, 语义分割阈值, 建议值 0.5
+        - dist_threshold: float, 点云评估距离阈值 (Å), 建议值 3.0
 
-        
-        - point_assign_radius: float,        为原子赋概率时的搜索半径 (Å)
-        - point_assign_sigma:  float,        为原子赋概率时的高斯衰减核sigma (Å)
-        - point_cat_weight_home:     float,  所在体素类别权重
-        - point_cat_weight_has_atom: float,  含原子体素类别权重
-        - point_cat_weight_no_atom:  float,  不含原子体素类别权重
-        
+        - core_decay_mode: str, 核心区衰减方式 ("hard" / "linear" / "none")
+        - core_offset: int, 裁边 voxel 数, 建议值 10(这个参数是与 core_decay_mode 配合使用的)
+        - atom_buffer_radius: float, 原子 buffer 半径 (Å), 建议与训练对齐
+        - valid_crop_margin: int, 监督区域裁边量(注意这是原始训练数据的一部分), 建议与训练对齐
+        - box_spatial_weight_sigma_ratio: float, 空间权重高斯核 sigma 与密度图半径的比值, 建议值 0.5
 
-        - stride:              int,          滑窗步幅
-        - windows_size:        int,          滑窗边长
-        - batch_size:          int,          推断 batch size
-        - core_offset:         int,          丢弃每个 block 边缘的体素数
-        - output_dir:          str|None,     输出目录(保存 pred_prob.npz, pred_atom_coords.npz, 可选的 gt_points.npz); None 则不保存
-        - show_progress:       bool,         是否显示进度条
-        - error_dir:           str|None,     错误日志目录
+        - stride: int, 滑窗步幅, 建议 40
+        - windows_size: int, 滑窗边长, 建议与训练对齐(80)
+        - batch_size: int, 推断 batch size, 建议值 2
+        - output_dir: str | None, 输出目录
+        - show_progress: bool, 是否显示进度条
+        - error_dir: str | None, 错误日志目录
 
-    Returns:
-        - result: dict, 与 run_single_pipeline() 返回格式相同，包含:
-            - "sample_name":   str
-            - "class_folder":  str, 强制指定为 "raw"
-            - "pred_prob":     np.ndarray, (D,H,W), 概率图
-            - "pred_atom_coords": np.ndarray, (N_pred,3), 预测为正类的原子坐标
-            - "atom_coords":   np.ndarray, (N_atom,3), 所有原子坐标
-            - "hardmask":      np.ndarray, (D,H,W), 硬掩膜
-            - "origin":        np.ndarray, (3,), origin
-            - "voxel_size":    np.ndarray, (3,), voxel_size
-            - "metrics":       dict | None, 评估指标（eval_gt=True 且结构中有配体时）
-            - "error":         str | None, 错误信息
+    输出:
+        - result: dict, 包含:
+            - "sample_name": str
+            - "atom_probs": np.ndarray, (N_atom,), 每个原子的概率
+            - "pred_atom_coords": np.ndarray, (N_pred, 3), 预测正类点云
+            - "atom_coords": np.ndarray, (N_atom, 3), 全部原子坐标
+            - "metrics": dict | None, 评估指标（eval_gt=True 且结构中有配体时）
+            - "error": str | None, 错误信息
+            - "all_box_results": list[dict], 缓存用的逐 BOX logits
     """
-    from pathlib import Path as _Path
-    sample_name = _Path(cif_path).stem
+    sample_name = Path(cif_path).stem
     result = {
         "sample_name":  sample_name,
         "class_folder": "raw",
@@ -278,7 +318,7 @@ def run_raw_pipeline(
     }
 
     try:
-        # ---- 1. 从原始文件提取特征 ----
+        # ---- 1. 加载原始数据 ----
         data = load_from_raw_cif(
             cif_path=cif_path,
             map_path=map_path,
@@ -288,15 +328,23 @@ def run_raw_pipeline(
             error_dir=error_dir,
         )
         # np.ndarray, float32, (C, D, H, W)
-        grid     = data["grid"]
-        # np.ndarray, int64, (D, H, W), 1=有原子 0=无原子
-        hardmask = data["hardmask"]
-        origin   = data["origin"]       # np.ndarray, 形状 (3,), 世界坐标原点
-        voxel_sz = data["voxel_size"]   # np.ndarray, 形状 (3,), 体素大小
-        atom_coords = data["atom_coords"] # np.ndarray, 形状 (N_atom, 3), 原子坐标
+        grid = data["grid"]
+        atom_coords = data["atom_coords"]   # np.ndarray, (N_atom, 3)
+        origin = data["origin"]             # np.ndarray, (3,)
+        voxel_sz = data["voxel_size"]       # np.ndarray, (3,)
+        emdb_channels = data["emdb_channels"]  # int
 
+        # ---- 2. 加载原子特征 ----
+        atom_feat = load_atom_features_from_raw(
+            cif_path=cif_path,
+            compute_density=compute_density,
+            select_first_model=select_first_model,
+            error_dir=error_dir,
+        )
+        if show_progress:
+            print(f"  [run] 原子特征: {atom_feat.shape}, 体素网格: {grid.shape}")
 
-        # ---- 2. 可选: 提取 GT 标签 ----
+        # ---- 3. 可选: 提取 GT 标签————只有在 eval_gt 时才试图提取 ----
         gt_data = None
         if eval_gt:
             # str, 场景A(无 cif_gt_path)时回退到 cif_path、场景B(有 cif_gt_path)时使用真实结构
@@ -310,51 +358,87 @@ def run_raw_pipeline(
                 class_mapping=class_mapping,
                 select_first_model=select_first_model,
                 error_dir=error_dir,
-            ) 
+            )
 
-
-        # ---- 3. 滑窗推断 ----
-        # np.ndarray, float32, (D, H, W)
-        pred_prob = run_inference(
-            model=model, device=device, show_progress=show_progress, grid=grid,
+        # ---- 4. 切分 BOX ----
+        box_dicts = split_volume_to_boxes(
+            grid=grid,
+            atom_coords_world=atom_coords,
+            atom_feat=atom_feat,
+            origin=origin,
+            voxel_size=voxel_sz,
+            window_size=windows_size,
             stride=stride,
-            windows_size=windows_size,
-            batch_size=batch_size,
+            atom_buffer_radius=atom_buffer_radius,
+            valid_crop_margin=valid_crop_margin,
+            emdb_channels=emdb_channels,
+        )
+
+        # ---- 5. 初始化 BOX 空间权重 (以各 BOX 自身中心为原点的高斯衰减) ----
+        box_spatial_weights = init_box_spatial_weights(
+            box_dicts=box_dicts,
+            voxel_size=voxel_sz,
+            window_size=windows_size,
+            sigma_ratio=box_spatial_weight_sigma_ratio,
+        )
+
+        # ---- 6. 分 batch 推断 ----
+        batched = prepare_batched_boxes(box_dicts, batch_size, device)
+        all_box_results = []
+        box_weight_idx = 0
+
+        import tqdm as _tqdm
+        total_boxes = len(box_dicts)
+        pbar = _tqdm.tqdm(
+            desc="  点云推断",
+            total=total_boxes,
+            file=sys.stdout,
+            position=0,
+            leave=False,
+            disable=not show_progress,
+        )
+
+        for batch_dict in batched:
+            atom_logits = run_point_inference(model, device, batch_dict)
+            batch_results = _unpack_batch_results(batch_dict, atom_logits)
+
+            # 附加空间权重
+            for br in batch_results:
+                br["box_spatial_weight"] = box_spatial_weights[box_weight_idx]
+                br["box_confidence_weight"] = 1.0   # 预留: 后续可基于 logit 分散度动态设定
+                box_weight_idx += 1
+
+            all_box_results.extend(batch_results)
+            pbar.update(len(batch_results))
+
+        pbar.close()
+
+        # ---- 7. 聚合 ----
+        atom_probs = merge_box_atom_results(
+            box_results=all_box_results,
+            total_atom_count=len(atom_coords),
+            core_decay_mode=core_decay_mode,
             core_offset=core_offset,
         )
 
-
-        # ---- 4. 后处理 ----
-        # 4a. 体素概率 → 原子概率
-        atom_probs = assign_prob_to_atoms(
-            pred_prob=pred_prob,
-            atom_coords=atom_coords,
-            origin=origin,
-            voxel_size=voxel_sz,
-            hardmask=hardmask,
-            radius=point_assign_radius,
-            sigma=point_assign_sigma,
-            cat_weight_home=point_cat_weight_home,
-            cat_weight_has_atom=point_cat_weight_has_atom,
-            cat_weight_no_atom=point_cat_weight_no_atom,
-        )
-
-        # 4b. 原子概率 → 语义分割 (二值化)
+        # ---- 8. 二值化 ----
         pred_atom_coords = point_semantic_segment(
             atom_probs=atom_probs,
             atom_coords=atom_coords,
             threshold=threshold,
         )
-        
-        result["pred_prob"]  = pred_prob
+
+        result["atom_probs"] = atom_probs
         result["pred_atom_coords"] = pred_atom_coords
         result["atom_coords"] = atom_coords
-        result["hardmask"]   = hardmask
-        result["origin"]     = origin
+        result["origin"] = origin
         result["voxel_size"] = voxel_sz
+        result["all_box_results"] = all_box_results
 
+        if show_progress:
+            print(f"  [run] 预测正类原子: {pred_atom_coords.shape[0]} / {len(atom_coords)}")
 
-        # ---- 5. 评估 (可选) ----
+        # ---- 9. 评估 (可选) ----
         if gt_data is not None:
             metrics = semantic_evaluate(
                 pred_atom_coords=pred_atom_coords,
@@ -362,35 +446,104 @@ def run_raw_pipeline(
                 dist_threshold=dist_threshold,
             )
             result["metrics"] = metrics
+            if show_progress:
+                print_metrics(metrics, prefix="  ")
 
-
-        # ---- 6. 保存结果(可视化逻辑内置于下面的函数) ----
+        # ---- 10. 保存结果 ----
         if output_dir is not None:
             os.makedirs(output_dir, exist_ok=True)
+            # 保存原子概率
             np.savez_compressed(
-                os.path.join(output_dir, "pred_prob.npz"),
-                pred_prob=pred_prob,
+                os.path.join(output_dir, "atom_probs.npz"),
+                atom_probs=atom_probs,
+                atom_coords=atom_coords,
             )
+            # 保存预测点云
             np.savez_compressed(
                 os.path.join(output_dir, "pred_atom_coords.npz"),
                 pred_atom_coords=pred_atom_coords,
             )
-            # 保存 GT 点云（若有）
+            # 保存逐 BOX logits (用于参数搜索缓存)
+            _save_box_logits_cache(
+                all_box_results=all_box_results,
+                save_path=os.path.join(output_dir, "box_logits_cache.npz"),
+                atom_coords=atom_coords,
+            )
             if gt_data is not None:
                 np.savez_compressed(
                     os.path.join(output_dir, "gt_points.npz"),
                     atom_gt=gt_data["atom_gt"],
                     atom_coords=gt_data["atom_coords"],
                 )
+            if show_progress:
+                print(f"  [run] 结果已保存: {output_dir}")
 
     except Exception as e:
         result["error"] = str(e)
         import traceback
         print(f"  ❌ 推断失败: {e}")
         traceback.print_exc()
+
     return result
 
 
+def _save_box_logits_cache(
+    all_box_results: list,
+    save_path: str,
+    atom_coords: np.ndarray,
+) -> None:
+    """
+    将逐 BOX 的 logits 和元信息保存为 .npz 文件, 用于参数搜索时跳过模型推断。
+
+    输入参数:
+        - all_box_results: list[dict], 每个 BOX 的结果
+        - save_path: str, 保存路径
+        - atom_coords: np.ndarray, (N_atom, 3), 全部原子坐标
+    """
+    # 将所有 BOX 信息打包为数组列表
+    n_boxes = len(all_box_results)
+    save_dict = {
+        "n_boxes": np.array(n_boxes, dtype=np.int64),
+        "atom_coords": atom_coords,
+    }
+    for i, br in enumerate(all_box_results):
+        save_dict[f"box_{i}_global_indices"] = br["global_atom_indices"]
+        save_dict[f"box_{i}_logits"] = br["atom_logits"]
+        save_dict[f"box_{i}_is_in_core"] = br["atom_is_in_core"]
+        save_dict[f"box_{i}_coord_local"] = br["atom_coord_local_voxel"]
+        save_dict[f"box_{i}_shape_zyx"] = br["box_shape_zyx"]
+        save_dict[f"box_{i}_spatial_weight"] = np.asarray(br.get("box_spatial_weight", np.ones(0)), dtype=np.float32)
+        save_dict[f"box_{i}_confidence_weight"] = np.array(float(br.get("box_confidence_weight", 1.0)), dtype=np.float32)
+
+    np.savez_compressed(save_path, **save_dict)
+
+
+def _load_box_logits_cache(cache_path: str) -> tuple:
+    """
+    从 .npz 缓存加载逐 BOX logits。
+
+    输入参数:
+        - cache_path: str, .npz 文件路径
+
+    输出:
+        - all_box_results: list[dict]
+        - atom_coords: np.ndarray, (N_atom, 3)
+    """
+    with np.load(cache_path, allow_pickle=False) as cache:
+        n_boxes = int(cache["n_boxes"])
+        atom_coords = cache["atom_coords"]
+        all_box_results = []
+        for i in range(n_boxes):
+            all_box_results.append({
+                "global_atom_indices": cache[f"box_{i}_global_indices"],
+                "atom_logits": cache[f"box_{i}_logits"],
+                "atom_is_in_core": cache[f"box_{i}_is_in_core"],
+                "atom_coord_local_voxel": cache[f"box_{i}_coord_local"],
+                "box_shape_zyx": cache[f"box_{i}_shape_zyx"],
+                "box_spatial_weight": cache[f"box_{i}_spatial_weight"],
+                "box_confidence_weight": float(cache[f"box_{i}_confidence_weight"]),
+            })
+    return all_box_results, atom_coords
 
 
 
@@ -400,22 +553,374 @@ def run_raw_pipeline(
 
 
 
+# =============================================================================
+# mode 处理函数
+# =============================================================================
+def _run_raw_single_mode(cfg_dict, model, device, output_root):
+    """mode=raw_single: 单样本原始文件推断 + 可选 GT 评估"""
+    cif_path = cfg_dict.get("cif_path")
+    map_path = cfg_dict.get("map_path")
+    if not cif_path or not map_path:
+        raise ValueError(
+            "[错误] mode=raw_single 需要指定 cif_path 和 map_path。\n"
+            "用法: +cif_path=\"xxx.cif\" +map_path=\"xxx.map\""
+        )
+
+    cif_gt_path = cfg_dict.get("cif_gt_path")
+    sample_output_dir = os.path.join(output_root, Path(cif_path).stem) if output_root else None
+
+    result = run_raw_point_pipeline(
+        model=model, device=device,
+        cif_path=cif_path, map_path=map_path, cif_gt_path=cif_gt_path,
+        target_voxel_size=cfg_dict["target_voxel_size"],
+        compute_density=cfg_dict["compute_density"],
+        select_first_model=cfg_dict["select_first_model"],
+        eval_gt=cfg_dict["eval_gt"],
+        filter_preset=cfg_dict.get("filter_preset"),
+        class_mapping=cfg_dict.get("class_mapping"),
+        threshold=cfg_dict["threshold"],
+        dist_threshold=cfg_dict["dist_threshold"],
+        core_decay_mode=cfg_dict["core_decay_mode"],
+        core_offset=cfg_dict["core_offset"],
+        atom_buffer_radius=cfg_dict["atom_buffer_radius"],
+        valid_crop_margin=cfg_dict["valid_crop_margin"],
+        box_spatial_weight_sigma_ratio=cfg_dict["box_spatial_weight_sigma_ratio"],
+        stride=cfg_dict["stride"],
+        windows_size=cfg_dict["windows_size"],
+        batch_size=cfg_dict["batch_size"],
+        output_dir=sample_output_dir,
+        show_progress=True,
+        error_dir=cfg_dict.get("error_dir"),
+    )
+
+    # 可视化
+    if result.get("error") is None:
+        _build_vis_bundle_safe(
+            cfg_dict=cfg_dict,
+            output_root=output_root,
+            cif_path=cif_path,
+            map_path=map_path,
+            cif_gt_path=cif_gt_path,
+            pred_atom_coords=result.get("pred_atom_coords"),
+            prob_threshold=cfg_dict["threshold"],
+            filter_preset=cfg_dict.get("filter_preset"),
+            class_mapping=cfg_dict.get("class_mapping"),
+            select_first_model=cfg_dict["select_first_model"],
+            pdb_id=None,
+        )
+
+    return result
+
+
+def _run_raw_batch_mode(cfg_dict, model, device, output_root):
+    """mode=raw_batch: 批量原始文件推断 + Excel 汇总"""
+    from src.inference.utils.yield_json_from_raw_sample import load_raw_pairs
+
+    raw_pairs_json = cfg_dict.get("raw_pairs_json")
+    if not raw_pairs_json:
+        raise ValueError("[错误] mode=raw_batch 需要指定 raw_pairs_json 路径")
+
+    pairs = load_raw_pairs(raw_pairs_json)
+    print(f"[raw_batch] 共 {len(pairs)} 个样本")
+
+    all_results = []
+    for i, (cif_p, map_p, cif_gt_p) in enumerate(pairs):
+        sname = Path(cif_p).stem
+        print(f"\n[{i+1}/{len(pairs)}] {sname}")
+        sample_out = os.path.join(output_root, sname) if output_root else None
+
+        r = run_raw_point_pipeline(
+            model=model, device=device,
+            cif_path=cif_p, map_path=map_p, cif_gt_path=cif_gt_p,
+            target_voxel_size=cfg_dict["target_voxel_size"],
+            compute_density=cfg_dict["compute_density"],
+            select_first_model=cfg_dict["select_first_model"],
+            eval_gt=cfg_dict["eval_gt"],
+            filter_preset=cfg_dict.get("filter_preset"),
+            class_mapping=cfg_dict.get("class_mapping"),
+            threshold=cfg_dict["threshold"],
+            dist_threshold=cfg_dict["dist_threshold"],
+            core_decay_mode=cfg_dict["core_decay_mode"],
+            core_offset=cfg_dict["core_offset"],
+            atom_buffer_radius=cfg_dict["atom_buffer_radius"],
+            valid_crop_margin=cfg_dict["valid_crop_margin"],
+            box_spatial_weight_sigma_ratio=cfg_dict["box_spatial_weight_sigma_ratio"],
+            stride=cfg_dict["stride"],
+            windows_size=cfg_dict["windows_size"],
+            batch_size=cfg_dict["batch_size"],
+            output_dir=sample_out,
+            show_progress=True,
+            error_dir=cfg_dict.get("error_dir"),
+        )
+
+        # 可视化
+        if r.get("error") is None:
+            _build_vis_bundle_safe(
+                cfg_dict=cfg_dict, output_root=output_root,
+                cif_path=cif_p, map_path=map_p, cif_gt_path=cif_gt_p,
+                pred_atom_coords=r.get("pred_atom_coords"),
+                prob_threshold=cfg_dict["threshold"],
+                filter_preset=cfg_dict.get("filter_preset"),
+                class_mapping=cfg_dict.get("class_mapping"),
+                select_first_model=cfg_dict["select_first_model"],
+                pdb_id=sname,
+            )
+
+        # 释放大数组
+        for key in ["all_box_results", "atom_probs", "pred_atom_coords", "atom_coords"]:
+            r.pop(key, None)
+        all_results.append(r)
+
+    # Excel 汇总
+    if output_root and cfg_dict.get("eval_gt", False):
+        excel_path = os.path.join(output_root, "batch_results.xlsx")
+        write_batch_excel(all_results, output_root)
+        print(f"[raw_batch] Excel 汇总已保存: {excel_path}")
+
+
+def _run_raw_param_search_mode(cfg_dict, model, device, output_root):
+    """mode=raw_param_search: 参数搜索, 缓存逐 BOX logits, 只重新做聚合+二值化"""
+    from src.inference.utils.yield_json_from_raw_sample import load_raw_pairs
+
+    raw_pairs_json = cfg_dict.get("raw_pairs_json")
+    if not raw_pairs_json:
+        raise ValueError("[错误] mode=raw_param_search 需要指定 raw_pairs_json 路径")
+
+    pairs = load_raw_pairs(raw_pairs_json)
+    print(f"[raw_param_search] 共 {len(pairs)} 个样本")
+
+    # 参数网格
+    search_params = cfg_dict.get("search_params", {})
+    param_grid = generate_param_grid(search_params)
+    if not param_grid:
+        raise ValueError("[错误] search_params 为空")
+    param_names = list(param_grid[0].keys())
+    print(f"[raw_param_search] 参数组合数: {len(param_grid)}")
+
+
+
+    # 1. 对每个样本做一次完整推断, 缓存 logits
+    npz_root = os.path.join(output_root, "_logits_cache")   # FIXME: 未来可以单独指定缓存文件夹, 共同存放共同读取
+    os.makedirs(npz_root, exist_ok=True)
+    delete_cache = cfg_dict.get("delete_cache_after_search", False)
+
+    cached_info = []
+    for i, (cif_p, map_p, cif_gt_p) in enumerate(pairs):
+        sname = Path(cif_p).stem
+        npz_path = os.path.join(npz_root, f"{sname}.npz")
+        info = {"name": sname, "cif_path": cif_p, "map_path": map_p, "cif_gt_path": cif_gt_p,
+                "npz_path": npz_path, "error": None, "gt_data": None}
+
+        if os.path.exists(npz_path):
+            print(f"  [{i+1}/{len(pairs)}] {sname} → 已有缓存, 跳过推断")
+        else:
+            print(f"  [{i+1}/{len(pairs)}] {sname} → 执行推断并缓存 logits")
+            r = run_raw_point_pipeline(
+                model=model, device=device,
+                cif_path=cif_p, map_path=map_p, cif_gt_path=cif_gt_p,
+                target_voxel_size=cfg_dict["target_voxel_size"],
+                compute_density=cfg_dict["compute_density"],
+                select_first_model=cfg_dict["select_first_model"],
+                eval_gt=False,
+                filter_preset=cfg_dict.get("filter_preset"),
+                class_mapping=cfg_dict.get("class_mapping"),
+                threshold=cfg_dict["threshold"],
+                dist_threshold=cfg_dict["dist_threshold"],
+                core_decay_mode="none", core_offset=0,
+                atom_buffer_radius=cfg_dict["atom_buffer_radius"],
+                valid_crop_margin=cfg_dict["valid_crop_margin"],
+                box_spatial_weight_sigma_ratio=cfg_dict["box_spatial_weight_sigma_ratio"],
+                stride=cfg_dict["stride"],
+                windows_size=cfg_dict["windows_size"],
+                batch_size=cfg_dict["batch_size"],
+                output_dir=None,
+                show_progress=True,
+                error_dir=cfg_dict.get("error_dir"),
+            )
+            if r["error"] is not None:
+                info["error"] = r["error"]
+                cached_info.append(info)
+                continue
+            _save_box_logits_cache(
+                all_box_results=r["all_box_results"],
+                save_path=npz_path,
+                atom_coords=r["atom_coords"],
+            )
+
+        if cfg_dict["eval_gt"]:
+            try:
+                _gt_cif = cif_gt_p if cif_gt_p else cif_p
+                gt = load_gt_from_structure(
+                    cif_path=cif_p,
+                    cif_gt_path=_gt_cif,
+                    map_path=map_p,
+                    target_voxel_size=cfg_dict["target_voxel_size"],
+                    filter_preset=cfg_dict.get("filter_preset"),
+                    class_mapping=cfg_dict.get("class_mapping"),
+                    select_first_model=cfg_dict["select_first_model"],
+                    error_dir=cfg_dict.get("error_dir"),
+                )
+                info["gt_data"] = gt
+            except Exception as e:
+                print(f"  ⚠️ GT 提取失败: {e}")
+        cached_info.append(info)
 
 
 
 
+    # 2. 对每个参数组合做聚合+评估
+    summary = []
+    for pi, params in enumerate(param_grid):
+        print(f"\n[raw_param_search] 参数 {pi+1}/{len(param_grid)}: {params}")
+        sample_metrics = []
+        per_sample_records = []
 
-# ----------------------------------------------- 主入口 -----------------------------------------------
+        for info in cached_info:
+            if info["error"] is not None:
+                continue
+            if not os.path.exists(info["npz_path"]):
+                continue
+
+            box_results, atom_coords = _load_box_logits_cache(info["npz_path"])
+
+            _core_decay = params.get("core_decay_mode", cfg_dict["core_decay_mode"])
+            _core_off = params.get("core_offset", cfg_dict["core_offset"])
+            _threshold = params.get("threshold", cfg_dict["threshold"])
+
+            atom_probs = merge_box_atom_results(
+                box_results=box_results,
+                total_atom_count=len(atom_coords),
+                core_decay_mode=_core_decay,
+                core_offset=_core_off,
+            )
+            pred_coords = point_semantic_segment(
+                atom_probs=atom_probs,
+                atom_coords=atom_coords,
+                threshold=_threshold,
+            )
+
+            if info.get("gt_data") is not None:
+                _dist_thresh = params.get("dist_threshold", cfg_dict["dist_threshold"])
+                metrics = semantic_evaluate(
+                    pred_atom_coords=pred_coords,
+                    atom_gt=info["gt_data"]["atom_gt"],
+                    dist_threshold=_dist_thresh,
+                )
+                metrics["sample_name"] = info["name"]
+                sample_metrics.append(metrics)
+                per_sample_records.append(
+                    {
+                        "sample_name": info["name"],
+                        "precision": metrics["precision"],
+                        "recall": metrics["recall"],
+                        "f1": metrics["f1"],
+                        "iou": metrics["iou"],
+                    }
+                )
+
+        if sample_metrics:
+            avg_p = float(np.mean([record["precision"] for record in sample_metrics]))
+            avg_r = float(np.mean([record["recall"] for record in sample_metrics]))
+            avg_f1 = float(np.mean([record["f1"] for record in sample_metrics]))
+            avg_iou = float(np.mean([record["iou"] for record in sample_metrics]))
+        else:
+            avg_p = avg_r = avg_f1 = avg_iou = 0.0
+
+        row = {
+            **params,
+            "avg_P": avg_p,
+            "avg_R": avg_r,
+            "avg_F1": avg_f1,
+            "avg_IoU": avg_iou,
+        }
+        if per_sample_records:
+            row["_per_sample"] = per_sample_records
+        summary.append(row)
+        print(
+            f"  → avg_P={avg_p:.4f}  avg_R={avg_r:.4f}  "
+            f"avg_F1={avg_f1:.4f}  avg_IoU={avg_iou:.4f}"
+        )
+
+    # 3. Excel 汇总
+    summary.sort(key=lambda row: row["avg_F1"], reverse=True)
+    best = summary[0]
+    if output_root:
+        write_param_search_excel(summary, param_names, output_root)
+
+    print("\n" + "=" * 60)
+    print("  [raw_param_search] 🏆 最优参数组合:")
+    for key, value in best.items():
+        if key == "_per_sample":
+            continue
+        print(f"    {key}: {round(value, 4) if isinstance(value, float) else value}")
+    print("=" * 60)
+
+
+
+
+    # 4. 最优参数下的可视化（复用缓存 logits，不重复跑完整模型）
+    if cfg_dict.get("vis_enable", False):
+        print("\n[raw_param_search] 开始使用最优参数生成可视化")
+        best_threshold = best.get("threshold", cfg_dict["threshold"])
+        best_core_decay = best.get("core_decay_mode", cfg_dict["core_decay_mode"])
+        best_core_offset = best.get("core_offset", cfg_dict["core_offset"])
+
+        for i, info in enumerate(cached_info):
+            if info["error"] is not None:
+                continue
+            if not os.path.exists(info["npz_path"]):
+                continue
+
+            print(f"[raw_param_search][正在可视化 {i+1}/{len(cached_info)}] {info['name']}")
+            box_results, atom_coords = _load_box_logits_cache(info["npz_path"])
+            atom_probs = merge_box_atom_results(
+                box_results=box_results,
+                total_atom_count=len(atom_coords),
+                core_decay_mode=best_core_decay,
+                core_offset=best_core_offset,
+            )
+            pred_coords = point_semantic_segment(
+                atom_probs=atom_probs,
+                atom_coords=atom_coords,
+                threshold=best_threshold,
+            )
+            _build_vis_bundle_safe(
+                cfg_dict=cfg_dict,
+                output_root=output_root,
+                cif_path=info["cif_path"],
+                map_path=info["map_path"],
+                cif_gt_path=info["cif_gt_path"],
+                pred_atom_coords=pred_coords,
+                prob_threshold=best_threshold,
+                filter_preset=cfg_dict.get("filter_preset"),
+                class_mapping=cfg_dict.get("class_mapping"),
+                select_first_model=cfg_dict["select_first_model"],
+                pdb_id=info["name"],
+            )
+
+    # 5. 清理缓存
+    if delete_cache:
+        print(f"[raw_param_search] 🧹 清除临时缓存 ({npz_root})")
+        for info in cached_info:
+            if info["error"] is None and os.path.exists(info["npz_path"]):
+                try:
+                    os.remove(info["npz_path"])
+                except Exception as e:
+                    print(f"  ❌ 删除失败: {e}")
+
+    print("\n🎉 参数搜索完毕！\n")
+
+
+# =============================================================================
+# 主入口
+# =============================================================================
 @hydra.main(version_base="1.3", config_path="../../configs/infer_or_eval", config_name=_CONFIG_NAME)
 def main(cfg: DictConfig):
     """
-    推断与评估的统一主入口。
-    按 cfg.mode 分流执行:
-        - single       → _run_single_mode()       (已处理 BOX .npz)
-        - batch        → _run_batch_mode()        (已处理 BOX .npz 批量)
-        - param_search → _run_param_search_mode() (超参数搜索)
-        - raw          → _run_raw_mode()          (原始 .cif + .map 单样本)
-        - raw_batch    → _run_raw_batch_mode()    (原始 .cif + .map 批量)
+    推断与评估的统一主入口。按 cfg.mode 分流:
+        raw_single / raw_batch / raw_param_search → 点云推断
+        single / batch / param_search → BOX 推断 (点云路径)
+        legacy_* → 旧版体素推断
     """
     cfg_dict = OmegaConf.to_container(cfg, resolve=True)
     ckpt_path = cfg_dict.get("ckpt_path")
@@ -425,737 +930,72 @@ def main(cfg: DictConfig):
             "+ckpt_path=\"feedback/logs/.../checkpoints/last.ckpt\""
         )
 
-    # ---- 读取公共配置 ----
     device_str = cfg_dict.get("device", "cuda:0" if torch.cuda.is_available() else "cpu")
-    device     = torch.device(device_str)
-    mode       = cfg_dict["mode"]
+    device = torch.device(device_str)
+    mode = cfg_dict["mode"]
     output_root = cfg_dict["output_root"]
-    base_infer_params = {
-        "stride":       cfg_dict["stride"],
-        "windows_size": cfg_dict["windows_size"],
-        "batch_size":   cfg_dict["batch_size"],
-        "threshold":    cfg_dict["threshold"],
-        "core_offset":  cfg_dict["core_offset"],
-    }
     os.makedirs(output_root, exist_ok=True)
+
     print("=" * 60)
-    print(f"  [inference/run] 推断与评估")
+    print(f"  [inference/run] 点云推断与评估")
     print(f"  模式: {mode}  |  配置: {_CONFIG_NAME}.yaml")
     print(f"  设备: {device_str}  |  checkpoint: {ckpt_path}")
     print("=" * 60)
-    # ---- 加载模型 (一次) ----
+
+    # 加载模型
     backbone_override = cfg_dict.get("backbone_override", None)
     model = load_model(ckpt_path, device, backbone_override=backbone_override)
 
-
-
-    # ---- 按 mode 执行 ----
-    if mode == "single":
-        all_data_path      = cfg_dict["all_data_path"]
-        data_folder_names  = cfg_dict["data_folder_names"]
-        class_mapping      = cfg_dict.get("class_mapping")
-        run_single_mode(cfg_dict, model, device, all_data_path,
-                         data_folder_names, class_mapping, base_infer_params,
-                         output_root)
-    elif mode == "batch":
-        all_data_path      = cfg_dict["all_data_path"]
-        data_folder_names  = cfg_dict["data_folder_names"]
-        class_folder_names = cfg_dict["class_folder_names"]
-        class_mapping      = cfg_dict.get("class_mapping")
-        run_batch_mode(cfg_dict, model, device, all_data_path,
-                        data_folder_names, class_folder_names, class_mapping,
-                        base_infer_params, output_root)
-    elif mode == "param_search":
-        all_data_path      = cfg_dict["all_data_path"]
-        data_folder_names  = cfg_dict["data_folder_names"]
-        class_folder_names = cfg_dict["class_folder_names"]
-        class_mapping      = cfg_dict.get("class_mapping")
-        run_param_search_mode(cfg_dict, model, device, all_data_path,
-                               data_folder_names, class_folder_names, class_mapping,
-                               base_infer_params, output_root)
-    elif mode == "raw_single":
-        _run_raw_mode(cfg_dict, model, device, base_infer_params, output_root)
+    # 按 mode 执行
+    if mode == "raw_single":
+        _run_raw_single_mode(cfg_dict, model, device, output_root)
     elif mode == "raw_batch":
-        _run_raw_batch_mode(cfg_dict, model, device, base_infer_params, output_root)
+        _run_raw_batch_mode(cfg_dict, model, device, output_root)
     elif mode == "raw_param_search":
-        _run_raw_param_search_mode(cfg_dict, model, device, base_infer_params, output_root)
+        _run_raw_param_search_mode(cfg_dict, model, device, output_root)
+
+
+
+
+    elif mode in ("single", "batch", "param_search"):
+        # BOX 推断模式 — 使用旧版 pipline_for_box 的接口, 但可复用同一个模型
+        from src.inference.utils.pipline_for_box import (
+            run_single_mode, run_batch_mode, run_param_search_mode,
+        )
+        base_infer_params = {
+            "stride": cfg_dict["stride"],
+            "windows_size": cfg_dict["windows_size"],
+            "batch_size": cfg_dict["batch_size"],
+            "threshold": cfg_dict["threshold"],
+            "core_offset": cfg_dict["core_offset"],
+        }
+        if mode == "single":
+            run_single_mode(cfg_dict, model, device,
+                            cfg_dict["all_data_path"], cfg_dict["data_folder_names"],
+                            cfg_dict.get("class_mapping"), base_infer_params, output_root)
+        elif mode == "batch":
+            run_batch_mode(cfg_dict, model, device,
+                           cfg_dict["all_data_path"], cfg_dict["data_folder_names"],
+                           cfg_dict["class_folder_names"], cfg_dict.get("class_mapping"),
+                           base_infer_params, output_root)
+        elif mode == "param_search":
+            run_param_search_mode(cfg_dict, model, device,
+                                  cfg_dict["all_data_path"], cfg_dict["data_folder_names"],
+                                  cfg_dict["class_folder_names"], cfg_dict.get("class_mapping"),
+                                  base_infer_params, output_root)
+    elif mode.startswith("legacy_"):
+        # 旧版体素推断入口
+        from src.inference.legacy.run_voxel import main as legacy_main
+        print("[run] 使用旧版体素推断入口 (legacy)")
+        legacy_main(cfg)
     else:
         raise ValueError(
             f"[错误] 未知 mode: '{mode}'，"
-            "请在配置中设置 mode = single / batch / param_search / raw_single / raw_batch / raw_param_search"
+            "请在配置中设置 mode = raw_single / raw_batch / raw_param_search / "
+            "single / batch / param_search / legacy_*"
         )
 
-
-
-
-
-
-# -----------------------------------------------原始样本 -----------------------------------------------
-def _run_raw_mode(cfg_dict, model, device, infer_params, output_root):
-    """mode=raw_single: 单样本原始文件推断 + 可选 GT 评估"""
-    cif_path = cfg_dict.get("cif_path")
-    map_path = cfg_dict.get("map_path")
-    if not cif_path or not map_path:
-        raise ValueError(
-            "[错误] mode=raw_single 需要指定 cif_path 和 map_path。\n"
-            "用法: +cif_path=\"/path/to/xxx.cif\" +map_path=\"/path/to/emd_xxx.map\""
-        )
-    # str | None, 标量, 可选的真实结构路径（仅用于 GT 评估）；None 则回退到 cif_path
-    cif_gt_path = cfg_dict.get("cif_gt_path", None)
-    from pathlib import Path as _Path
-    sample_name = _Path(cif_path).stem
-
-    # dict, 原子赋概率/后处理默认参数（与 raw_* 配置保持一致）
-    postprocess_kwargs = {
-        "point_assign_radius":        cfg_dict.get("point_assign_radius"),
-        "point_assign_sigma":         cfg_dict.get("point_assign_sigma"),
-        "point_cat_weight_home":      cfg_dict.get("point_cat_weight_home"),
-        "point_cat_weight_has_atom":  cfg_dict.get("point_cat_weight_has_atom"),
-        "point_cat_weight_no_atom":   cfg_dict.get("point_cat_weight_no_atom"),
-    }
-
-    result = run_raw_pipeline(
-        model=model,
-        device=device,
-        cif_path=cif_path,
-        map_path=map_path,
-        cif_gt_path=cif_gt_path,
-        target_voxel_size=cfg_dict.get("target_voxel_size"),
-        compute_density=cfg_dict.get("compute_density"),
-        select_first_model=cfg_dict.get("select_first_model"),
-        eval_gt=cfg_dict.get("eval_gt"),
-        filter_preset=cfg_dict.get("filter_preset"),
-        class_mapping=cfg_dict.get("class_mapping"),
-        dist_threshold=cfg_dict.get("dist_threshold"),
-
-        # 为了避免 batch 下打印一万次 GT 解析报错，可以给个 error_dir=os.path.join(output_root, sample_name),
-        error_dir=cfg_dict.get("error_dir"),
-        output_dir=os.path.join(output_root, sample_name),
-        **postprocess_kwargs,
-        **infer_params,
-    )
-
-    if result["error"]:
-        print(f"\n❌ 推断失败: {result['error']}")
-        return
-
-    pred_prob = result["pred_prob"]
-    print(f"\n[Raw] 样本: {sample_name}")
-    print(f"[Raw] 概率图统计:")
-    print(f"  shape = {pred_prob.shape}")
-    print(f"  min={pred_prob.min():.6f}  max={pred_prob.max():.6f}  "
-          f"mean={pred_prob.mean():.6f}")
-    for q in [0.5, 0.9, 0.95, 0.99]:
-        print(f"  {q*100:.0f}% 分位数 = {np.quantile(pred_prob, q):.6f}")
-    _pred_atom_coords = result.get("pred_atom_coords")
-    print(f"  预测正类原子数 = {len(_pred_atom_coords) if _pred_atom_coords is not None else 0}")
-
-    if result["metrics"]:
-        print(f"\n[Raw] 评估结果 (与 GT 对比):")
-        print_metrics(result["metrics"])
-    else:
-        print(f"\n[Raw] 未启用 GT 评估 (eval_gt=false)")
-        
-    # np.ndarray | None, (N_pred, 3)
-    _pred_atom_coords = result.get("pred_atom_coords")
-    _build_vis_bundle_safe(
-        cfg_dict=cfg_dict,
-        output_root=output_root,
-        cif_path=cif_path,
-        map_path=map_path,
-        cif_gt_path=cif_gt_path,
-        pred_atom_coords=_pred_atom_coords,
-        prob_threshold=cfg_dict.get("threshold"),
-        filter_preset=cfg_dict.get("filter_preset"),
-        class_mapping=cfg_dict.get("class_mapping"),
-        select_first_model=cfg_dict.get("select_first_model"),
-        pdb_id=sample_name,
-    )
-    print(f"\n✅ 原始文件推断完毕！输出: {os.path.join(output_root, sample_name)}")
-
-def _run_raw_batch_mode(cfg_dict, model, device, infer_params, output_root):
-    """
-    mode=raw_batch: 批量原始文件推断 + 可选 GT 评估。
-
-    输入方式:
-      raw_pairs: JSON 文件路径，每项 dict 含 {"cif_path": ..., "map_path": ...,   None|"cif_gt_path": ...}
-      透过 yield_json_from_raw_sample.py 预先生成该 JSON，支持筛选和场景B (cif_gt_path)。
-    """
-    # ---- 读取 raw_pairs JSON ----
-    import time
-    # list[tuple(str, str, str|None)], 路径三元组 (cif_path, map_path, cif_gt_path)
-    pairs = []
-    raw_pairs = cfg_dict.get("raw_pairs", None)
-    if not raw_pairs:
-        raise ValueError(
-            "[错误] mode=raw_batch 需要设置 raw_pairs（JSON 文件路径），"
-            "格式为 [{\"cif_path\": ..., \"map_path\": ...[, \"cif_gt_path\": ...]}]\n"
-            "可用 src/inference/utils/yield_json_from_raw_sample.py 预先生成该 JSON。"
-        )
-    if isinstance(raw_pairs, str) and raw_pairs.endswith(".json"):
-        import json
-        with open(raw_pairs, "r", encoding="utf-8") as f:
-            raw_pairs = json.load(f)
-    for p in raw_pairs:
-        pairs.append((p["cif_path"], p["map_path"], p.get("cif_gt_path", None)))
-
-    if not pairs:
-        raise RuntimeError("[错误] mode=raw_batch 未找到任何有效的 (cif, map) 文件对")
-    print(f"[raw_batch] 共找到 {len(pairs)} 个样本")
-
-
-    # ---- 公共参数 ----
-    # 从配置中提取原始文件推断的共享参数
-    raw_kwargs = {
-        "target_voxel_size":  cfg_dict.get("target_voxel_size"),           # 0.7
-        "compute_density":    cfg_dict.get("compute_density"),             # true
-        "select_first_model": cfg_dict.get("select_first_model"),          # true
-        "eval_gt":            cfg_dict.get("eval_gt"),                     # true
-        "filter_preset":      cfg_dict.get("filter_preset"),               # "five_class"
-        "class_mapping":      cfg_dict.get("class_mapping"),               # [0, 1, 0, 0, 1]
-        "point_assign_radius":        cfg_dict.get("point_assign_radius"),
-        "point_assign_sigma":         cfg_dict.get("point_assign_sigma"),
-        "point_cat_weight_home":      cfg_dict.get("point_cat_weight_home"),
-        "point_cat_weight_has_atom":  cfg_dict.get("point_cat_weight_has_atom"),
-        "point_cat_weight_no_atom":   cfg_dict.get("point_cat_weight_no_atom"),
-        "dist_threshold":     cfg_dict.get("dist_threshold"),              # 3.0
-        "error_dir":          cfg_dict.get("error_dir", "error_raw_batch"),
-        **infer_params,
-    }
-
-    # ---- 批量推断 ----
-    all_results = []
-    for i, (cif_path, map_path, cif_gt_path) in enumerate(pairs):
-        from pathlib import Path as _Path
-        sample_name = _Path(cif_path).stem
-        print(f"\n[raw_batch {i+1}/{len(pairs)}] === {sample_name} ===")
-        if cif_gt_path:
-            print(f"  [GT] 使用独立 GT 结构: {cif_gt_path}")
-        sample_dir = os.path.join(output_root, sample_name)
-        
-        start_time = time.time()
-        result = run_raw_pipeline(
-            model=model, device=device,
-            cif_path=cif_path, map_path=map_path,
-            cif_gt_path=cif_gt_path,
-            output_dir=sample_dir,
-            show_progress=False,
-            **raw_kwargs,
-        )
-
-        if result["error"] is None:
-            # np.ndarray | None, (N_pred, 3)
-            _pred_atom_coords = result.get("pred_atom_coords")
-            result["num_pred_pos"] = len(_pred_atom_coords) if _pred_atom_coords is not None else 0
-            
-            elapsed = time.time() - start_time
-            if result["metrics"] is not None:
-                m = result["metrics"]
-                print(f"  ✅ [耗时 {elapsed:.1f}s] P={m['precision']:.4f}  R={m['recall']:.4f}  "
-                      f"F1={m['f1']:.4f}  IoU={m['iou']:.4f}  "
-                      f"正类原子={result['num_pred_pos']}")
-            else:
-                print(f"  ✅ [耗时 {elapsed:.1f}s] 推断完成, 预测正类原子数={result['num_pred_pos']}")
-                
-            # np.ndarray | None, (N_pred, 3)
-            _pred_atom_coords = result.get("pred_atom_coords")
-            _build_vis_bundle_safe(
-                cfg_dict=cfg_dict,
-                output_root=output_root,
-                cif_path=cif_path,
-                map_path=map_path,
-                cif_gt_path=cif_gt_path,
-                pred_atom_coords=_pred_atom_coords,
-                prob_threshold=cfg_dict.get("threshold"),
-                filter_preset=cfg_dict.get("filter_preset"),
-                class_mapping=cfg_dict.get("class_mapping"),
-                select_first_model=cfg_dict.get("select_first_model"),
-                pdb_id=sample_name,
-            )
-        else:
-            result["num_pred_pos"] = 0
-
-        # 释放大数组节省内存
-        for key in ["pred_prob", "pred_atom_coords", "atom_coords", "hardmask"]:
-            result.pop(key, None)
-
-        all_results.append(result)
-    write_batch_excel(all_results, output_root)
-    print("\n 批量原始文件推断完毕！\n")
-
-
-def _run_raw_param_search_mode(cfg_dict, model, device, base_params, output_root):
-    """
-    mode=raw_param_search: 使用原始 .cif + .map 文件进行网格调参搜索。
-
-    与 mode=param_search 逻辑对齐，区别在于数据来自原始文件而非预处理 BOX:
-    - 数据加载: load_from_raw_cif() + load_gt_from_structure()   (而非 load_from_npz_dirs)
-    - 单样本推断: run_raw_pipeline()                             (而非 run_single_pipeline)
-    - 优化: 若仅搜索 threshold，则复用概率图缓存，只变更阈值
-
-    输入方式:
-      raw_pairs: JSON 文件路径，每项 dict 含 {"cif_path": ..., "map_path": ...,  None|"cif_gt_path": ...}
-      透过 yield_json_from_raw_sample.py 预先生成该 JSON，支持筛选和场景B (cif_gt_path)。
-    """
-    # ---- 0. 校验 param_sweep 配置 ----
-    param_sweep_cfg = cfg_dict.get("param_sweep", None)
-    if not param_sweep_cfg:
-        raise ValueError(
-            "[错误] mode=raw_param_search 需要配置 param_sweep 节，例如:\n"
-            "param_sweep:\n"
-            "  - {name: threshold, min: 0.3, max: 0.7, step: 0.05}"
-        )
-
-    # ---- 1. 读取 raw_pairs JSON ----
-    # list[tuple(str, str, str|None)], 路径三元组 (cif_path, map_path, cif_gt_path)
-    pairs = []
-    raw_pairs = cfg_dict.get("raw_pairs", None)
-    if not raw_pairs:
-        raise ValueError(
-            "[错误] mode=raw_param_search 需要设置 raw_pairs（JSON 文件路径），"
-            "格式为 [{\"cif_path\": ..., \"map_path\": ...[, \"cif_gt_path\": ...]}]\n"
-            "可用 src/inference/utils/yield_json_from_raw_sample.py 预先生成该 JSON。"
-        )
-    if isinstance(raw_pairs, str) and raw_pairs.endswith(".json"):
-        import json
-        with open(raw_pairs, "r", encoding="utf-8") as f:
-            raw_pairs = json.load(f)
-    for p in raw_pairs:
-        pairs.append((p["cif_path"], p["map_path"], p.get("cif_gt_path", None)))
-
-    if not pairs:
-        raise RuntimeError("[错误] mode=raw_param_search 未找到任何有效的 (cif, map) 文件对")
-    print(f"[raw_param_search] 共找到 {len(pairs)} 个样本")
-
-
-    # ---- 2. 生成参数网格 ----
-    # list[dict], 每项为一组参数组合
-    param_grid  = generate_param_grid(param_sweep_cfg)
-    # list[str], 被 sweep 的参数名
-    param_names = list(param_grid[0].keys()) if param_grid else []
-    # list[dict], 汇总的评估结果
-    summary = []
-
-    # 公共调用参数（不含 threshold/stride 等被 sweep 的参数）
-    # dict, 原始文件推断的固定参数
-    raw_fixed_kwargs = {
-        "target_voxel_size":  cfg_dict.get("target_voxel_size"),            # 0.7
-        "compute_density":    cfg_dict.get("compute_density"),              # True
-        "select_first_model": cfg_dict.get("select_first_model"),           # False
-        "eval_gt":            True,   # 调参必须有 GT
-        "filter_preset":      cfg_dict.get("filter_preset"),              # "five_class"
-        "class_mapping":      cfg_dict.get("class_mapping"),              # [0,1,0,0,1]
-        "dist_threshold":     cfg_dict.get("dist_threshold"),             # 3.0
-        "point_assign_radius":        cfg_dict.get("point_assign_radius"),
-        "point_assign_sigma":         cfg_dict.get("point_assign_sigma"),
-        "point_cat_weight_home":      cfg_dict.get("point_cat_weight_home"),
-        "point_cat_weight_has_atom":  cfg_dict.get("point_cat_weight_has_atom"),
-        "point_cat_weight_no_atom":   cfg_dict.get("point_cat_weight_no_atom"),
-        "error_dir":          cfg_dict.get("error_dir"),                  # None
-    }
-    # dict, 后处理默认参数（仅后处理搜索时作为兜底）
-    postprocess_defaults = {
-        "point_assign_radius":        cfg_dict.get("point_assign_radius"),
-        "point_assign_sigma":         cfg_dict.get("point_assign_sigma"),
-        "point_cat_weight_home":      cfg_dict.get("point_cat_weight_home"),
-        "point_cat_weight_has_atom":  cfg_dict.get("point_cat_weight_has_atom"),
-        "point_cat_weight_no_atom":   cfg_dict.get("point_cat_weight_no_atom"),
-    }
-
-
-    # ---- 3. 判断是否复用概率图缓存加速----
-    # 后处理参数名集合（不影响模型 forward 的参数）
-    POST_INFERENCE_PARAMS = {
-        "threshold", 
-        "point_assign_radius", 
-        "point_assign_sigma",
-        "point_cat_weight_home", 
-        "point_cat_weight_has_atom",
-        "point_cat_weight_no_atom"
-    }
-    only_sweep_post_params = all(name in POST_INFERENCE_PARAMS for name in param_names)
-    
-    if only_sweep_post_params:
-        print("\n[raw_param_search] 💡 仅搜索后处理参数，启用推断缓存加速！")
-        npz_root_path = cfg_dict.get("npz_root_path", os.path.join(output_root, "cache"))
-        os.makedirs(npz_root_path, exist_ok=True)
-        # bool, 跑完是否删除缓存文件
-        delete_cache = cfg_dict.get("delete_cache", False)
-
-        # ---- 阶段 1: 对每个样本做一次全图推断，缓存概率图 + GT ----
-        # list[dict], 每项包含样本的基础信息与 .npz 保存路径 (不再在内存中保存大体积张量)
-        cached_info = []
-        print("[raw_param_search] --- 阶段 1: 全量推断落盘缓存 ---")
-        for i, (cif_path, map_path, cif_gt_path) in enumerate(pairs):
-            from pathlib import Path as _Path
-            import re
-            # str, 从 map_path 提取数字作为 emdb 编号, e.g. "40631"
-            emdb_match = re.search(r'\d+', _Path(map_path).name)
-            emdb_id = emdb_match.group() if emdb_match else "unknown"
-            # str, 从 cif_path 提取无后缀受体文件名并转为小写作为 pdb 编号, e.g. "9qad"
-            pdb_id = _Path(cif_path).stem.lower()
-            
-            cache_name = f"{emdb_id}_{pdb_id}.npz"
-            npz_path = os.path.join(npz_root_path, cache_name)
-            sname = _Path(cif_path).stem
-            # dict, 保存路径信息以便下游读取
-            sample_info = {
-                "name": sname,
-                "cif_path": cif_path,
-                "map_path": map_path,
-                "cif_gt_path": cif_gt_path,
-                "npz_path": npz_path,
-                "error": None
-            }
-            
-            print(f"  [{i+1}/{len(pairs)}] {sname}")
-            if cif_gt_path:
-                print(f"    [GT] 使用独立 GT 结构: {cif_gt_path}")
-            
-            # 检查是否已有对应的 .npz 缓存文件存在
-            if os.path.exists(npz_path):
-                print(f"    [Cache] 命中已有硬盘缓存，跳过推断: {npz_path}")
-                cached_info.append(sample_info)
-                continue
-                
-            try:
-                data = load_from_raw_cif(
-                    cif_path=cif_path,
-                    map_path=map_path,
-                    target_voxel_size=raw_fixed_kwargs["target_voxel_size"],
-                    compute_density=raw_fixed_kwargs["compute_density"],
-                    select_first_model=raw_fixed_kwargs["select_first_model"],
-                )
-                # np.ndarray, float32, (D, H, W)
-                pred_prob = run_inference(
-                    model=model, device=device, show_progress=False, grid=data["grid"],
-                    stride=base_params["stride"],
-                    windows_size=base_params["windows_size"],
-                    batch_size=base_params["batch_size"],
-                    core_offset=base_params["core_offset"],
-                )
-                # str, 场景A(无 cif_gt_path)时回退到 cif_path、场景B(有 cif_gt_path)时使用真实结构
-                _effective_gt_cif = cif_gt_path if cif_gt_path else cif_path
-                # dict, 点云 GT 数据
-                gt_data = load_gt_from_structure(
-                    cif_path=cif_path,              # 受体结构（场景B: 预测结构；场景A: 与 gt 相同）
-                    cif_gt_path=_effective_gt_cif,  # 真实结构（含配体信息）；场景A时与 cif_path 相同
-                    map_path=map_path,
-                    target_voxel_size=raw_fixed_kwargs["target_voxel_size"],
-                    filter_preset=raw_fixed_kwargs["filter_preset"],
-                    class_mapping=raw_fixed_kwargs["class_mapping"],
-                    select_first_model=raw_fixed_kwargs["select_first_model"],
-                    error_dir=raw_fixed_kwargs["error_dir"],
-                )
-                
-                # dict, 要存入 .npz 的结构
-                save_dict = {
-                    "pred_prob":   pred_prob,
-                    "atom_coords": data["atom_coords"],
-                    "hardmask":    data["hardmask"],
-                    "origin":      data["origin"],
-                    "voxel_size":  data["voxel_size"],
-                }
-                if gt_data is not None:
-                    save_dict["gt_atom_coords"] = gt_data["atom_coords"]
-                    save_dict["gt_atom_gt"]     = gt_data["atom_gt"]
-                    
-                # 存入硬盘 (未压缩)
-                np.savez(npz_path, **save_dict)
-                print(f"    [Cache] 推断完成，已落盘至: {npz_path}")
-                cached_info.append(sample_info)
-                
-            except Exception as e:
-                import traceback
-                print(f"  ❌ 推断失败 {sname}: {e}")
-                traceback.print_exc()
-                # 发生错误时不保存 .npz 缓存文件
-                sample_info["error"] = str(e)
-                cached_info.append(sample_info)
-
-
-
-
-        # ---- 阶段 2: 遍历参数组合，复用缓存概率图 ----         # TODO: 注意看 Pocket\sbatch\infer\search_v0_half1.sbatch, 一个a100可以配套16核cpu, 那么能否用joblib让cpu"并行地"处理样本，搜索参数？
-        print("\n[raw_param_search] --- 阶段 2: 后处理评估 ---")
-        
-        # 为了记录逐样本结果，判断并生成 sample indices
-        excel_sample_n = cfg_dict.get("excel_sample_n", 0)
-        selected_sample_indices = []
-        if excel_sample_n > 0 and len(cached_info) > 0:
-            np.random.seed(42)  # 固定种子保证可重复性
-            selected_sample_indices = np.random.choice(len(cached_info), min(excel_sample_n, len(cached_info)), replace=False).tolist()
-
-        from src.inference.postprocess import assign_prob_to_atoms, point_semantic_segment
-            
-        for idx, override_params in enumerate(param_grid):
-            # 获取本组完整的后处理参数
-            iter_params = {**postprocess_defaults, **base_params, **override_params}
-            th = iter_params.get("threshold")
-            r = iter_params.get("point_assign_radius")
-            sig = iter_params.get("point_assign_sigma")
-            wp1 = iter_params.get("point_cat_weight_home")
-            wp2 = iter_params.get("point_cat_weight_has_atom")
-            wp3 = iter_params.get("point_cat_weight_no_atom")
-            
-            param_str = "  ".join(f"{k}={v}" for k, v in override_params.items())
-            print(f"[{idx+1}/{len(param_grid)}] {param_str}")
-            
-            # list[dict], 本轮所有样本的评估结果
-            eval_results = []
-            
-            # 用于逐样本记录的数据
-            per_sample_records = []
-            
-            for c_i, info in enumerate(cached_info):
-
-                if info["error"] is not None: continue
-                if not os.path.exists(info["npz_path"]): continue
-                with np.load(info["npz_path"], allow_pickle=True) as cache:
-                    if "gt_atom_gt" not in cache:
-                        continue
-                        
-                    # 4a. 体素概率 → 原子概率
-                    atom_probs = assign_prob_to_atoms(
-                        pred_prob=cache["pred_prob"],
-                        atom_coords=cache["atom_coords"],
-                        origin=cache["origin"],
-                        voxel_size=cache["voxel_size"],
-                        hardmask=cache["hardmask"],
-                        radius=r,
-                        sigma=sig,
-                        cat_weight_home=wp1,
-                        cat_weight_has_atom=wp2,
-                        cat_weight_no_atom=wp3,
-                    )
-                    
-                    # 4b. 原子概率 → 二值化
-                    pred_atom_coords = point_semantic_segment(
-                        atom_probs=atom_probs,
-                        atom_coords=cache["atom_coords"],
-                        threshold=th,
-                    )
-
-                    metrics = semantic_evaluate(
-                        pred_atom_coords=pred_atom_coords,
-                        atom_gt=cache["gt_atom_gt"],
-                        dist_threshold=raw_fixed_kwargs["dist_threshold"],
-                    )
-                eval_results.append(metrics)
-                
-                if c_i in selected_sample_indices:
-                    per_sample_records.append({
-                        "sample_name": info["name"],
-                        "precision": metrics.get("precision", 0.0),
-                        "recall": metrics.get("recall", 0.0),
-                        "f1": metrics.get("f1", 0.0),
-                        "iou": metrics.get("iou", 0.0),
-                    })
-
-            if eval_results:
-                avg_p   = float(np.mean([r["precision"] for r in eval_results]))
-                avg_r   = float(np.mean([r["recall"]    for r in eval_results]))
-                avg_f1  = float(np.mean([r["f1"]        for r in eval_results]))
-                avg_iou = float(np.mean([r["iou"]       for r in eval_results]))
-            else:
-                avg_p = avg_r = avg_f1 = avg_iou = 0.0
-
-            # dict, 本组参数的评估汇总
-            row = {**override_params, "avg_P": avg_p, "avg_R": avg_r,
-                   "avg_F1": avg_f1, "avg_IoU": avg_iou}
-            if per_sample_records:
-                row["_per_sample"] = per_sample_records
-                
-            summary.append(row)
-            print(f"  → avg_P={avg_p:.4f}  avg_R={avg_r:.4f}  "
-                  f"avg_F1={avg_f1:.4f}  avg_IoU={avg_iou:.4f}")
-
-
-    else:   # 非纯后处理搜索 → 每组参数都跑全量推断
-        excel_sample_n = cfg_dict.get("excel_sample_n", 0)
-        selected_sample_indices = []   # 生成"excel_sample_n"个样本的详细信息
-        if excel_sample_n > 0 and len(pairs) > 0:
-            np.random.seed(42)
-            selected_sample_indices = np.random.choice(len(pairs), min(excel_sample_n, len(pairs)), replace=False).tolist()
-
-        import time
-        for idx, override_params in enumerate(param_grid):
-            # dict, 本轮使用的完整推断参数（base + override）
-            iter_infer_params = {**base_params, **override_params}
-            param_str = "  ".join(f"{k}={v}" for k, v in override_params.items())
-            print(f"\n{'=' * 60}")
-            print(f"[raw_param_search {idx+1}/{len(param_grid)}] {param_str}")
-            
-            eval_results = []   # list[dict], 本轮各样本的评估结果
-            per_sample_records = []
-            
-            for i, (cif_path, map_path, cif_gt_path) in enumerate(pairs):
-                from pathlib import Path as _Path
-                sname = _Path(cif_path).stem
-                
-                # 记录本样本的耗时
-                start_time = time.time()
-                result = run_raw_pipeline(
-                    model=model, device=device,
-                    cif_path=cif_path, map_path=map_path,
-                    cif_gt_path=cif_gt_path,
-                    output_dir=None,          # 调参时不保存到磁盘
-                    show_progress=False,
-                    **raw_fixed_kwargs,
-                    **iter_infer_params,
-                )
-                elapsed = time.time() - start_time
-                
-                if result["error"] is None and result["metrics"] is not None:
-                    m = result["metrics"]
-                    eval_results.append(m)
-                    
-                    if i in selected_sample_indices:
-                        per_sample_records.append({
-                            "sample_name": sname,
-                            "precision": m.get("precision", 0.0),
-                            "recall": m.get("recall", 0.0),
-                            "f1": m.get("f1", 0.0),
-                            "iou": m.get("iou", 0.0),
-                        })
-                    print(f"  [{i+1}/{len(pairs)}] {sname} [耗时 {elapsed:.1f}s] F1={m.get('f1', 0.0):.4f}")
-                else:
-                    if result["error"]:
-                        print(f"  [{i+1}/{len(pairs)}] {sname} [耗时 {elapsed:.1f}s] ❌ {result['error']}")
-                    else:
-                        print(f"  [{i+1}/{len(pairs)}] {sname} [耗时 {elapsed:.1f}s] ✅ 无评估结果")
-
-            if eval_results:
-                avg_p   = float(np.mean([r["precision"] for r in eval_results]))
-                avg_r   = float(np.mean([r["recall"]    for r in eval_results]))
-                avg_f1  = float(np.mean([r["f1"]        for r in eval_results]))
-                avg_iou = float(np.mean([r["iou"]       for r in eval_results]))
-            else:
-                avg_p = avg_r = avg_f1 = avg_iou = 0.0
-
-            row = {**override_params, "avg_P": avg_p, "avg_R": avg_r,
-                   "avg_F1": avg_f1, "avg_IoU": avg_iou}
-            if per_sample_records:
-                row["_per_sample"] = per_sample_records
-                
-            summary.append(row)
-            print(f"  → avg_P={avg_p:.4f}  avg_R={avg_r:.4f}  "
-                  f"avg_F1={avg_f1:.4f}  avg_IoU={avg_iou:.4f}")
-
-    # ---- 4. 排序 + 写 Excel + 打印最优 ----
-    summary.sort(key=lambda r: r["avg_F1"], reverse=True)
-    best = summary[0]
-    write_param_search_excel(summary, param_names, output_root, output_name=cfg_dict.get("output_name"))
-    print("\n" + "=" * 60)
-    print("  [raw_param_search] 🏆 最优参数组合:")
-    for k, v in best.items():
-        print(f"    {k}: {round(v, 4) if isinstance(v, float) else v}")
-    print("=" * 60)
-
-
-
-    # ---- 5. 可视化 ----
-    vis_enable = cfg_dict.get("vis_enable")
-    vis_after_search = cfg_dict.get("vis_after_search")
-    if vis_enable and vis_after_search:
-        print("\n[raw_param_search] 开始可视化")
-        if only_sweep_post_params:
-            best_threshold = best.get("threshold", cfg_dict.get("threshold"))
-            best_radius = best.get("point_assign_radius", cfg_dict.get("point_assign_radius"))
-            best_sigma = best.get("point_assign_sigma", cfg_dict.get("point_assign_sigma"))
-            best_wp1 = best.get("point_cat_weight_home", cfg_dict.get("point_cat_weight_home"))
-            best_wp2 = best.get("point_cat_weight_has_atom", cfg_dict.get("point_cat_weight_has_atom"))
-            best_wp3 = best.get("point_cat_weight_no_atom", cfg_dict.get("point_cat_weight_no_atom"))
-            for info in cached_info:
-                if info["error"] is not None:
-                    continue
-                if not os.path.exists(info["npz_path"]):
-                    continue
-                # 从硬盘重新读取推断的部分结果
-                with np.load(info["npz_path"], allow_pickle=True) as cache:
-                    # 使用最优后处理参数从缓存的 pred_prob 生成点云
-                    atom_probs = assign_prob_to_atoms(
-                        pred_prob=cache.get("pred_prob"),
-                        atom_coords=cache.get("atom_coords"),
-                        origin=cache.get("origin"),
-                        voxel_size=cache.get("voxel_size"),
-                        hardmask=cache.get("hardmask"),
-                        radius=best_radius,
-                        sigma=best_sigma,
-                        cat_weight_home=best_wp1,
-                        cat_weight_has_atom=best_wp2,
-                        cat_weight_no_atom=best_wp3,
-                    )
-                    pred_atom_coords = point_semantic_segment(
-                        atom_probs=atom_probs,
-                        atom_coords=cache.get("atom_coords"),
-                        threshold=best_threshold,
-                    )
-                _build_vis_bundle_safe(
-                    cfg_dict=cfg_dict,
-                    output_root=output_root,
-                    cif_path=info.get("cif_path"),
-                    map_path=info.get("map_path"),
-                    cif_gt_path=info.get("cif_gt_path"),
-                    pred_atom_coords=pred_atom_coords,
-                    prob_threshold=best_threshold,
-                    filter_preset=raw_fixed_kwargs.get("filter_preset"),
-                    class_mapping=raw_fixed_kwargs.get("class_mapping"),
-                    select_first_model=raw_fixed_kwargs.get("select_first_model"),
-                    pdb_id=info.get("name"),
-                )
-        else:
-            _param_names = list(param_names)
-            best_override = {k: best[k] for k in _param_names}
-            iter_infer_params = {**base_params, **best_override}
-            best_threshold = iter_infer_params.get("threshold", cfg_dict.get("threshold"))
-            for i, (cif_path, map_path, cif_gt_path) in enumerate(pairs):
-                from pathlib import Path as _Path
-                sname = _Path(cif_path).stem
-                print(f"[raw_param_search][正在可视化 {i+1}/{len(pairs)}] {sname}")
-                result = run_raw_pipeline(
-                    model=model, device=device,
-                    cif_path=cif_path, map_path=map_path,
-                    cif_gt_path=cif_gt_path,
-                    output_dir=None,
-                    show_progress=False,
-                    **raw_fixed_kwargs,
-                    **iter_infer_params,
-                )
-                if result["error"] is not None:
-                    print(f"  [Vis] 错误: {result['error']}")
-                    continue
-                _pred_atom_coords = result.get("pred_atom_coords")
-                _build_vis_bundle_safe(
-                    cfg_dict=cfg_dict,
-                    output_root=output_root,
-                    cif_path=cif_path,
-                    map_path=map_path,
-                    cif_gt_path=cif_gt_path,
-                    pred_atom_coords=_pred_atom_coords,
-                    prob_threshold=best_threshold,
-                    filter_preset=raw_fixed_kwargs.get("filter_preset"),
-                    class_mapping=raw_fixed_kwargs.get("class_mapping"),
-                    select_first_model=raw_fixed_kwargs.get("select_first_model"),
-                    pdb_id=sname,
-                )
-                _release_keys = ["pred_prob", "pred_atom_coords", "hardmask"]
-                for key in _release_keys:
-                    result.pop(key, None)
-
-    # ---- 6. 清理临时缓存文件 ----
-    if only_sweep_post_params and delete_cache:
-        print(f"\n[raw_param_search] 🧹 清除临时硬盘缓存 ({npz_root_path})...")
-        for info in cached_info:
-            if info["error"] is None and os.path.exists(info["npz_path"]):
-                try:
-                    os.remove(info["npz_path"])
-                except Exception as e:
-                    print(f"  ❌ 删除缓存失败 {info['npz_path']}: {e}")
-                    
-    print("\n🎉 原始数据网格调参搜索完毕！\n")
 
 
 if __name__ == "__main__":
     main()
- 

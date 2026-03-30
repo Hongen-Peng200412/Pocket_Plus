@@ -166,22 +166,54 @@ def write_param_search_excel(
 
 
 # ---------------------------------------------------- 生成参数网格 ----------------------------------------------------
-def generate_param_grid(param_sweep_cfg: list) -> list:
+def generate_param_grid(param_sweep_cfg: list | dict) -> list:
     """
     根据配置生成参数网格（各参数取值的笛卡尔积）。
 
     Args:
-        - param_sweep_cfg: list[dict], 每项含 name / min / max / step
+        - param_sweep_cfg: list[dict] 或 dict
+            - 若为 list[dict]: 每项含 name / min / max / step，兼容旧接口
+            - 若为 dict: 形如 {param_name: {min/max/step}} 或 {param_name: [v1, v2, ...]}
 
     Returns:
         - param_grid: list[dict], 每项为一组参数组合 {param_name: value}
     """
     all_axes = []
     names = []
-    for spec in param_sweep_cfg:
-        name = spec["name"]
-        values = np.arange(spec["min"], spec["max"] + spec["step"] / 2, spec["step"])
-        values = np.round(values, 8).tolist()
+
+    # list[tuple[str, object]], 统一后的参数名与其取值规范
+    if isinstance(param_sweep_cfg, dict):
+        spec_items = [(str(name), spec) for name, spec in param_sweep_cfg.items()]
+    else:
+        spec_items = []
+        for spec in param_sweep_cfg:
+            if not isinstance(spec, dict) or "name" not in spec:
+                raise TypeError(
+                    "旧版 param_sweep_cfg 的每一项都必须是包含 name 字段的 dict。"
+                )
+            name = str(spec["name"])
+            value_spec = {key: value for key, value in spec.items() if key != "name"}
+            spec_items.append((name, value_spec))
+
+    for name, spec in spec_items:
+        # list, 当前参数可选值列表
+        if isinstance(spec, dict):
+            if {"min", "max", "step"} <= set(spec.keys()):
+                values = np.arange(spec["min"], spec["max"] + spec["step"] / 2, spec["step"])
+                values = np.round(values, 8).tolist()
+            elif "values" in spec:
+                values = list(spec["values"])
+            else:
+                raise ValueError(
+                    f"[ParamSearch] 参数 {name} 的配置必须包含 min/max/step，或显式提供 values。"
+                )
+        elif isinstance(spec, (list, tuple)):
+            values = list(spec)
+        else:
+            raise TypeError(
+                f"[ParamSearch] 参数 {name} 的配置类型不支持: {type(spec)}"
+            )
+
         all_axes.append(values)
         names.append(name)
         print(f"[ParamSearch] 参数 {name}: {values}")

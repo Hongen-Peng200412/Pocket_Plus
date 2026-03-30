@@ -1,7 +1,7 @@
 # ============================================================
 # Hydra 根配置 (所有实验的基础)
 # ============================================================
-# 此文件是 Hydra 的顶层入口, 即使使用 sbatch 脚本也必须存在
+# 此文件是 Hydra 的顶层入口, 即使使用 sbatch 脚本也必须存在. 但是本文件可以完全不动——————它就是被 override 的
 # 用法:
 #   python Pocket_Plus/src/train.py +experiment=exp001_baseline
 #   sbatch sbatch/h200/1gpu.sbatch "+experiment=exp001_baseline"

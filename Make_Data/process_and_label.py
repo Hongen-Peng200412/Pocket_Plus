@@ -808,6 +808,7 @@ pocket_class_name_map                               # np.ndarray, str (scalar), 
 
 
 
+# TODO: 放宽限制, 允许不解析残基、图
 
 # NOTE: 这是在推断是用的
 def get_features_when_infer(

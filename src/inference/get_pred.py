@@ -1,27 +1,95 @@
 """
-get_pred.py - 模型加载与推断模块
+get_pred.py — 模型加载与点云级推断模块
 
-负责从 checkpoint 加载训练好的模型,
-并对输入特征执行滑窗推断, 产出概率图。
+负责:
+    1. 从 Lightning checkpoint 加载完整 VolumePointStage1Model
+    2. 对已组装好的 batch dict 执行模型前向, 返回 atom-level 原始 logits
 
-输出概率图形状:
-    - 二分类: (D, H, W), 每个体素的正类概率
-    - 多分类: (C_out, D, H, W), 每个体素各类的概率 [预留]
+旧版体素推断逻辑已迁移至 src/inference/legacy/get_pred_voxel.py
 """
 
-import os
 import sys
 from pathlib import Path
-from typing import Optional
+from typing import Any
+
 import numpy as np
 import torch
-import tqdm
+from omegaconf import OmegaConf
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from Pocket.utils.network_tools import map_segmentation, map_reconstruction
+
+def _extract_backbone_cfg(config_obj: Any) -> dict[str, Any] | None:
+    """
+    从用户传入配置、checkpoint 超参数或训练配置快照中提取 VolumePointStage1Model 的 Hydra 配置。
+
+    输入参数:
+        - config_obj: Any, 可能是 DictConfig、dict、wrapper 级配置或 backbone 级配置
+
+    输出:
+        - backbone_cfg: dict[str, Any] | None, 可直接传给 hydra.instantiate() 的 backbone 配置
+    """
+    if config_obj is None:
+        return None
+
+    if OmegaConf.is_config(config_obj):
+        config_obj = OmegaConf.to_container(config_obj, resolve=True)
+    if not isinstance(config_obj, dict):
+        return None
+
+    # 直接就是 backbone 配置
+    target_name = config_obj.get("_target_")
+    if target_name is not None and "model" not in config_obj and "backbone" not in config_obj:
+        return config_obj
+
+    # 训练快照通常是全局配置，backbone 位于 cfg.model.backbone
+    model_cfg = config_obj.get("model")
+    if isinstance(model_cfg, dict):
+        model_backbone_cfg = _extract_backbone_cfg(model_cfg)
+        if model_backbone_cfg is not None:
+            return model_backbone_cfg
+
+    # wrapper 级配置通常是 cfg.model，backbone 位于其下一级
+    nested_backbone_cfg = config_obj.get("backbone")
+    if isinstance(nested_backbone_cfg, dict):
+        direct_backbone_cfg = _extract_backbone_cfg(nested_backbone_cfg)
+        if direct_backbone_cfg is not None:
+            return direct_backbone_cfg
+
+    return None
+
+
+def _load_backbone_cfg_from_training_snapshot(ckpt_path: str) -> tuple[dict[str, Any] | None, str | None]:
+    """
+    从 checkpoint 同一 run 目录下保存的训练配置快照中恢复 backbone 配置。
+
+    输入参数:
+        - ckpt_path: str, Lightning checkpoint 路径
+
+    输出:
+        - backbone_cfg: dict[str, Any] | None, 恢复出的 backbone 配置
+        - config_path: str | None, 实际命中的配置文件路径
+    """
+    ckpt_file = Path(ckpt_path).resolve()
+    if len(ckpt_file.parents) < 2:
+        return None, None
+
+    run_dir = ckpt_file.parents[1]
+    candidate_paths = (
+        run_dir / "config.yaml",
+        run_dir / ".hydra" / "config.yaml",
+    )
+    for config_path in candidate_paths:
+        if not config_path.exists():
+            continue
+        loaded_cfg = OmegaConf.load(config_path)
+        backbone_cfg = _extract_backbone_cfg(loaded_cfg)
+        if backbone_cfg is not None:
+            return backbone_cfg, str(config_path)
+
+    return None, None
 
 
 # =============================================================================
@@ -29,26 +97,23 @@ from Pocket.utils.network_tools import map_segmentation, map_reconstruction
 # =============================================================================
 def load_model(
     ckpt_path: str,
-    device: torch.device,
-    backbone_override: dict = None,
+    device: str | torch.device,
+    backbone_override: dict | None = None,
 ) -> torch.nn.Module:
     """
-    从 Lightning checkpoint 加载训练好的 backbone 模型。
+    从 Lightning checkpoint 加载完整 VolumePointStage1Model。
 
-    自动从 checkpoint 的 hyper_parameters 中推断 backbone 结构,无需手动指定 in_channels / out_channels。
+    输入参数:
+        - ckpt_path: str, checkpoint 文件路径 (.ckpt)
+        - device: str | torch.device, 推断设备
+        - backbone_override: dict | None, 若提供则用此配置覆盖 checkpoint 中的 backbone 配置; 格式为 Hydra instantiate 所需的字典（含 _target_ 等）
 
-    Args:
-        - ckpt_path:        str,           checkpoint 文件路径 (.ckpt)
-        - device:           torch.device,  推断设备
-        - backbone_override: dict | None,  若提供则用此配置覆盖 checkpoint 中的 backbone 配置；
-                             格式为 Hydra instantiate 所需的字典（含 _target_ 等）。
-                             通常不需要，仅在 ckpt 内参数缺失时使用。
-
-    Returns:
-        - model: nn.Module, eval 模式的裸 backbone, 位于指定 device
+    输出:
+        - model: nn.Module, eval 模式的完整 VolumePointStage1Model, 位于指定 device
     """
     print(f"[get_pred] 正在加载模型: {ckpt_path}")
 
+    # dict, Lightning checkpoint 完整内容
     ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
     if "state_dict" not in ckpt:
         raise RuntimeError(
@@ -56,35 +121,46 @@ def load_model(
             f"请确认文件是 Lightning .ckpt 格式: {ckpt_path}"
         )
 
-    # ---- 1. 推断 backbone 结构 ----
+    # ---- 1. 构建模型 ----
     if backbone_override is not None:
-        # 用户显式覆盖
+        backbone_cfg = _extract_backbone_cfg(backbone_override)
+        if backbone_cfg is None:
+            raise ValueError(
+                "[get_pred] backbone_override 必须是 VolumePointStage1Model 配置，"
+                "或包含 model.backbone / backbone 的完整训练配置。"
+            )
         from hydra.utils import instantiate
-        model = instantiate(backbone_override)
-        print(f"[get_pred] 使用用户提供的 backbone 配置")
+        model = instantiate(backbone_cfg)
+        print("[get_pred] 使用用户提供的 backbone 配置")
     elif "hyper_parameters" in ckpt and "backbone" in ckpt["hyper_parameters"]:
-        # 从 checkpoint 的 hyper_parameters 中自动推断
         hp = ckpt["hyper_parameters"]
         backbone_cfg = hp["backbone"]
         from hydra.utils import instantiate
         model = instantiate(backbone_cfg)
-        print(f"[get_pred] 从 checkpoint hyper_parameters 自动推断 backbone: "
-              f"{backbone_cfg.get('_target_', 'unknown')}")
+        target_name = backbone_cfg.get("_target_", "unknown") if isinstance(backbone_cfg, dict) else "unknown"
+        print(f"[get_pred] 从 checkpoint hyper_parameters 自动推断 backbone: {target_name}")
     else:
-        # 回退: 尝试硬编码 SimpleUnet (兼容旧 checkpoint)
-        print("[get_pred] ⚠️ checkpoint 中无 hyper_parameters.backbone, "
-              "尝试使用默认 SimpleUnet")
-        from src.model.raunet import SimpleUnet
-        # 从 state_dict 推断 in_channels
-        state_dict = ckpt["state_dict"]
-        backbone_keys = [k for k in state_dict if k.startswith("backbone.")]
-        if not backbone_keys:
-            raise RuntimeError("[get_pred] state_dict 中无 backbone.* 键")
-        # 找第一个卷积层的权重来推断 in_channels
-        in_ch = _infer_in_channels_from_state_dict(state_dict)
-        model = SimpleUnet(in_channels=in_ch, out_channels=1)
+        backbone_cfg, config_path = _load_backbone_cfg_from_training_snapshot(ckpt_path)
+        if backbone_cfg is not None:
+            from hydra.utils import instantiate
+            model = instantiate(backbone_cfg)
+            target_name = backbone_cfg.get("_target_", "unknown")
+            print(f"[get_pred] 从训练配置快照恢复 backbone: {target_name}")
+            print(f"[get_pred] 配置来源: {config_path}")
+        else:
+            raise RuntimeError(
+                "[get_pred] checkpoint 中无 hyper_parameters.backbone，且未在 checkpoint 邻近目录找到可用训练配置。"
+                "请提供 backbone_override，或确认 run_dir/config.yaml 存在且包含 model.backbone。"
+            )
 
-    # ---- 2. 提取并加载 backbone 权重 ----
+    # ---- 2. 推断 in_channels 并设置 ----
+    in_channels = _infer_in_channels(ckpt)
+    if hasattr(model, "set_input_channels"):
+        model.set_input_channels(in_channels)
+        print(f"[get_pred] 设置 model.set_input_channels({in_channels})")
+
+    # ---- 3. 提取并加载 backbone 权重 ----
+    # dict[str, torch.Tensor], 去掉 "backbone." 前缀后的权重字典
     state_dict = ckpt["state_dict"]
     backbone_state = {
         k.replace("backbone.", ""): v
@@ -92,217 +168,108 @@ def load_model(
         if k.startswith("backbone.")
     }
     if not backbone_state:
-        # 尝试不带前缀的情况 (直接 state_dict)
         backbone_state = state_dict
         print("[get_pred] ⚠️ 未找到 backbone.* 前缀, 尝试直接加载全部权重")
 
-    # 使用 strict=False 以容忍 Lightning 包装器附带的额外键,（如 criterion.weight、loss.* 等），避免 Unexpected key(s) 报错
+    # strict=False 以容忍 Lightning 包装器附带的额外键
     load_result = model.load_state_dict(backbone_state, strict=False)
     if load_result.missing_keys:
         print(f"[get_pred] ⚠️ 缺失的键: {load_result.missing_keys}")
     if load_result.unexpected_keys:
         print(f"[get_pred] ⚠️ 多余的键 (已忽略): {load_result.unexpected_keys}")
+
     model.to(device)
     model.eval()
-
-    # 打印模型摘要
-    in_ch = getattr(model, "in_channels", "?")
-    out_ch = getattr(model, "out_channels", "?")
-    print(f"[get_pred] 模型加载成功: in_channels={in_ch}, out_channels={out_ch}, device={device}")
-
+    print(f"[get_pred] 模型加载成功, device={device}")
     return model
 
-def _infer_in_channels_from_state_dict(state_dict: dict) -> int:
+
+def _infer_in_channels(ckpt: dict) -> int:
     """
-    从 Lightning state_dict 中推断 backbone 输入通道数。
-    查找第一个 backbone.*.weight 且形状为 5D (Conv3d) 的参数, 取其 shape[1]。
+    从 Lightning checkpoint 推断 backbone 输入通道数。
 
-    Args:
-        - state_dict: dict, Lightning checkpoint 的 state_dict
+    优先级:
+        1. hyper_parameters 中显式记录的 in_channels
+        2. 从 state_dict 第一个 Conv3d 权重推断
 
-    Returns:
+    输入参数:
+        - ckpt: dict, Lightning checkpoint
+
+    输出:
         - in_channels: int, 推断出的输入通道数
     """
+    # 尝试从 hyper_parameters 直接获取
+    hp = ckpt.get("hyper_parameters", {})
+    if "in_channels" in hp:
+        return int(hp["in_channels"])
+
+    # 从 state_dict 推断
+    state_dict = ckpt.get("state_dict", {})
     for key in state_dict.keys():
         if key.startswith("backbone.") and key.endswith(".weight") and "conv" in key.lower():
             w = state_dict[key]
             if w.dim() == 5:  # Conv3d: (out_ch, in_ch, kD, kH, kW)
                 in_ch = w.shape[1]
-                # Check if it's likely the first layer (e.g., in_channels is small, like 1, 49, 50, etc., not 256)
                 if in_ch <= 128:
                     print(f"[get_pred] 从 {key} 推断 in_channels={in_ch}")
                     return in_ch
-    print("[get_pred] ⚠️ 无法从 state_dict 推断 in_channels, 使用默认值 1")
+
+    print("[get_pred] ⚠️ 无法推断 in_channels, 使用默认值 1")
     return 1
 
 
 
 
+
 # =============================================================================
-# 2. 推断 - 滑窗机制
+# 2. 点云级推断
 # =============================================================================
-def run_inference(
-    model, device, show_progress,
-    grid,
-    stride, windows_size, batch_size, core_offset,
-    blocks_weight=None,  # see me: 将会在这里增加高斯衰减核开关
-    **kwargs
-) -> np.ndarray:
+def run_point_inference(
+    model: torch.nn.Module,
+    device: str | torch.device,
+    batch_dict: dict[str, Any],
+) -> torch.Tensor:
     """
-    Run sliding-window inference on multi-channel features and return probability maps.
+    对一个已组装好的 batch dict 执行模型前向, 返回原始 atom logits。
 
-    Args:
-        - model: nn.Module, backbone in eval mode
-        - device: torch.device
-        - show_progress: bool, whether to show tqdm
-        - grid: np.ndarray, float32, (C, D, H, W), 作为模型输入的特征(50)
-        - stride: int, sliding window stride
-        - windows_size: int, window edge length
-        - batch_size: int, number of windows per batch
-        - core_offset: int, crop border thickness
-        - blocks_weight: np.ndarray | None, optional fusion weights (3D or 5D): (D,H,W) OR (N,C,D,H,W)
+    输入参数:
+        - model: nn.Module, eval 模式的 VolumePointStage1Model
+        - device: str | torch.device, 推断设备
+        - batch_dict: dict[str, Any], 由 box_point_collate() 产出的 batch dict, 所有 tensor 已在 device 上
 
-    Returns:
-        - pred_prob: np.ndarray, float32
-            - binary (out_channels=1): (D, H, W)
-            - multi-class: (C_out, D, H, W)
+    输出:
+        - atom_logits: torch.Tensor, (sumN, C_logit), 原始 atom 分类 logits, 未经 sigmoid
     """
-    # 丢掉任何外部传递下来多余的参数 kwargs, e.g. threshold
-    kwargs.pop("threshold", None)
-    C, D, H, W = grid.shape
-    spatial_shape = np.array([D, H, W])
-    # out_channels: int, 提取自模型中的目标通道数设定，找不到时默认设1。
-    out_channels = getattr(model, "out_channels", None)
-
-    # Use total volume threshold instead of per-axis comparison
-    total_voxels = int(np.prod(spatial_shape))
-    volume_threshold = 2 * (windows_size ** 3)
-    use_sliding_window = (total_voxels > volume_threshold)
-
-    if use_sliding_window:
-        pad_d = max(0, windows_size - D)
-        pad_h = max(0, windows_size - H)
-        pad_w = max(0, windows_size - W)
-        if pad_d > 0 or pad_h > 0 or pad_w > 0:
-            grid = np.pad(grid, ((0, 0), (0, pad_d), (0, pad_h), (0, pad_w)), mode='constant')
-
-        _, Dp, Hp, Wp = grid.shape
-        spatial_shape_pad = (Dp, Hp, Wp)
-
-        # 1. 将体积分割为多个滑窗块
-        multi_ch_blocks, coords = map_segmentation(
-            torch.from_numpy(grid),
-            windows_size=windows_size,
-            stride=stride,
-        )
-        n_blocks = len(multi_ch_blocks)
-
-        # 2. 批量推断
-        # pbar: tqdm.tqdm, 进度条对象，用于实时显示滑窗推断进度
-        pbar = tqdm.tqdm(
-            desc="  Sliding-window inference",
-            total=n_blocks,
-            file=sys.stdout,
-            position=0,
-            leave=False,
-            disable=not show_progress,
-        )
-        
-        # grid_batches: list[list[int]], 嵌套列表，每个子列表包含当前 batch 要处理的滑窗索引序列
-        grid_batches = _get_batch_slices(n_blocks, batch_size)
-        out_segmentation = torch.zeros(
-            (n_blocks, out_channels, windows_size, windows_size, windows_size),
-            device="cpu",
-        )
-        with torch.no_grad():
-            for batch_indices in grid_batches:
-                batch_input = torch.stack([multi_ch_blocks[i] for i in batch_indices], dim=0).to(device)
-                batch_output = torch.sigmoid(model(batch_input)).cpu()
-                out_segmentation[batch_indices] = batch_output
-                pbar.update(len(batch_indices))
-        pbar.close()
-
-        # 3. Reconstruct
-        blocks_np = out_segmentation.numpy()  # (N_blocks, out_channels, Dp, Hp, Wp)
-        pred_prob = map_reconstruction(       # (out_channels, Dp, Hp, Wp)
-            blocks=blocks_np,
-            image_shape=(out_channels,) + spatial_shape_pad,
-            coords=coords,
-            windows_size=windows_size,
-            core_offset=core_offset,
-            blocks_weight=blocks_weight,
-        )
-        if out_channels == 1:
-            pred_prob = pred_prob[0]
-
-        # Crop padding
-        if pad_d > 0 or pad_h > 0 or pad_w > 0:
-            pred_prob = pred_prob[..., :D, :H, :W]
-
-    else:
-        pred_prob = _full_volume_inference(
-            model, grid, device,
-            out_channels=out_channels,
-            show_progress=show_progress,
-        )
-
-    return pred_prob
-
-
-
-
-
-def _full_volume_inference(
-    model, grid, device, out_channels, show_progress
-) -> np.ndarray:
-    """
-    全图推断: 当三维体积足够小时, 不需要滑窗。
-
-    Args / Returns: 同 run_inference（内部函数）
-    """
-    C, D, H, W = grid.shape
-    # 绝大多数 3D UNet (下采样3~4层) 要求输入尺寸能够被 16 或 32 整除, 此处将空间维强行 padding 到 32 的整数倍，推理完毕后再截取
-    pad_d = (32 - D % 32) % 32
-    pad_h = (32 - H % 32) % 32
-    pad_w = (32 - W % 32) % 32
-    if pad_d > 0 or pad_h > 0 or pad_w > 0:
-        grid = np.pad(grid, ((0, 0), (0, pad_d), (0, pad_h), (0, pad_w)), mode='constant')
-        
     with torch.no_grad():
-        full_input = torch.from_numpy(grid)[None].to(device)   # (1, C, D_pad, H_pad, W_pad)
-        output = torch.sigmoid(model(full_input))              # (1, C_out, D_pad, H_pad, W_pad)
-        if out_channels == 1:
-            pred_prob = output[0, 0].detach().cpu().numpy()    # (D_pad, H_pad, W_pad)
-        else:
-            pred_prob = output[0].detach().cpu().numpy()       # (C_out, D_pad, H_pad, W_pad)
-            
-    # 去除由于 pad 到 32 整数倍引入的空边，将其还原为真正的 D, H, W
-    if pad_d > 0 or pad_h > 0 or pad_w > 0:
-        pred_prob = pred_prob[..., :D, :H, :W]
-        
-    if show_progress:
-        print("  [get_pred] 全图推断完成")
-    return pred_prob
+        # dict[str, Any], 模型前向输出
+        outputs = model(batch_dict)
+
+    # torch.Tensor, (sumN, C_logit), atom 分类 logits
+    atom_logits = outputs["atom_logits"]
+    return atom_logits
+
+
 
 
 
 # =============================================================================
 # 工具函数
 # =============================================================================
-def _get_batch_slices(total: int, batch_size: int) -> list:
+def move_batch_to_device(
+    batch_dict: dict[str, Any],
+    device: str | torch.device,
+) -> dict[str, Any]:
     """
-    将 [0, total) 切分为 batch_size 大小的索引切片列表。
+    将 batch dict 中的所有 torch.Tensor 移至指定设备, 非 tensor 字段保持不变。
 
-    Args:
-        - total:      int, 总数量
-        - batch_size: int, 每批数量
+    输入参数:
+        - batch_dict: dict[str, Any], box_point_collate 输出的 batch dict
+        - device: str | torch.device, 目标设备
 
-    Returns:
-        - slices: list[ list[int] ], 索引列表的列表
+    输出:
+        - batch_dict: dict[str, Any], tensor 已移至 device 的 batch dict (原地修改并返回)
     """
-    slices = []
-    for start in range(0, total, batch_size):
-        end = min(start + batch_size, total)
-        slices.append(list(range(start, end)))
-    return slices
-
+    for key, val in batch_dict.items():
+        if isinstance(val, torch.Tensor):
+            batch_dict[key] = val.to(device)
+    return batch_dict

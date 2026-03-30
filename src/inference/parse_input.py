@@ -4,7 +4,7 @@ parse_input.py - 数据加载与特征整合模块
 负责将各种来源的数据整合为模型需要的输入格式。
 支持两种加载方式：
   方式1. 从已处理的 .npz 文件（emdb_BOX / pdb_feature_BOX / pdb_label_BOX）加载（load_from_npz_dirs）——————移步到 inference.utils.pipline_for_box.py
-  方式2. 从原始 .cif + .map 文件实时提取特征（load_from_raw_cif），无需预处理
+  方式2. 从原始 .cif + .map 文件实时提取特征（load_from_raw_cif）
 
 典型数据目录结构 (方式1):
     all_data_path/
@@ -63,7 +63,7 @@ def apply_class_mapping(label: np.ndarray, mapping: list) -> np.ndarray:
         mapped[label == old_id] = new_id
     return mapped
 
-def compute_hardmask(grid: np.ndarray, emdb_channels: int = 1) -> np.ndarray:
+def compute_hardmask(grid: np.ndarray, emdb_channels: int) -> np.ndarray:
     """
     计算硬掩膜：判断体素处是否有原子（基于 pdb_feature 通道是否全零）
 
@@ -91,15 +91,15 @@ def compute_hardmask(grid: np.ndarray, emdb_channels: int = 1) -> np.ndarray:
 
 
 # =============================================================================
-# 从原始文件加载特征/标签（无需预处理 BOX）
+# 从原始文件加载特征/标签（无需预处理 BOX）  # FIXME: 未来加入更多密度信息(如差图) 时, 需要更改此函数
 # =============================================================================
 def load_from_raw_cif(
     cif_path: str,
     map_path: str,
-    target_voxel_size: float = 1.0,
-    compute_density: bool = True,
-    select_first_model: bool = False,
-    error_dir: str = None,
+    target_voxel_size: float,
+    compute_density: bool,
+    select_first_model: bool,
+    error_dir: str,
 ) -> dict:
     """
     从原始 .cif + .map 文件加载体素化特征与属性(hardmask)，返回包含 grid, hardmask, emdb_channels, sample_name, class_folder, voxel_size, origin, atom_coords 的 dict
@@ -189,14 +189,14 @@ def load_from_raw_cif(
 
 
 def load_gt_from_structure(
-    cif_path: str=None,     # 用于提供蛋白/核酸的骨架结构
-    cif_gt_path: str=None,  # 用于产生候选配体、挑选合格配体并选中配体的信息(可以为空, 为空时默认为 cif_path)
-    map_path: str=None,
-    target_voxel_size: float = None,
-    filter_preset: str = None,
-    class_mapping: list = None,
-    select_first_model: bool = True,
-    error_dir: str = None,
+    cif_path: str,          # 用于提供受体, 必选
+    cif_gt_path: str,       # 用于产生候选配体、挑选合格配体并选中配体的信息, 可选: 传 None 则回退到 cif_path
+    map_path: str,
+    target_voxel_size: float,
+    filter_preset: str,
+    class_mapping: list,
+    select_first_model: bool,
+    error_dir: str,
 ) -> Optional[dict]:
     """
     从原始 .cif / .pdb 文件提取点云级 Ground Truth 标签:  按 Pocket/Make_Data/labels/filter_config.py 定义的预设读取配体筛选规则，
@@ -323,3 +323,339 @@ def load_gt_from_structure(
         "atom_coords": atom_coords,
         "atom_gt": atom_gt.astype(np.float32),
     }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# =============================================================================
+# 点云推断: 原子特征加载
+# =============================================================================
+def load_atom_features_from_raw(
+    cif_path: str,
+    compute_density: bool,
+    select_first_model: bool,
+    error_dir: str,
+) -> np.ndarray:
+    """
+    从原始 .cif/.pdb 文件提取 per-atom 49 维特征向量。
+
+    复用 Make_Data.process_and_label.get_features_when_infer()，与 bind_AtomsFeature_to_EMDB 内部调用的是同一函数。
+
+    输入参数:
+        - cif_path: str, 输入结构文件路径 (.cif/.pdb)
+        - compute_density: bool, 是否计算原子局部密度特征
+        - select_first_model: bool, 多模型时是否仅取第一个模型
+        - error_dir: str | None, 错误日志目录
+
+    输出:
+        - atom_feat: np.ndarray, (N_atom, 49), float32, per-atom 特征向量
+    """
+    from Make_Data.process_and_label import get_features_when_infer
+
+    result = get_features_when_infer(
+        input_path=cif_path,
+        error_dir=error_dir,
+        compute_density=compute_density,
+        select_first_model=select_first_model,
+    )
+    if result is None:
+        raise RuntimeError(
+            f"[parse_input.load_atom_features_from_raw] "
+            f"get_features_when_infer() 返回 None, cif_path={cif_path}"
+        )
+
+    # tuple[dict, dict, dict], (atoms_dict, residues_dict, graph_dict)
+    atoms_dict, _, _ = result
+    # np.ndarray, (N_atom, 49), float32, per-atom 特征向量
+    atom_feat = atoms_dict["features"].astype(np.float32, copy=False)
+    return atom_feat
+
+
+# =============================================================================
+# 点云推断: 整体体积切分为 BOX
+# =============================================================================
+def _compute_window_starts(dim: int, window_size: int, stride: int) -> list[int]:
+    """
+    计算单轴滑窗起点，并保证最后一个窗口一定贴到尾部。
+
+    输入参数:
+        - dim: int, 当前轴长度
+        - window_size: int, 窗口长度
+        - stride: int, 滑窗步幅
+
+    输出:
+        - starts: list[int], 单轴所有滑窗起点
+    """
+    if dim <= window_size:
+        return [0]
+
+    starts = list(range(0, dim - window_size + 1, stride))
+    last = dim - window_size
+    if starts[-1] != last:
+        starts.append(last)
+    return starts
+
+
+def split_volume_to_boxes(
+    grid: np.ndarray,
+    atom_coords_world: np.ndarray,
+    atom_feat: np.ndarray,
+    origin: np.ndarray,
+    voxel_size: np.ndarray,
+    window_size: int,
+    stride: int,
+    atom_buffer_radius: float,
+    valid_crop_margin: int,
+    emdb_channels: int,
+) -> list:
+    """
+    将整体密度图切分为多个训练级 BOX，每个 BOX 组装为与训练 __getitem__ 完全同构的 sample dict。
+
+    滑窗策略与旧版 map_segmentation() 一致, 但额外为每个 BOX 构造原子级字段。
+
+    输入参数:
+        - grid: np.ndarray, (C, D, H, W), float32, 完整的多通道体素特征网格
+        - atom_coords_world: np.ndarray, (N_atom, 3), float32, 所有原子世界坐标 (x, y, z)
+        - atom_feat: np.ndarray, (N_atom, 49), float32, per-atom 特征向量
+        - origin: np.ndarray, (3,), float, 密度图原点 (x, y, z)
+        - voxel_size: np.ndarray, (3,), float, 体素大小 (x, y, z)
+        - window_size: int, 标量, BOX 窗口大小 (voxel)
+        - stride: int, 标量, 滑窗步长 (voxel)
+        - atom_buffer_radius: float, 标量, 原子 buffer 半径 (Å), 建议值 4.0
+        - valid_crop_margin: int, 标量, 监督区域裁边量 (voxel), 建议值 0
+        - emdb_channels: int, 标量, EMDB 密度图通道数
+
+    输出:
+        - box_dicts: list[dict], 每个 dict 为一个 BOX 的完整推断输入
+            每个 dict 包含:
+            - 训练 sample dict 同构的所有字段 (torch.Tensor)
+            - "global_atom_indices": np.ndarray, (N_box,), int, 该 BOX 选中原子的全局索引, N_box 为该 BOX 决定原子的数量(BOX内+buffer)
+            - "box_position_zyx": tuple[int, int, int], 该 BOX 在整体体积中的起始坐标 (z0, y0, x0)
+    """
+    import torch
+    from src.datasets.box_geometry import (
+        select_atoms_for_box,
+        build_atom_coordinates,
+        build_atom_features,
+        build_atom_valid_mask,
+        build_voxel_valid_mask,
+        compute_hardmask as shared_compute_hardmask,
+    )
+
+    C, D, H, W = grid.shape
+    # np.ndarray, (3,), float64, 体素标量大小
+    voxel_size = np.asarray(voxel_size, dtype=np.float64).reshape(3)
+    # np.ndarray, (3,), float64, 原点
+    origin = np.asarray(origin, dtype=np.float64).reshape(3)
+
+    # 滑窗: 对不足 window_size 的维度进行 pad
+    pad_d = max(0, window_size - D)
+    pad_h = max(0, window_size - H)
+    pad_w = max(0, window_size - W)
+    if pad_d > 0 or pad_h > 0 or pad_w > 0:
+        grid = np.pad(grid, ((0, 0), (0, pad_d), (0, pad_h), (0, pad_w)), mode="constant")
+    _, Dp, Hp, Wp = grid.shape
+
+    # 生成滑窗起始坐标，并保证最后一个窗口覆盖到各轴尾部
+    z_starts = _compute_window_starts(Dp, window_size, stride)
+    y_starts = _compute_window_starts(Hp, window_size, stride)
+    x_starts = _compute_window_starts(Wp, window_size, stride)
+
+    box_dicts = []
+    box_idx = 0
+
+    for z0 in z_starts:
+        for y0 in y_starts:
+            for x0 in x_starts:
+                z1 = min(z0 + window_size, Dp)
+                y1 = min(y0 + window_size, Hp)
+                x1 = min(x0 + window_size, Wp)
+
+                # np.ndarray, (C, D_box, H_box, W_box), float32, 当前 BOX 的体素子块
+                box_grid = grid[:, z0:z1, y0:y1, x0:x1].copy()
+                # np.ndarray, (3,), int64, 当前 BOX 的体素形状 (Z, Y, X)
+                box_shape_zyx = np.array([z1 - z0, y1 - y0, x1 - x0], dtype=np.int64)
+                # np.ndarray, (3,), float64, 当前 BOX 的世界原点 (x, y, z)
+                # grid 空间轴是 (Z, Y, X), 而 origin/voxel_size 是 (x, y, z)
+                box_origin_world = (origin + np.array([x0, y0, z0], dtype=np.float64) * voxel_size).astype(np.float32)
+                # np.ndarray, (3,), float32
+                voxel_size_f32 = voxel_size.astype(np.float32)
+
+                # 调用共享几何模块选择原子
+                selected = select_atoms_for_box(
+                    atom_coords_world=atom_coords_world,
+                    box_origin_world=box_origin_world,
+                    voxel_size_world=voxel_size_f32,
+                    box_shape_zyx=box_shape_zyx,
+                    buffer_radius=atom_buffer_radius,
+                )
+                # np.ndarray, (N_box,), int64, 选中的全局原子索引
+                selected_idx = selected["selected_idx"]
+                # np.ndarray, (N_box,), bool
+                atom_is_in_core_box = selected["atom_is_in_core_box"]
+
+                # 构造三套坐标
+                coord_data = build_atom_coordinates(
+                    atom_coords_world=atom_coords_world,
+                    selected_idx=selected_idx,
+                    box_origin_world=box_origin_world,
+                    voxel_size_world=voxel_size_f32,
+                    box_shape_zyx=box_shape_zyx,
+                )
+
+                # 构造特征
+                atom_feat_sel = build_atom_features(
+                    atom_features_raw=atom_feat,
+                    selected_idx=selected_idx,
+                )
+
+                # 构造 mask（与训练完全一致）
+                atom_valid_mask = build_atom_valid_mask(
+                    atom_coord_local_voxel=coord_data["atom_coord_local_voxel"],
+                    atom_is_in_core_box=atom_is_in_core_box,
+                    box_shape_zyx=box_shape_zyx,
+                    valid_crop_margin=float(valid_crop_margin),
+                )
+                voxel_valid_mask = build_voxel_valid_mask(
+                    box_shape_zyx=box_shape_zyx,
+                    valid_crop_margin=valid_crop_margin,
+                )
+                hardmask = shared_compute_hardmask(
+                    voxel_grid=box_grid,
+                    emdb_channels=emdb_channels,
+                )
+
+                # 推断时无真实标签, 占位全零
+                n_selected = len(selected_idx)
+                # np.ndarray, (N_selected,), int64, 占位标签
+                atom_label = np.zeros(n_selected, dtype=np.int64)
+                # np.ndarray, (D_box, H_box, W_box), int64, 占位标签
+                voxel_label = np.zeros(box_shape_zyx.tolist(), dtype=np.int64)
+
+                # 组装训练同构的 sample dict
+                sample_dict = _to_torch_sample_infer(
+                    voxel_grid=box_grid,
+                    voxel_label=voxel_label,
+                    hardmask=hardmask,
+                    voxel_valid_mask=voxel_valid_mask,
+                    box_origin_world=box_origin_world,
+                    voxel_size_world=voxel_size_f32,
+                    box_shape_zyx=box_shape_zyx,
+                    atom_coord_world=coord_data["atom_coord_world"],
+                    atom_coord_local_voxel=coord_data["atom_coord_local_voxel"],
+                    atom_coord_centered_world=coord_data["atom_coord_centered_world"],
+                    atom_feat=atom_feat_sel,
+                    atom_label=atom_label,
+                    atom_is_in_core_box=atom_is_in_core_box,
+                    atom_valid_mask=atom_valid_mask,
+                )
+                # 附加元信息
+                sample_dict["sample_name"] = f"infer_box_{box_idx}"
+                sample_dict["pdb_id"] = "infer"
+                sample_dict["class_name"] = "infer"
+                sample_dict["instance_id"] = 0
+                sample_dict["is_center_box"] = False
+
+                # 推断专用: 全局索引与 BOX 位置
+                sample_dict["global_atom_indices"] = selected_idx.copy()
+                sample_dict["box_position_zyx"] = (z0, y0, x0)
+
+                box_dicts.append(sample_dict)
+                box_idx += 1
+
+    print(f"[parse_input] 切分完成: {len(box_dicts)} 个 BOX "
+          f"(grid={grid.shape}, window={window_size}, stride={stride})")
+    return box_dicts
+
+
+def _to_torch_sample_infer(**kwargs) -> dict:
+    """
+    将 numpy 数组转为 torch.Tensor, 字段和 dtype 与训练侧 BoxPointDataset._to_torch_sample 完全一致。
+
+    输入参数:
+        - 见 BoxPointDataset.__getitem__ 返回值的 voxel/atom 字段
+
+    输出:
+        - dict[str, torch.Tensor], 训练同构的 sample dict
+    """
+    import torch
+    return {
+        "voxel_grid": torch.tensor(kwargs["voxel_grid"], dtype=torch.float32),
+        "voxel_label": torch.tensor(kwargs["voxel_label"], dtype=torch.int64),
+        "hardmask": torch.tensor(kwargs["hardmask"], dtype=torch.int64),
+        "voxel_valid_mask": torch.tensor(kwargs["voxel_valid_mask"], dtype=torch.bool),
+        "box_origin_world": torch.tensor(kwargs["box_origin_world"], dtype=torch.float32),
+        "voxel_size_world": torch.tensor(kwargs["voxel_size_world"], dtype=torch.float32),
+        "box_shape_zyx": torch.tensor(kwargs["box_shape_zyx"], dtype=torch.int64),
+        "atom_coord_world": torch.tensor(kwargs["atom_coord_world"], dtype=torch.float32),
+        "atom_coord_local_voxel": torch.tensor(kwargs["atom_coord_local_voxel"], dtype=torch.float32),
+        "atom_coord_centered_world": torch.tensor(kwargs["atom_coord_centered_world"], dtype=torch.float32),
+        "atom_feat": torch.tensor(kwargs["atom_feat"], dtype=torch.float32),
+        "atom_label": torch.tensor(kwargs["atom_label"], dtype=torch.int64),
+        "atom_is_in_core_box": torch.tensor(kwargs["atom_is_in_core_box"], dtype=torch.bool),
+        "atom_valid_mask": torch.tensor(kwargs["atom_valid_mask"], dtype=torch.bool),
+    }
+
+
+def prepare_batched_boxes(
+    box_dicts: list,
+    batch_size: int,
+    device: str,
+) -> list:
+    """
+    将 split_volume_to_boxes() 返回的 BOX 列表按 batch_size 分组,
+    对每组调用 box_point_collate() 产出 batch dict 并移至设备。
+
+    输入参数:
+        - box_dicts: list[dict], split_volume_to_boxes 的返回值
+        - batch_size: int, 标量, 每个 batch 包含的 BOX 数
+        - device: str, 目标设备
+
+    输出:
+        - batches: list[dict], 每个 dict 为一个 batch, 所有 tensor 已在 device 上
+            每个 batch dict 额外包含:
+            - "_box_meta": list[dict], 每个 BOX 的元信息 (global_atom_indices 和 box_position_zyx )
+    """
+    from src.datasets.box_point_collate import box_point_collate
+    from src.inference.get_pred import move_batch_to_device
+
+    batches = []
+    n_boxes = len(box_dicts)
+
+    for start in range(0, n_boxes, batch_size):
+        end = min(start + batch_size, n_boxes)
+        group = box_dicts[start:end]
+
+        # 保存推断专用的元信息 (不参与 collate)
+        box_meta_list = []
+        for box_dict in group:
+            box_meta_list.append({
+                "global_atom_indices": box_dict.pop("global_atom_indices"),
+                "box_position_zyx": box_dict.pop("box_position_zyx"),
+            })
+
+        # dict[str, Any], box_point_collate 需要标准字段
+        batch_dict = box_point_collate(group)
+        batch_dict = move_batch_to_device(batch_dict, device)
+        batch_dict["_box_meta"] = box_meta_list
+
+        # 恢复 box_dicts 中的元信息 (避免破坏原始列表)
+        for i, box_dict in enumerate(group):
+            box_dict["global_atom_indices"] = box_meta_list[i]["global_atom_indices"]
+            box_dict["box_position_zyx"] = box_meta_list[i]["box_position_zyx"]
+
+        batches.append(batch_dict)
+
+    return batches

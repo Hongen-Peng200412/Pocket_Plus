@@ -1,0 +1,288 @@
+model:
+  name: dense
+  _target_: src.wrappers.voxel_point_stage1.VoxelPointStage1Wrapper
+  backbone:
+    _target_: src.model.stage1_model.VolumePointStage1Model
+    voxel_backbone:
+      _target_: src.model.stage1_voxel_backbone.Stage1VoxelBackbone
+      in_channels: null
+      feature_channels: 64
+      planes:
+      - 64
+      - 256
+      - 256
+      - 256
+      - 256
+      - 256
+      - 128
+      - 64
+      - 64
+      gradient_checkpoint: true
+      return_feature_keys:
+      - voxel_ds_2
+      - voxel_ds_3
+      - voxel_c4
+      - voxel_final
+      aux_head_hidden_channels: 32
+    point_backbone:
+      _target_: src.model.stage1_point_backbone.Stage1PointBackbone
+      backend: ptv3
+      atom_feature_dim: 49
+      point_grid_size: 0.25
+      input_embed_dim: 64
+      input_embed_hidden_dim: 128
+      out_channels: 64
+      recycle_feature_dim: 64
+      serialization_orders:
+      - z
+      - z-trans
+      - hilbert
+      - hilbert-trans
+      shuffle_orders: true
+      stride:
+      - 4
+      - 2
+      - 2
+      - 2
+      embedding_kernel_size: 5
+      embedding_impl: pointconv
+      cpe_impl: pointconv
+      embedding_receptive_field: 5.0
+      pointconv_embed_max_neighbors: 64
+      pointconv_block_max_neighbors: 32
+      enc_cpe_kernel_size:
+      - 5
+      - 5
+      - 5
+      - 5
+      - 5
+      dec_cpe_kernel_size:
+      - 5
+      - 5
+      - 5
+      - 5
+      enc_cpe_receptive_field:
+      - 2.0
+      - 2.0
+      - 8.0
+      - 12.0
+      - 16.0
+      dec_cpe_receptive_field:
+      - 2.0
+      - 2.0
+      - 8.0
+      - 12.0
+      enc_depths:
+      - 2
+      - 2
+      - 2
+      - 6
+      - 2
+      enc_channels:
+      - 64
+      - 64
+      - 128
+      - 256
+      - 512
+      enc_num_head:
+      - 2
+      - 4
+      - 8
+      - 16
+      - 32
+      enc_patch_size:
+      - 256
+      - 128
+      - 96
+      - 72
+      - 64
+      dec_depths:
+      - 2
+      - 2
+      - 2
+      - 2
+      dec_channels:
+      - 64
+      - 64
+      - 128
+      - 256
+      dec_num_head:
+      - 4
+      - 4
+      - 8
+      - 16
+      dec_patch_size:
+      - 128
+      - 96
+      - 72
+      - 64
+      mlp_ratio: 4
+      qkv_bias: true
+      qk_scale: null
+      attn_drop: 0.2
+      proj_drop: 0.2
+      drop_path: 0.3
+      pre_norm: true
+      enable_rpe: false
+      enable_flash: false
+      upcast_attention: false
+      upcast_softmax: false
+      cls_mode: false
+      pdnorm_bn: false
+      pdnorm_ln: false
+      pdnorm_decouple: true
+      pdnorm_adaptive: false
+      pdnorm_affine: true
+      pdnorm_conditions:
+      - ScanNet
+      - S3DIS
+      - Structured3D
+    point_fusion_map:
+      point_enc2: voxel_ds_2
+      point_enc3: voxel_ds_3
+      point_enc4: voxel_c4
+      point_feat: voxel_final
+    point_fusion_modes:
+    - concat_linear
+    - concat_linear
+    - concat_linear
+    - concat_linear
+    sampler_modes:
+    - trilinear
+    - trilinear
+    - trilinear
+    - trilinear
+    fusion_mlp_ratio: 2.0
+    fusion_proj_drop: 0.2
+    atom_head_hidden_dim: 128
+    atom_head_num_heads: 4
+    atom_head_patch_size: 128
+    atom_head_num_layers: 4
+    atom_head_serialization_orders:
+    - z
+    - z-trans
+    - hilbert
+    - hilbert-trans
+    atom_head_shuffle_orders: true
+    atom_head_qkv_bias: true
+    atom_head_qk_scale: null
+    atom_head_attn_drop: 0.2
+    atom_head_proj_drop: 0.2
+    atom_head_enable_rpe: false
+    atom_head_enable_flash: false
+    atom_head_upcast_attention: false
+    atom_head_upcast_softmax: false
+    atom_logit_dim: 1
+    enable_recycling: true
+    max_recycles: 3
+    randomize_recycles: true
+    detach_recycle_states: true
+  atom_loss:
+    _target_: src.modules.losses.BinaryFocalLossWithAlpha
+    gamma: 2.0
+    ignore_index: null
+    eps: 1.0e-06
+    scale: 1.0
+    alpha_tune:
+    - 0.75
+    - 0.25
+    use_adaptive_alpha: false
+  voxel_aux_loss:
+    _target_: src.modules.losses.BinaryFocalLossWithAlpha
+    gamma: 2.0
+    ignore_index: null
+    eps: 1.0e-06
+    scale: 1.0
+    alpha_tune:
+    - 0.75
+    - 0.25
+    use_adaptive_alpha: false
+  atom_loss_weight: 1.0
+  voxel_aux_loss_weight: 0.2
+  interval: epoch
+  frequency: 1
+  monitor_metric: val/atom_pr_auc
+  monitor_mode: max
+  compile: false
+dataset:
+  _target_: src.datasets.box_point_dataset.BoxPointDataset
+  name: fused
+  all_data_path: /storage/penghongen/Pocket_classic/v_1
+  sample_root_path: /home/penghongen/My_Project/Data/DATA_v1/parsed_pdb
+  data_folder_names:
+  - emdb_BOX
+  - pdb_feature_BOX
+  - pdb_label_BOX
+  class_folder_names:
+  - metal_ion
+  - peptide
+  - nucleic
+  - small_molecule
+  class_mapping:
+  - 0
+  - 1
+  - 0
+  - 0
+  - 1
+  split_train:
+  - /storage/penghongen/Pocket_classic/v_1/split/split_3/metal_ion/train.json
+  - /storage/penghongen/Pocket_classic/v_1/split/split_3/peptide/train.json
+  - /storage/penghongen/Pocket_classic/v_1/split/split_3/nucleic/train.json
+  - /storage/penghongen/Pocket_classic/v_1/split/split_3/small_molecule/train.json
+  split_val:
+  - /storage/penghongen/Pocket_classic/v_1/split/split_3/metal_ion/val.json
+  - /storage/penghongen/Pocket_classic/v_1/split/split_3/peptide/val.json
+  - /storage/penghongen/Pocket_classic/v_1/split/split_3/nucleic/val.json
+  - /storage/penghongen/Pocket_classic/v_1/split/split_3/small_molecule/val.json
+  split_test:
+  - /storage/penghongen/Pocket_classic/v_1/split/split_3/metal_ion/test.json
+  - /storage/penghongen/Pocket_classic/v_1/split/split_3/peptide/test.json
+  - /storage/penghongen/Pocket_classic/v_1/split/split_3/nucleic/test.json
+  - /storage/penghongen/Pocket_classic/v_1/split/split_3/small_molecule/test.json
+  atom_buffer_radius: 0.0
+  cache_size: 128
+  valid_crop_margin: 0
+  enable_random_rotation: true
+post_process:
+  name: none
+output:
+  save_top_k: 5
+  save_every_n_epochs: 5
+  visualization:
+    enabled: false
+train:
+  batch_size: 6
+  num_workers: 20
+  dataloader_backend: auto
+  pin_memory: true
+  nnodes: 1
+  devices: 1
+  max_epochs: 100
+  accelerator: auto
+  ddp_find_unused_parameters: false
+  precision: bf16-mixed
+  gradient_clip_val: 0.5
+  accumulate_grad_batches: 6
+  check_val_every_n_epoch: 1
+  log_every_n_steps: 3
+  optimizer:
+    _target_: torch.optim.AdamW
+    _partial_: true
+    lr: 2.0e-05
+    weight_decay: 0.01
+  scheduler:
+    _target_: torch.optim.lr_scheduler.ReduceLROnPlateau
+    _partial_: true
+    mode: max
+    factor: 0.5
+    patience: 10
+    threshold: 0.001
+    threshold_mode: rel
+    min_lr: 1.0e-07
+name: dense_h200
+tag: 密集
+project_name: PV_dense_fused
+min_duration: 0
+keep_short_runs: true
+offline: false
+migrate_slurm_logs: false

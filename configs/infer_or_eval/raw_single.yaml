@@ -9,121 +9,172 @@
 
 # --- 运行模式 ---
 # mode: str, 标量
-#   传入: run.py main() 分流执行 _run_raw_mode() 
+#   传入: run.py main() 分流执行 _run_raw_single_mode() 
 #   作用: 运行模式。指定代码执行针对原始文件的、不依赖 BOX 预处理的即时处理流。
 mode: "raw_single"
 
 
 # --- 原始数据核心路径 (必须覆盖) ---
 # cif_path: str, 标量
-#   传入: run_raw_pipeline() -> load_from_raw_cif()
+#   传入: run.py _run_raw_single_mode() -> run_raw_point_pipeline() -> load_from_raw_cif()
 #   作用: 结构数据文件。读取蛋白原子坐标与残基三元组信息。
 # cif_path: null
 
 # map_path: str, 标量
-#   传入: load_map() -> make_model_grid()
+#   传入: run.py _run_raw_single_mode() -> run_raw_point_pipeline() -> load_from_raw_cif()
 #   作用: 密度图矩阵文件（EMDB）。提供三维电子云分布。
 # map_path: null
 
 # cif_gt_path: str | null
-#   传入: run_raw_pipeline(cif_gt_path=...)
+#   传入: run.py _run_raw_single_mode() -> run_raw_point_pipeline(cif_gt_path=...)
 #   作用: 真实结构参考。用于场景B：建模结构做输入提特征，实验解析结构做真值对齐评估。
 # cif_gt_path: null
 
 
 # --- 动态数据处理特征 ---
 # target_voxel_size: float, 标量 (Å)
-#   传入: make_model_grid(target_voxel_size=...)
+#   传入: run.py _run_raw_single_mode() -> run_raw_point_pipeline() -> load_from_raw_cif()
 #   作用: 归一化体素重采样大小。定义电镜密度采样至网络时物理间距。绝不可瞎填。
 target_voxel_size: 1.0
 
 # compute_density: bool, 标量
-#   传入: get_features_when_infer(compute_density=...)
+#   传入: run.py _run_raw_single_mode() -> run_raw_point_pipeline() -> load_from_raw_cif()
 #   作用: 密度通道路由。是否计算原子的局部堆叠密度作为额外特征。
 compute_density: true
 
 # select_first_model: bool, 标量
-#   传入: get_features_when_infer(select_first_model=...) 
+#   传入: run.py _run_raw_single_mode() -> run_raw_point_pipeline() -> load_from_raw_cif()
 #   作用: 单模型筛选开关。避免包含多结构的 PDB 在特征空间内叠加冲突。
 select_first_model: false
 
 
 # --- GT 标签提取与评估参数 ---
 # eval_gt: bool, 标量
-#   传入: run.py 接收，激发 load_gt_from_structure()
+#   传入: run.py _run_raw_single_mode() -> run_raw_point_pipeline(eval_gt=...)
 #   作用: 实时伴随评估。开启后将立刻从输入结构自带配体中算出口袋精度。
 eval_gt: false
 
 # filter_preset: str, 标量
-#   作用: 配体原子过滤模板选择。
+#   传入: run.py _run_raw_single_mode() -> run_raw_point_pipeline(filter_preset=...)
+#   作用: 配体原子过滤模板选择。决定提取 GT 标签的规则。
 filter_preset: "binary"
 
 # class_mapping: list[int] | null
-#   作用: 口袋标签 ID 映射纠偏列表。
+#   传入: run.py _run_raw_single_mode() -> run_raw_point_pipeline(class_mapping=...)
+#   作用: GT 评估时使用的口袋标签映射。当前默认值会把所有非背景类别都视为正类；
+#        若想严格对齐当前训练主配置，请改成 [0, 1, 0, 0, 1]。
 class_mapping: [0, 1, 1, 1, 1]
 
 # dist_threshold: float, 标量 (Å)
-#   作用: 原子评估(Hit)判定半径。
+#   传入: run.py _run_raw_single_mode() -> run_raw_point_pipeline(dist_threshold=...)
+#   作用: 原子评估(Hit)判定半径。预测点与 GT 原子在该距离内判定成功检测。
 dist_threshold: 3.0
 
 # error_dir: str | null
-#   作用: 遇到不可读结构时的异常导出位置。
+#   传入: run.py _run_raw_single_mode() -> run_raw_point_pipeline(error_dir=...)
+#   作用: 异常导出位置。遇到不可读结构或异常时的报错写入地点。
 error_dir: null
 
 
 # --- 模型权重 ---
 # ckpt_path: str, 标量
-#   作用: 权重加载路径。
+#   传入: run.py main() 解析并传给 get_pred.load_model(ckpt_path=...)
+#   作用: 权重加载位置。
 ckpt_path: "/home/penghongen/My_Project/feedback/logs/RAUNet-MyDatasets_half_1-none/half_1____2026-03-04_17-35-26/checkpoints/last.ckpt"
 
 # backbone_override: dict | null
-#   作用: 模型结构覆盖。
+#   传入: run.py main() 解析并传给 get_pred.load_model(backbone_override=...)
+#   作用: 模型结构硬编码覆盖配置。
 backbone_override: null
 
 
 # --- 计算设备 ---
 # device: str, 标量
-#   作用: 运算设备选择（CUDA优先）。
+#   传入: run.py main() 解析后给模型实例化和推理使用 
+#   作用: 运算设备选择（CUDA优先，如 "cuda:0"）。
 device: "cuda:0"
 
 
 # --- 输出路径 ---
 # output_root: str, 标量
-#   传入: run.py 最终结果拼接逻辑
+#   传入: run.py _run_raw_single_mode(output_root=...)
 #   作用: 持久化文件落点。保存在 `output_root / sample_name /` 之下。
 output_root: "inference_output/raw"
 
 
 # --- 可视化配置 ---
-# vis_enable: bool
+# vis_enable: bool, 标量
+#   传入: run.py _run_raw_single_mode() -> _build_vis_bundle_safe(cfg_dict)
+#   作用: 可视化总开关。控制是否最终产出 PyMol session 和脚本。
 vis_enable: true
+
 # vis_output_root: str | null
+#   传入: run.py _run_raw_single_mode() -> _build_vis_bundle_safe(cfg_dict)
+#   作用: 可视化专属的落点路径，不填(null)则跳过显示生成并报未设置。
 vis_output_root: null
 
 
 # --- 模型执行参数 ---
 # batch_size: int, 标量
+#   传入: run.py _run_raw_single_mode() -> run_raw_point_pipeline(batch_size=...)
+#   作用: 每个推断 batch 包含切分 BOX 数目，控制 GPU VRAM 的吞吐量。
 batch_size: 1
-# stride: int, 标量 (像素)
+
+# stride: int, 标量 (voxel)
+#   传入: run.py _run_raw_single_mode() -> run_raw_point_pipeline(stride=...)
+#   作用: 窗口滑步长度。滑窗步长，决定重叠率。
 stride: 32
-# windows_size: int, 标量 (像素)
+
+# windows_size: int, 标量 (voxel)
+#   传入: run.py _run_raw_single_mode() -> run_raw_point_pipeline(windows_size=...)
+#   作用: 滑窗物理边长，决断每一次输入网络的张量跨度。
 windows_size: 48
-# core_offset: int, 标量 (像素)
-core_offset: 2
+
 # threshold: float, 标量
+#   传入: run.py _run_raw_single_mode() -> run_raw_point_pipeline(threshold=...)
+#   作用: 语义分割阳性概率的二值化判定阈值。
 threshold: 0.5
 
-# point_assign_* 系列: float, 标量 (Å)
-#   传入: assign_prob_to_atoms() 后处理流
-#   作用: 细节权重。确定三维网格概率落点在原子质心层级时的加权平均权重配置。
-point_assign_radius: 2.0
-point_assign_sigma: 1.0
-point_cat_weight_home: 0.5
-point_cat_weight_has_atom: 0.35
-point_cat_weight_no_atom: 0.15
+
+# --- 点云推断聚合参数 ---
+# 聚合策略: 固定使用加权平均 logit → sigmoid → prob (logit_mean)
+
+# core_decay_mode: str, 标量
+#   传入: run.py _run_raw_single_mode() -> run_raw_point_pipeline(core_decay_mode=...)
+#   作用: 核心区信度衰减方式。"hard" (边界内1，界外0) / "linear" (向外线性衰减) / "none" (不衰减)。
+core_decay_mode: "linear"
+
+# core_offset: int, 标量 (voxel)
+#   传入: run.py _run_raw_single_mode() -> run_raw_point_pipeline(core_offset=...)
+#   作用: 裁边厚度。将各个 BOX 边缘部分认定为不稳定，并在聚合时减权或裁边。
+core_offset: 2
+
+# atom_buffer_radius: float, 标量 (Å)
+#   传入: run.py _run_raw_single_mode() -> run_raw_point_pipeline(atom_buffer_radius=...)
+#   作用: 原子 buffer 半径。当前 raw 推理默认保留 4.0A 上下文，这与当前训练主配置的 0.0 不同。
+atom_buffer_radius: 4.0
+
+# valid_crop_margin: int, 标量 (voxel)
+#   传入: run.py _run_raw_single_mode() -> run_raw_point_pipeline(valid_crop_margin=...)
+#   作用: 监督区域裁边厚度。控制训练、推理边缘对齐机制的兼容性，与训练一致。
+valid_crop_margin: 0
+
+# box_spatial_weight_sigma_ratio: float, 标量
+#   传入: run.py _run_raw_single_mode() -> run_raw_point_pipeline(box_spatial_weight_sigma_ratio=...)
+#   作用: 空间权重高斯核 sigma = sigma_ratio × 密度图最大半径。→ 1.0 表示权重衰减很缓, 0.3 表示快速衰减。用于多角度重叠原子的归一化信任分布修正。
+box_spatial_weight_sigma_ratio: 0.5
+
+
+# --- 旧版体素后处理参数 (已迁移至 legacy/, 保留供参考) ---
+# point_assign_radius: 2.0
+# point_assign_sigma: 1.0
+# point_cat_weight_home: 0.5
+# point_cat_weight_has_atom: 0.35
+# point_cat_weight_no_atom: 0.15
 
 
 # --- Hydra 行为控制 ---
 hydra:
   job:
     chdir: false
+

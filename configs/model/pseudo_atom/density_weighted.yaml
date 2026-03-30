@@ -1,5 +1,5 @@
 # @package _global_
-# 伪原子变体: 密度加权采样 64 个
+# 伪原子变体: 密度加权采样 64 + 0.3 * atom_num
 model:
   backbone:
     pseudo_atom_cfg:
