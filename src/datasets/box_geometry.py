@@ -199,21 +199,90 @@ def build_voxel_valid_mask(
     return voxel_valid_mask
 
 
-def compute_hardmask(voxel_grid: np.ndarray, emdb_channels: int) -> np.ndarray:
+def build_hardmask_from_atom_coordinates(
+    atom_coord_local_voxel: np.ndarray,
+    atom_is_in_core_box: np.ndarray,
+    box_shape_zyx: np.ndarray,
+) -> np.ndarray:
     """
-    生成 hardmask：只检查非 EMDB 通道是否存在非零值, 注意同样地, EMDB通道必须位于最前方(用户输入必须如此). 
-    pdb_feature 通道 "全零 <=> 该体素没有原子" 
-    
+    基于原子几何位置构造 voxel hardmask。
+
+    hardmask 的语义固定为:
+        - 只统计 core box 内的原子
+        - 某个 voxel 只要落入至少一个 core atom 的 home voxel, 则记为 1
+        - 与 `pdb_feature_BOX` 是否存在、是否参与 `voxel_grid` 拼接无关
+
     输入:
-        - voxel_grid: numpy.ndarray, 形如 (C, D, H, W), 多通道体素特征网格。
-        - emdb_channels: int, 标量, EMDB 通道数（位于 voxel_grid 最前面的通道数）。
-    
+        - atom_coord_local_voxel: numpy.ndarray, 形如 (N_selected, 3), 原子的连续局部 voxel 坐标, 顺序为 (x, y, z), 采用 corner 语义
+        - atom_is_in_core_box: numpy.ndarray, 形如 (N_selected,), bool, 标记每个原子是否位于当前 core box 内
+        - box_shape_zyx: numpy.ndarray, 形如 (3,), 当前 BOX 的空间大小, 顺序为 (Z, Y, X)
+
     输出:
-        - numpy.ndarray, 形如 (D, H, W), int64, hardmask。
+        - numpy.ndarray, 形如 (D, H, W), int64, 几何定义的 hardmask, 取值 0 或 1
     """
-    if voxel_grid.shape[0] <= emdb_channels:
-        # 无 pdb_feature 通道(如 unfused 模式)时, 返回全零 hardmask, 体素辅助监督自动失效
-        return np.zeros(voxel_grid.shape[1:], dtype=np.int64)
-    pdb_feature_grid = voxel_grid[emdb_channels:]
-    has_atom = np.any(pdb_feature_grid != 0, axis=0)
-    return has_atom.astype(np.int64)
+    # int, int, int, 当前 BOX 的空间尺寸
+    depth, height, width = [int(v) for v in np.asarray(box_shape_zyx, dtype=np.int64).tolist()]
+    # numpy.ndarray, (D, H, W), int64, 初始化为全零的几何 hardmask
+    hardmask = np.zeros((depth, height, width), dtype=np.int64)
+
+    # numpy.ndarray, (N_selected,), bool, 仅保留 core box 内原子
+    core_mask = np.asarray(atom_is_in_core_box, dtype=bool)
+    if atom_coord_local_voxel.shape[0] == 0 or not np.any(core_mask):
+        return hardmask
+
+    # numpy.ndarray, (N_core, 3), float32, core 原子的连续局部 voxel 坐标
+    core_coord_local_voxel = np.asarray(atom_coord_local_voxel[core_mask], dtype=np.float32)
+    # numpy.ndarray, (N_core, 3), int64, 用 floor 得到原子的 home voxel 索引, 顺序为 (x, y, z)
+    voxel_idx_xyz = np.floor(core_coord_local_voxel).astype(np.int64)
+    # numpy.ndarray, (3,), int64, BOX 空间大小, 顺序为 (x, y, z)
+    box_shape_xyz = np.asarray([width, height, depth], dtype=np.int64)
+
+    # numpy.ndarray, (N_core,), bool, 过滤浮点边界误差或异常坐标导致的越界索引
+    valid_mask = np.all(voxel_idx_xyz >= 0, axis=1)
+    valid_mask &= voxel_idx_xyz[:, 0] < box_shape_xyz[0]
+    valid_mask &= voxel_idx_xyz[:, 1] < box_shape_xyz[1]
+    valid_mask &= voxel_idx_xyz[:, 2] < box_shape_xyz[2]
+    if not np.any(valid_mask):
+        return hardmask
+
+    # numpy.ndarray, (N_valid, 3), int64, 合法的 home voxel 索引
+    voxel_idx_xyz = voxel_idx_xyz[valid_mask]
+    hardmask[voxel_idx_xyz[:, 2], voxel_idx_xyz[:, 1], voxel_idx_xyz[:, 0]] = 1
+    return hardmask
+
+
+def build_hardmask_from_world_coordinates(
+    atom_coords_world: np.ndarray,
+    box_origin_world: np.ndarray,
+    voxel_size_world: np.ndarray,
+    box_shape_zyx: np.ndarray,
+) -> np.ndarray:
+    """
+    基于世界坐标下的原子位置直接构造 voxel hardmask。
+
+    输入:
+        - atom_coords_world: numpy.ndarray, 形如 (N_atom, 3), 原子的世界坐标, 顺序为 (x, y, z)
+        - box_origin_world: numpy.ndarray, 形如 (3,), 当前 BOX 的世界坐标原点, 顺序为 (x, y, z)
+        - voxel_size_world: numpy.ndarray, 形如 (3,), 当前 BOX 的体素尺寸, 顺序为 (x, y, z)
+        - box_shape_zyx: numpy.ndarray, 形如 (3,), 当前 BOX 的空间大小, 顺序为 (Z, Y, X)
+
+    输出:
+        - numpy.ndarray, 形如 (D, H, W), int64, 几何定义的 hardmask, 取值 0 或 1
+    """
+    # numpy.ndarray, (N_atom, 3), float32, 原子相对当前 BOX 原点的连续局部 voxel 坐标
+    atom_coord_local_voxel = (
+        (np.asarray(atom_coords_world, dtype=np.float32) - np.asarray(box_origin_world, dtype=np.float32)[None, :])
+        / np.asarray(voxel_size_world, dtype=np.float32)[None, :]
+    ).astype(np.float32, copy=False)
+
+    # numpy.ndarray, (3,), float32, BOX 大小, 顺序为 (x, y, z)
+    box_shape_xyz = np.asarray(box_shape_zyx, dtype=np.float32)[[2, 1, 0]]
+    # numpy.ndarray, (N_atom,), bool, 判断原子是否落在当前 core box 内
+    atom_is_in_core_box = np.all(atom_coord_local_voxel >= 0.0, axis=1)
+    atom_is_in_core_box &= np.all(atom_coord_local_voxel < box_shape_xyz[None, :], axis=1)
+
+    return build_hardmask_from_atom_coordinates(
+        atom_coord_local_voxel=atom_coord_local_voxel,
+        atom_is_in_core_box=atom_is_in_core_box,
+        box_shape_zyx=np.asarray(box_shape_zyx, dtype=np.int64),
+    )

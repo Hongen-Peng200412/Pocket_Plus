@@ -21,4 +21,4 @@ model:
     alpha_tune: [0.75, 0.25]
     use_adaptive_alpha: false
 
-  voxel_aux_loss_weight: 0.2       # float, 体素辅助损失权重
+  voxel_aux_loss_weight: 0.1       # float, 体素辅助损失权重 原本是0.2!

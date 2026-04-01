@@ -25,6 +25,18 @@ except ImportError:
 # 从序列化模块导入编码函数
 from .serialization import encode
 
+@torch._dynamo.disable
+def _radius_graph_eager(coord, receptive_field, batch, max_neighbors):
+    """Keep torch_cluster custom ops out of torch.compile tracing."""
+    return torch_cluster.radius_graph(
+        x=coord,
+        r=receptive_field,
+        batch=batch,
+        max_num_neighbors=max_neighbors,
+        loop=False,
+    )
+
+
 @torch.inference_mode()
 def offset2bincount(offset):
     """
@@ -1030,8 +1042,6 @@ class PointConvCPE(PointModule):
         )
         # nn.Linear, (C_r -> C), 投影回原维度
         self.w_o = nn.Linear(c_r, self.channels)
-        # nn.Linear, (C -> C), 保留的 post linear
-        self.linear_post = nn.Linear(self.channels, self.channels)
         # norm_layer, 归一化层
         self.norm = norm_layer(self.channels) if norm_layer is not None else nn.Identity()
 
@@ -1051,12 +1061,11 @@ class PointConvCPE(PointModule):
             return point[graph_cache_attr]
 
         # torch.Tensor, (2, E), 新建 radius graph
-        edge_index = torch_cluster.radius_graph(
-            x=point.coord,
-            r=self.receptive_field,
+        edge_index = _radius_graph_eager(
+            coord=point.coord,
+            receptive_field=self.receptive_field,
             batch=point.batch,
-            max_num_neighbors=self.max_neighbors,
-            loop=False,
+            max_neighbors=self.max_neighbors,
         )
         if graph_cache_attr is not None:
             point[graph_cache_attr] = edge_index
@@ -1092,7 +1101,7 @@ class PointConvCPE(PointModule):
         # torch.Tensor, (N, C), 投影回原维度
         delta_i = self.w_o(agg_i)
         # torch.Tensor, (N, C), post linear + norm
-        delta_i = self.norm(self.linear_post(delta_i))
+        delta_i = self.norm(delta_i)
         # 更新点特征(纯 delta)
         point.feat = delta_i
         return point
@@ -1618,12 +1627,11 @@ class PointConvEmbedding(PointModule):
             - point: Point, 嵌入后的点云数据
         """
         # torch.Tensor, (2, E), 邻域边索引
-        edge_index = torch_cluster.radius_graph(
-            x=point.coord,
-            r=self.receptive_field,
+        edge_index = _radius_graph_eager(
+            coord=point.coord,
+            receptive_field=self.receptive_field,
             batch=point.batch,
-            max_num_neighbors=self.max_neighbors,
-            loop=False,
+            max_neighbors=self.max_neighbors,
         )
         # torch.Tensor, (E,), 目标点索引 / 源点索引
         idx_i = edge_index[0]
@@ -1777,7 +1785,7 @@ class PointTransformerV3(PointModule):
         enc_channels=(64, 64, 128, 256, 512),
         enc_num_head=(2, 4, 8, 16, 32),
         enc_patch_size=(256, 128, 96, 72, 64),
-        dec_depths=(2, 2, 2, 2, 2),         # see me: s最后一项为 dec4(最低分辨率、不做 unpooling); 若设为 0 则回退到旧版无 dec4 行为
+        dec_depths=(2, 2, 2, 2, 0),         # see me: s最后一项为 dec4(最低分辨率、不做 unpooling); 若设为 0 则回退到旧版无 dec4 行为
         dec_channels=(64, 64, 128, 256, 512),
         dec_num_head=(4, 4, 8, 16, 32),
         dec_patch_size=(128, 96, 72, 64, 64),
@@ -1811,7 +1819,7 @@ class PointTransformerV3(PointModule):
                 - 基础参数:
                     - in_channels: int, 输入点云特征通道数,默认6
                     - order: tuple[str] 或 str, 序列化顺序,可选"z"(Z-order)、"z-trans"(转置Z-order)、"hilbert"(Hilbert曲线)、"hilbert-trans"(转置Hilbert曲线)
-                    - stride: tuple[int], 每个编码器阶段(除第一阶段外)的下采样步长,长度=num_stages-1,默认(2,2,2,2)
+                    - stride: tuple[int], 每个编码器阶段(除第一阶段外)的下采样步长,长度=num_stages-1,默认(2,2,2,2,0)
                     - enable_flash: bool, 是否启用Flash Attention加速,默认True
                     - shuffle_orders: bool, 训练时是否随机打乱多种序列化顺序的使用,默认True
 

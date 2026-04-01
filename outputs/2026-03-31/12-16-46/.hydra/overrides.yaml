@@ -1,0 +1,4 @@
+- ckpt_path=C:\Users\15919\OneDrive\My_Project\Pocket_Plus\.codex_tmp_infer_smoke\exp_run\checkpoints\last.ckpt
+- device=cpu
+- output_root=C:\Users\15919\OneDrive\My_Project\Pocket_Plus\.codex_tmp_infer_smoke\out
+- raw_pairs_json=C:\Users\15919\OneDrive\My_Project\Pocket_Plus\src\inference\utils\for_v0_search.json

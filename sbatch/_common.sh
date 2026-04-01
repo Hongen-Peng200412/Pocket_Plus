@@ -10,7 +10,7 @@ set -euo pipefail
 
 PROJECT_ROOT="/home/penghongen/My_Project"
 CONDA_BASE="/home/penghongen/anaconda3"
-CONDA_ENV_NAME="${Pocket_Plus_CONDA_ENV_NAME:-Pocket_Plus_centos7}"
+CONDA_ENV_NAME="${Pocket_Plus_CONDA_ENV_NAME:-Pocket_Plus_centos7_cu121_allgpu}"
 
 set +u
 source "${CONDA_BASE}/etc/profile.d/conda.sh"

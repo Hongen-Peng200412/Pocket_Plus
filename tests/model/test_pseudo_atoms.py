@@ -139,6 +139,19 @@ class TestPseudoAtomCount:
 class TestInjectRemoveRoundtrip:
     """注入/移除一致性测试。"""
 
+    def test_inject_allows_missing_atom_global_indices(self):
+        """训练 batch 缺少 atom_global_indices 也应正常 inject/remove。"""
+        gen = _make_default_gen(base_count=2, scale_factor=0.0)
+        batch = _make_batch(batch_size=2, atoms_per_box=(3, 5))
+        pseudo = gen.generate(batch)
+
+        new_batch, split_info = gen.inject(batch, pseudo)
+        restored_batch = gen.remove(new_batch, split_info)
+
+        assert "atom_global_indices" not in new_batch
+        assert "atom_global_indices" not in restored_batch
+        assert restored_batch["atom_coord_centered_world"].shape == batch["atom_coord_centered_world"].shape
+
     def test_roundtrip(self):
         gen = _make_default_gen(base_count=4, scale_factor=0.0)
         batch = _make_batch(batch_size=2, atoms_per_box=(3, 5))
@@ -328,6 +341,127 @@ class TestLifecycle:
                 delete_too_close_radius=0.0, delete_too_far_radius=0.0,
                 lifecycle=[True, True],  # 长度不是 3
             )
+
+
+class TestRecycleHelpers:
+    """recycle 相关 helper 测试。"""
+
+    def test_prepare_pseudo_dict_non_regenerates_positions(self):
+        """`non` 应忽略 cache 中的位置并重新采样。"""
+        torch.manual_seed(0)
+        np.random.seed(0)
+        gen = _make_default_gen(base_count=2, scale_factor=0.0, recycle_policy="non")
+        batch = _make_batch(batch_size=1, atoms_per_box=(4,))
+        cached = gen.generate(batch)
+        cached["pseudo_coord_centered_world"] = torch.full_like(cached["pseudo_coord_centered_world"], 123.0)
+
+        prepared = gen.prepare_pseudo_dict_for_recycle(batch=batch, cached_pseudo_dict=cached)
+
+        assert not torch.allclose(prepared["pseudo_coord_centered_world"], cached["pseudo_coord_centered_world"])
+
+    def test_prepare_pseudo_dict_pos_keeps_positions_but_reinitializes_features(self):
+        """`pos` 应保留位置，但按当前初始化逻辑重刷 `pseudo_feat`。"""
+        torch.manual_seed(1)
+        np.random.seed(1)
+        gen = _make_default_gen(
+            base_count=2,
+            scale_factor=0.0,
+            recycle_policy="pos",
+            init_feat_mode="neighbor_mean",
+            neighbor_radius=100.0,
+        )
+        batch = _make_batch(batch_size=1, atoms_per_box=(4,), feat_dim=4)
+        cached = gen.generate(batch)
+        cached = {**cached, "pseudo_feat": torch.full_like(cached["pseudo_feat"], 7.0)}
+
+        prepared = gen.prepare_pseudo_dict_for_recycle(batch=batch, cached_pseudo_dict=cached)
+
+        assert torch.allclose(prepared["pseudo_coord_centered_world"], cached["pseudo_coord_centered_world"])
+        assert not torch.allclose(prepared["pseudo_feat"], cached["pseudo_feat"])
+
+    def test_prepare_pseudo_dict_all_keeps_positions_and_features(self):
+        """`all` 应直接复用 cache 中的位置与 `pseudo_feat`。"""
+        torch.manual_seed(2)
+        np.random.seed(2)
+        gen = _make_default_gen(base_count=2, scale_factor=0.0, recycle_policy="all")
+        batch = _make_batch(batch_size=1, atoms_per_box=(4,), feat_dim=4)
+        cached = gen.generate(batch)
+        cached = {**cached, "pseudo_feat": torch.full_like(cached["pseudo_feat"], 5.0)}
+
+        prepared = gen.prepare_pseudo_dict_for_recycle(batch=batch, cached_pseudo_dict=cached)
+
+        assert torch.allclose(prepared["pseudo_coord_centered_world"], cached["pseudo_coord_centered_world"])
+        assert torch.allclose(prepared["pseudo_feat"], cached["pseudo_feat"])
+
+    def test_reinitialize_pseudo_features_preserves_geometry(self):
+        """重初始化特征时不应改动伪原子的几何字段。"""
+        torch.manual_seed(3)
+        np.random.seed(3)
+        gen = _make_default_gen(
+            base_count=2,
+            scale_factor=0.0,
+            init_feat_mode="neighbor_mean",
+            neighbor_radius=100.0,
+        )
+        batch = _make_batch(batch_size=1, atoms_per_box=(4,), feat_dim=4)
+        pseudo = gen.generate(batch)
+        pseudo_with_bad_feat = {**pseudo, "pseudo_feat": torch.full_like(pseudo["pseudo_feat"], 9.0)}
+
+        reinitialized = gen.reinitialize_pseudo_features(batch=batch, pseudo_dict=pseudo_with_bad_feat)
+
+        assert torch.allclose(reinitialized["pseudo_coord_centered_world"], pseudo["pseudo_coord_centered_world"])
+        assert torch.allclose(reinitialized["pseudo_coord_local_voxel"], pseudo["pseudo_coord_local_voxel"])
+        assert torch.allclose(reinitialized["pseudo_coord_world"], pseudo["pseudo_coord_world"])
+        assert not torch.allclose(reinitialized["pseudo_feat"], pseudo_with_bad_feat["pseudo_feat"])
+
+    def test_extract_pseudo_dict_from_batch_roundtrip(self):
+        """inject 后再 extract，伪原子字段应可无损恢复。"""
+        torch.manual_seed(4)
+        np.random.seed(4)
+        gen = _make_default_gen(base_count=2, scale_factor=0.0)
+        batch = _make_batch(batch_size=2, atoms_per_box=(3, 4), feat_dim=4)
+        pseudo = gen.generate(batch)
+
+        mixed_batch, split_info = gen.inject(batch, pseudo)
+        extracted = gen.extract_pseudo_dict_from_batch(mixed_batch, split_info)
+
+        assert torch.allclose(extracted["pseudo_coord_centered_world"], pseudo["pseudo_coord_centered_world"])
+        assert torch.allclose(extracted["pseudo_coord_local_voxel"], pseudo["pseudo_coord_local_voxel"])
+        assert torch.allclose(extracted["pseudo_coord_world"], pseudo["pseudo_coord_world"])
+        assert torch.allclose(extracted["pseudo_feat"], pseudo["pseudo_feat"])
+        assert torch.equal(extracted["pseudo_batch_index"], pseudo["pseudo_batch_index"])
+        assert torch.equal(extracted["pseudo_counts"], pseudo["pseudo_counts"])
+        assert torch.equal(extracted["pseudo_valid_mask"], pseudo["pseudo_valid_mask"])
+        assert torch.equal(extracted["pseudo_label"], pseudo["pseudo_label"])
+        assert torch.equal(extracted["pseudo_is_in_core_box"], pseudo["pseudo_is_in_core_box"])
+
+    def test_interleave_real_and_pseudo_tensor(self):
+        """`interleave_real_and_pseudo_tensor()` 应按 `[real_i, pseudo_i]` 交错拼接。"""
+        real_tensor = torch.tensor([[1.0], [2.0], [3.0], [4.0], [5.0]])
+        pseudo_tensor = torch.tensor([[10.0], [11.0], [12.0]])
+        split_info = [(2, 1), (3, 2)]
+
+        mixed = PseudoAtomGenerator.interleave_real_and_pseudo_tensor(
+            real_tensor=real_tensor,
+            split_info=split_info,
+            pseudo_tensor=pseudo_tensor,
+        )
+
+        expected = torch.tensor([[1.0], [2.0], [10.0], [3.0], [4.0], [5.0], [11.0], [12.0]])
+        assert torch.allclose(mixed, expected)
+
+    def test_extract_pseudo_tensor_from_mixed(self):
+        """`extract_pseudo_tensor_from_mixed()` 应只抽出 pseudo 槽位。"""
+        mixed_tensor = torch.tensor([[1.0], [2.0], [10.0], [3.0], [4.0], [5.0], [11.0], [12.0]])
+        split_info = [(2, 1), (3, 2)]
+
+        pseudo_tensor = PseudoAtomGenerator.extract_pseudo_tensor_from_mixed(
+            mixed_tensor=mixed_tensor,
+            split_info=split_info,
+        )
+
+        expected = torch.tensor([[10.0], [11.0], [12.0]])
+        assert torch.allclose(pseudo_tensor, expected)
 
 
 class TestBuildRealMask:

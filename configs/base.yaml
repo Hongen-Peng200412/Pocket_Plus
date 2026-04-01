@@ -12,10 +12,10 @@ defaults:
   - model: default                             # Wrapper/_target_/recycle 等结构参数
 
   # --- 模型子模块 (各自独立可替换) ---
-  - model/voxel_backbone: raunet_64            # 体素分支
-  - model/point_backbone: ptv3_dense           # 点云分支
-  - model/fusion: dense_4hook                  # 融合逻辑
-  - model/atom_head: 4layer                    # atom head
+  - model/voxel_backbone: default              # 体素分支
+  - model/point_backbone: default              # 点云分支
+  - model/fusion: default                      # 融合逻辑
+  - model/atom_head: default                   # atom head
   - model/pseudo_atom: none                    # 伪原子(默认关闭)
   - model/embed_head: none                     # embed head(默认关闭)
 
@@ -28,7 +28,7 @@ defaults:
   - output: standard
 
   # --- 训练超参数 ---
-  - train: default_h100
+  - train: B64_L2
 
   - _self_
 
@@ -37,6 +37,7 @@ defaults:
 name: base
 tag: "默认"
 project_name: PV_default
+experiment_group: "default"          # str, run_dir 父文件夹名, 建议由 experiment 覆盖
 
 # --- 运行控制 ---
 min_duration: 0

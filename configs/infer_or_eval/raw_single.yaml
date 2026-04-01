@@ -4,7 +4,7 @@
 # 此文件供 src/inference/run.py 使用，通过 Hydra 加载:
 #   python src/inference/run.py --config-name=raw_single \
 #       +cif_path="/path/to/xxx.cif" +map_path="/path/to/emd_xxx.map" \
-#       +ckpt_path="..."
+#       ckpt_path="..."
 # =============================================================================
 
 # --- 运行模式 ---

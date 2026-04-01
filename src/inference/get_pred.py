@@ -228,7 +228,7 @@ def run_point_inference(
     model: torch.nn.Module,
     device: str | torch.device,
     batch_dict: dict[str, Any],
-) -> torch.Tensor:
+) -> dict[str, Any]:
     """
     对一个已组装好的 batch dict 执行模型前向, 返回原始 atom logits。
 
@@ -238,15 +238,15 @@ def run_point_inference(
         - batch_dict: dict[str, Any], 由 box_point_collate() 产出的 batch dict, 所有 tensor 已在 device 上
 
     输出:
-        - atom_logits: torch.Tensor, (sumN, C_logit), 原始 atom 分类 logits, 未经 sigmoid
+        - outputs: dict[str, Any], 模型前向输出, 至少包含:
+            - "atom_logits": torch.Tensor, (sumN_final, C_logit), 原始 atom 分类 logits, 未经 sigmoid
+            - 以及与最终原子视图对齐的辅助字段(atom_counts / atom_coord_local_voxel / atom_is_in_core_box 等)
     """
     with torch.no_grad():
         # dict[str, Any], 模型前向输出
         outputs = model(batch_dict)
 
-    # torch.Tensor, (sumN, C_logit), atom 分类 logits
-    atom_logits = outputs["atom_logits"]
-    return atom_logits
+    return outputs
 
 
 

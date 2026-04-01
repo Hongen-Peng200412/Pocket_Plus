@@ -38,6 +38,7 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 
+from .box_geometry import build_hardmask_from_atom_coordinates
 from .box_point_collate import box_point_collate
 
 
@@ -146,8 +147,8 @@ class BoxPointDataset(Dataset):
             - `label` 文件夹必须且只允许出现一个。
 
         这样做的原因是:
-            - hardmask 逻辑默认把前若干个通道视作 EMDB 通道；
-            - 其余通道才会被看成 pdb feature，并用于判断某个体素是否存在原子。
+            - 当前数据契约默认把密度类通道放在前部，保持与既有训练配置的输入通道顺序一致；
+            - `label` 文件夹仍然要求唯一，避免 voxel 标签来源不明确。
         """
         non_emdb_seen = False
         label_folder_count = 0
@@ -333,18 +334,6 @@ class BoxPointDataset(Dataset):
         grid_std = float(np.std(grid))
         return ((grid - grid_mean) / (grid_std + 1e-8)).astype(np.float32, copy=False)
 
-    def _compute_hardmask(self, voxel_grid: np.ndarray, emdb_channels: int) -> np.ndarray:
-        """
-        生成 hardmask：只检查非 EMDB 通道是否存在非零值, 注意同样地, EMDB通道必须位于最前方(用户输入必须如此). 
-        pdb_feature 通道 “全零 <=> 该体素没有原子” 
-        """
-        if voxel_grid.shape[0] <= emdb_channels:
-            # 无 pdb_feature 通道(如 unfused 模式)时, 返回全零 hardmask, 体素辅助监督自动失效
-            return np.zeros(voxel_grid.shape[1:], dtype=np.int64)
-        pdb_feature_grid = voxel_grid[emdb_channels:]
-        has_atom = np.any(pdb_feature_grid != 0, axis=0)
-        return has_atom.astype(np.int64)
-
     def _apply_class_mapping(self, label: np.ndarray, mapping: list[int]) -> np.ndarray:
         """
         将原始类别 ID 映射成新的类别 ID。
@@ -363,12 +352,11 @@ class BoxPointDataset(Dataset):
         对于 class_name 下的样本名为 sample_name 的这个特定样本，遍历 `self.data_folder_names` 指定的多个目录，并按以下规则组织:
             - 含 `"label"` 的目录读成 voxel 标签，最终统一为 `(D, H, W)` 的 int64。
             - 其余目录都视为 voxel 特征，沿 channel 维拼接成 `(C, D, H, W)`。
-            - 含 `"emdb"` 的特征目录会额外执行 z-score 归一化，并累计 EMDB 通道数，供 hardmask 逻辑跳过这些通道。
+            - 含 `"emdb"` 的特征目录会额外执行 z-score 归一化。
 
         返回字段:
             - `voxel_grid`: np.ndarray, `(C, D, H, W)`, float32。
             - `voxel_label`: np.ndarray, `(D, H, W)`, int64。
-            - `hardmask`: np.ndarray, `(D, H, W)`, int64。
             - `box_origin_world`: np.ndarray, `(3,)`, 世界坐标系下 BOX 左下近角点，顺序 (x, y, z)。
             - `voxel_size_world`: np.ndarray, `(3,)`, 每个 voxel 在世界坐标中的尺寸，顺序 (x, y, z)。
             - `box_shape_zyx`: np.ndarray, `(3,)`, 按 `(Z, Y, X)` 排列的 BOX 尺寸。
@@ -381,7 +369,6 @@ class BoxPointDataset(Dataset):
         x_range: Optional[np.ndarray] = None
         y_range: Optional[np.ndarray] = None
         z_range: Optional[np.ndarray] = None
-        emdb_channels = 0
 
         for folder_name in self.data_folder_names:
             npz_path = self.all_data_path / folder_name / class_name / f"{sample_name}.npz"
@@ -407,7 +394,6 @@ class BoxPointDataset(Dataset):
                 grid = grid.astype(np.float32, copy=False)   # feature 一律转 float32, 便于后续直接拼接
                 if "emdb" in folder_name:   # NOTE: 当前逻辑下 emdb 被强制归一化
                     grid = self._zscore_emdb_grid(grid)
-                    emdb_channels += int(grid.shape[0])
                 voxel_parts.append(grid)
 
         if voxel_label is None:
@@ -416,13 +402,11 @@ class BoxPointDataset(Dataset):
             raise RuntimeError(f"box metadata is missing for sample: {sample_name}")
 
         voxel_grid = np.concatenate(voxel_parts, axis=0).astype(np.float32, copy=False)
-        hardmask = self._compute_hardmask(voxel_grid, emdb_channels=emdb_channels)
         box_shape_zyx = np.asarray(voxel_grid.shape[-3:], dtype=np.int64)
 
         return {
             "voxel_grid": voxel_grid,
             "voxel_label": voxel_label,
-            "hardmask": hardmask,
             "box_origin_world": box_origin_world,
             "voxel_size_world": voxel_size_world,
             "box_shape_zyx": box_shape_zyx,
@@ -1098,6 +1082,12 @@ class BoxPointDataset(Dataset):
                 voxel_size_world=box_data["voxel_size_world"],
                 box_shape_zyx=box_data["box_shape_zyx"],
             )
+            # numpy.ndarray, (D, H, W), int64, 几何定义的 hardmask: 只要有 core 原子落入对应 voxel 即记为 1
+            hardmask = build_hardmask_from_atom_coordinates(
+                atom_coord_local_voxel=coord_data["atom_coord_local_voxel"],
+                atom_is_in_core_box=selected["atom_is_in_core_box"],
+                box_shape_zyx=box_data["box_shape_zyx"],
+            )
             # 构造监督 mask: voxel 侧只裁边，atom 侧要求同时满足 core 内且落在裁边后的有效区域内。
             voxel_valid_mask = self._build_voxel_valid_mask(
                 box_shape_zyx=box_data["box_shape_zyx"],
@@ -1121,7 +1111,7 @@ class BoxPointDataset(Dataset):
             sample_dict: dict[str, Any] = {
                 "voxel_grid": box_data["voxel_grid"],
                 "voxel_label": box_data["voxel_label"],
-                "hardmask": box_data["hardmask"],
+                "hardmask": hardmask,
                 "voxel_valid_mask": voxel_valid_mask,
                 "box_origin_world": box_data["box_origin_world"],
                 "voxel_size_world": box_data["voxel_size_world"],

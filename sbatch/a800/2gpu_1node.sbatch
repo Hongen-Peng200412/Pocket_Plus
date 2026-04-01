@@ -15,6 +15,8 @@
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=48
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "${SCRIPT_DIR}/../_common.sh"
-source "${SCRIPT_DIR}/../_train_core.sh" "${1}" 1 2 "${2:-}"
+SBATCH_ROOT="${POCKET_PLUS_SBATCH_ROOT:-/home/penghongen/My_Project/Pocket_Plus/sbatch}"
+export POCKET_PLUS_LOCK_PRE_ENABLED="${POCKET_PLUS_LOCK_PRE_ENABLED:-1}"
+export POCKET_PLUS_LOCK_AFTER_ENABLED="${POCKET_PLUS_LOCK_AFTER_ENABLED:-1}"
+source "${SBATCH_ROOT}/_common.sh"
+source "${SBATCH_ROOT}/_train_core.sh" "${1}" 1 2 "${2:-}"

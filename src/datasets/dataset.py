@@ -1,6 +1,7 @@
 import json
 import os
 import random
+import re
 from pathlib import Path
 from typing import List, Optional
 
@@ -8,12 +9,18 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader, Dataset
 
+from src.datasets.box_geometry import build_hardmask_from_world_coordinates
 from utils.network_tools import random_rotation90_plus
 
 
 torch.manual_seed(114514)
 random.seed(114514)
 np.random.seed(114514)
+
+
+_BOX_SAMPLE_NAME_PATTERN = re.compile(
+    r"^(?P<pdb_id>.+)_(?P<instance_id>-?\d+)_(?P<rxx>-?\d+)_(?P<ryy>-?\d+)_(?P<rzz>-?\d+)(?P<center>_C)?$"
+)
 
 
 class MyDatasets(Dataset):
@@ -41,12 +48,14 @@ class MyDatasets(Dataset):
         split_file: list[str] = None,
         mode: Optional[str] = None,
 
+        sample_root_path: Optional[str] = None,
         data_folder_names: list[str] = ["emdb_BOX", "pdb_feature_BOX", "pdb_label_BOX"],    #NOTE: 之后固定下来: "pdb_label_BOX" 当作标签, 别的都当做特征的一部分进行拼接
         class_folder_names: list[str] = ["metal_ion", "peptide", "nucleic", "small_molecule"], 
         class_mapping: list[int] = None, 
         **kwargs,
     ):
         self.all_data_path = all_data_path
+        self.sample_root_path = sample_root_path
         self.data_folder_names = data_folder_names
         self.class_folder_names = class_folder_names
         self.class_mapping = class_mapping
@@ -97,8 +106,12 @@ class MyDatasets(Dataset):
             item = self.total_sample[index]          # 形为 {k: sample_name}
             k, sample_name = next( iter(item.items()) )    # 键, 值; k 代表本样本属于第几个 class 
 
-            # int, 记录 EMDB 密度图占据的通道总数, 用于后续 hardmask 计算
-            emdb_channels = 0
+            # np.ndarray | None, (3,), 当前 BOX 的世界坐标原点
+            box_origin_world = None
+            # np.ndarray | None, (3,), 当前 BOX 的体素尺寸
+            voxel_size_world = None
+            # np.ndarray | None, (3,), 当前 BOX 的空间大小, 顺序为 (D, H, W)
+            box_shape_zyx = None
 
             for data_folder_name in self.data_folder_names:
                 sample_path = os.path.join(self.all_data_path, data_folder_name, self.class_folder_names[k], sample_name+".npz")
@@ -106,21 +119,46 @@ class MyDatasets(Dataset):
                 if "label" in data_folder_name:
                     with np.load(sample_path) as data:
                         label = data["grid"]
+                        if box_origin_world is None:
+                            box_origin_world = np.asarray(data["origin"], dtype=np.float32).reshape(3)
+                            voxel_size_world = np.asarray(data["voxel_size"], dtype=np.float32).reshape(3)
+                            box_shape_zyx = np.asarray(label.shape[-3:], dtype=np.int64)
                     if self.class_mapping is not None:
                         label = class_mapping(label, self.class_mapping)
                 else:
                     # 注意就目前来说, 所有数据都是 CDHW 的形状
                     with np.load(sample_path) as data:
                         _grid = data["grid"]
+                        if box_origin_world is None:
+                            box_origin_world = np.asarray(data["origin"], dtype=np.float32).reshape(3)
+                            voxel_size_world = np.asarray(data["voxel_size"], dtype=np.float32).reshape(3)
+                            box_shape_zyx = np.asarray(_grid.shape[-3:], dtype=np.int64)
                     # NOTE: 如果data_folder_names[k] 含有字段"emdb", 那么就对它做归一化(看成密度图或差图)
                     if "emdb" in data_folder_name:
                         _grid = (_grid - np.mean(_grid)) / (np.std(_grid) + 1e-8)
-                        emdb_channels += _grid.shape[0]   # int, 累加 EMDB 通道数(通常为1)
                     grid.append(_grid)
             grid = np.concatenate(grid, axis=0)       # np.ndarray, (C, D, H, W), float, 拼接后的完整特征网格
 
-            # 生成 hardmask: 判断 pdb_feature 部分是否全零 (全零 <--> 该体素无原子)
-            hardmask = return_hardmask(grid, emdb_channels=emdb_channels)   # np.ndarray, (D, H, W), int64, 取值0或1
+            if self.sample_root_path is None:
+                raise ValueError("MyDatasets 现在要求显式传入 sample_root_path，用于几何 hardmask 生成")
+            if box_origin_world is None or voxel_size_world is None or box_shape_zyx is None:
+                raise RuntimeError(f"[MyDatasets] 样本缺少 BOX 几何元信息: {sample_name}")
+
+            # str, 标量, 从 BOX 样本名解析出的结构 ID
+            pdb_id = _parse_box_sample_name(sample_name)
+            atoms_path = Path(self.sample_root_path) / pdb_id / "atoms.npz"
+            if not atoms_path.exists():
+                raise FileNotFoundError(f"[MyDatasets] 未找到 atoms.npz: {atoms_path}")
+            with np.load(atoms_path) as data:
+                atom_coords_world = np.asarray(data["coords"], dtype=np.float32)
+
+            # 生成 hardmask: 基于原子几何位置写入 home voxel occupancy
+            hardmask = build_hardmask_from_world_coordinates(
+                atom_coords_world=atom_coords_world,
+                box_origin_world=box_origin_world,
+                voxel_size_world=voxel_size_world,
+                box_shape_zyx=box_shape_zyx,
+            )
 
             # 数据增强与后处理 (random_rotation90_plus 接受 *x 变参, 对所有输入施加相同旋转)
             if self.istrain:
@@ -160,40 +198,17 @@ def class_mapping(label: np.ndarray, mapping: list[int]) -> np.ndarray:
     return mapped_label
 
 
-def return_hardmask(grid: np.ndarray, emdb_channels: int = 1) -> np.ndarray:
+def _parse_box_sample_name(sample_name: str) -> str:
     """
-    NOTE: 约定, 密度图类的特征占据在特征列表(data_folder_name)的位置, 属于最前部分 .
-    接受 Mydatasets 里面加载完成的 grid, 按照针对 grid 特征向量的堆叠逻辑
-    (Pocket\Make_Data\PDB_processor\features 和 Pocket\processedPDB_EMDB_binder\bind.py),
-    返回 hardmask, 供 loss 使用.
+    从 BOX 样本名中解析 `pdb_id`。
 
-    原理:
-        grid 的前 emdb_channels 个通道是 EMDB 密度图(经过 z-score 归一化, 全零不代表无原子);
-        剩余通道是 pdb_feature(来自 bind_AtomsFeature_to_EMDB, 未归一化, 体素全零 ⟺ 无原子).
-        因此只需检查 grid[emdb_channels:] 在 channel 轴上是否存在非零值.
+    Args:
+        - sample_name: str, 标量, BOX 样本名
 
-    输入参数 / Args:
-        - grid: np.ndarray, (C, D, H, W), float32, 拼接后的完整特征网格.
-                C = emdb_channels + pdb_feature_channels.
-        - emdb_channels: int, 默认1. EMDB 密度图占据的前若干个通道数.(根据 data_folder_names 中有 "emdb" 字段的文件夹决定占据的通道数)
-
-    输出 / Return:
-        - hardmask: np.ndarray, (D, H, W), int64, 取值为0或1.
-                    某个体素处取值为 0 ⟺ 这个体素处没有原子.
-
-    意义: 关注先验信息"这个体素处没有原子那么一定不是口袋",
-          所以让计算损失时忽略没有原子的体素.
+    Returns:
+        - pdb_id: str, 小写结构 ID
     """
-    # 增加简易校验：如果网格通道数甚至都不到 emdb_channels，肯定有问题
-    if grid.shape[0] <= emdb_channels:
-        raise ValueError(f"[return_hardmask] grid 的通道数({grid.shape[0]})不够或未包含其余特征，emdb_channels={emdb_channels}")
-
-    # np.ndarray, (pdb_feature_channels, D, H, W), float32
-    # 取 pdb_feature 部分 (跳过前 emdb_channels 个 EMDB 密度图通道)
-    pdb_features = grid[emdb_channels:]
-    # np.ndarray, (D, H, W), bool
-    # 对 channel 轴(axis=0)做 any: 只要有一个通道非零, 说明该体素有原子存在
-    has_atom = np.any(pdb_features != 0, axis=0)
-    # np.ndarray, (D, H, W), int64, 取值0或1
-    hardmask = has_atom.astype(np.int64)
-    return hardmask
+    matched = _BOX_SAMPLE_NAME_PATTERN.match(sample_name)
+    if matched is None:
+        raise ValueError(f"[MyDatasets] 非法 sample_name: {sample_name}")
+    return matched.group("pdb_id").lower()

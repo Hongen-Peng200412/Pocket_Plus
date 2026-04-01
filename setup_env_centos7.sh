@@ -20,8 +20,24 @@ if ! command -v conda >/dev/null 2>&1; then
     exit 1
 fi
 
+sanitize_inherited_build_env() {
+    local vars=(CC CXX CPP CUDAHOSTCXX CFLAGS CXXFLAGS CPPFLAGS LDFLAGS LDSHARED AR AS NM RANLIB STRIP OBJCOPY OBJDUMP CONDA_BUILD_SYSROOT)
+    local var
+    for var in "${vars[@]}"; do
+        if [ -n "${!var:-}" ]; then
+            echo "[Env] Clearing inherited ${var}=${!var}"
+            unset "${var}"
+        fi
+    done
+}
+
+echo "[Env] Sanitizing inherited compiler/build environment before conda env create"
+sanitize_inherited_build_env
+
 CONDA_BASE="$(conda info --base)"
+set +u
 source "${CONDA_BASE}/etc/profile.d/conda.sh"
+set -u
 
 if ! conda env list | awk '{print $1}' | grep -Fxq "${ENV_NAME}"; then
     echo "[Env] Creating base environment '${ENV_NAME}' from ${ENV_FILE}"
@@ -34,10 +50,59 @@ else
     echo "[Env] Reusing existing environment '${ENV_NAME}'"
 fi
 
-conda activate "${ENV_NAME}"
+if [ "${CONDA_DEFAULT_ENV:-}" = "${ENV_NAME}" ]; then
+    echo "[Env] '${ENV_NAME}' is already active, skipping redundant conda activate."
+else
+    set +u
+    conda activate "${ENV_NAME}"
+    set -u
+fi
 
 export PIP_DISABLE_PIP_VERSION_CHECK=1
 export PIP_DEFAULT_TIMEOUT
+
+configure_stack() {
+    local selected_stack="$1"
+    case "${selected_stack}" in
+        torch24-cu121)
+            TORCH_INDEX_URL="https://download.pytorch.org/whl/cu121"
+            TORCH_SPEC="torch==2.4.1 torchvision==0.19.1 torchaudio==2.4.1"
+            PYG_WHL_URL="https://data.pyg.org/whl/torch-2.4.0+cu121.html"
+            SPCONV_SPEC="spconv-cu121==2.3.8"
+            FLASH_ATTN_SPEC="flash-attn==2.8.3"
+            MIN_CUDA_VERSION="12.0"
+            EXPECTED_TORCH_CUDA="12.1"
+            CUDA_HOME_CANDIDATES=("/usr/local/cuda-12.1" "/usr/local/cuda")
+            ;;
+        torch21-cu118)
+            TORCH_INDEX_URL="https://download.pytorch.org/whl/cu118"
+            TORCH_SPEC="torch==2.1.2 torchvision==0.16.2 torchaudio==2.1.2"
+            PYG_WHL_URL="https://data.pyg.org/whl/torch-2.1.0+cu118.html"
+            SPCONV_SPEC="spconv-cu118==2.3.8"
+            FLASH_ATTN_SPEC="flash-attn==2.5.8"
+            MIN_CUDA_VERSION="11.6"
+            EXPECTED_TORCH_CUDA="11.8"
+            CUDA_HOME_CANDIDATES=("/usr/local/cuda-11.8" "/usr/local/cuda")
+            ;;
+        *)
+            echo "[Env] Unknown POCKET_TORCH_STACK='${selected_stack}'. Supported values: torch24-cu121, torch21-cu118"
+            exit 1
+            ;;
+    esac
+}
+
+detect_installed_torch() {
+    python - <<'PY'
+try:
+    import torch
+except Exception:
+    print("NONE|")
+else:
+    version = getattr(torch, "__version__", "UNKNOWN")
+    cuda_version = getattr(torch.version, "cuda", None) or ""
+    print(f"{version}|{cuda_version}")
+PY
+}
 
 write_runtime_hooks() {
     local activate_dir deactivate_dir
@@ -91,31 +156,45 @@ else
     echo "[Env] Skipping pip self-upgrade (set POCKET_UPGRADE_PIP=1 to enable)"
 fi
 
+echo "[Env] Installing repo-side pure Python helpers"
+pip_install_retry "rootutils==1.0.7"
+
 declare -a CUDA_HOME_CANDIDATES=()
-case "${STACK}" in
-    torch24-cu121)
-        TORCH_INDEX_URL="https://download.pytorch.org/whl/cu121"
-        TORCH_SPEC="torch==2.4.1 torchvision==0.19.1 torchaudio==2.4.1"
-        PYG_WHL_URL="https://data.pyg.org/whl/torch-2.4.0+cu121.html"
-        SPCONV_SPEC="spconv-cu121==2.3.8"
-        FLASH_ATTN_SPEC="flash-attn==2.8.3"
-        MIN_CUDA_VERSION="12.0"
-        CUDA_HOME_CANDIDATES=("/usr/local/cuda-12.1" "/usr/local/cuda")
-        ;;
-    torch21-cu118)
-        TORCH_INDEX_URL="https://download.pytorch.org/whl/cu118"
-        TORCH_SPEC="torch==2.1.2 torchvision==0.16.2 torchaudio==2.1.2"
-        PYG_WHL_URL="https://data.pyg.org/whl/torch-2.1.0+cu118.html"
-        SPCONV_SPEC="spconv-cu118==2.3.8"
-        FLASH_ATTN_SPEC="flash-attn==2.5.8"
-        MIN_CUDA_VERSION="11.6"
-        CUDA_HOME_CANDIDATES=("/usr/local/cuda-11.8" "/usr/local/cuda")
-        ;;
-    *)
-        echo "[Env] Unknown POCKET_TORCH_STACK='${STACK}'. Supported values: torch24-cu121, torch21-cu118"
-        exit 1
-        ;;
-esac
+configure_stack "${STACK}"
+
+INSTALLED_TORCH_INFO="$(detect_installed_torch)"
+INSTALLED_TORCH_VERSION="${INSTALLED_TORCH_INFO%%|*}"
+INSTALLED_TORCH_CUDA="${INSTALLED_TORCH_INFO#*|}"
+if [ "${INSTALLED_TORCH_VERSION}" != "NONE" ]; then
+    echo "[Env] Installed torch: ${INSTALLED_TORCH_VERSION} (cuda=${INSTALLED_TORCH_CUDA:-cpu})"
+fi
+
+if [ "${FLASH_ONLY}" = "1" ] && [ "${INSTALLED_TORCH_VERSION}" != "NONE" ]; then
+    case "${INSTALLED_TORCH_CUDA}" in
+        11.8)
+            if [ "${STACK}" != "torch21-cu118" ]; then
+                echo "[Env] FLASH_ONLY detected torch cuda=${INSTALLED_TORCH_CUDA}, overriding STACK -> torch21-cu118"
+                STACK="torch21-cu118"
+                configure_stack "${STACK}"
+            fi
+            ;;
+        12.1|12.2)
+            if [ "${STACK}" != "torch24-cu121" ]; then
+                echo "[Env] FLASH_ONLY detected torch cuda=${INSTALLED_TORCH_CUDA}, overriding STACK -> torch24-cu121"
+                STACK="torch24-cu121"
+                configure_stack "${STACK}"
+            fi
+            ;;
+        "")
+            echo "[Env] FLASH_ONLY requested but installed torch reports no CUDA runtime."
+            exit 1
+            ;;
+        *)
+            echo "[Env] FLASH_ONLY does not know how to map torch cuda=${INSTALLED_TORCH_CUDA} to a supported stack."
+            exit 1
+            ;;
+    esac
+fi
 
 if [ -z "${CUDA_HOME_DEFAULT}" ]; then
     for candidate in "${CUDA_HOME_CANDIDATES[@]}"; do
@@ -130,7 +209,27 @@ echo "[Env] Using CUDA_HOME default: ${CUDA_HOME_DEFAULT}"
 
 if [ "${FLASH_ONLY}" != "1" ]; then
     echo "[Env] Installing PyTorch stack: ${STACK}"
-    pip_install_retry --index-url "${TORCH_INDEX_URL}" ${TORCH_SPEC}
+    pip_install_retry --index-url "${TORCH_INDEX_URL}" --force-reinstall --no-cache-dir ${TORCH_SPEC}
+
+    echo "[Env] Verifying that torch now sees a CUDA runtime"
+    python - <<'PY'
+import torch
+cuda_version = getattr(torch.version, "cuda", None)
+print("torch:", torch.__version__)
+print("torch.version.cuda:", cuda_version)
+if not cuda_version:
+    raise SystemExit(
+        "[Env] torch still reports a CPU-only runtime after CUDA wheel installation. "
+        "Check whether a conda package pulled in cpu-only pytorch/torchvision."
+    )
+PY
+
+    echo "[Env] Installing torch-dependent training packages"
+    pip_install_retry \
+        "lightning==2.2.5" \
+        "pytorch-lightning==2.2.5" \
+        "torchmetrics==1.3.2" \
+        "timm==0.9.16"
 
     echo "[Env] Installing PyG runtime packages"
     pip_install_retry \
@@ -195,6 +294,30 @@ if nvcc < minimum:
 print(f"[Env] nvcc {nvcc} satisfies minimum CUDA toolkit requirement {minimum}.")
 PY
 
+if [ -n "${INSTALLED_TORCH_CUDA:-}" ]; then
+    python - <<PY
+from packaging.version import Version
+
+installed = Version("${INSTALLED_TORCH_CUDA}")
+nvcc = Version("${NVCC_VERSION}")
+stack = "${STACK}"
+expected = Version("${EXPECTED_TORCH_CUDA}")
+
+if stack == "torch21-cu118" and nvcc.release[:2] != installed.release[:2]:
+    raise SystemExit(
+        f"[Env] nvcc {nvcc} mismatches installed torch cuda {installed}. "
+        f"Set CUDA_HOME to a CUDA {installed} toolkit (for example /usr/local/cuda-11.8) "
+        f"or reinstall the full torch stack."
+    )
+
+if stack == "torch24-cu121" and nvcc.release[0] != expected.release[0]:
+    raise SystemExit(
+        f"[Env] nvcc {nvcc} is incompatible with stack {stack}. Expected CUDA major {expected.release[0]}."
+    )
+print(f"[Env] nvcc {nvcc} is acceptable for installed torch cuda {installed} under stack {stack}.")
+PY
+fi
+
 echo "[Env] Installing flash-attn from source for glibc 2.17 safety"
 export TORCH_CUDA_ARCH_LIST="${POCKET_TORCH_CUDA_ARCH_LIST}"
 echo "[Env] TORCH_CUDA_ARCH_LIST=${TORCH_CUDA_ARCH_LIST}"
@@ -204,7 +327,7 @@ if [ "${FLASH_REINSTALL}" = "1" ]; then
 fi
 FLASH_ATTENTION_FORCE_BUILD=TRUE MAX_JOBS="${MAX_JOBS}" TORCH_CUDA_ARCH_LIST="${TORCH_CUDA_ARCH_LIST}" \
     CC="${CC}" CXX="${CXX}" CUDAHOSTCXX="${CUDAHOSTCXX}" \
-    pip_install_retry "${FLASH_ATTN_SPEC}" --no-build-isolation --no-cache-dir --force-reinstall
+    pip_install_retry "${FLASH_ATTN_SPEC}" --no-build-isolation --no-cache-dir --force-reinstall --no-deps
 
 echo "[Env] Running import smoke test"
 python - <<'PY'

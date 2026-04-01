@@ -146,23 +146,27 @@ class PseudoAtomGenerator:
         delete_too_close_radius: float,
         delete_too_far_radius: float,
         lifecycle: list[bool],
+        recycle_policy: str = "pos",
     ) -> None:
         """
-            为每个 BOX 现场生成伪原子并处理注入/移除。不含可学习参数。
-
+            为每个 BOX 生成伪原子，并统一管理注入 / 移除与 recycle 语义。
             输入参数:
-                - base_count: int, 固定基数 b
-                - scale_factor: float, 比例系数 k, 伪原子目标数 = b + k × N_real
-                - max_sample_rounds: int, 采样-删除循环最大轮次, 建议值 3
-                - init_feat_mode: str, "zero" / "neighbor_mean"
-                - init_feat_noise_std: float, 特征高斯噪声 σ, 建议值 0.0
-                - neighbor_radius: float, "neighbor_mean" 模式邻域半径(Å), 建议值 3.0
-                - enable_density_weighting: bool, 是否启用密度加权采样
-                - density_channel_index: int, voxel_grid 中差图通道索引
-                - density_prob_base: float, 密度概率基底, 建议值 0.1
-                - delete_too_close_radius: float, r0: 对距参考点 < r0 的伪原子做聚类稀疏化, 0.0 不启用
-                - delete_too_far_radius: float, r1: 删除距所有参考点 > r1 的伪原子, 0.0 不启用
-                - lifecycle: list[bool], 长度=3, [embed_head, point_backbone, atom_head]
+                - base_count: int, 标量, 每个 BOX 的固定伪原子基数 b
+                - scale_factor: float, 标量, 按真实原子数放大的比例系数 k
+                - max_sample_rounds: int, 标量, “采样 → 删除过滤 → 补采”的最大循环轮次
+                - init_feat_mode: str, 标量, 伪原子初始特征模式, 可选 "zero" / "neighbor_mean"
+                - init_feat_noise_std: float, 标量, 伪原子特征初始化时叠加的高斯噪声标准差
+                - neighbor_radius: float, 标量, "neighbor_mean" 模式的邻域半径, 单位 Å
+                - enable_density_weighting: bool, 标量, 是否按 `voxel_grid` 密度图做加权采样
+                - density_channel_index: int, 标量, 密度采样使用的 `voxel_grid` 通道索引
+                - density_prob_base: float, 标量, 密度采样的概率基底项
+                - delete_too_close_radius: float, 标量, 聚类稀疏化半径 r0, 0.0 表示关闭
+                - delete_too_far_radius: float, 标量, 远距离删除半径 r1, 0.0 表示关闭
+                - lifecycle: list[bool], 长度 = 3, 依次表示 [embed_head, point_backbone, atom_head] 三个阶段是否存在伪原子
+                - recycle_policy: str, 标量, recycle 期间伪原子的跨轮保留策略
+                    - "non": 不保留任何伪原子状态; 下一轮重新采样位置并重新初始化属性
+                    - "pos": 仅保留位置与静态元数据; 下一轮按 `init_feat_mode` 重新初始化属性
+                    - "all": 保留位置、属性与 point recycle 隐状态; 语义上最接近旧版 persist
         """
         self.base_count = int(base_count)
         self.scale_factor = float(scale_factor)
@@ -180,6 +184,71 @@ class PseudoAtomGenerator:
         if len(lifecycle) != 3:
             raise ValueError(f"lifecycle 长度必须为 3, 当前为 {len(lifecycle)}")
         self.lifecycle = [bool(v) for v in lifecycle]
+        # str, 标量, recycle 阶段的伪原子生命周期策略
+        self.recycle_policy = str(recycle_policy).strip().lower()
+        if self.recycle_policy not in {"non", "pos", "all"}:
+            raise ValueError(
+                "recycle_policy must be one of "
+                "['non', 'pos', 'all']"
+            )
+
+    def keep_position_across_recycle(self) -> bool:
+        """
+        返回当前策略是否跨 recycle 保留伪原子位置。
+
+        输出:
+            - keep_position: bool, 标量, True 表示下一轮沿用上一轮的伪原子几何布局
+        """
+        return self.recycle_policy in {"pos", "all"}
+
+    def keep_features_across_recycle(self) -> bool:
+        """
+        返回当前策略是否跨 recycle 保留伪原子属性。
+
+        输出:
+            - keep_features: bool, 标量, True 表示下一轮直接沿用上一轮的 `pseudo_feat`
+        """
+        return self.recycle_policy == "all"
+
+    def keep_point_recycle_state_across_recycle(self) -> bool:
+        """
+        返回当前策略是否跨 recycle 保留 point 分支的伪原子隐状态。
+
+        输出:
+            - keep_point_state: bool, 标量, True 表示下一轮复用伪原子的 `point_recycle_out`
+        """
+        return self.recycle_policy == "all"
+
+    def prepare_pseudo_dict_for_recycle(
+        self,
+        batch: dict[str, Any],
+        cached_pseudo_dict: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        """
+        根据当前 recycle policy 的策略, 依据 batch 调整当前伪原子字典 cached_pseudo_dict。
+
+        输入参数:
+            - batch: dict[str, Any], 当前轮 real-only batch 视图
+            - cached_pseudo_dict: dict[str, Any] | None, 上一轮或 embed 阶段缓存的伪原子模板
+
+        输出:
+            - pseudo_dict: dict[str, Any], 与当前 batch 对齐的本轮伪原子字典
+        """
+        if cached_pseudo_dict is None or not self.keep_position_across_recycle():
+            return self.generate(batch)
+        if self.keep_features_across_recycle():
+            cached_feat = cached_pseudo_dict.get("pseudo_feat")
+            if cached_feat is None:
+                raise RuntimeError("cached_pseudo_dict is missing 'pseudo_feat' under recycle_policy='all'.")
+            target_dim = int(batch["atom_feat"].shape[1])
+            cached_dim = int(cached_feat.shape[1])
+            if cached_dim != target_dim:
+                raise RuntimeError(
+                    f"cached pseudo feature dim mismatch under recycle_policy='all': "
+                    f"cached={cached_dim}, current={target_dim}"
+                )
+            return {**cached_pseudo_dict}
+        return self.reinitialize_pseudo_features(batch=batch, pseudo_dict=cached_pseudo_dict)
 
 
 
@@ -189,8 +258,8 @@ class PseudoAtomGenerator:
     # =================================================================================================================
     # 生成与初始化逻辑
     # =================================================================================================================
-    # 根据密度信息算采样密度
-    def _compute_density_probs(
+    # 根据密度信息算采样密度  
+    def _compute_density_probs(  # TODO: 之后考虑支持多个密度信息
         self,
         batch: dict[str, Any],
         box_idx: int,
@@ -284,7 +353,7 @@ class PseudoAtomGenerator:
 
         输入参数:
             - n: int, 需要采样的点数
-            - half_extent: np.ndarray, (3,), BOX 在 centered_world 坐标系中的半跨度 (x,y,z)
+            - half_extent: np.ndarray, (3,), BOX 在 centered_world 坐标系中的半跨度 (x,y,z):= 0.5 * box_shape_xyz * voxel_size
             - density_probs: np.ndarray | None, (D*H*W,), 展平的密度概率(仅密度加权时非空)
             - voxel_size: np.ndarray, (3,), voxel 世界尺寸 (x,y,z)
             - box_shape_zyx: np.ndarray, (3,), BOX 体素网格大小 (Z,Y,X)
@@ -301,61 +370,62 @@ class PseudoAtomGenerator:
     def _apply_deletion(
         self,
         new_coords: np.ndarray,
-        ref_coords: np.ndarray,
         real_coords: np.ndarray,
     ) -> np.ndarray:
         """
-        对新采样的伪原子应用两个独立的删除过滤器。
+        对新采样的伪原子应用三个独立的过滤阶段，确保空间分布合理且无碰撞。
 
-        r0 (delete_too_close_radius): 对距参考点集 < r0 的伪原子做聚类稀疏化。
-            先找出这些"太近"的伪原子，对它们按 r0 邻接关系做贪心聚类，每个簇只保留一个代表。
-        r1 (delete_too_far_radius): 删除距所有参考点 > r1 的伪原子。
+        阶段 1 (防冲撞): 剔除距真实原子 < r0 的新候选点。
+        阶段 2 (防越界): 剔除距所有真实原子 > r1 的新候选点，限制在实际受体表面包络内。
+        阶段 3 (防扎堆): 对同批次幸存的新候选点，以 r0 为半径做内部贪心聚类稀疏化，每个相交簇仅留其一。
 
         输入参数:
-            - new_coords: np.ndarray, (M, 3), 新采样的伪原子坐标
-            - ref_coords: np.ndarray, (R, 3), 参考点集(真实原子 + 已采集伪原子)
-            - real_coords: np.ndarray, (N, 3), 真实原子坐标
+            - new_coords: np.ndarray, (M, 3), 待评估的新采样的伪原子坐标
+            - real_coords: np.ndarray, (N, 3), 真实原子坐标(防冲撞与防越界的参考基准)
 
         输出:
-            - filtered_coords: np.ndarray, (K, 3), 过滤后保留的伪原子坐标
+            - filtered_coords: np.ndarray, (K, 3), 经过严格过滤后保留的安全伪原子坐标
         """
         if new_coords.shape[0] == 0:
             return new_coords
-
-        # np.ndarray, (M,), bool, 总保留掩码
+        # np.ndarray, (M,), bool, 当前批次的全局保留掩码
         keep = np.ones(new_coords.shape[0], dtype=bool)
 
-        if self.delete_too_close_radius > 0 and ref_coords.shape[0] > 0:
-            r0 = self.delete_too_close_radius
-            # cKDTree, 参考点集的 KD 树
-            ref_tree = cKDTree(ref_coords)
-            # np.ndarray, (M,), float, 每个新点到最近参考点的距离
-            dists_to_ref, _ = ref_tree.query(new_coords, k=1)
-            # np.ndarray, (M,), bool, 距参考点 < r0 的点
-            too_close_mask = dists_to_ref < r0
-            # int, 有多少点太近
-            n_too_close = int(too_close_mask.sum())
-            if n_too_close > 0:
-                # np.ndarray, (n_too_close,), int, "太近"点在 new_coords 中的下标
-                too_close_indices = np.where(too_close_mask)[0]
-                # np.ndarray, (n_too_close, 3), "太近"点的坐标
-                too_close_coords = new_coords[too_close_indices]
-                # np.ndarray, (K_keep,), int, 聚类后保留的"太近"点的局部下标
-                local_keep = _thin_by_clustering(too_close_coords, r0)
-                # set[int], 聚类后需要删除的"太近"点在 new_coords 中的全局下标
-                too_close_remove = set(too_close_indices.tolist()) - set(too_close_indices[local_keep].tolist())
-                for idx in too_close_remove:
-                    keep[idx] = False
+        # 阶段 1 & 2：基于真实原子的距离过滤 (冲撞过滤与极远过滤)
+        if real_coords.shape[0] > 0:
+            # cKDTree, 基于真实原子建立 KD 树
+            real_tree = cKDTree(real_coords)
+            # np.ndarray, (M,), float, 所有候选点到最近真实原子的距离
+            dists_to_real, _ = real_tree.query(new_coords, k=1)
+            
+            # 阶段 1：冲撞过滤 (仅与真实原子)
+            if self.delete_too_close_radius > 0:
+                r0 = self.delete_too_close_radius
+                too_close_mask = dists_to_real < r0
+                keep[too_close_mask] = False
 
-        if self.delete_too_far_radius > 0 and ref_coords.shape[0] > 0:
-            r1 = self.delete_too_far_radius
-            # cKDTree, 参考点集的 KD 树(可能与上面相同，但避免强制依赖)
-            ref_tree = cKDTree(ref_coords)
-            # np.ndarray, (M,), float, 每个新点到最近参考点的距离
-            dists_to_ref, _ = ref_tree.query(new_coords, k=1)
-            # np.ndarray, (M,), bool, 距所有参考点 > r1 的点
-            too_far_mask = dists_to_ref > r1
-            keep[too_far_mask] = False
+            # 阶段 2：极远过滤 (仅跟真实原子)
+            if self.delete_too_far_radius > 0:
+                r1 = self.delete_too_far_radius
+                too_far_mask = dists_to_real > r1
+                keep[too_far_mask] = False
+
+        # 阶段 3：伪原子互斥聚类
+        if self.delete_too_close_radius > 0:
+            r0 = self.delete_too_close_radius
+            # np.ndarray, (S,), int, 目前所有幸存候选点在 new_coords 下标
+            survivors = np.where(keep)[0]
+            if survivors.shape[0] > 0:
+                # np.ndarray, (S, 3), 幸存点坐标
+                survivor_coords = new_coords[survivors]
+                # np.ndarray, (K_keep,), int, 按 r0 调用贪心选点后返回相对于 survivor_coords 的保留下标
+                local_keep = _thin_by_clustering(survivor_coords, r0)
+                
+                # set[int], 在幸存者集中落选的集合
+                local_drop = set(range(survivors.shape[0])) - set(local_keep.tolist())
+                for drop_idx in local_drop:
+                    orig_idx = survivors[drop_idx]
+                    keep[orig_idx] = False
 
         return new_coords[keep]
 
@@ -368,7 +438,7 @@ class PseudoAtomGenerator:
         feat_dim: int,
     ) -> np.ndarray:
         """
-        为伪原子初始化特征。
+        按照 self.init_feat_mode 为伪原子初始化特征。
 
         输入参数:
             - pseudo_coords: np.ndarray, (M, 3), 伪原子 centered_world 坐标
@@ -404,25 +474,25 @@ class PseudoAtomGenerator:
         return pseudo_feat
 
 
-    # 总函数
+    # 关于伪原子初始化的总函数
     def generate(self, batch: dict[str, Any]) -> dict[str, Any]:
         """
-            为整个 batch 生成伪原子(numpy/CPU 阶段)。
+        为整个 batch 生成伪原子(numpy/CPU 阶段)。
 
-            输入参数:
-                - batch: dict[str, Any], collate 后的 batch 字典
+        输入参数:
+            - batch: dict[str, Any], collate 后的 batch 字典
 
-            输出:
-                - pseudo_dict: dict[str, Any], 与真实原子字段同构的伪原子数据
-                    - pseudo_coord_centered_world: torch.Tensor, (sumM, 3)
-                    - pseudo_coord_local_voxel: torch.Tensor, (sumM, 3)
-                    - pseudo_coord_world: torch.Tensor, (sumM, 3)
-                    - pseudo_feat: torch.Tensor, (sumM, F)
-                    - pseudo_valid_mask: torch.Tensor, (sumM,), 全 False
-                    - pseudo_label: torch.Tensor, (sumM,), 全 0
-                    - pseudo_is_in_core_box: torch.Tensor, (sumM,), bool
-                    - pseudo_batch_index: torch.Tensor, (sumM,), long
-                    - pseudo_counts: torch.Tensor, (B,), long
+        输出:
+            - pseudo_dict: dict[str, Any], 与真实原子字段同构的伪原子数据
+                - pseudo_coord_centered_world: torch.Tensor, (sumM, 3)
+                - pseudo_coord_local_voxel: torch.Tensor, (sumM, 3)
+                - pseudo_coord_world: torch.Tensor, (sumM, 3)
+                - pseudo_feat: torch.Tensor, (sumM, F)
+                - pseudo_valid_mask: torch.Tensor, (sumM,), 全 False
+                - pseudo_label: torch.Tensor, (sumM,), 全 0
+                - pseudo_is_in_core_box: torch.Tensor, (sumM,), bool
+                - pseudo_batch_index: torch.Tensor, (sumM,), long
+                - pseudo_counts: torch.Tensor, (B,), long
         """
         # int, batch 大小
         batch_size = int(batch["box_shape_zyx"].shape[0])
@@ -459,9 +529,9 @@ class PseudoAtomGenerator:
             # torch.Tensor, (N_i,), bool, 当前 BOX 的真实原子掩码
             real_mask_i = (real_batch_index == box_idx)
             # np.ndarray, (N_i, 3), 当前 BOX 真实原子 centered_world 坐标
-            real_cw_i = real_coord_cw[real_mask_i].cpu().numpy().astype(np.float32)
+            real_cw_i = real_coord_cw[real_mask_i].detach().cpu().numpy().astype(np.float32)
             # np.ndarray, (N_i, F), 当前 BOX 真实原子特征
-            real_feat_i = real_feat[real_mask_i].cpu().numpy().astype(np.float32)
+            real_feat_i = real_feat[real_mask_i].detach().cpu().numpy().astype(np.float32)
             # int, 当前 BOX 真实原子数
             n_real_i = int(real_cw_i.shape[0])
             # int, 目标伪原子数
@@ -490,17 +560,13 @@ class PseudoAtomGenerator:
                 n_need = n_target - n_collected
                 if n_need <= 0:
                     break
-                # np.ndarray, (n_need, 3), 新撒的伪原子 centered_world 坐标
-                new_coords = self._sample_positions(n_need, half_extent, density_probs, voxel_size, box_shape_zyx)
+                # 默认生成 5 倍候选
+                n_sample = n_need * 5
+                # np.ndarray, (n_sample, 3), 新撒的伪原子 centered_world 坐标
+                new_coords = self._sample_positions(n_sample, half_extent, density_probs, voxel_size, box_shape_zyx)
 
                 # --- 删除机制 ---
-                # np.ndarray, (n_ref, 3), 参考点集 = 真实原子 + 已采集伪原子
-                if n_collected > 0:
-                    ref_coords = np.concatenate([real_cw_i] + collected_coords, axis=0)
-                else:
-                    ref_coords = real_cw_i
-
-                new_coords = self._apply_deletion(new_coords, ref_coords, real_cw_i)
+                new_coords = self._apply_deletion(new_coords, real_cw_i)
                 if new_coords.shape[0] > 0:
                     collected_coords.append(new_coords)
                     n_collected += new_coords.shape[0]
@@ -572,17 +638,145 @@ class PseudoAtomGenerator:
             "pseudo_counts": pseudo_counts_t.to(device),
         }
 
+
+
+
+
+
+
+
+
+
     # =================================================================================================================
-
-
-
-
-
-
-
+    # 与真实原子的交互
     # =================================================================================================================
-    # 对原有 batch inject / remove
-    # =================================================================================================================
+    # 基于 real-only batch 重新初始化 `pseudo_feat`
+    def reinitialize_pseudo_features(
+        self,
+        batch: dict[str, Any],
+        pseudo_dict: dict[str, Any],
+    ) -> dict[str, Any]:
+        """
+        在固定伪原子位置的前提下，基于当前 real-only batch 重新初始化 `pseudo_feat`。
+
+        输入参数:
+            - batch: dict[str, Any], 当前轮 real-only batch 视图
+            - pseudo_dict: dict[str, Any], 已缓存的伪原子模板; 其坐标与计数将被原样复用
+
+        输出:
+            - refreshed_pseudo_dict: dict[str, Any], 坐标不变但 `pseudo_feat` 已重建的伪原子字典
+        """
+        # torch.Tensor, (sumN, F), 当前 real atom 的属性特征
+        real_feat = batch["atom_feat"]
+        # torch.Tensor, (sumM, 3), 已缓存的伪原子 centered_world 坐标
+        pseudo_coord_cw = pseudo_dict["pseudo_coord_centered_world"]
+        # int, 当前 batch 的 real atom 特征维度
+        feat_dim = int(real_feat.shape[1]) if real_feat.ndim == 2 else 0
+
+        device = real_feat.device
+        dtype = real_feat.dtype
+        n_pseudo_total = pseudo_coord_cw.shape[0]
+
+        if self.init_feat_mode == "zero":
+            pseudo_feat_t = torch.zeros((n_pseudo_total, feat_dim), dtype=dtype, device=device)
+            if self.init_feat_noise_std > 0:
+                pseudo_feat_t += torch.randn_like(pseudo_feat_t) * self.init_feat_noise_std
+        else:
+            # torch.Tensor, (sumN,), long, 当前 real atom 的 batch 索引
+            real_batch_index = batch["atom_batch_index"]
+            # torch.Tensor, (sumN, 3), 当前 real atom 的 centered_world 坐标
+            real_coord_cw = batch["atom_coord_centered_world"]
+            # torch.Tensor, (B,), long, 每个 BOX 的伪原子数
+            pseudo_counts = pseudo_dict["pseudo_counts"]
+            
+            # list[np.ndarray], 每个 BOX 的伪原子特征
+            refreshed_feat_list: list[np.ndarray] = []
+            pseudo_offset = 0
+            for box_idx in range(int(pseudo_counts.shape[0])):
+                # int, 当前 BOX 的伪原子数
+                n_pseudo_i = int(pseudo_counts[box_idx].item())
+                # torch.Tensor, (N_i,), bool, 当前 BOX 的 real atom 掩码
+                real_mask_i = real_batch_index == box_idx
+                # np.ndarray, (N_i, 3), 当前 BOX 的 real atom centered_world 坐标
+                real_cw_i = real_coord_cw[real_mask_i].detach().cpu().numpy().astype(np.float32)
+                # np.ndarray, (N_i, F), 当前 BOX 的 real atom 特征
+                real_feat_i = real_feat[real_mask_i].detach().cpu().numpy().astype(np.float32)
+                # np.ndarray, (M_i, 3), 当前 BOX 的伪原子 centered_world 坐标
+                pseudo_cw_i = pseudo_coord_cw[pseudo_offset : pseudo_offset + n_pseudo_i].detach().cpu().numpy().astype(np.float32)
+                # np.ndarray, (M_i, F), 在固定坐标上重新初始化得到的伪原子特征
+                refreshed_feat_i = self._init_features(
+                    pseudo_coords=pseudo_cw_i,
+                    real_coords=real_cw_i,
+                    real_feat=real_feat_i,
+                    feat_dim=feat_dim,
+                )
+                refreshed_feat_list.append(refreshed_feat_i)
+                pseudo_offset += n_pseudo_i
+
+            if refreshed_feat_list:
+                pseudo_feat = np.concatenate(refreshed_feat_list, axis=0)
+            else:
+                pseudo_feat = np.empty((0, feat_dim), dtype=np.float32)
+                
+            pseudo_feat_t = torch.tensor(
+                pseudo_feat,
+                dtype=dtype,
+                device=device,
+            )
+
+        refreshed_pseudo_dict = {**pseudo_dict}
+        refreshed_pseudo_dict["pseudo_feat"] = pseudo_feat_t
+        return refreshed_pseudo_dict
+
+
+    # 从 batch 中提取伪原子
+    def extract_pseudo_dict_from_batch(
+        self,
+        batch: dict[str, Any],
+        split_info: list[tuple[int, int]],
+    ) -> dict[str, Any]:
+        """
+        从当前 mixed batch 中提取伪原子子字典，供阶段切换或下一轮 recycle 缓存使用。
+
+        输入参数:
+            - batch: dict[str, Any], 当前 mixed batch; 原子布局满足 `[real_i, pseudo_i]` 交错约定
+            - split_info: list[tuple[int, int]], 长度 = B, 每个 BOX 的 `(n_real, n_pseudo)`
+
+        输出:
+            - pseudo_dict: dict[str, Any], 与 `generate()` 返回格式一致的伪原子字典
+        """
+        device = batch["atom_coord_centered_world"].device
+        batch_size = len(split_info)
+        # torch.Tensor, (B,), long, 每个 BOX 的伪原子数
+        pseudo_counts = torch.tensor([np_ for _, np_ in split_info], dtype=torch.long, device=device)
+        # int, 当前 mixed batch 的总原子数
+        total_mixed = sum(nr + np_ for nr, np_ in split_info)
+        # torch.Tensor, (sumN+sumM,), bool, 伪原子掩码
+        pseudo_mask = torch.zeros(total_mixed, dtype=torch.bool, device=device)
+        offset = 0
+        for nr, np_ in split_info:
+            if np_ > 0:
+                pseudo_mask[offset + nr : offset + nr + np_] = True
+            offset += nr + np_
+
+        pseudo_batch_index = torch.repeat_interleave(
+            torch.arange(batch_size, dtype=torch.long, device=device),
+            pseudo_counts,
+        )
+        return {
+            "pseudo_coord_centered_world": batch["atom_coord_centered_world"][pseudo_mask],
+            "pseudo_coord_local_voxel": batch["atom_coord_local_voxel"][pseudo_mask],
+            "pseudo_coord_world": batch["atom_coord_world"][pseudo_mask],
+            "pseudo_feat": batch["atom_feat"][pseudo_mask],
+            "pseudo_valid_mask": batch["atom_valid_mask"][pseudo_mask],
+            "pseudo_label": batch["atom_label"][pseudo_mask],
+            "pseudo_is_in_core_box": batch["atom_is_in_core_box"][pseudo_mask],
+            "pseudo_batch_index": pseudo_batch_index,
+            "pseudo_counts": pseudo_counts,
+        }
+
+
+    # 对原有 batch inject 伪原子
     def inject(
         self,
         batch: dict[str, Any],
@@ -601,8 +795,14 @@ class PseudoAtomGenerator:
         """
         # int, batch 大小
         batch_size = int(batch["box_shape_zyx"].shape[0])
+
+        # 更新 batch["atom_counts"]
         # torch.Tensor, (B,), long, 每个 BOX 的真实原子数
-        real_counts = batch["atom_counts"] if "atom_counts" in batch else self._compute_counts(batch)
+        real_counts = batch.get("atom_counts")
+        total_real = int(batch["atom_batch_index"].shape[0])  # 全batch真实原子总数
+        if real_counts is None or int(real_counts.sum().item()) != total_real:
+            real_counts = self._compute_counts(batch)
+
         # torch.Tensor, (B,), long, 每个 BOX 的伪原子数
         pseudo_counts = pseudo_dict["pseudo_counts"]
         # list[tuple[int, int]], 长度为B, 每个样本的 (n_real, n_pseudo)
@@ -624,6 +824,7 @@ class PseudoAtomGenerator:
             "atom_valid_mask": "pseudo_valid_mask",
             "atom_label": "pseudo_label",
             "atom_is_in_core_box": "pseudo_is_in_core_box",
+            "atom_global_indices": None,
         }
         # dict[str, Any], 浅拷贝
         new_batch = {**batch}
@@ -636,10 +837,22 @@ class PseudoAtomGenerator:
             pseudo_offsets_start[1:] = torch.cumsum(pseudo_counts[:-1], dim=0)
 
         for batch_field, pseudo_field in field_map.items():
-            if batch_field not in batch or pseudo_field not in pseudo_dict:
-                continue
+            if batch_field not in batch:
+                if batch_field == "atom_global_indices":
+                    continue
+                raise ValueError(f"batch_field {batch_field} not in batch")
             real_tensor = batch[batch_field]
-            pseudo_tensor = pseudo_dict[pseudo_field]
+            if pseudo_field is None:
+                pseudo_tensor = torch.full(
+                    (int(pseudo_counts.sum().item()),),
+                    fill_value=-1,
+                    dtype=real_tensor.dtype,
+                    device=device,
+                )
+            else:
+                pseudo_tensor = pseudo_dict[pseudo_field]
+            
+
             # 交错拼接
             chunks: list[torch.Tensor] = []
             for i in range(batch_size):
@@ -670,7 +883,7 @@ class PseudoAtomGenerator:
         return new_batch, split_info
 
 
-
+    # 对原有 batch remove 伪原子
     def remove(
         self,
         batch: dict[str, Any],
@@ -710,12 +923,13 @@ class PseudoAtomGenerator:
             "atom_valid_mask",
             "atom_label",
             "atom_is_in_core_box",
+            "atom_global_indices",
         )
+        # 恢复属性
         for field_name in atom_fields:
             if field_name in batch and batch[field_name] is not None:
                 new_batch[field_name] = batch[field_name][real_mask]
-
-        # 恢复索引辅助字段
+        # 恢复索引
         real_counts_t = torch.tensor(real_counts_list, dtype=torch.long, device=device)
         new_batch["atom_counts"] = real_counts_t
         new_batch["atom_offsets"] = torch.cumsum(real_counts_t, dim=0)
@@ -734,7 +948,7 @@ class PseudoAtomGenerator:
     @staticmethod
     def _compute_counts(batch: dict[str, Any]) -> torch.Tensor:
         """
-        从 atom_batch_index 反推每个 BOX 的原子数(当 batch 中没有 atom_counts 时)。
+        由 atom_batch_index 反过来导出每个 BOX 的原子数。
 
         输入参数:
             - batch: dict[str, Any]
@@ -766,3 +980,91 @@ class PseudoAtomGenerator:
             mask[offset : offset + nr] = True
             offset += nr + np_
         return mask
+
+    @staticmethod
+    def interleave_real_and_pseudo_tensor(
+        real_tensor: torch.Tensor | None,
+        split_info: list[tuple[int, int]],
+        pseudo_tensor: torch.Tensor | None = None,
+    ) -> torch.Tensor | None:
+        """
+        按 `[real_i, pseudo_i]` 的交错布局，将 real-only 张量扩展为 mixed 张量。
+
+        输入参数:
+            - real_tensor: torch.Tensor | None, `(sumN_real, ...)` 或 `(sumN_real+sumM, ...)`, 当前 real-only 张量
+            - split_info: list[tuple[int, int]], 长度 = B, 每个 BOX 的 `(n_real, n_pseudo)`
+            - pseudo_tensor: torch.Tensor | None, `(sumM, ...)`, 需要写入 pseudo 槽位的张量; 为 None 时补零
+
+        输出:
+            - mixed_tensor: torch.Tensor | None, `(sumN_real+sumM, ...)`, 交错布局后的 mixed 张量
+        """
+        if real_tensor is None:
+            return None
+        total_real = sum(nr for nr, _ in split_info)
+        total_pseudo = sum(np_ for _, np_ in split_info)
+        total_mixed = total_real + total_pseudo
+        if real_tensor.shape[0] == total_mixed and pseudo_tensor is None:
+            return real_tensor
+        if real_tensor.shape[0] != total_real:
+            raise RuntimeError(
+                f"Expected a real-only tensor of length {total_real} or a mixed tensor of length {total_mixed}, "
+                f"but got {real_tensor.shape[0]}."
+            )
+        if pseudo_tensor is not None and pseudo_tensor.shape[0] != total_pseudo:
+            raise RuntimeError(
+                f"Expected a pseudo tensor of length {total_pseudo}, but got {pseudo_tensor.shape[0]}."
+            )
+        suffix_shape = tuple(real_tensor.shape[1:])
+        chunks: list[torch.Tensor] = []
+        real_offset = 0
+        pseudo_offset = 0
+        for nr, np_ in split_info:
+            if nr > 0:
+                chunks.append(real_tensor[real_offset : real_offset + nr])
+                real_offset += nr
+            if np_ > 0:
+                if pseudo_tensor is None:
+                    chunks.append(real_tensor.new_zeros((np_,) + suffix_shape))
+                else:
+                    chunks.append(
+                        pseudo_tensor[pseudo_offset : pseudo_offset + np_].to(
+                            device=real_tensor.device,
+                            dtype=real_tensor.dtype,
+                        )
+                    )
+                pseudo_offset += np_
+        if chunks:
+            return torch.cat(chunks, dim=0)
+        return real_tensor.new_zeros((0,) + suffix_shape)
+
+    @staticmethod
+    def extract_pseudo_tensor_from_mixed(
+        mixed_tensor: torch.Tensor | None,
+        split_info: list[tuple[int, int]],
+    ) -> torch.Tensor | None:
+        """
+        从 mixed 张量中抽取伪原子子张量。
+
+        输入参数:
+            - mixed_tensor: torch.Tensor | None, `(sumN_real+sumM, ...)`, 按 `[real_i, pseudo_i]` 交错布局的 mixed 张量
+            - split_info: list[tuple[int, int]], 长度 = B, 每个 BOX 的 `(n_real, n_pseudo)`
+
+        输出:
+            - pseudo_tensor: torch.Tensor | None, `(sumM, ...)`, 按 BOX 顺序拼接后的伪原子子张量
+        """
+        if mixed_tensor is None:
+            return None
+        total_mixed = sum(nr + np_ for nr, np_ in split_info)
+        if mixed_tensor.shape[0] != total_mixed:
+            raise RuntimeError(
+                f"Expected a mixed tensor of length {total_mixed}, but got {mixed_tensor.shape[0]}."
+            )
+        chunks: list[torch.Tensor] = []
+        offset = 0
+        for nr, np_ in split_info:
+            if np_ > 0:
+                chunks.append(mixed_tensor[offset + nr : offset + nr + np_])
+            offset += nr + np_
+        if chunks:
+            return torch.cat(chunks, dim=0)
+        return mixed_tensor.new_empty((0,) + tuple(mixed_tensor.shape[1:]))

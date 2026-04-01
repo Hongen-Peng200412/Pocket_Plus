@@ -11,15 +11,15 @@ run.py — 推断与评估的统一入口 (点云推断版): # see me: 只要不
     # 单样本推断 (可以选择后续再评估也可以不评估)
     python src/inference/run.py --config=infer \\
         +class_folder="small_molecule" +sample_name="9f3f_0_0_0_0_C" \\
-        +ckpt_path="feedback/logs/.../last.ckpt"
+        ckpt_path="feedback/logs/.../last.ckpt"
 
     # 批量推断 + 评估
     python src/inference/run.py --config=infer mode=batch \\
-        +ckpt_path="feedback/logs/.../last.ckpt"
+        ckpt_path="feedback/logs/.../last.ckpt"
 
     # 网格调参搜索
     python src/inference/run.py --config=search_best_param \\
-        mode=param_search +ckpt_path="..."
+        mode=param_search ckpt_path="..."
 
 支持的运行模式 (mode):
     - "raw_single":       单样本原始文件推断 (直接读取 .cif + .map, 全模型点云推断)
@@ -176,14 +176,14 @@ def _get_config_name() -> str:
 _CONFIG_NAME = _get_config_name()
 
 
-def _unpack_batch_results(batch_dict: dict, atom_logits: torch.Tensor) -> list:
+def _unpack_batch_results(batch_dict: dict, outputs: dict[str, Any]) -> list:
     """
     将一个 batch 的模型输出拆分回逐 BOX 的结果列表。
 
     输入参数:
         - batch_dict: dict, box_point_collate 产出的 batch dict
             含 _box_meta, atom_counts, atom_is_in_core_box, atom_coord_local_voxel, box_shape_zyx
-        - atom_logits: torch.Tensor, (sumN, C), 模型输出的原始 logits
+        - outputs: dict[str, Any], 模型前向输出, 至少包含 atom_logits
 
     输出:
         - box_results: list[dict], 每个 dict 含:
@@ -192,35 +192,46 @@ def _unpack_batch_results(batch_dict: dict, atom_logits: torch.Tensor) -> list:
     # list[dict], 每个 BOX 的推断专用元信息
     box_meta_list = batch_dict["_box_meta"]
     # torch.Tensor, (B,), long, 每个 BOX 的原子数
-    atom_counts = batch_dict["atom_counts"]
+    atom_counts = outputs.get("atom_counts", batch_dict["atom_counts"])
     # torch.Tensor, (sumN,), bool
-    atom_is_in_core = batch_dict["atom_is_in_core_box"].cpu().numpy()
+    atom_is_in_core = outputs.get("atom_is_in_core_box", batch_dict["atom_is_in_core_box"]).cpu().numpy()
     # torch.Tensor, (sumN, 3), float32
-    atom_coord_local = batch_dict["atom_coord_local_voxel"].cpu().numpy()
+    atom_coord_local = outputs.get("atom_coord_local_voxel", batch_dict["atom_coord_local_voxel"]).cpu().numpy()
+    atom_global_indices = outputs.get("atom_global_indices", batch_dict.get("atom_global_indices"))
     # torch.Tensor, (B, 3), int64
     box_shapes = batch_dict["box_shape_zyx"].cpu().numpy()
 
     # np.ndarray, (sumN, C=1) 或 (sumN,), float32
+    atom_logits = outputs["atom_logits"]
     logits_np = atom_logits.cpu().numpy()
     if logits_np.ndim == 2:
         if logits_np.shape[1] == 1:
             logits_np = logits_np[:, 0]
         else:
             raise ValueError(f"atom_logits has unexpected shape: {logits_np.shape}")
+    if atom_global_indices is None:
+        raise RuntimeError("Inference batch is missing atom_global_indices, cannot map logits back to global atoms.")
+    atom_global_indices_np = atom_global_indices.cpu().numpy()
 
     box_results = []
     offset = 0
     for i, count in enumerate(atom_counts.tolist()):
         count = int(count)
         box_results.append({
-            "global_atom_indices": box_meta_list[i]["global_atom_indices"],
+            "global_atom_indices": atom_global_indices_np[offset:offset + count].copy(),
             "atom_logits": logits_np[offset:offset + count].copy(),
             "atom_is_in_core": atom_is_in_core[offset:offset + count].copy(),
             "atom_coord_local_voxel": atom_coord_local[offset:offset + count].copy(),
             "box_shape_zyx": box_shapes[i].copy(),
+            "box_position_zyx": box_meta_list[i]["box_position_zyx"],
         })
         offset += count
 
+    if offset != logits_np.shape[0]:
+        raise RuntimeError(
+            f"Inference atom slicing mismatch: consumed={offset}, logits={logits_np.shape[0]}, "
+            f"atom_counts={tuple(int(v) for v in atom_counts.tolist())}"
+        )
     return box_results
 
 
@@ -273,9 +284,9 @@ def run_raw_point_pipeline(
     输入参数:
         - model: nn.Module, eval 模式的 VolumePointStage1Model
         - device: torch.device, 推断设备
-        - cif_path: str, 原始结构文件路径 (.cif/.pdb)
-        - map_path: str, 对应的 EMDB 密度图路径
-        - cif_gt_path: str | None, 真实结构路径（仅用于 GT 标签提取评估）
+        - cif_path: str, 原始结构文件路径 (.cif/.pdb), 必需
+        - map_path: str, 对应的 EMDB 密度图路径, 必需
+        - cif_gt_path: str | None, 真实结构路径, 仅用于 GT 标签提取评估: 在GT模式下若为None则回退到 cif_path
 
         - target_voxel_size: float, 重采样目标体素大小 (Å), 建议值 1.0
         - compute_density: bool, 是否计算原子局部密度特征
@@ -399,8 +410,8 @@ def run_raw_point_pipeline(
         )
 
         for batch_dict in batched:
-            atom_logits = run_point_inference(model, device, batch_dict)
-            batch_results = _unpack_batch_results(batch_dict, atom_logits)
+            outputs = run_point_inference(model, device, batch_dict)
+            batch_results = _unpack_batch_results(batch_dict, outputs)
 
             # 附加空间权重
             for br in batch_results:
@@ -673,8 +684,7 @@ def _run_raw_batch_mode(cfg_dict, model, device, output_root):
 
     # Excel 汇总
     if output_root and cfg_dict.get("eval_gt", False):
-        excel_path = os.path.join(output_root, "batch_results.xlsx")
-        write_batch_excel(all_results, output_root)
+        excel_path = write_batch_excel(all_results, output_root)
         print(f"[raw_batch] Excel 汇总已保存: {excel_path}")
 
 
@@ -927,7 +937,7 @@ def main(cfg: DictConfig):
     if not ckpt_path:
         raise ValueError(
             "[错误] 未指定 ckpt_path，请通过命令行传入: "
-            "+ckpt_path=\"feedback/logs/.../checkpoints/last.ckpt\""
+            "ckpt_path=\"feedback/logs/.../checkpoints/last.ckpt\""
         )
 
     device_str = cfg_dict.get("device", "cuda:0" if torch.cuda.is_available() else "cpu")

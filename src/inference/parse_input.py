@@ -40,6 +40,10 @@ from typing import Optional
 
 import numpy as np
 
+from src.datasets.box_geometry import (
+    build_hardmask_from_atom_coordinates,
+    build_hardmask_from_world_coordinates,
+)
 
 
 
@@ -63,30 +67,6 @@ def apply_class_mapping(label: np.ndarray, mapping: list) -> np.ndarray:
         mapped[label == old_id] = new_id
     return mapped
 
-def compute_hardmask(grid: np.ndarray, emdb_channels: int) -> np.ndarray:
-    """
-    计算硬掩膜：判断体素处是否有原子（基于 pdb_feature 通道是否全零）
-
-    原理:
-        grid 的前 emdb_channels 个通道是 EMDB 密度图（经 z-score 归一化，全零不代表无原子）;
-        剩余通道是 pdb_feature（未归一化，全零 ⟺ 无原子）。因此只需检查 grid[emdb_channels:] 在 channel 轴上是否存在非零值。
-
-    # NOTE：此函数假设 grid 的前 emdb_channels 个通道一定是 EMDB 密度图这要求上游 load_from_npz_dirs() 在拼接 grid_parts 时，含 "emdb" 的文件夹必须排在 data_folder_names 列表的最前面。如果顺序被调换，此处截取将出错，hardmask 会被错误计算，且不会产生任何报错（Silent Fail），直接污染下游评估结果。
-
-    Args:
-        - grid:          np.ndarray, (C, D, H, W), float32, 拼接后的完整特征网格
-        - emdb_channels: int, EMDB 密度图占据的前若干个通道数
-
-    Returns:
-        - hardmask: np.ndarray, (D, H, W), int64, 1=有原子 0=无原子
-    """
-    # np.ndarray, (pdb_feature_channels, D, H, W)
-    pdb_features = grid[emdb_channels:]
-    # np.ndarray, (D, H, W), bool
-    has_atom = np.any(pdb_features != 0, axis=0)
-    # np.ndarray, (D, H, W), int64
-    return has_atom.astype(np.int64)
-
 
 
 
@@ -102,7 +82,7 @@ def load_from_raw_cif(
     error_dir: str,
 ) -> dict:
     """
-    从原始 .cif + .map 文件加载体素化特征与属性(hardmask)，返回包含 grid, hardmask, emdb_channels, sample_name, class_folder, voxel_size, origin, atom_coords 的 dict
+    从原始 .cif + .map 文件加载体素化特征与属性(hardmask)，返回包含 grid, hardmask, emdb_channels, sample_name, class_folder, voxel_size, origin, atom_coords 的 dict。
 
     Args:
         - cif_path:           str,   原始结构文件路径 (.cif / .pdb)
@@ -127,7 +107,7 @@ def load_from_raw_cif(
         1. 加载并重采样 EMDB 密度图, 对密度图做 z-score 归一化
         2. 调用 bind_AtomsFeature_to_EMDB(pdb_path=...) , 现场生成原子特征并映射到 EMDB 体素网格
         3. 拼接 EMDB 密度图通道 + PDB 特征通道 → grid (C=50, D, H, W)
-        4. 计算 hardmask（复用 _compute_hardmask()）
+        4. 基于原子几何位置计算 hardmask
     """
     from Pocket.utils.mrc_tools import load_map, make_model_grid
     from processedPDB_EMDB_binder.bind import bind_AtomsFeature_to_EMDB
@@ -170,9 +150,16 @@ def load_from_raw_cif(
     emdb_channels = 1
 
 
-    # ---- 4. 计算 hardmask ----
-    # np.ndarray, (D', H', W'), int64, 1=有原子 0=无原子
-    hardmask = compute_hardmask(grid, emdb_channels=emdb_channels)
+    # ---- 4. 基于原子几何位置计算 hardmask ----
+    # np.ndarray, (3,), int64, 当前整图的空间大小, 顺序为 (D, H, W)
+    box_shape_zyx = np.asarray(grid.shape[-3:], dtype=np.int64)
+    # np.ndarray, (D', H', W'), int64, 1=该体素落入至少一个原子的 home voxel
+    hardmask = build_hardmask_from_world_coordinates(
+        atom_coords_world=atom_coords,
+        box_origin_world=np.asarray(origin, dtype=np.float32).reshape(3),
+        voxel_size_world=np.asarray(voxel_size, dtype=np.float32).reshape(3),
+        box_shape_zyx=box_shape_zyx,
+    )
 
 
     return {
@@ -435,7 +422,7 @@ def split_volume_to_boxes(
         - stride: int, 标量, 滑窗步长 (voxel)
         - atom_buffer_radius: float, 标量, 原子 buffer 半径 (Å), 建议值 4.0
         - valid_crop_margin: int, 标量, 监督区域裁边量 (voxel), 建议值 0
-        - emdb_channels: int, 标量, EMDB 密度图通道数
+        - emdb_channels: int, 标量, 旧接口保留参数; 当前仅用于与历史调用保持签名兼容
 
     输出:
         - box_dicts: list[dict], 每个 dict 为一个 BOX 的完整推断输入
@@ -451,10 +438,10 @@ def split_volume_to_boxes(
         build_atom_features,
         build_atom_valid_mask,
         build_voxel_valid_mask,
-        compute_hardmask as shared_compute_hardmask,
     )
 
     C, D, H, W = grid.shape
+    del emdb_channels  # 与旧接口兼容; 几何 hardmask 不再依赖特征通道布局
     # np.ndarray, (3,), float64, 体素标量大小
     voxel_size = np.asarray(voxel_size, dtype=np.float64).reshape(3)
     # np.ndarray, (3,), float64, 原点
@@ -532,9 +519,10 @@ def split_volume_to_boxes(
                     box_shape_zyx=box_shape_zyx,
                     valid_crop_margin=valid_crop_margin,
                 )
-                hardmask = shared_compute_hardmask(
-                    voxel_grid=box_grid,
-                    emdb_channels=emdb_channels,
+                hardmask = build_hardmask_from_atom_coordinates(
+                    atom_coord_local_voxel=coord_data["atom_coord_local_voxel"],
+                    atom_is_in_core_box=atom_is_in_core_box,
+                    box_shape_zyx=box_shape_zyx,
                 )
 
                 # 推断时无真实标签, 占位全零
@@ -648,6 +636,17 @@ def prepare_batched_boxes(
 
         # dict[str, Any], box_point_collate 需要标准字段
         batch_dict = box_point_collate(group)
+        total_atoms = int(batch_dict["atom_counts"].sum().item())
+        if total_atoms > 0:
+            batch_dict["atom_global_indices"] = torch.cat(
+                [
+                    torch.as_tensor(box_meta["global_atom_indices"], dtype=torch.long)
+                    for box_meta in box_meta_list
+                ],
+                dim=0,
+            )
+        else:
+            batch_dict["atom_global_indices"] = torch.empty((0,), dtype=torch.long)
         batch_dict = move_batch_to_device(batch_dict, device)
         batch_dict["_box_meta"] = box_meta_list
 

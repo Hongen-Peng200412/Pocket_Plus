@@ -196,10 +196,17 @@ def scatter_to_voxel_grid(
 
     # torch.Tensor, (N, 3), int64, 将 corner 语义坐标 floor 到体素格点索引
     voxel_idx_xyz = atom_coord_local_voxel.floor().long()
-    # clamp 到合法范围
-    voxel_idx_xyz[:, 0] = voxel_idx_xyz[:, 0].clamp(0, w_val - 1)  # x -> W
-    voxel_idx_xyz[:, 1] = voxel_idx_xyz[:, 1].clamp(0, h_val - 1)  # y -> H
-    voxel_idx_xyz[:, 2] = voxel_idx_xyz[:, 2].clamp(0, d_val - 1)  # z -> D
+    
+    # torch.Tensor, (N,), bool, 如果超出索引，直接丢掉
+    valid_mask = (
+        (voxel_idx_xyz[:, 0] >= 0) & (voxel_idx_xyz[:, 0] < w_val) &
+        (voxel_idx_xyz[:, 1] >= 0) & (voxel_idx_xyz[:, 1] < h_val) &
+        (voxel_idx_xyz[:, 2] >= 0) & (voxel_idx_xyz[:, 2] < d_val)
+    )
+    if not valid_mask.all():
+        voxel_idx_xyz = voxel_idx_xyz[valid_mask]
+        point_feat = point_feat[valid_mask]
+        point_batch = point_batch[valid_mask]
 
     # torch.Tensor, (N,), int64, 线性索引 = batch * (D*H*W) + z * (H*W) + y * W + x
     linear_idx = (
@@ -343,6 +350,7 @@ class Stage1EmbedHead(nn.Module):
         if resolve_act_layer is None:
             raise ImportError("解析激活函数需要 PTV3 相关依赖。") from _PTV3_HEAD_IMPORT_ERROR
 
+        self.atom_feature_dim = int(atom_feature_dim)
         self.embed_hidden_dim = int(embed_hidden_dim)
         self.embed_voxel_out_channels = int(embed_voxel_out_channels)
         self.embed_point_out_channels = int(embed_point_out_channels)
@@ -523,7 +531,7 @@ class Stage1EmbedHead(nn.Module):
                     cur_local_voxel = trim_result["atom_coord_local_voxel"]
                     cur_coord = trim_result["point_coord"]
                     # 更新全局掩码: global_keep_mask 中当前为 True 的位置, 只有那些 local_mask 也为 True 的才保留
-                    active_positions = global_keep_mask.nonzero(as_tuple=True)[0]
+                    active_positions = global_keep_mask.nonzero(as_tuple=True)[0]  # 返回 global_keep_mask 中为 True 的索引
                     global_keep_mask[active_positions[~local_mask]] = False
                     # 重建 Point 对象
                     point = self._make_point_and_serialize(
@@ -551,11 +559,11 @@ class Stage1EmbedHead(nn.Module):
         同时返回裁剪后的原子字段, 供 stage1_model 更新 batch 使用。
 
         输入参数:
-            - atom_feat: torch.Tensor, (sumN, F_atom), batch 内全部原子的底层特征
+            - atom_feat: torch.Tensor, (sumN, F_atom), batch 内全部原子的原始特征(49)
             - atom_coord_centered_world: torch.Tensor, (sumN, 3), 以 BOX 中心为原点的世界坐标
             - atom_batch_index: torch.Tensor, (sumN,), 每个原子所属 batch 索引
             - atom_offsets: torch.Tensor, (B,), PTV3 风格结束偏移
-            - atom_coord_local_voxel: torch.Tensor, (sumN, 3), 连续体素坐标 (x, y, z)
+            - atom_coord_local_voxel: torch.Tensor, (sumN, 3), corner 连续体素坐标 (x, y, z)
             - box_shape_zyx: torch.Tensor, (B, 3), 体素网格尺寸 (Z, Y, X)
             - voxel_size_world: torch.Tensor, (B, 3), 体素世界尺寸 (x, y, z)
             - atom_is_in_core_box: torch.Tensor, (sumN,), bool, 是否在 core box 内
@@ -565,7 +573,7 @@ class Stage1EmbedHead(nn.Module):
                 - "voxel_pdb_embed_grid": (B, embed_voxel_out_channels, D, H, W)
                 - "embed_point_feat": (sumN', embed_point_out_channels) 或 None
 
-                - "atom_feat": (sumN', F_atom), 裁剪后原子特征
+                - "atom_feat": (sumN', F_atom), 裁剪后原子的原始特征(49)
                 - "atom_coord_centered_world": (sumN', 3)
                 - "atom_batch_index": (sumN',)
                 - "atom_offsets": (B,)
@@ -736,7 +744,7 @@ class Stage1EmbedHead(nn.Module):
             final_core = cur_core
             final_local_voxel = cur_local_voxel
 
-        # 裁剪原始 atom_feat(注意: 这是裁剪 input 的 atom_feat, 不是 hidden)
+        # 裁剪原始 atom_feat(49)
         final_atom_feat = atom_feat[final_global_keep]
 
         return {

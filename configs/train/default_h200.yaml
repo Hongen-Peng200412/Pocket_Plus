@@ -1,7 +1,0 @@
-defaults:
-  - default_h100
-  - _self_
-
-# --- H200 覆盖 (Override) ---
-batch_size: 6                   # int, 覆盖 default_h100 的 batch_size
-accumulate_grad_batches: 6      # int, 覆盖 default_h100 的 accumulate_grad_batches

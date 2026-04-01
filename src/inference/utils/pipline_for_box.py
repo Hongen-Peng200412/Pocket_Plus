@@ -1,5 +1,6 @@
 import os
 import sys
+import re
 import numpy as np
 import torch
 import rootutils
@@ -29,7 +30,59 @@ from src.inference.utils.utils import (
 # =============================================================================
 # 1. 从已处理的 .npz 目录加载单个样本
 # =============================================================================
-from src.inference.parse_input import apply_class_mapping, compute_hardmask
+from src.datasets.box_geometry import build_hardmask_from_world_coordinates
+from src.inference.parse_input import apply_class_mapping
+
+
+_BOX_SAMPLE_NAME_PATTERN = re.compile(
+    r"^(?P<pdb_id>.+)_(?P<instance_id>-?\d+)_(?P<rxx>-?\d+)_(?P<ryy>-?\d+)_(?P<rzz>-?\d+)(?P<center>_C)?$"
+)
+
+
+def _parse_box_sample_name(sample_name: str) -> dict[str, str]:
+    """
+    从 BOX 样本名中解析出结构级 `pdb_id`。
+
+    输入参数:
+        - sample_name: str, 标量, BOX 样本名, 例如 `9f3f_0_0_0_0_C`
+
+    输出:
+        - dict[str, str], 仅包含:
+            - "pdb_id": str, 小写结构 ID
+    """
+    matched = _BOX_SAMPLE_NAME_PATTERN.match(sample_name)
+    if matched is None:
+        raise ValueError(f"[pipline_for_box] 非法 sample_name: {sample_name}")
+    return {"pdb_id": matched.group("pdb_id").lower()}
+
+
+def _load_atom_coords_for_box(sample_root_path: str, sample_name: str) -> np.ndarray:
+    """
+    读取 BOX 对应结构的全局原子世界坐标。
+
+    输入参数:
+        - sample_root_path: str, 标量, 结构缓存根目录, 要求其下存在 `pdb_id/atoms.npz`
+        - sample_name: str, 标量, BOX 样本名
+
+    输出:
+        - atom_coords_world: np.ndarray, (N_atom, 3), float32, 全局原子世界坐标
+    """
+    # str, 标量, 从 BOX 样本名解析出的结构 ID
+    pdb_id = _parse_box_sample_name(sample_name)["pdb_id"]
+    # Path, 标量, atoms.npz 的绝对路径
+    atoms_path = Path(sample_root_path) / pdb_id / "atoms.npz"
+    if not atoms_path.exists():
+        raise FileNotFoundError(f"[pipline_for_box] 未找到 atoms.npz: {atoms_path}")
+
+    with np.load(atoms_path) as npz_file:
+        # np.ndarray, (N_atom, 3), float32, 全局原子世界坐标
+        atom_coords_world = np.asarray(npz_file["coords"], dtype=np.float32)
+
+    if atom_coords_world.ndim != 2 or atom_coords_world.shape[1] != 3:
+        raise ValueError(
+            f"[pipline_for_box] atoms.npz 中的 coords 形状非法: {atom_coords_world.shape}, path={atoms_path}"
+        )
+    return atom_coords_world.astype(np.float32, copy=False)
 
 
 def voxel_evaluate(
@@ -120,6 +173,7 @@ def load_from_npz_dirs(
     class_folder: str,              # ["small_molecule", "metal_ion", "peptide", "nucleic"]
     data_folder_names: list = None, # ["emdb_BOX", "pdb_feature_BOX", "pdb_label_BOX"]
     sample_name: str = None,
+    sample_root_path: str = None,
     class_mapping: list = None,
 ) -> dict:
     """
@@ -131,22 +185,29 @@ def load_from_npz_dirs(
         - class_folder:      str,       类别子文件夹名（如 "small_molecule"）
         - data_folder_names: list[str], 数据文件夹列表, 默认 ["emdb_BOX", "pdb_feature_BOX", "pdb_label_BOX"]。
                              see me: 1.含 "label" 字段的文件夹被视为标签, 含 "emdb" 字段的文件夹做 z-score 归一化, 其余直接拼接为特征。
-                                   2.含 "emdb" 的文件夹必须排在所有特征文件夹之前，否则 hardmask 将会被错误计算
+                                   2.含 "emdb" 的文件夹仍建议排在最前面，以保持与训练配置一致的输入通道顺序
         - sample_name:       str,       样本名（不含 .npz 后缀，如 "9f3f_0_0_0_0_C"）
+        - sample_root_path:  str,       结构缓存根目录, 用于读取 `pdb_id/atoms.npz` 并基于原子几何位置生成 hardmask
         - class_mapping:     list[int] | None, 标签类别映射表, 例如 [0, 1, 1, 1, 1] 将 4 类口袋合并为 1 类。
 
     Returns:
         - result: dict, 包含以下键:
             - "grid":       np.ndarray, float32, (C, D, H, W), 拼接后的完整特征网格
             - "label":      np.ndarray, int64,   (D, H, W),    标签（若存在标签文件夹）; 若不存在标签文件夹则此键不存在
-            - "hardmask":   np.ndarray, int64,   (D, H, W),    硬掩膜（1=有原子, 0=无原子）
+            - "hardmask":   np.ndarray, int64,   (D, H, W),    几何定义的硬掩膜（1=至少有一个原子落入该体素）
             - "emdb_channels": int, EMDB 密度图占据的通道数
             - "sample_name": str, 样本名
             - "class_folder": str, 类别文件夹名
     """
-    grid_parts = []        # list[np.ndarray], 特征部分，后续拼接
-    label = None           # np.ndarray | None, 标签
-    emdb_channels = 0      # int, EMDB 密度图特征占的通道数
+    if sample_root_path is None:
+        raise ValueError("[pipline_for_box] load_from_npz_dirs 现在要求显式传入 sample_root_path，用于几何 hardmask 生成")
+
+    grid_parts = []                # list[np.ndarray], 特征部分，后续拼接
+    label = None                   # np.ndarray | None, 标签
+    emdb_channels = 0              # int, EMDB 密度图特征占的通道数
+    box_origin_world = None        # np.ndarray | None, (3,), 当前 BOX 的世界坐标原点
+    voxel_size_world = None        # np.ndarray | None, (3,), 当前 BOX 的体素尺寸
+    box_shape_zyx = None           # np.ndarray | None, (3,), 当前 BOX 的空间大小
 
     # 检查 emdb 文件夹是否在最前面
     non_emdb_seen = False
@@ -167,7 +228,12 @@ def load_from_npz_dirs(
             if not os.path.exists(npz_path):
                 # 标签文件不存在 → 跳过（标签可选）
                 continue
-            raw_label = np.load(npz_path)["grid"]   # np.ndarray, (1,D,H,W) 或 (D,H,W)
+            with np.load(npz_path) as npz_file:
+                raw_label = np.asarray(npz_file["grid"])   # np.ndarray, (1,D,H,W) 或 (D,H,W)
+                if box_origin_world is None:
+                    box_origin_world = np.asarray(npz_file["origin"], dtype=np.float32).reshape(3)
+                    voxel_size_world = np.asarray(npz_file["voxel_size"], dtype=np.float32).reshape(3)
+                    box_shape_zyx = np.asarray(raw_label.shape[-3:], dtype=np.int64)
             if raw_label.ndim == 4:
                 raw_label = raw_label[0]             # (1,D,H,W) → (D,H,W)
             if class_mapping is not None:
@@ -178,7 +244,12 @@ def load_from_npz_dirs(
         # ---- 特征分支 ----
         if not os.path.exists(npz_path):
             raise FileNotFoundError( f"[parse_input] 特征文件不存在: {npz_path}")
-        _grid = np.load(npz_path)["grid"]   # np.ndarray, (C_k, D, H, W), float
+        with np.load(npz_path) as npz_file:
+            _grid = np.asarray(npz_file["grid"])   # np.ndarray, (C_k, D, H, W), float
+            if box_origin_world is None:
+                box_origin_world = np.asarray(npz_file["origin"], dtype=np.float32).reshape(3)
+                voxel_size_world = np.asarray(npz_file["voxel_size"], dtype=np.float32).reshape(3)
+                box_shape_zyx = np.asarray(_grid.shape[-3:], dtype=np.int64)
         # 对 EMDB 密度图做 z-score 归一化
         if "emdb" in folder_name:
             _grid = (_grid - np.mean(_grid)) / (np.std(_grid) + 1e-8)
@@ -187,19 +258,31 @@ def load_from_npz_dirs(
 
     # 拼接特征通道
     # NOTE：拼接顺序与 data_folder_names 的遍历顺序一致。
-    #       _compute_hardmask() 假设前 emdb_channels 个通道属于 EMDB 密度图， 因此 data_folder_names 中含 "emdb" 的文件夹必须排在所有特征文件夹之前！如果调换顺序（如把 pdb_feature_BOX 排在 emdb_BOX 前面），hardmask 将会被错误计算，导致评估结果静默出错。
+    #       hardmask 已切换为几何定义，不再依赖特征通道的非零模式；
+    #       这里仍保留现有目录顺序约束，仅用于保持与训练阶段一致的输入通道布局。
     if not grid_parts:
         raise RuntimeError(
             f"[parse_input] 未找到任何特征文件: "
             f"all_data_path={all_data_path}, class_folder={class_folder}, "
             f"sample_name={sample_name}"
         )
+    if box_origin_world is None or voxel_size_world is None or box_shape_zyx is None:
+        raise RuntimeError(
+            f"[pipline_for_box] 未能从 BOX npz 读取几何元信息: "
+            f"all_data_path={all_data_path}, class_folder={class_folder}, sample_name={sample_name}"
+        )
     grid = np.concatenate(grid_parts, axis=0).astype(np.float32)
     # np.ndarray, float32, (C, D, H, W), 其中 C = sum(各特征文件夹的通道数)
 
-    # 计算 hardmask
-    hardmask = compute_hardmask(grid, emdb_channels)
-    # np.ndarray, int64, (D, H, W), 1=有原子, 0=无原子
+    # np.ndarray, (N_atom, 3), float32, 结构级全局原子世界坐标
+    atom_coords_world = _load_atom_coords_for_box(sample_root_path=sample_root_path, sample_name=sample_name)
+    # np.ndarray, int64, (D, H, W), 几何定义的 hardmask
+    hardmask = build_hardmask_from_world_coordinates(
+        atom_coords_world=atom_coords_world,
+        box_origin_world=box_origin_world,
+        voxel_size_world=voxel_size_world,
+        box_shape_zyx=box_shape_zyx,
+    )
 
     result = {
         "grid":          grid,
@@ -355,6 +438,7 @@ def run_single_pipeline(
     model: torch.nn.Module,
     device: torch.device,
     all_data_path: str,
+    sample_root_path: str,
     class_folder: str,
     sample_name: str,
     data_folder_names: list,
@@ -374,6 +458,7 @@ def run_single_pipeline(
         - model:             nn.Module,    已加载的 backbone
         - device:            torch.device, 推断设备
         - all_data_path:     str,          数据根目录
+        - sample_root_path:  str,          结构缓存根目录, 用于几何 hardmask 生成
         - class_folder:      str,          类别文件夹
         - sample_name:       str,          样本名
         - data_folder_names: list[str],    数据文件夹列表
@@ -408,6 +493,7 @@ def run_single_pipeline(
             all_data_path=all_data_path,
             class_folder=class_folder,
             sample_name=sample_name,
+            sample_root_path=sample_root_path,
             data_folder_names=data_folder_names,
             class_mapping=class_mapping,
         )
@@ -466,6 +552,7 @@ def run_batch(
     device: torch.device,
     entries: list,
     infer_params: dict,
+    sample_root_path: str,
     class_mapping: list = None,
     output_root: str = None,
     save_results: bool = True,
@@ -478,6 +565,7 @@ def run_batch(
         - device:        torch.device
         - entries:       list[dict],   prepare_data_entries() 的返回值, 位于 Pocket\src\inference\parse_input.py
         - infer_params:  dict,         推断参数 (stride / windows_size / batch_size / threshold)
+        - sample_root_path: str,       结构缓存根目录, 用于几何 hardmask 生成
         - class_mapping: list[int] | None
         - output_root:   str | None,   输出根目录; 每个样本在此下建子目录
         - save_results:  bool,         是否保存每个样本的结果到磁盘
@@ -500,6 +588,7 @@ def run_batch(
             model=model,
             device=device,
             all_data_path=entry["all_data_path"],
+            sample_root_path=sample_root_path,
             class_folder=cls,
             sample_name=name,
             data_folder_names=entry["data_folder_names"],
@@ -537,6 +626,7 @@ def run_param_search(
     entries: list,
     param_sweep_cfg: list,
     base_params: dict,
+    sample_root_path: str,
     class_mapping: list = None,
     output_root: str = "param_search_output",
 ) -> None:
@@ -549,6 +639,7 @@ def run_param_search(
         - entries:         list[dict], prepare_data_entries() 返回值, 位于 Pocket\src\inference\parse_input.py
         - param_sweep_cfg: list[dict], sweep 配置
         - base_params:     dict, 基准推断参数. param_sweep_cfg没有参数值时将作为默认值
+        - sample_root_path: str, 结构缓存根目录, 用于几何 hardmask 生成
         - class_mapping:   list[int] | None
         - output_root:     str, Excel 写出目录
     """
@@ -574,6 +665,7 @@ def run_param_search(
                     all_data_path=entry["all_data_path"],
                     class_folder=cls,
                     sample_name=name,
+                    sample_root_path=sample_root_path,
                     data_folder_names=entry["data_folder_names"],
                     class_mapping=class_mapping,
                 )
@@ -638,6 +730,7 @@ def run_param_search(
             results = run_batch(
                 model, device, entries,
                 infer_params=infer_params,
+                sample_root_path=sample_root_path,
                 class_mapping=class_mapping,
                 output_root=None,   # 调参时不保存到磁盘
                 save_results=False,
@@ -700,6 +793,7 @@ def run_single_mode(cfg_dict, model, device, all_data_path,
     """mode=single: 单样本推断 + 可选评估"""
     class_folder = cfg_dict.get("class_folder", None)
     sample_name  = cfg_dict.get("sample_name", None)
+    sample_root_path = cfg_dict.get("sample_root_path", None)
     if not class_folder or not sample_name:
         raise ValueError(
             "[错误] mode=single 需要指定 class_folder 和 sample_name。"
@@ -709,6 +803,7 @@ def run_single_mode(cfg_dict, model, device, all_data_path,
         model=model,
         device=device,
         all_data_path=all_data_path,
+        sample_root_path=sample_root_path,
         class_folder=class_folder,
         sample_name=sample_name,
         data_folder_names=data_folder_names,
@@ -739,6 +834,7 @@ def run_batch_mode(cfg_dict, model, device, all_data_path,
                     data_folder_names, class_folder_names, class_mapping,
                     infer_params, output_root):
     """mode=batch: 批量推断 + 可选评估 + Excel 汇总"""
+    sample_root_path = cfg_dict.get("sample_root_path", None)
     split_files = cfg_dict.get("split_files", None)
     if split_files is not None and not isinstance(split_files, list):
         split_files = list(split_files)
@@ -755,6 +851,7 @@ def run_batch_mode(cfg_dict, model, device, all_data_path,
     results = run_batch(
         model, device, entries,
         infer_params=infer_params,
+        sample_root_path=sample_root_path,
         class_mapping=class_mapping,
         output_root=output_root,
         save_results=True,
@@ -767,6 +864,7 @@ def run_param_search_mode(cfg_dict, model, device, all_data_path,
                            data_folder_names, class_folder_names, class_mapping,
                            base_params, output_root):
     """mode=param_search: 网格调参搜索"""
+    sample_root_path = cfg_dict.get("sample_root_path", None)
     split_files = cfg_dict.get("split_files", None)
     if split_files is not None and not isinstance(split_files, list):
         split_files = list(split_files)
@@ -790,6 +888,7 @@ def run_param_search_mode(cfg_dict, model, device, all_data_path,
         model, device, entries,
         param_sweep_cfg=param_sweep_cfg,
         base_params=base_params,
+        sample_root_path=sample_root_path,
         class_mapping=class_mapping,
         output_root=output_root,
     )

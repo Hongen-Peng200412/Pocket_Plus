@@ -10,6 +10,7 @@ model:
                                      # list[int], RAUNet 各层通道数
                                      #   映射: (enc0, enc1, enc2, enc3, bottleneck, dec3, dec2, dec1, dec0)
       gradient_checkpoint: true      # bool, 梯度检查点以节省显存
-      return_feature_keys: ["voxel_ds_2", "voxel_ds_3", "voxel_c4", "voxel_final"]
-                                     # list[str], 返回的中间特征名称; 被 point_fusion_map 引用
+      # return_feature_keys: ["voxel_ds_2", "voxel_ds_3", "voxel_c4", "voxel_final"]
+      #                                # list[str], 返回的中间特征名称; 被 point_fusion_map 引用
+      return_feature_keys: []        # 做好防护了: 取其所需
       aux_head_hidden_channels: 32   # int, 辅助分类头隐藏通道数

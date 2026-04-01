@@ -18,4 +18,5 @@ data_folder_names: ["emdb_BOX", "pdb_label_BOX"]
 # --- Buffer 原子 ---
 # float, 原子 buffer 半径(Å); 设为正值以支持 embed head 的渐进裁剪
 # embed head 的 trunk_buffer_radii / voxel_buffer_radii 应当 <= 此值
-atom_buffer_radius: 8.0
+atom_buffer_radius: 16.0
+valid_crop_margin: 10

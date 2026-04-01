@@ -18,20 +18,56 @@ else
     CONFIG_NAME="${1:-base}"
     HYDRA_OVERRIDES="${4:-}"
 fi
+
+NNODES="${2:?Error: NNODES is required}"
+DEVICES="${3:?Error: DEVICES is required}"
+
+echo "[Args] CONFIG_NAME=${CONFIG_NAME}"
+echo "[Args] HYDRA_OVERRIDES=${HYDRA_OVERRIDES:-<empty>}"
+echo "[Args] NNODES=${NNODES}"
+echo "[Args] DEVICES=${DEVICES}"
+
+is_lock_enabled() {
+    case "${1:-1}" in
+        1|true|TRUE|True|yes|YES|Yes|on|ON|On)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+LOCK_PRE_ENABLED="${POCKET_PLUS_LOCK_PRE_ENABLED:-1}"
+LOCK_AFTER_ENABLED="${POCKET_PLUS_LOCK_AFTER_ENABLED:-1}"
+
+echo "[Args] LOCK_PRE_ENABLED=${LOCK_PRE_ENABLED}"
+echo "[Args] LOCK_AFTER_ENABLED=${LOCK_AFTER_ENABLED}"
+
 LOCK_PRE="/home/penghongen/pre_lock_${SLURM_JOB_ID}"
-# touch "${LOCK_PRE}"
-echo "[Status] pre_Lock created: ${LOCK_PRE}"
-echo "[Wait] Waiting for user to delete ${LOCK_PRE} to start..."
+if is_lock_enabled "${LOCK_PRE_ENABLED}"; then
+    touch "${LOCK_PRE}"
+    echo "[Status] pre_Lock created: ${LOCK_PRE}"
+    echo "[Wait] Waiting for user to delete ${LOCK_PRE} to start..."
+else
+    echo "[Status] pre_Lock disabled by sbatch script."
+fi
 
 LOCK_AFTER="/home/penghongen/after_lock_${SLURM_JOB_ID}"
-touch "${LOCK_AFTER}"
-echo "[Status] after_Lock created: ${LOCK_AFTER}"
+if is_lock_enabled "${LOCK_AFTER_ENABLED}"; then
+    touch "${LOCK_AFTER}"
+    echo "[Status] after_Lock created: ${LOCK_AFTER}"
+else
+    echo "[Status] after_Lock disabled by sbatch script."
+fi
 
 LOCK_TRY="/home/penghongen/try_lock_${SLURM_JOB_ID}"
 
-while [ -f "${LOCK_PRE}" ]; do
-    sleep 20
-done
+if is_lock_enabled "${LOCK_PRE_ENABLED}"; then
+    while [ -f "${LOCK_PRE}" ]; do
+        sleep 20
+    done
+fi
 echo "[Start] Starting Training..."
 
 while true; do
@@ -57,6 +93,11 @@ while true; do
         echo "[Error] Training FAILED! Check error logs above."
         echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
 
+        if ! is_lock_enabled "${LOCK_AFTER_ENABLED}"; then
+            echo "[Stop] after_Lock is disabled, so the job will exit immediately after this failure."
+            break
+        fi
+
         touch "${LOCK_TRY}"
 
         echo "[Action Required] Job is PAUSED. "
@@ -77,8 +118,10 @@ while true; do
     fi
 done
 
-while [ -f "${LOCK_AFTER}" ]; do
-    sleep 20
-done
+if is_lock_enabled "${LOCK_AFTER_ENABLED}"; then
+    while [ -f "${LOCK_AFTER}" ]; do
+        sleep 20
+    done
+fi
 
 echo "[Exit] Job finished."

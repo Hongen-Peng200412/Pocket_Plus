@@ -41,6 +41,41 @@ from Bio.PDB import PDBParser, MMCIFParser
 from Make_Data.PDB_processor.config import AMINO_ACIDS, NUCLEOTIDES, DNA_NUCLEOTIDES, MODIFIED_RESIDUE_TO_PARENT
 
 
+def load_raw_pairs(raw_pairs: str | list[dict]) -> list[tuple[str, str, str | None]]:
+    """
+    将 raw_pairs 配置统一解析为 `(cif_path, map_path, cif_gt_path)` 三元组列表。
+    """
+    if not raw_pairs:
+        raise ValueError("raw_pairs/raw_pairs_json 不能为空。")
+
+    if isinstance(raw_pairs, str):
+        if not raw_pairs.endswith(".json"):
+            raise ValueError(
+                f"raw_pairs 若为字符串，当前仅支持 JSON 文件路径，收到: {raw_pairs}"
+            )
+        with open(raw_pairs, "r", encoding="utf-8-sig") as file_obj:
+            raw_pairs = json.load(file_obj)
+
+    if not isinstance(raw_pairs, list):
+        raise TypeError(
+            f"raw_pairs 必须是 JSON 路径或 list[dict]，当前类型为: {type(raw_pairs)}"
+        )
+
+    pairs: list[tuple[str, str, str | None]] = []
+    for item in raw_pairs:
+        if not isinstance(item, dict):
+            raise TypeError(
+                f"raw_pairs 的每一项都必须是 dict，当前收到: {type(item)}"
+            )
+        if "cif_path" not in item or "map_path" not in item:
+            raise KeyError(
+                "raw_pairs 的每一项都必须包含 `cif_path` 和 `map_path`。"
+            )
+        pairs.append((item["cif_path"], item["map_path"], item.get("cif_gt_path", None)))
+
+    return pairs
+
+
 def get_nucleic_ratio(file_path: str) -> float:
     """
     读取并过滤结构文件，计算核酸与蛋白的核酸/氨基酸比例.

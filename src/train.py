@@ -25,6 +25,7 @@ _fix_gloo_socket_ifname()
 
 import torch
 import torch.multiprocessing
+torch.set_float32_matmul_precision("high")
 torch.multiprocessing.set_sharing_strategy('file_system')
 import hydra
 from omegaconf import DictConfig, OmegaConf
@@ -143,6 +144,39 @@ def _initialize_lazy_modules_before_ddp(model: torch.nn.Module, datamodule: pl.L
 
 
 # Hydra 将所有子配置合并成一个大的 cfg 对象传入 main 函数: main(cfg)
+def _get_eager_backbone(model: torch.nn.Module) -> torch.nn.Module | None:
+    """Return the underlying backbone, unwrapping torch.compile if needed."""
+    backbone = getattr(model, "backbone", None)
+    if backbone is None:
+        return None
+    return getattr(backbone, "_orig_mod", backbone)
+
+
+def _prepare_model_for_batch_size_tuning(model: torch.nn.Module, verbose: bool = True) -> dict[str, object]:
+    """Make batch-size probing follow a worst-case recycle path."""
+    state: dict[str, object] = {}
+    backbone = _get_eager_backbone(model)
+    if backbone is None:
+        return state
+
+    if hasattr(backbone, "randomize_recycles"):
+        state["randomize_recycles"] = getattr(backbone, "randomize_recycles")
+        if getattr(backbone, "randomize_recycles"):
+            setattr(backbone, "randomize_recycles", False)
+            if verbose:
+                print("[Train] Batch size tuning: force deterministic max recycle passes for worst-case memory probing")
+    return state
+
+
+def _restore_model_after_batch_size_tuning(model: torch.nn.Module, state: dict[str, object]) -> None:
+    """Restore model attributes mutated for batch-size tuning."""
+    backbone = _get_eager_backbone(model)
+    if backbone is None:
+        return
+    for attr_name, attr_value in state.items():
+        setattr(backbone, attr_name, attr_value)
+
+
 @hydra.main(version_base="1.3", config_path="../configs", config_name=_CONFIG_NAME)
 
 
@@ -168,10 +202,10 @@ def main(cfg: DictConfig):
         config=cfg,
         project_root=str(ROOT),
         feedback_root=str(FEEDBACK_ROOT),
-        hard_params_keys=["model", "dataset", "post_process"]
+        experiment_group=cfg.experiment_group,
     )
     # 更新 Pl Lightning 默认根目录为我们的新运行目录
-    # str, (Path String), 实验反馈的保存路径，如...C_a的baseline\logs\VNEGNN-graspDataset-None\2023-10-01_Tag
+    # str, (Path String), 实验反馈的保存路径, 格式: {feedback_root}/logs/{experiment_group}/{tag}____{timestamp}
     run_dir = str(exp_manager.run_dir)
     if exp_manager.is_rank_zero:
         os.makedirs(os.path.join(run_dir, "checkpoints"), exist_ok=True)
@@ -214,6 +248,14 @@ def main(cfg: DictConfig):
             self.dataset_cfg = dataset_cfg
             # DictConfig, (Dict-like), 保存训练配置
             self.train_cfg = train_cfg
+            
+        @property
+        def batch_size(self):
+            return self.train_cfg.batch_size
+            
+        @batch_size.setter
+        def batch_size(self, value):
+            self.train_cfg.batch_size = value
             
         def setup(self, stage=None):  
             """
@@ -319,10 +361,18 @@ def main(cfg: DictConfig):
     if exp_manager.is_rank_zero:
         print(f"[Train] 实例化(Instantiate)模型的名字: {cfg.model.name}")
         print(f"[Train] 实例化(Instantiate)模型的路径: {cfg.model._target_}")
+    global_batch_size = cfg.train.get("global_batch_size", None)
+    batch_size_tuning_enabled = global_batch_size is not None and global_batch_size > 0
+    compile_requested = bool(cfg.model.get("compile", False))
+    compile_deferred = bool(compile_requested and batch_size_tuning_enabled)
+    if compile_deferred and exp_manager.is_rank_zero:
+        print("[Train] 检测到自动 Batch Size 探测已启用; 暂缓 torch.compile, 待 tuner 完成后再编译 backbone")
+
     model = hydra.utils.instantiate(
         cfg.model,
         optimizer=cfg.train.optimizer,
-        scheduler=cfg.train.scheduler
+        scheduler=cfg.train.scheduler,
+        compile=False if compile_deferred else compile_requested,
     )
     _initialize_lazy_modules_before_ddp(model, dm, verbose=exp_manager.is_rank_zero)
     _fix_gloo_socket_ifname()
@@ -514,12 +564,79 @@ def main(cfg: DictConfig):
         callbacks=callbacks,                              # List[Callback]
         precision=cfg.train.precision,                    # str, mixed precision setting
         gradient_clip_val=cfg.train.gradient_clip_val,    # float, gradient clipping
-        accumulate_grad_batches=cfg.train.accumulate_grad_batches, # int, 梯度累积步数
+        accumulate_grad_batches=cfg.train.get("accumulate_grad_batches", 1), # int, 默认 1
         check_val_every_n_epoch=cfg.train.check_val_every_n_epoch, # int
         log_every_n_steps=cfg.train.get("log_every_n_steps", 10), # int, 控制wandb记录日志的频率
         num_sanity_val_steps=2 # int, 用于检查bug
     )
     
+
+
+
+    # -------------- 8.5 自动推导全局 Batch Size 与 Accumulate Steps --------------
+    if global_batch_size is not None and global_batch_size > 0:
+        if exp_manager.is_rank_zero:
+            print(f"[Train] 开始自动探测显存，寻找最佳 Batch Size (目标 Global Batch = {global_batch_size})...")
+        
+        from lightning.pytorch.tuner import Tuner
+        tuner = Tuner(trainer)
+        init_val = cfg.train.get("tuning_init_batch_size", 2)
+        tuning_state = _prepare_model_for_batch_size_tuning(model, verbose=exp_manager.is_rank_zero)
+        try:
+            # Search maximum batch size that fits in memory, with exact integer precision
+            tuner.scale_batch_size(
+                model,
+                datamodule=dm,
+                mode="binsearch",
+                init_val=init_val,
+                max_trials=25
+            )
+        finally:
+            _restore_model_after_batch_size_tuning(model, tuning_state)
+
+        # Tuner only samples a few batches; leave headroom for heavier real batches.
+        found_bs = int(dm.batch_size)
+        safety_factor = float(cfg.train.get("batch_size_tuning_safety_factor", 0.8))
+        safe_bs = max(1, int(found_bs * safety_factor))
+        if safe_bs > found_bs:
+            safe_bs = found_bs
+        if found_bs > 1 and safe_bs == found_bs and safety_factor < 1.0:
+            safe_bs = found_bs - 1
+        dm.batch_size = safe_bs
+        try:
+            cfg.train.batch_size = safe_bs
+        except Exception:
+            pass
+
+        # Calculate actual accumulate_grad_batches based on the safe batch size
+        num_devices = trainer.world_size
+        accumulate_steps = max(1, global_batch_size // (safe_bs * num_devices))
+        
+        # Dynamically modify trainer's runtime property
+        trainer.accumulate_grad_batches = accumulate_steps
+
+        if exp_manager.is_rank_zero:
+            print(f"[Train] => Target Global Batch Size: {global_batch_size}")
+            print(f"[Train] => Initial per-device guess: {init_val}")
+            print(f"[Train] => Tuned per-device batch size: {found_bs}")
+            print(f"[Train] => Safe per-device batch size: {safe_bs} (safety_factor={safety_factor:.2f})")
+            print(f"[Train] => Accumulate Steps: {accumulate_steps}")
+            print(f"[Train] => world_size: {num_devices}")
+            print(f"[Train] => Effective Global Batch Size: {safe_bs * num_devices * accumulate_steps}")
+
+        if False and exp_manager.is_rank_zero:
+            print(f"[Train] => 目标 Global Batch Size: {global_batch_size}")
+            print(f"[Train] => 初始猜测单卡 Batch Size: {init_val}")
+            print(f"[Train] => 实际探测最佳单卡 Batch Size: {found_bs}")
+            print(f"[Train] => 计算得 Accumulate Steps: {accumulate_steps}")
+            print(f"[Train] => 总并行硬件数 (world_size): {num_devices}")
+            print(f"[Train] => 实际等效 Global Batch Size: {found_bs * num_devices * accumulate_steps}")
+
+    if compile_deferred:
+        if exp_manager.is_rank_zero:
+            print("[Train] 自动 Batch Size 探测完成, 开始执行 torch.compile(backbone)...")
+        model.backbone = torch.compile(model.backbone)
+
 
 
 

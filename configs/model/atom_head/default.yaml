@@ -16,7 +16,6 @@ model:
     atom_head_enable_flash: false
     atom_head_upcast_attention: false
     atom_head_upcast_softmax: false
-    atom_head_ffn_type: ${model.backbone.atom_head_ffn_type}   # str, "mlp"/"gated"/"none" (由 configs/experiment 覆盖)
     atom_head_mlp_ratio: 4
     atom_head_cpe_impl: "none"     # str, "none"/"sparseconv"/"pointconv"
     atom_head_cpe_kernel_size: 5

@@ -2,7 +2,7 @@
 # 基于原始文件结构的网格调参搜寻配置 (点云推断版)
 # =============================================================================
 # 此文件供 src/inference/run.py 使用，通过 Hydra 加载:
-#   python src/inference/run.py --config=raw_param_search_10 +ckpt_path="..."
+#   python src/inference/run.py --config=raw_param_search_10 ckpt_path="..."
 #
 # 该模式:
 #   1. 对每个 (CIF, MAP) 样本执行一次完整点云推断, 缓存逐 BOX logits (.npz)

@@ -12,8 +12,15 @@ name: default
 _target_: src.wrappers.voxel_point_stage1.VoxelPointStage1Wrapper
 
 backbone:
-  # _target_: str, 骨干网络类
   _target_: src.model.stage1_model.VolumePointStage1Model
+  atom_logit_dim: 1
+  enable_recycling: false
+  max_recycles: 1
+  randomize_recycles: false
+  detach_recycle_states: true
+  act_layer_name: "gelu"
+  ffn_type: "mlp"
+  atom_head_ffn_type: "mlp"
 
 # --- 调度器行为 ---  # see me: 调度器将会被改为 warmup+cosine，请确保 train configs 中的 scheduler 配置对应支持
 interval: "step"                   # str, 调度器更新间隔

@@ -17,11 +17,15 @@ def _write_npz(path: Path, **arrays: np.ndarray) -> None:
 def _build_dataset(
     tmp_path: Path,
     *,
+    data_folder_names: list[str] | None = None,
     label_channel_first: bool = True,
     enable_random_rotation: bool = False,
     valid_crop_margin: int = 1,
     atom_buffer_radius: float = 1.0,
 ) -> BoxPointDataset:
+    if data_folder_names is None:
+        data_folder_names = ["emdb_BOX", "pdb_feature_BOX", "pdb_label_BOX"]
+
     class_name = "small_molecule"
     sample_name = "abcd_7_0_0_0_C"
 
@@ -48,18 +52,20 @@ def _build_dataset(
         origin=origin,
         voxel_size=voxel_size,
     )
-    _write_npz(
-        all_data_path / "pdb_feature_BOX" / class_name / f"{sample_name}.npz",
-        grid=pdb_feature_grid,
-        origin=origin,
-        voxel_size=voxel_size,
-    )
-    _write_npz(
-        all_data_path / "pdb_label_BOX" / class_name / f"{sample_name}.npz",
-        grid=label_grid,
-        origin=origin,
-        voxel_size=voxel_size,
-    )
+    if "pdb_feature_BOX" in data_folder_names:
+        _write_npz(
+            all_data_path / "pdb_feature_BOX" / class_name / f"{sample_name}.npz",
+            grid=pdb_feature_grid,
+            origin=origin,
+            voxel_size=voxel_size,
+        )
+    if "pdb_label_BOX" in data_folder_names:
+        _write_npz(
+            all_data_path / "pdb_label_BOX" / class_name / f"{sample_name}.npz",
+            grid=label_grid,
+            origin=origin,
+            voxel_size=voxel_size,
+        )
 
     sample_root_path = tmp_path / "structures"
     atom_coords = np.array(
@@ -89,7 +95,7 @@ def _build_dataset(
         sample_root_path=str(sample_root_path),
         split_file=[str(split_path)],
         mode="train" if enable_random_rotation else "val",
-        data_folder_names=["emdb_BOX", "pdb_feature_BOX", "pdb_label_BOX"],
+        data_folder_names=list(data_folder_names),
         class_folder_names=[class_name],
         atom_buffer_radius=atom_buffer_radius,
         valid_crop_margin=valid_crop_margin,
@@ -117,6 +123,7 @@ def test_box_point_dataset_builds_expected_sample(tmp_path: Path) -> None:
     assert torch.isclose(emdb_grid.mean(), torch.tensor(0.0), atol=1e-6)
     assert torch.isclose(emdb_grid.std(unbiased=False), torch.tensor(1.0), atol=1e-6)
 
+    assert sample["hardmask"][1, 1, 0].item() == 1
     assert sample["hardmask"][1, 1, 1].item() == 1
     assert sample["hardmask"][0, 0, 0].item() == 0
     assert sample["voxel_label"][1, 1, 1].item() == 1
@@ -145,6 +152,20 @@ def test_load_box_npz_triplet_accepts_both_label_shapes(tmp_path: Path) -> None:
     assert tuple(box_data_4d["voxel_label"].shape) == (4, 4, 4)
     assert tuple(box_data_3d["voxel_label"].shape) == (4, 4, 4)
     assert np.array_equal(box_data_4d["voxel_label"], box_data_3d["voxel_label"])
+
+
+def test_box_point_dataset_builds_hardmask_without_pdb_feature_box(tmp_path: Path) -> None:
+    dataset = _build_dataset(
+        tmp_path,
+        data_folder_names=["emdb_BOX", "pdb_label_BOX"],
+    )
+
+    sample = dataset[0]
+
+    assert tuple(sample["voxel_grid"].shape) == (1, 4, 4, 4)
+    assert sample["hardmask"][1, 1, 0].item() == 1
+    assert sample["hardmask"][1, 1, 1].item() == 1
+    assert sample["hardmask"][0, 0, 0].item() == 0
 
 
 def test_structure_cache_reuses_loaded_data(tmp_path: Path) -> None:

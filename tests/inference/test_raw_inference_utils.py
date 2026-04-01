@@ -2,11 +2,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import json
 import torch
 from omegaconf import OmegaConf
 
 from src.inference.get_pred import load_model
 from src.inference.utils.utils import generate_param_grid
+from src.inference.utils.yield_json_from_raw_sample import load_raw_pairs
 
 
 def test_generate_param_grid_supports_dict_style_config() -> None:
@@ -53,3 +55,45 @@ def test_load_model_falls_back_to_training_snapshot_config(tmp_path: Path) -> No
     model = load_model(str(ckpt_path), device="cpu")
 
     assert isinstance(model, torch.nn.Identity)
+
+
+def test_load_raw_pairs_supports_json_file(tmp_path: Path) -> None:
+    raw_pairs_path = tmp_path / "raw_pairs.json"
+    raw_pairs_path.write_text(
+        json.dumps(
+            [
+                {
+                    "cif_path": "/tmp/sample.cif",
+                    "map_path": "/tmp/sample.map",
+                    "cif_gt_path": "/tmp/sample_gt.cif",
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    pairs = load_raw_pairs(str(raw_pairs_path))
+
+    assert pairs == [
+        ("/tmp/sample.cif", "/tmp/sample.map", "/tmp/sample_gt.cif")
+    ]
+
+
+def test_load_raw_pairs_supports_utf8_bom_json(tmp_path: Path) -> None:
+    raw_pairs_path = tmp_path / "raw_pairs_bom.json"
+    raw_pairs_path.write_bytes(
+        json.dumps(
+            [
+                {
+                    "cif_path": "/tmp/sample.cif",
+                    "map_path": "/tmp/sample.map",
+                }
+            ]
+        ).encode("utf-8-sig")
+    )
+
+    pairs = load_raw_pairs(str(raw_pairs_path))
+
+    assert pairs == [
+        ("/tmp/sample.cif", "/tmp/sample.map", None)
+    ]

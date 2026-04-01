@@ -17,7 +17,7 @@ from omegaconf import DictConfig, OmegaConf
 class ExperimentManager:
     """
     实验管理器类，主要功能包括：
-    1. 自动创建实验运行目录（包含时间戳和核心参数标签）。
+    1. 自动创建实验运行目录（以用户指定的 experiment_group 为父文件夹，包含 tag 和时间戳）。
     2. 保存配置快照（Snapshot），方便后续复现。
     3. 支持 SLURM 集群环境下的日志自动迁移。
     4. 支持异常或短期运行（可能是调试）的自动清理。
@@ -28,21 +28,22 @@ class ExperimentManager:
         config: DictConfig,
         project_root: str,
         feedback_root: str,
-        hard_params_keys: list = None,
+        experiment_group: str,
     ):
         """
         初始化实验管理器。
-        Args:
-            config: Hydra 解析后的完整配置对象。
-            project_root: 项目根路径。
-            feedback_root: 实验结果（日志、反馈）的总存储路径。
-            hard_params_keys: 需要在目录名中体现的核心参数键值列表（如模型名、数据集名）。
+
+        输入参数:
+            - config: DictConfig, 无固定形状, Hydra 解析后的完整配置对象
+            - project_root: str, 标量, 项目根路径
+            - feedback_root: str, 标量, 实验结果(日志、反馈)的总存储路径
+            - experiment_group: str, 标量, run_dir 的父文件夹名称, 由用户在 configs/experiment 中显式指定
         """
         self.config = config
         self.project_root = Path(project_root)
         self.feedback_root = Path(feedback_root)
         self.start_time = time.time()
-        self.hard_params_keys = hard_params_keys or ["model", "dataset", "loss"]            # 默认的"核心参数键"，若未提供则使用 ["model", "dataset", "loss"], 用于在 def _resolve_run_dir 创建反馈文件夹
+        self.experiment_group = self._sanitize_path_component(experiment_group)
         self.rank = int(os.environ.get("SLURM_PROCID", os.environ.get("LOCAL_RANK", "0")))
         self.is_rank_zero = self.rank == 0
         self.run_stamp, self.run_stamp_source = self._resolve_run_stamp()
@@ -80,21 +81,12 @@ class ExperimentManager:
 
     def _resolve_run_dir(self) -> Path:
         """
-        根据 hard_params_keys 寻找相应的配置信息, 如果config[key]有name这个属性, 那就把name的值加入到hard_names列表中作为日志文件名的一部分。
-        路径格式：{feedback_root}/logs/{hard_params}/{tag}____{timestamp}
+        生成本次运行的目录路径。
+        路径格式: {feedback_root}/logs/{experiment_group}/{tag}____{timestamp}
         """
-        hard_names = []
-        for key in self.hard_params_keys:
-            if key in self.config and "name" in self.config[key]:
-                hard_names.append(str(self.config[key].name))
-            else:
-                hard_names.append("Unknown")
-                print(f"[ExperimentManager] 警告: 配置中缺失关键键值 '{key}' 的 'name' 属性。")
-
-        self.hard_param_str = "-".join(hard_names)
         tag = self._sanitize_path_component(self.config.get("tag", "NoTag"))
         self.run_name = f"{tag}____{self.run_stamp}"
-        return self.feedback_root / "logs" / self.hard_param_str / self.run_name
+        return self.feedback_root / "logs" / self.experiment_group / self.run_name
 
     def _save_config_snapshot(self):
         """

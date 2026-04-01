@@ -14,6 +14,9 @@ model:
       input_embed_hidden_dim: 128    # int, 嵌入层隐藏维度
       out_channels: 64               # int, 点分支最终输出通道数
       recycle_feature_dim: 64        # int, recycle 特征维度
+      recycle_in_norm_mode: layernorm  # str, 对上一轮 point recycle_out 先做归一化再投影; "layernorm" / "none"
+      recycle_use_gate: true           # bool, 是否为 recycle 残差增加逐通道可学习门控
+      recycle_gate_init: 0.0           # float, 门控初始值; 0 表示从“几乎不注入 recycle 残差”开始学
 
       # --- 序列化 ---
       serialization_orders: ["z", "z-trans", "hilbert", "hilbert-trans"]
@@ -21,14 +24,14 @@ model:
 
       # --- 编码器/解码器 ---
       stride: [4, 2, 2, 2]          # list[int], 各层下采样步幅
-      enc_depths: [2, 2, 2, 6, 2]   # list[int], 编码器每层 Block 数
+      enc_depths: [2, 2, 2, 2, 2]   # list[int], 编码器每层 Block 数
       enc_channels: [64, 64, 128, 256, 512]
       enc_num_head: [2, 4, 8, 16, 32]
-      enc_patch_size: [256, 128, 96, 72, 64]
-      dec_depths: [2, 2, 2, 2, 0]   # list[int], 解码器; dec4=0 跳过最低分辨率(旧版兼容)
+      enc_patch_size: [512, 256, 128, 96, 72]
+      dec_depths: [3, 3, 3, 3, 6]   # list[int], 解码器; dec4=0 跳过最低分辨率(旧版兼容)
       dec_channels: [64, 64, 128, 256, 512]
       dec_num_head: [4, 4, 8, 16, 32]
-      dec_patch_size: [128, 96, 72, 64, 64]
+      dec_patch_size: [512, 256, 128, 96, 72]
 
       # --- 嵌入层 ---
       embedding_kernel_size: 5       # int, sparseconv 卷积核
@@ -50,10 +53,10 @@ model:
       qk_scale: null
       attn_drop: 0.2                 # float, 注意力 dropout
       proj_drop: 0.2                 # float, 投影 dropout
-      drop_path: 0.3                 # float, 随机深度 drop 概率
+      drop_path: 0.4                 # float, 随机深度 drop 概率
       pre_norm: true
       enable_rpe: false
-      enable_flash: false
+      enable_flash: true
       upcast_attention: false
       upcast_softmax: false
 

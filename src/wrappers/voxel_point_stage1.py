@@ -121,9 +121,21 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
         # torch.Tensor, (sumN, 1), 原子级预测 logits
         atom_logits = outputs["atom_logits"]
         # torch.Tensor, (sumN,), 原子级真值标签(0/1)
-        atom_target = batch["atom_label"]
+        atom_target = outputs.get("atom_target", batch["atom_label"])
         # torch.Tensor | None, (sumN,), 原子有效掩码(1=有效, 0=padding)
-        atom_valid_mask = batch.get("atom_valid_mask")
+        atom_valid_mask = outputs.get("atom_valid_mask", batch.get("atom_valid_mask"))
+        if atom_logits.shape[0] != atom_target.shape[0]:
+            raise RuntimeError(
+                "Atom supervision shape mismatch before loss: "
+                f"atom_logits.shape={tuple(atom_logits.shape)}, "
+                f"atom_target.shape={tuple(atom_target.shape)}"
+            )
+        if atom_valid_mask is not None and atom_valid_mask.shape[0] != atom_target.shape[0]:
+            raise RuntimeError(
+                "Atom valid-mask shape mismatch before loss: "
+                f"atom_valid_mask.shape={tuple(atom_valid_mask.shape)}, "
+                f"atom_target.shape={tuple(atom_target.shape)}"
+            )
         loss_out = self.atom_loss(
             atom_logits,
             atom_target,
@@ -220,9 +232,16 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
         # torch.Tensor, (sumN, 1), 原子级预测 logits
         atom_logits = outputs["atom_logits"]
         # torch.Tensor, (sumN,), 原子级真值标签
-        atom_target = batch["atom_label"]
+        atom_target = outputs.get("atom_target", batch["atom_label"])
         # torch.Tensor, (sumN,), bool, 原子有效掩码
-        atom_valid_mask = batch["atom_valid_mask"].bool()
+        atom_valid_mask = outputs.get("atom_valid_mask", batch["atom_valid_mask"]).bool()
+
+        if atom_logits.shape[0] != atom_target.shape[0]:
+            raise RuntimeError(
+                "Atom supervision shape mismatch before metric update: "
+                f"atom_logits.shape={tuple(atom_logits.shape)}, "
+                f"atom_target.shape={tuple(atom_target.shape)}"
+            )
 
         # int | None, 损失函数中指定的忽略标签索引
         ignore_index = getattr(self.atom_loss, "ignore_index", None)

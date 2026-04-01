@@ -13,24 +13,55 @@ set -euo pipefail
 
 PROJECT_ROOT="/home/penghongen/My_Project/Pocket_Plus"
 CONDA_BASE="/home/penghongen/anaconda3"
-CONDA_ENV_NAME="${Pocket_Plus_CONDA_ENV_NAME:-Pocket_Plus_centos7}"
+CONDA_ENV_NAME="${Pocket_Plus_CONDA_ENV_NAME:-Pocket_Plus_centos7_cu121_allgpu}"
 STACK="${POCKET_TORCH_STACK:-torch24-cu121}"
 MAX_JOBS="${MAX_JOBS:-8}"
 POCKET_TORCH_CUDA_ARCH_LIST="${POCKET_TORCH_CUDA_ARCH_LIST:-9.0}"
-
-if [ -z "${CUDA_HOME:-}" ]; then
-    if [ -d "/usr/local/cuda-12.1" ]; then
-        export CUDA_HOME="/usr/local/cuda-12.1"
-    else
-        export CUDA_HOME="/usr/local/cuda"
-    fi
-fi
 
 set +u
 source "${CONDA_BASE}/etc/profile.d/conda.sh"
 conda activate "${CONDA_ENV_NAME}"
 set -u
 unset BOOST_ROOT
+
+CURRENT_TORCH_CUDA="$(python - <<'PY'
+try:
+    import torch
+except Exception:
+    print("")
+else:
+    print(getattr(torch.version, "cuda", None) or "")
+PY
+)"
+
+if [ -z "${POCKET_TORCH_STACK:-}" ]; then
+    case "${CURRENT_TORCH_CUDA}" in
+        11.8) STACK="torch21-cu118" ;;
+        12.1|12.2) STACK="torch24-cu121" ;;
+    esac
+fi
+
+if [ -z "${CUDA_HOME:-}" ]; then
+    case "${STACK}" in
+        torch21-cu118)
+            if [ -d "/usr/local/cuda-11.8" ]; then
+                export CUDA_HOME="/usr/local/cuda-11.8"
+            else
+                export CUDA_HOME="/usr/local/cuda"
+            fi
+            ;;
+        torch24-cu121)
+            if [ -d "/usr/local/cuda-12.1" ]; then
+                export CUDA_HOME="/usr/local/cuda-12.1"
+            else
+                export CUDA_HOME="/usr/local/cuda"
+            fi
+            ;;
+        *)
+            export CUDA_HOME="/usr/local/cuda"
+            ;;
+    esac
+fi
 
 export PATH="${CUDA_HOME}/bin:${PATH}"
 if [ -n "${LD_LIBRARY_PATH:-}" ]; then
