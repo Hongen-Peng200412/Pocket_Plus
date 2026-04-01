@@ -505,7 +505,7 @@ class TestThinByClustering:
 class TestForwardWithPseudoAtoms:
     """在完整(dummy) forward 中验证伪原子注入→参与→移除。"""
 
-    def test_forward_output_only_real(self):
+    def test_atom_head_only_lifecycle_is_rejected(self):
         """用 DummyBackbone + pseudo_atom_cfg 跑 forward, 输出应只含真实原子。"""
         from torch import nn
         from src.model.stage1_model import VolumePointStage1Model
@@ -559,32 +559,34 @@ class TestForwardWithPseudoAtoms:
             lifecycle=[False, False, True],  # 只在 atom head 存在
         )
 
-        model = VolumePointStage1Model(
-            voxel_backbone=_Voxel(),
-            point_backbone=_Point(),
-            point_fusion_map={"point_feat": "voxel_c0"},
-            point_fusion_modes=("concat_linear",),
-            sampler_modes=("nearest",),
-            fusion_mlp_ratio=1.0, fusion_proj_drop=0.0,
-            atom_head_hidden_dim=8, atom_head_num_heads=1,
-            atom_head_patch_size=4, atom_head_num_layers=1,
-            atom_head_serialization_orders=("z",),
-            atom_head_shuffle_orders=False,
-            atom_head_qkv_bias=False, atom_head_qk_scale=None,
-            atom_head_attn_drop=0.0, atom_head_proj_drop=0.0,
-            atom_head_enable_rpe=False, atom_head_enable_flash=False,
-            atom_head_upcast_attention=False, atom_head_upcast_softmax=False,
-            atom_logit_dim=1,
-            enable_recycling=False, max_recycles=1,
-            randomize_recycles=False, detach_recycle_states=False,
-            act_layer_name="gelu", ffn_type="mlp",
-            atom_head_ffn_type="none", atom_head_mlp_ratio=4,
-            atom_head_cpe_impl="none", atom_head_cpe_kernel_size=5,
-            atom_head_cpe_receptive_field=2.0,
-            atom_head_pointconv_max_neighbors=16,
-            atom_head_drop_path=0.0, atom_head_pre_norm=True,
-            pseudo_atom_cfg=pseudo_cfg,
-        )
+        with pytest.raises(ValueError, match="atom head"):
+            VolumePointStage1Model(
+                voxel_backbone=_Voxel(),
+                point_backbone=_Point(),
+                point_fusion_map={"point_feat": "voxel_c0"},
+                point_fusion_modes=("concat_linear",),
+                sampler_modes=("nearest",),
+                fusion_mlp_ratio=1.0, fusion_proj_drop=0.0,
+                atom_head_hidden_dim=8, atom_head_num_heads=1,
+                atom_head_patch_size=4, atom_head_num_layers=1,
+                atom_head_serialization_orders=("z",),
+                atom_head_shuffle_orders=False,
+                atom_head_qkv_bias=False, atom_head_qk_scale=None,
+                atom_head_attn_drop=0.0, atom_head_proj_drop=0.0,
+                atom_head_enable_rpe=False, atom_head_enable_flash=False,
+                atom_head_upcast_attention=False, atom_head_upcast_softmax=False,
+                atom_logit_dim=1,
+                enable_recycling=False, max_recycles=1,
+                randomize_recycles=False, detach_recycle_states=False,
+                act_layer_name="gelu", ffn_type="mlp",
+                atom_head_ffn_type="none", atom_head_mlp_ratio=4,
+                atom_head_cpe_impl="none", atom_head_cpe_kernel_size=5,
+                atom_head_cpe_receptive_field=2.0,
+                atom_head_pointconv_max_neighbors=16,
+                atom_head_drop_path=0.0, atom_head_pre_norm=True,
+                pseudo_atom_cfg=pseudo_cfg,
+            )
+        return
         # 替换 attention stack 和 logit head 为 identity
         model.atom_token_proj = nn.Identity()
         model.atom_attention_stack = _Attn()

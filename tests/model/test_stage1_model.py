@@ -81,10 +81,10 @@ class _DummyAttentionStack(nn.Module):
         return token_feat
 
 
-def test_volume_point_stage1_skips_point_forward_when_backend_is_zeros() -> None:
+def _make_model(**overrides) -> VolumePointStage1Model:
     voxel_backbone = _DummyVoxelBackbone()
     point_backbone = _DummyZerosPointBackbone(out_channels=4, point_grid_size=0.25)
-    model = VolumePointStage1Model(
+    kwargs = dict(
         voxel_backbone=voxel_backbone,
         point_backbone=point_backbone,
         point_fusion_map={"point_feat": "voxel_c0"},
@@ -122,6 +122,13 @@ def test_volume_point_stage1_skips_point_forward_when_backend_is_zeros() -> None
         atom_head_drop_path=0.0,
         atom_head_pre_norm=True,
     )
+    kwargs.update(overrides)
+    return VolumePointStage1Model(**kwargs)
+
+
+def test_volume_point_stage1_skips_point_forward_when_backend_is_zeros() -> None:
+    point_backbone = _DummyZerosPointBackbone(out_channels=4, point_grid_size=0.25)
+    model = _make_model(point_backbone=point_backbone)
     attention_stack = _DummyAttentionStack()
     model.atom_token_proj = nn.Identity()
     model.atom_attention_stack = attention_stack
@@ -156,3 +163,36 @@ def test_volume_point_stage1_skips_point_forward_when_backend_is_zeros() -> None
     assert torch.allclose(outputs["atom_tokens"], expected_tokens)
     assert attention_stack.last_point_state is not None
     assert attention_stack.last_point_state["grid_size"] == point_backbone.point_grid_size
+
+def test_sample_voxel_feature_single_box_respects_centered_world_geometry() -> None:
+    model = _make_model()
+    voxel_feat = torch.arange(8, dtype=torch.float32).view(1, 1, 2, 2, 2)
+    sampled = model._sample_voxel_feature_single_box(
+        voxel_feat_one_box=voxel_feat,
+        point_coord_centered_world_one_box=torch.tensor(
+            [
+                [1.0, -2.0, 4.0],
+                [-1.0, 2.0, -4.0],
+            ],
+            dtype=torch.float32,
+        ),
+        voxel_size_world_one_box=torch.tensor([2.0, 4.0, 8.0], dtype=torch.float32),
+        box_shape_zyx_one_box=torch.tensor([2, 2, 2], dtype=torch.long),
+        fusion_mode="concat_linear",
+        sampler_mode="nearest",
+    )
+
+    assert sampled.shape == (2, 1)
+    assert torch.equal(sampled[:, 0], torch.tensor([5.0, 2.0]))
+
+
+def test_update_split_info_after_trim_tracks_real_and_pseudo_counts_per_box() -> None:
+    split_info = [(2, 1), (1, 2)]
+    global_keep_mask = torch.tensor([True, False, True, False, True, False], dtype=torch.bool)
+
+    updated = VolumePointStage1Model._update_split_info_after_trim(
+        split_info=split_info,
+        global_keep_mask=global_keep_mask,
+    )
+
+    assert updated == [(1, 1), (0, 1)]

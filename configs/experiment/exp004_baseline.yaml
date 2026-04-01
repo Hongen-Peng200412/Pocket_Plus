@@ -11,7 +11,7 @@ defaults:
   - override /model/point_backbone: heavy_大感受野      # 点云分支: PTV3 Dense
   - override /model/fusion: e234d4             # 融合: 4 层级全融合
   - override /model/atom_head: heavy               # Atom Head: 4 层
-  - override /model/pseudo_atom: "none"             # 伪原子
+  - override /model/pseudo_atom: "256_8"             # 伪原子
   - override /model/embed_head: heavy                # Embed Head: 关闭
   - override /loss: focal_default                   # 损失: Focal Loss
   - override /dataset: unfused_embed                        # 数据集: fused
@@ -20,8 +20,8 @@ defaults:
 
 
 # --- 实验标识 ---
-name: exp001_baseline
-tag: "伪原子0"
+name: exp004_baseline
+tag: "伪原子3"
 experiment_group: "baseline"   # str, run_dir 父文件夹名称: 存放目录为: .../logs/ experiment_group / tag___timestamp
 project_name: PV_baseline         # wandb 的项目名称
 

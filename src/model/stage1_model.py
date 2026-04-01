@@ -165,7 +165,7 @@ class VolumePointStage1Model(nn.Module):
         self,
         voxel_backbone: nn.Module | Any,
         point_backbone: nn.Module | Any,
-        point_fusion_map: dict[str, str | None],
+        point_fusion_map: dict[str, str],
         point_fusion_modes: Sequence[str],
         sampler_modes: Sequence[str],
         fusion_mlp_ratio: float,
@@ -210,7 +210,7 @@ class VolumePointStage1Model(nn.Module):
                 - point_backbone: nn.Module | Any, 点分支模块或 Hydra 配置
 
 
-                - point_fusion_map: dict[str, str | None], 点分支变量名到体素特征名的映射；若子配置想关闭继承来的某个融合项，可将对应 value 设为 null
+                - point_fusion_map: dict[str, str], 点分支变量名到体素特征名的映射
                 - sampler_modes: Sequence[str], 与 `point_fusion_map` 和 `point_fusion_modes` 等长的 voxel->point 取样策略列表；每个元素对应一次命名点变量融合
                 - point_fusion_modes: Sequence[str], 与 `point_fusion_map` 等长的融合策略列表
                 
@@ -826,11 +826,7 @@ class VolumePointStage1Model(nn.Module):
                     cached_pseudo_dict=pseudo_cache,
                 )
                 point_batch, mixed_split_info = self.pseudo_atom_gen.inject(batch, pseudo_dict)
-                pseudo_point_recycle = (
-                    pseudo_point_recycle_in
-                    if self.pseudo_atom_gen.keep_point_recycle_state_across_recycle()
-                    else None
-                )
+                pseudo_point_recycle = (pseudo_point_recycle_in if self.pseudo_atom_gen.keep_point_recycle_state_across_recycle() else None)
                 # 真实原子 recycle 状态与伪原子 recycle 状态在这里重新交错成 mixed 布局。
                 point_recycle = self._expand_real_tensor_with_pseudo_slots(
                     real_tensor=point_recycle_in,

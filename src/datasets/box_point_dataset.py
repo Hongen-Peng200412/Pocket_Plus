@@ -926,17 +926,22 @@ class BoxPointDataset(Dataset):
             rtol=3e-2,
             atol=3e-4,
         ):
-            raise ValueError(
-                "当前样本的 voxel_size_world 不是近似各向同性，"
-                f"第一版不同步 90 度旋转不支持该情况: {voxel_size_world}"
-            )
+            # raise ValueError(
+            #     "当前样本的 voxel_size_world 不是近似各向同性，"
+            #     f"第一版不同步 90 度旋转不支持该情况: {voxel_size_world}"
+            # )
+            print("当前样本的 voxel_size_world 不是近似各向同性，"
+                f"第一版不同步 90 度旋转不支持该情况: {voxel_size_world}")
 
         if (k % 2) == 1 and int(box_shape_zyx[axis1]) != int(box_shape_zyx[axis2]):
-            raise ValueError(
-                "当前样本的旋转平面两轴长度不同，"
+            # raise ValueError(
+            #     "当前样本的旋转平面两轴长度不同，"
+            #     "第一版为了避免世界坐标语义混乱，不支持这种 90 度轴交换旋转。"
+            #     f" box_shape_zyx={box_shape_zyx}, axis1={axis1}, axis2={axis2}, k={k}"
+            # )
+            print("当前样本的旋转平面两轴长度不同，"
                 "第一版为了避免世界坐标语义混乱，不支持这种 90 度轴交换旋转。"
-                f" box_shape_zyx={box_shape_zyx}, axis1={axis1}, axis2={axis2}, k={k}"
-            )
+                f" box_shape_zyx={box_shape_zyx}, axis1={axis1}, axis2={axis2}, k={k}")
 
     def _apply_synced_rotation(self, sample_dict: dict[str, Any]) -> dict[str, Any]:
         """

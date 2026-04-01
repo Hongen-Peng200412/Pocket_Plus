@@ -2,9 +2,9 @@
 model:
   backbone:
     pseudo_atom_cfg:
-      base_count: 64               # int, 固定基数
-      scale_factor: 0.4            # float, 比例系数 k
-      max_sample_rounds: 5         # int, 采样-删除循环最大轮次
+      base_count: 256               # int, 固定基数
+      scale_factor: 0.8            # float, 比例系数 k
+      max_sample_rounds: 20         # int, 采样-删除循环最大轮次
       init_feat_mode: "zero"       # str, "zero" / "neighbor_mean", 初始化伪原子特征
       init_feat_noise_std: 0.1
       neighbor_radius: 3.0         # float, 邻域半径(Å), "neighbor_mean" 模式下确定伪原子特征
