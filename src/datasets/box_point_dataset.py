@@ -38,8 +38,16 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 
-from .box_geometry import build_hardmask_from_atom_coordinates
+from .box_geometry import (
+    build_atom_coordinates,
+    build_atom_features,
+    build_atom_valid_mask,
+    build_hardmask_from_atom_coordinates,
+    build_voxel_valid_mask,
+    select_atoms_for_box,
+)
 from .box_point_collate import box_point_collate
+from .box_sample_builder import build_box_point_numpy_sample, to_torch_sample
 
 
 _SAMPLE_NAME_PATTERN = re.compile(
@@ -524,223 +532,6 @@ class BoxPointDataset(Dataset):
 
 
 
-
-
-    # # ------------------------------------------------- 按照BOX的空间范围筛选原子与体素(原子有三层: 核心的监督BOX、BOX、选中) -------------------------------------------------
-    def _select_atoms_for_box(
-        self,
-        atom_coords_world: np.ndarray,
-        box_origin_world: np.ndarray,
-        voxel_size_world: np.ndarray,
-        box_shape_zyx: np.ndarray,
-        buffer_radius: float,
-    ) -> dict[str, np.ndarray]:
-        """
-        先选 box 内原子，再从这个BOX额外地扩张 buffer 内原子。
-
-        输入:
-            - atom_coords_world: numpy.ndarray, 形如 (N_atom, 3), 表示原子在世界坐标系下的三维坐标，顺序为 (x, y, z)。
-            - box_origin_world: numpy.ndarray, 形如 (3,), 表示当前 BOX 左下近角点在世界坐标系下的坐标，顺序为 (x, y, z)。
-            - voxel_size_world: numpy.ndarray, 形如 (3,), 表示当前 BOX 中每个体素的世界物理尺寸，顺序为 (x, y, z)。
-            - box_shape_zyx: numpy.ndarray, 形如 (3,), 表示当前 BOX 的体素网格大小，顺序为 (Z, Y, X)，对应 (depth, height, width)。
-            - buffer_radius: float, 标量, 表示在 box 外部额外扩展接受原子的世界坐标半径。
-
-        输出:
-            - 返回一个 dict[str, numpy.ndarray] 字典:
-                - "selected_idx": numpy.ndarray, 形如 (N_selected,), int64，表示被选中（包含在 box 或扩展 buffer 内）的原子的原始索引。
-                - "atom_is_in_core_box": numpy.ndarray, 形如 (N_selected,), bool，表示被选中的原子是否位于 box 内(另一部分是buffer外边界)
-        """
-        box_shape_xyz = box_shape_zyx[[2, 1, 0]].astype(np.float32)   # Z/Y/X -> X/Y/Z
-        # numpy.ndarray, (3,), 类型 float32，表示当前 BOX 在世界坐标系下的最大边界坐标 (x_max, y_max, z_max)
-        box_max_world = box_origin_world + box_shape_xyz * voxel_size_world
-
-        # core_mask: 落在当前 BOX 内部的原子。
-        # numpy.ndarray, (N_atom,), 类型 bool，将会标记哪些原子在当前 BOX 内
-        core_mask = np.all(atom_coords_world >= box_origin_world[None, :], axis=1)
-        core_mask &= np.all(atom_coords_world < box_max_world[None, :], axis=1)
-
-        buffer_min_world = box_origin_world - float(buffer_radius)
-        buffer_max_world = box_max_world + float(buffer_radius)
-        # numpy.ndarray, (N_atom,), 类型 bool，将会表示外扩 buffer 最小边界内的原子
-        selected_mask = np.all(atom_coords_world >= buffer_min_world[None, :], axis=1)
-        selected_mask &= np.all(atom_coords_world < buffer_max_world[None, :], axis=1)
-
-        # numpy.ndarray, (N_selected,), 类型 int64，从 selected_mask 提取出的选中原子的下标数组
-        # 当传入一个 1D 布尔数组时，np.where(selected_mask) 返回的是一个元组，例如 (array([1, 4, 5...]),), 其中的第一个元素就是所有值为 True 的元素的下标数组。加上 [0] 把这个下标数组单独提取出来。
-        selected_idx = np.where(selected_mask)[0].astype(np.int64)
-        # numpy.ndarray, (N_selected,), 类型 bool，对应于选中的原子的是否在 box 内(另一部分是buffer外边界)
-        atom_is_in_core_box = core_mask[selected_idx]
-        
-        return {
-            "selected_idx": selected_idx,
-            "atom_is_in_core_box": atom_is_in_core_box.astype(bool, copy=False),
-        }
-
-    def _build_atom_labels(
-        self,
-        labels_dict: dict[str, np.ndarray],
-        selected_idx: np.ndarray,
-    ) -> np.ndarray:
-        """
-        返回选中原子(BOX内部+buffer)的分类标签, 来源为 pocket_class_ids, 并经 class_mapping 映射。
-
-        输入:
-            - labels_dict: dict[str, numpy.ndarray], 包含原始原子的标签信息的字典，从labels.npz读出: labels_dict = _load_structure_npz_cached(parsed_name["pdb_id"])
-            - selected_idx: numpy.ndarray, 形如 (N_selected,), 选中的原子索引。
-
-        输出:
-            - numpy.ndarray, 形如 (N_selected,), 类型为 int64, 经 class_mapping 映射后的原子分类标签。
-        """
-        # numpy.ndarray, (N_selected,), int64, 按 pocket_class_ids 取出选中原子的多分类标签
-        atom_label = labels_dict["pocket_class_ids"][selected_idx].astype(np.int64, copy=False)
-        # 若配置了 class_mapping，则与 voxel label 走同一套映射
-        if self.class_mapping is not None:
-            atom_label = self._apply_class_mapping(atom_label, self.class_mapping)
-        return atom_label
-
-    def _build_atom_features(
-        self,
-        atom_features_raw: np.ndarray,
-        selected_idx: np.ndarray,
-    ) -> np.ndarray:
-        """
-        构造 atom_feat。
-        第一版保持 atom 原始特征不变，不把 `core_flag` 或监督 mask 混入底层 `atom_feat`。
-
-        输入:
-            - atom_features_raw: numpy.ndarray, 形如 (N_atom, F_raw), 所有原子的原始特征。
-            - selected_idx: numpy.ndarray, 形如 (N_selected,), 被选中原子的下标。
-
-        输出:
-            - numpy.ndarray, 形如 (N_selected, F_raw), 最终传入 point branch 的原子级别特征。
-        """
-        # numpy.ndarray, (N_selected, F_raw), float32 类型，取出被选中原子的原始特征，F_raw 一般为 49
-        selected_raw = atom_features_raw[selected_idx].astype(np.float32, copy=False)        # (N_selected, F_raw)
-        return selected_raw.astype(np.float32, copy=False)
-
-    def _build_atom_coordinates(
-        self,
-        atom_coords_world: np.ndarray,
-        selected_idx: np.ndarray,
-        box_origin_world: np.ndarray,
-        voxel_size_world: np.ndarray,
-        box_shape_zyx: np.ndarray,
-    ) -> dict[str, np.ndarray]:
-        """
-        为选中的原子同时生成三套坐标表示。
-
-        返回的三套坐标分别是:
-            - `atom_coord_world`: 世界坐标，顺序 `(x, y, z)`。
-            - `atom_coord_local_voxel`: 连续 voxel 坐标，顺序仍是 `(x, y, z)`，数值语义是“距离 BOX (左下)原点多少个 voxel”。
-              这里保留的是角点语义：若原子正好位于第 `i/j/k` 个 voxel 的中心，则坐标应为 `(i+0.5, j+0.5, k+0.5)`。
-            - `atom_coord_centered_world`: 以 BOX 中心为原点的世界坐标，顺序 `(x, y, z)`。
-
-        输入:
-            - atom_coords_world: numpy.ndarray, 形如 (N_atom, 3), 所有原子的世界坐标。
-            - selected_idx: numpy.ndarray, 形如 (N_selected,), 选中的原子索引。
-            - box_origin_world: numpy.ndarray, 形如 (3,), BOX的原点世界坐标 (x,y,z)。
-            - voxel_size_world: numpy.ndarray, 形如 (3,), BOX的世界物理体素大小 (x,y,z)。
-            - box_shape_zyx: numpy.ndarray, 形如 (3,), BOX的体素网格大小，顺序 (Z,Y,X)。
-
-        输出:
-            - dict[str, numpy.ndarray] 字典:
-                - "atom_coord_world": numpy.ndarray, (N_selected, 3), 原子的纯世界坐标 (X,Y,Z)。
-                - "atom_coord_local_voxel": numpy.ndarray, (N_selected, 3), 连续的体素网格空间坐标 (X,Y,Z), 采用角点语义。
-                - "atom_coord_centered_world": numpy.ndarray, (N_selected, 3), 以 BOX 中心为原点的世界坐标 (X,Y,Z)。
-        """
-        # numpy.ndarray, (N_selected, 3), float32 类型，选中原子的世界坐标
-        selected_coord_world = atom_coords_world[selected_idx].astype(np.float32, copy=False)
-        # numpy.ndarray, (N_selected, 3), float32 类型，基于 BOX 原点及 voxel 大小映射后的连续体素坐标(角点语义)
-        atom_coord_local_voxel = (
-            (selected_coord_world - box_origin_world[None, :]) / voxel_size_world[None, :]
-        ).astype(np.float32, copy=False)
-        box_shape_xyz = box_shape_zyx[[2, 1, 0]].astype(np.float32)
-        # numpy.ndarray, (3,), float32 类型，BOX 的中心世界坐标
-        box_center_world = box_origin_world + 0.5 * box_shape_xyz * voxel_size_world
-        # numpy.ndarray, (N_selected, 3), float32 类型，每个原子相对于当前 BOX 中心的世界坐标
-        atom_coord_centered_world = selected_coord_world - box_center_world[None, :]
-
-        return {
-            "atom_coord_world": selected_coord_world,
-            "atom_coord_local_voxel": atom_coord_local_voxel,
-            "atom_coord_centered_world": atom_coord_centered_world.astype(np.float32, copy=False),
-        }
-
-    def _build_voxel_valid_mask(
-        self,
-        box_shape_zyx: np.ndarray,
-    ) -> np.ndarray:
-        """
-        构造 voxel 辅助监督掩码: 在六个面各无条件裁掉 `valid_crop_margin` 个 voxel。
-
-        输入:
-            - box_shape_zyx: numpy.ndarray, 形如 (3,), 表示体素数组空间大小信息，顺序为 (depth, height, width)。
-
-        输出:
-            - numpy.ndarray, 形如 (D, H, W), 类型 bool。`True` 表示该位置参与 voxel 监督，`False` 表示该位置被边界裁掉。
-        """
-        # int 标量类型，分别代表 Z, Y, X 三个维度在体素空间中的格子数量
-        depth, height, width = [int(v) for v in box_shape_zyx.tolist()]
-        # numpy.ndarray, (D, H, W), 类型 bool，初始化全为 True 的初始体素掩码
-        voxel_valid_mask = np.ones((depth, height, width), dtype=bool)
-        # int 标量类型，从类的属性中获取需要向内裁剪的边缘层数
-        margin = int(self.valid_crop_margin)
-        if margin <= 0:
-            return voxel_valid_mask
-
-        # 六个面各裁掉 margin 个 voxel
-        voxel_valid_mask[: min(margin, depth), :, :] = False
-        voxel_valid_mask[max(depth - margin, 0) :, :, :] = False
-        voxel_valid_mask[:, : min(margin, height), :] = False
-        voxel_valid_mask[:, max(height - margin, 0) :, :] = False
-        voxel_valid_mask[:, :, : min(margin, width)] = False
-        voxel_valid_mask[:, :, max(width - margin, 0) :] = False
-
-        return voxel_valid_mask
-
-    def _build_atom_valid_mask(
-        self,
-        atom_coord_local_voxel: np.ndarray,
-        atom_is_in_core_box: np.ndarray,
-        box_shape_zyx: np.ndarray,
-    ) -> np.ndarray:
-        """
-        构造 atom 监督掩码。
-
-        只有同时满足下面两个条件的 atom 才参与监督:
-            1. 位于 core box 内部。
-            2. 在连续 voxel 坐标意义下，落在裁掉 `valid_crop_margin` 后的有效监督区域内。
-
-        输入:
-            - atom_coord_local_voxel: numpy.ndarray, 形如 (N_selected, 3), atom 的连续局部 voxel 坐标，顺序为 (x, y, z)。
-            - atom_is_in_core_box: numpy.ndarray, 形如 (N_selected,), 标记该 atom 是否在 core box 内，True 即在内部。
-            - box_shape_zyx: numpy.ndarray, 形如 (3,), BOX 网格大小，顺序为 (Z, Y, X)。
-
-        输出:
-            - numpy.ndarray, 形如 (N_selected,), 类型 bool，表示这些原子在训练时是否作为监督信号纳入 loss 中。
-        """
-        atom_is_in_core_box = atom_is_in_core_box.astype(bool, copy=False)
-        margin = float(self.valid_crop_margin)
-        if atom_coord_local_voxel.shape[0] == 0:
-            return atom_is_in_core_box.astype(bool, copy=True)
-        if margin <= 0:
-            return atom_is_in_core_box.astype(bool, copy=True)
-
-        box_shape_xyz = box_shape_zyx[[2, 1, 0]].astype(np.float32, copy=False)
-        inside_lower = atom_coord_local_voxel >= margin
-        inside_upper = atom_coord_local_voxel < (box_shape_xyz[None, :] - margin)
-        inside_valid_crop = np.all(inside_lower & inside_upper, axis=1)
-        return np.logical_and(atom_is_in_core_box, inside_valid_crop).astype(bool, copy=False)
-
-
-
-
-
-
-
-
-
-
     # ------------------------------------------------- 旋转辅助函数 -------------------------------------------------
     def _sample_rotation_params(self) -> tuple[int, int, int]:
         """
@@ -1013,10 +804,11 @@ class BoxPointDataset(Dataset):
         sample_dict["atom_coord_world"] = (
             sample_dict["atom_coord_centered_world"] + box_center_world[None, :]
         ).astype(np.float32, copy=False)
-        sample_dict["atom_valid_mask"] = self._build_atom_valid_mask(
+        sample_dict["atom_valid_mask"] = build_atom_valid_mask(
             atom_coord_local_voxel=sample_dict["atom_coord_local_voxel"],
             atom_is_in_core_box=sample_dict["atom_is_in_core_box"],
             box_shape_zyx=sample_dict["box_shape_zyx"],
+            valid_crop_margin=float(self.valid_crop_margin),
         )
 
         return sample_dict
@@ -1071,69 +863,26 @@ class BoxPointDataset(Dataset):
             structure_data = self._load_structure_npz_cached(parsed_name["pdb_id"])
 
 
-            # 第四步: 构造原子级别的的数据。 `selected` 负责“选哪些原子”
-            selected = self._select_atoms_for_box(
-                atom_coords_world=structure_data["atom_coord_world"],
+            # 第四步 + sample dict 组装: 调用共享 builder
+            sample_dict = build_box_point_numpy_sample(
+                voxel_grid=box_data["voxel_grid"],
+                voxel_label=box_data["voxel_label"],
+                atom_coords_world_full=structure_data["atom_coord_world"],
+                atom_features_raw_full=structure_data["atom_feature_raw"],
+                atom_labels_full=structure_data["pocket_class_ids"],
                 box_origin_world=box_data["box_origin_world"],
                 voxel_size_world=box_data["voxel_size_world"],
                 box_shape_zyx=box_data["box_shape_zyx"],
-                buffer_radius=self.atom_buffer_radius,
+                atom_buffer_radius=self.atom_buffer_radius,
+                valid_crop_margin=self.valid_crop_margin,
+                class_mapping=self.class_mapping,
             )
-            # `coord_data` 负责把选中的原子同步映射到三套坐标系中。
-            coord_data = self._build_atom_coordinates(
-                atom_coords_world=structure_data["atom_coord_world"],
-                selected_idx=selected["selected_idx"],
-                box_origin_world=box_data["box_origin_world"],
-                voxel_size_world=box_data["voxel_size_world"],
-                box_shape_zyx=box_data["box_shape_zyx"],
-            )
-            # numpy.ndarray, (D, H, W), int64, 几何定义的 hardmask: 只要有 core 原子落入对应 voxel 即记为 1
-            hardmask = build_hardmask_from_atom_coordinates(
-                atom_coord_local_voxel=coord_data["atom_coord_local_voxel"],
-                atom_is_in_core_box=selected["atom_is_in_core_box"],
-                box_shape_zyx=box_data["box_shape_zyx"],
-            )
-            # 构造监督 mask: voxel 侧只裁边，atom 侧要求同时满足 core 内且落在裁边后的有效区域内。
-            voxel_valid_mask = self._build_voxel_valid_mask(
-                box_shape_zyx=box_data["box_shape_zyx"],
-            )
-            atom_valid_mask = self._build_atom_valid_mask(
-                atom_coord_local_voxel=coord_data["atom_coord_local_voxel"],
-                atom_is_in_core_box=selected["atom_is_in_core_box"],
-                box_shape_zyx=box_data["box_shape_zyx"],
-            )
-            # atom_feat / atom_label 分别承载点特征与点监督。
-            atom_feat = self._build_atom_features(
-                atom_features_raw=structure_data["atom_feature_raw"],
-                selected_idx=selected["selected_idx"],
-            )
-            atom_label = self._build_atom_labels(
-                labels_dict=structure_data,
-                selected_idx=selected["selected_idx"],
-            )
-
-            # sample_dict 仍然先保留 numpy 版本，后面统一做旋转和转 torch。
-            sample_dict: dict[str, Any] = {
-                "voxel_grid": box_data["voxel_grid"],
-                "voxel_label": box_data["voxel_label"],
-                "hardmask": hardmask,
-                "voxel_valid_mask": voxel_valid_mask,
-                "box_origin_world": box_data["box_origin_world"],
-                "voxel_size_world": box_data["voxel_size_world"],
-                "box_shape_zyx": box_data["box_shape_zyx"],
-                "atom_coord_world": coord_data["atom_coord_world"],
-                "atom_coord_local_voxel": coord_data["atom_coord_local_voxel"],
-                "atom_coord_centered_world": coord_data["atom_coord_centered_world"],
-                "atom_feat": atom_feat,
-                "atom_label": atom_label,
-                "atom_is_in_core_box": selected["atom_is_in_core_box"],
-                "atom_valid_mask": atom_valid_mask,
-                "sample_name": sample_name,
-                "pdb_id": parsed_name["pdb_id"],
-                "class_name": class_name,
-                "instance_id": parsed_name["instance_id"],
-                "is_center_box": parsed_name["is_center_box"],
-            }
+            # 追加元信息
+            sample_dict["sample_name"] = sample_name
+            sample_dict["pdb_id"] = parsed_name["pdb_id"]
+            sample_dict["class_name"] = class_name
+            sample_dict["instance_id"] = parsed_name["instance_id"]
+            sample_dict["is_center_box"] = parsed_name["is_center_box"]
 
             # 第五步: 训练模式下，若开启随机旋转，需对该样本数据做统一的 90 度旋转。
             if self.enable_random_rotation:
@@ -1155,32 +904,7 @@ class BoxPointDataset(Dataset):
 
     def _to_torch_sample(self, sample_dict: dict[str, Any]) -> dict[str, Any]:
         """
-        整理类型, 将 numpy 数组转换为 torch 数组并整理dtype
+        整理类型, 将 numpy 数组转换为 torch 数组并整理dtype。
+        委托给共享 to_torch_sample, 保留方法壳以兼容可能的外部子类引用。
         """
-        return {
-            "voxel_grid": torch.tensor(sample_dict["voxel_grid"], dtype=torch.float32),
-            "voxel_label": torch.tensor(sample_dict["voxel_label"], dtype=torch.int64),
-            "hardmask": torch.tensor(sample_dict["hardmask"], dtype=torch.int64),
-            "voxel_valid_mask": torch.tensor(sample_dict["voxel_valid_mask"], dtype=torch.bool),
-            "box_origin_world": torch.tensor(sample_dict["box_origin_world"], dtype=torch.float32),
-            "voxel_size_world": torch.tensor(sample_dict["voxel_size_world"], dtype=torch.float32),
-            "box_shape_zyx": torch.tensor(sample_dict["box_shape_zyx"], dtype=torch.int64),
-            "atom_coord_world": torch.tensor(sample_dict["atom_coord_world"], dtype=torch.float32),
-            "atom_coord_local_voxel": torch.tensor(
-                sample_dict["atom_coord_local_voxel"], dtype=torch.float32
-            ),
-            "atom_coord_centered_world": torch.tensor(
-                sample_dict["atom_coord_centered_world"], dtype=torch.float32
-            ),
-            "atom_feat": torch.tensor(sample_dict["atom_feat"], dtype=torch.float32),
-            "atom_label": torch.tensor(sample_dict["atom_label"], dtype=torch.int64),
-            "atom_is_in_core_box": torch.tensor(
-                sample_dict["atom_is_in_core_box"], dtype=torch.bool
-            ),
-            "atom_valid_mask": torch.tensor(sample_dict["atom_valid_mask"], dtype=torch.bool),
-            "sample_name": sample_dict["sample_name"],
-            "pdb_id": sample_dict["pdb_id"],
-            "class_name": sample_dict["class_name"],
-            "instance_id": sample_dict["instance_id"],
-            "is_center_box": sample_dict["is_center_box"],
-        }
+        return to_torch_sample(sample_dict)

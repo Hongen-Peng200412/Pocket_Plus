@@ -100,6 +100,7 @@ def bind_AtomsLabel_to_EMDB(
 def bind_AtomsFeature_to_EMDB(
     sample_folder_path: str=None,                                                                                # 与下面二选一
     pdb_path: str=None, error_dir: str=None, compute_density: bool=True, select_first_model: bool=False,      # 与上面二选一
+    pre_parsed_atom_info: dict=None,  # 可选: 直接传入已解析的原子信息 dict (含 'features' 和 'coords'), 跳过重复解析
 
     emdb_path: str=None, 
     target_voxel_size: float=1.0,
@@ -115,6 +116,7 @@ def bind_AtomsFeature_to_EMDB(
     Args:
         - sample_folder_path: 由 Pocket\Make_Data\PDB_processor\run_preprocess.py 产生的对应样本文件夹路径(里面有四个.npz)。注意将会读取 sample_folder_path/atoms.npz这个文件
         - pdb_path: PDB文件路径. 训练时读取atoms.npz, 推断时输入pdb, 通过 Pocket\Make_Data\PDB_processor\run_preprocess.py 里面的 def get_features_when_infer 读取与atoms.npz等价的特征.
+        - pre_parsed_atom_info: dict | None, 可选. 若提供, 直接使用其中的 'features' 和 'coords', 跳过 get_features_when_infer 调用, 避免重复解析 CIF.
 
         - emdb_path: EMDB文件路径
         - target_voxel_size: 重采样后的体素大小. 若为None则保持原有分辨率
@@ -128,7 +130,11 @@ def bind_AtomsFeature_to_EMDB(
             - feature_np: np.ndarray, (C, D, H, W), float32. 即, 创建一个与EMDB文件有相同空间维度的张量, 将PDB的原子特征填充到对应的位置.
             - atom_pos_array: np.ndarray, (N_atom, 3), float32. 所有原子的世界坐标 (x, y, z), 单位 Å.
     """
-    if sample_folder_path is not None:
+    if pre_parsed_atom_info is not None:
+        # 直接使用调用方已解析的原子信息, 保证坐标与特征严格同源
+        atom_features_array = pre_parsed_atom_info['features']
+        atom_pos_array = pre_parsed_atom_info['coords']
+    elif sample_folder_path is not None:
         atoms_npz = os.path.join(sample_folder_path, 'atoms.npz')
         atom_features_array = np.load(atoms_npz)['features']  # np.ndarray, (N_atom, 49), float32, 残基级特征向量 (类型 One-Hot + 理化性质)
         atom_pos_array = np.load(atoms_npz)['coords']  # (N_atom, 3)
@@ -137,9 +143,8 @@ def bind_AtomsFeature_to_EMDB(
         atom_features_array = atom_info['features']
         atom_pos_array = atom_info['coords']
     else:
-        raise ValueError("Either atoms_npz or pdb_path must be provided")
+        raise ValueError("Either pre_parsed_atom_info, sample_folder_path, or pdb_path must be provided")
     feature_channel = atom_features_array.shape[1]
-    # print(f"feature_channel 是{feature_channel}")
     
     map_data, voxel_size, origin = load_map(emdb_path)
     if target_voxel_size is not None:

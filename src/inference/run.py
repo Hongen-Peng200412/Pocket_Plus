@@ -51,7 +51,7 @@ sys.path.insert(0, str(POCKET_ROOT))
 # --- 导入推断模块 ---
 from src.inference.parse_input import (
     load_from_raw_cif, load_gt_from_structure,
-    load_atom_features_from_raw, split_volume_to_boxes, prepare_batched_boxes,
+    split_volume_to_boxes, prepare_batched_boxes,
 )
 from src.inference.get_pred import load_model, run_point_inference, move_batch_to_device
 from src.inference.postprocess import (
@@ -181,13 +181,18 @@ def _unpack_batch_results(batch_dict: dict, outputs: dict[str, Any]) -> list:
     将一个 batch 的模型输出拆分回逐 BOX 的结果列表。
 
     输入参数:
-        - batch_dict: dict, box_point_collate 产出的 batch dict
-            含 _box_meta, atom_counts, atom_is_in_core_box, atom_coord_local_voxel, box_shape_zyx
+        - batch_dict: dict, prepare_batched_boxes 产出的 batch dict
+            含 _box_meta, atom_global_indices, atom_counts, atom_is_in_core_box, atom_coord_local_voxel, box_shape_zyx
         - outputs: dict[str, Any], 模型前向输出, 至少包含 atom_logits
 
     输出:
         - box_results: list[dict], 每个 dict 含:
-            - global_atom_indices, atom_logits, atom_is_in_core, atom_coord_local_voxel, box_shape_zyx
+            - "global_atom_indices": np.ndarray, (N_box,), int, 该 BOX 选中原子的全局索引
+            - "atom_logits": np.ndarray, (N_box,), float32, 模型预测 logits
+            - "atom_is_in_core": np.ndarray, (N_box,), bool
+            - "atom_coord_local_voxel": np.ndarray, (N_box, 3), float32
+            - "box_shape_zyx": np.ndarray, (3,), int64
+            - "box_position_zyx": tuple[int, int, int]
     """
     # list[dict], 每个 BOX 的推断专用元信息
     box_meta_list = batch_dict["_box_meta"]
@@ -345,13 +350,8 @@ def run_raw_point_pipeline(
         voxel_sz = data["voxel_size"]       # np.ndarray, (3,)
         emdb_channels = data["emdb_channels"]  # int
 
-        # ---- 2. 加载原子特征 ----
-        atom_feat = load_atom_features_from_raw(
-            cif_path=cif_path,
-            compute_density=compute_density,
-            select_first_model=select_first_model,
-            error_dir=error_dir,
-        )
+        # ---- 2. 原子特征已随 load_from_raw_cif 一并返回 ----
+        atom_feat = data["atom_feat"]         # np.ndarray, (N_atom, F)
         if show_progress:
             print(f"  [run] 原子特征: {atom_feat.shape}, 体素网格: {grid.shape}")
 
@@ -967,32 +967,6 @@ def main(cfg: DictConfig):
 
 
 
-    elif mode in ("single", "batch", "param_search"):
-        # BOX 推断模式 — 使用旧版 pipline_for_box 的接口, 但可复用同一个模型
-        from src.inference.utils.pipline_for_box import (
-            run_single_mode, run_batch_mode, run_param_search_mode,
-        )
-        base_infer_params = {
-            "stride": cfg_dict["stride"],
-            "windows_size": cfg_dict["windows_size"],
-            "batch_size": cfg_dict["batch_size"],
-            "threshold": cfg_dict["threshold"],
-            "core_offset": cfg_dict["core_offset"],
-        }
-        if mode == "single":
-            run_single_mode(cfg_dict, model, device,
-                            cfg_dict["all_data_path"], cfg_dict["data_folder_names"],
-                            cfg_dict.get("class_mapping"), base_infer_params, output_root)
-        elif mode == "batch":
-            run_batch_mode(cfg_dict, model, device,
-                           cfg_dict["all_data_path"], cfg_dict["data_folder_names"],
-                           cfg_dict["class_folder_names"], cfg_dict.get("class_mapping"),
-                           base_infer_params, output_root)
-        elif mode == "param_search":
-            run_param_search_mode(cfg_dict, model, device,
-                                  cfg_dict["all_data_path"], cfg_dict["data_folder_names"],
-                                  cfg_dict["class_folder_names"], cfg_dict.get("class_mapping"),
-                                  base_infer_params, output_root)
     elif mode.startswith("legacy_"):
         # 旧版体素推断入口
         from src.inference.legacy.run_voxel import main as legacy_main
