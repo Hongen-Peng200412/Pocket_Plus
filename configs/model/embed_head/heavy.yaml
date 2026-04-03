@@ -6,7 +6,7 @@ model:
       _target_: src.model.stage1_embed_head.Stage1EmbedHead
       atom_feature_dim: 49         # int, 原子原始特征维度
       embed_hidden_dim: 64         # int, 共享 trunk 隐藏通道数
-      embed_voxel_out_channels: 16 # int, scatter 到体素网格后的通道数
+      embed_voxel_out_channels: 32 # int, scatter 到体素网格后的通道数
       embed_point_out_channels: 64 # int, 输出给点分支的通道数
       num_trunk_blocks: 3          # int, 共享 trunk block 数
       num_voxel_blocks: 2          # int, 体素分支 block 数

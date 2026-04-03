@@ -596,7 +596,7 @@ def main(cfg: DictConfig):
 
         # Tuner only samples a few batches; leave headroom for heavier real batches.
         found_bs = int(dm.batch_size)
-        safety_factor = float(cfg.train.get("batch_size_tuning_safety_factor", 0.8))
+        safety_factor = float(cfg.train.get("batch_size_tuning_safety_factor", 0.7))
         safe_bs = max(1, int(found_bs * safety_factor))
         if safe_bs > found_bs:
             safe_bs = found_bs

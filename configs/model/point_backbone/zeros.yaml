@@ -4,7 +4,7 @@ model:
   backbone:
     point_backbone:
       _target_: src.model.stage1_point_backbone.Stage1PointBackbone
-      backend: ptv3                  # str, "ptv3" / "zeros"(消融用全零)
+      backend: zeros                  # str, "ptv3" / "zeros"(消融用全零)
       atom_feature_dim: 49           # int, 原子原始特征维度; 与数据集 atom_feat 通道一致
                                      #   选择 embed_head/default.yaml 时会自动覆盖为 embed_point_out_channels
       point_grid_size: 0.25          # float, 离散化粒度(Å)

@@ -17,6 +17,20 @@ import torch.nn.functional as F
 from scipy.spatial import cKDTree
 
 
+def _tensor_to_numpy(
+    tensor: torch.Tensor,
+    dtype: Any | None = None,
+) -> np.ndarray:
+    tensor_cpu = tensor.detach().cpu()
+    if tensor_cpu.is_floating_point() and tensor_cpu.dtype != torch.float32:
+        tensor_cpu = tensor_cpu.to(dtype=torch.float32)
+
+    array = tensor_cpu.numpy()
+    if dtype is not None:
+        array = array.astype(dtype, copy=False)
+    return array
+
+
 # ============================================================
 # 工具函数
 # ============================================================
@@ -281,9 +295,9 @@ class PseudoAtomGenerator:
             - probs: np.ndarray, (D*H*W,), 归一化概率
         """
         # torch.Tensor, (D, H, W), 差图通道
-        density_grid = batch["voxel_grid"][box_idx, self.density_channel_index].detach().cpu()
+        density_grid = batch["voxel_grid"][box_idx, self.density_channel_index]
         # np.ndarray, (D*H*W,), 展平密度值
-        density_flat = density_grid.numpy().ravel().astype(np.float64)
+        density_flat = _tensor_to_numpy(density_grid).ravel().astype(np.float64)
         # np.ndarray, (D*H*W,), 未归一化概率 = base + 密度值
         unnorm = np.maximum(self.density_prob_base + density_flat, 0.0)
         total = unnorm.sum()
@@ -515,11 +529,11 @@ class PseudoAtomGenerator:
         for box_idx in range(batch_size):
             # --- 取当前 BOX 的几何元信息 ---
             # np.ndarray, (3,), BOX 体素网格大小 (Z,Y,X)
-            box_shape_zyx = batch["box_shape_zyx"][box_idx].cpu().numpy().astype(np.float32)
+            box_shape_zyx = _tensor_to_numpy(batch["box_shape_zyx"][box_idx], dtype=np.float32)
             # np.ndarray, (3,), 每个 voxel 的世界尺寸 (x,y,z)
-            voxel_size = batch["voxel_size_world"][box_idx].cpu().numpy().astype(np.float32)
+            voxel_size = _tensor_to_numpy(batch["voxel_size_world"][box_idx], dtype=np.float32)
             # np.ndarray, (3,), BOX 左下近角点世界坐标 (x,y,z)
-            box_origin = batch["box_origin_world"][box_idx].cpu().numpy().astype(np.float32)
+            box_origin = _tensor_to_numpy(batch["box_origin_world"][box_idx], dtype=np.float32)
             # np.ndarray, (3,), BOX 尺寸 (x,y,z)
             box_shape_xyz = box_shape_zyx[[2, 1, 0]]
             # np.ndarray, (3,), BOX 在 centered_world 坐标系中的半跨度
@@ -529,9 +543,9 @@ class PseudoAtomGenerator:
             # torch.Tensor, (N_i,), bool, 当前 BOX 的真实原子掩码
             real_mask_i = (real_batch_index == box_idx)
             # np.ndarray, (N_i, 3), 当前 BOX 真实原子 centered_world 坐标
-            real_cw_i = real_coord_cw[real_mask_i].detach().cpu().numpy().astype(np.float32)
+            real_cw_i = _tensor_to_numpy(real_coord_cw[real_mask_i], dtype=np.float32)
             # np.ndarray, (N_i, F), 当前 BOX 真实原子特征
-            real_feat_i = real_feat[real_mask_i].detach().cpu().numpy().astype(np.float32)
+            real_feat_i = _tensor_to_numpy(real_feat[real_mask_i], dtype=np.float32)
             # int, 当前 BOX 真实原子数
             n_real_i = int(real_cw_i.shape[0])
             # int, 目标伪原子数
@@ -698,11 +712,14 @@ class PseudoAtomGenerator:
                 # torch.Tensor, (N_i,), bool, 当前 BOX 的 real atom 掩码
                 real_mask_i = real_batch_index == box_idx
                 # np.ndarray, (N_i, 3), 当前 BOX 的 real atom centered_world 坐标
-                real_cw_i = real_coord_cw[real_mask_i].detach().cpu().numpy().astype(np.float32)
+                real_cw_i = _tensor_to_numpy(real_coord_cw[real_mask_i], dtype=np.float32)
                 # np.ndarray, (N_i, F), 当前 BOX 的 real atom 特征
-                real_feat_i = real_feat[real_mask_i].detach().cpu().numpy().astype(np.float32)
+                real_feat_i = _tensor_to_numpy(real_feat[real_mask_i], dtype=np.float32)
                 # np.ndarray, (M_i, 3), 当前 BOX 的伪原子 centered_world 坐标
-                pseudo_cw_i = pseudo_coord_cw[pseudo_offset : pseudo_offset + n_pseudo_i].detach().cpu().numpy().astype(np.float32)
+                pseudo_cw_i = _tensor_to_numpy(
+                    pseudo_coord_cw[pseudo_offset : pseudo_offset + n_pseudo_i],
+                    dtype=np.float32,
+                )
                 # np.ndarray, (M_i, F), 在固定坐标上重新初始化得到的伪原子特征
                 refreshed_feat_i = self._init_features(
                     pseudo_coords=pseudo_cw_i,
