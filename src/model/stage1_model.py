@@ -814,35 +814,39 @@ class VolumePointStage1Model(nn.Module):
 
 
             # ------------------------------------- point backbone -------------------------------------
-            # pseudo_dict 始终表示“本轮注入到当前 mixed 视图里的那份伪原子模板”。
-            pseudo_dict: dict[str, Any] | None = pseudo_cache
-            point_batch = batch
-            point_recycle = point_recycle_in
+            # dict[str, Any] | None, 本轮准备注入 mixed 视图的伪原子模板; 初始取自上一轮缓存。
+            current_pseudo_dict: dict[str, Any] | None = pseudo_cache
+            # dict[str, Any], 送入点分支的 batch; 若 lifecycle[1]=True 则为 inject 后的 mixed 视图, 否则等同于 batch。
+            mixed_batch = batch
+            # torch.Tensor | None, 送入点分支的 recycle 输入; 若有伪原子则为交错后的 mixed 布局。
+            current_point_recycle = point_recycle_in
             # list[tuple[int, int]] | None, 当前 recycle 内 mixed 原子布局 `[real_i, pseudo_i]` 的计数表。
             mixed_split_info: list[tuple[int, int]] | None = None
             if lifecycle[1]:
-                pseudo_dict = self._prepare_aligned_pseudo_dict(
+                current_pseudo_dict = self._prepare_aligned_pseudo_dict(
                     batch=batch,
                     cached_pseudo_dict=pseudo_cache,
                 )
-                point_batch, mixed_split_info = self.pseudo_atom_gen.inject(batch, pseudo_dict)
-                pseudo_point_recycle = (pseudo_point_recycle_in if self.pseudo_atom_gen.keep_point_recycle_state_across_recycle() else None)
-                # 真实原子 recycle 状态与伪原子 recycle 状态在这里重新交错成 mixed 布局。
-                point_recycle = self._expand_real_tensor_with_pseudo_slots(
+                # dict[str, Any], inject 后的 mixed batch; list[tuple[int, int]], 每个 BOX 的 (n_real, n_pseudo)
+                mixed_batch, mixed_split_info = self.pseudo_atom_gen.inject(batch, current_pseudo_dict)
+                # torch.Tensor | None, 当前轮伪原子的 point recycle 状态; `all` 策略下为上一轮伪原子的 point_recycle_out, 否则为 None。
+                current_pseudo_recycle = (pseudo_point_recycle_in if self.pseudo_atom_gen.keep_point_recycle_state_across_recycle() else None)
+                # torch.Tensor | None, 真实原子与伪原子的 recycle 状态交错成 mixed 布局, 维度 (sumN_mixed, C_recycle)。
+                current_point_recycle = self._expand_real_tensor_with_pseudo_slots(
                     real_tensor=point_recycle_in,
                     split_info=mixed_split_info,
-                    pseudo_tensor=pseudo_point_recycle,
+                    pseudo_tensor=current_pseudo_recycle,
                 )
 
             # dict[str, torch.Tensor], 记录每个命名点变量实际采样到的体素特征，仅用于可视化与调试。
             sampled_point_fusion_feat_dict: dict[str, torch.Tensor] = {}
             if getattr(self.point_backbone, "backend", None) == "zeros":
-                # dict[str, Any], zeros 后端直接提供全零占位点特征；此路径不执行 point forward，也不做 voxel->point 融合。
+                # dict[str, Any], zeros 后端直接提供全零占位点特征; 此路径不执行 point forward, 也不做 voxel->point 融合。
                 point_output_dict = self.point_backbone.build_zeros_output(
-                    atom_feat=point_batch["atom_feat"],
-                    atom_coord_centered_world=point_batch["atom_coord_centered_world"],
-                    atom_batch_index=point_batch["atom_batch_index"],
-                    atom_offsets=point_batch["atom_offsets"],
+                    atom_feat=mixed_batch["atom_feat"],
+                    atom_coord_centered_world=mixed_batch["atom_coord_centered_world"],
+                    atom_batch_index=mixed_batch["atom_batch_index"],
+                    atom_offsets=mixed_batch["atom_offsets"],
                     return_feature_names=self.point_feature_names_to_return,
                 )
             else:
@@ -851,123 +855,129 @@ class VolumePointStage1Model(nn.Module):
                         feature_name=feature_name,
                         point_like=point_like,
                         voxel_output_dict=voxel_output_dict,
-                        batch=point_batch,
+                        batch=mixed_batch,
                         sampled_point_fusion_feat_dict=sampled_point_fusion_feat_dict,
                     )
-                # dict[str, Any], 当前轮点分支原始输出，包含点特征、点状态与中间命名点变量。
+                # dict[str, Any], 当前轮点分支原始输出, 包含点特征、点状态与中间命名点变量; 维度均为 mixed 视图。
                 point_output_dict = self.point_backbone(
-                    atom_feat=point_batch["atom_feat"],
-                    atom_coord_centered_world=point_batch["atom_coord_centered_world"],
-                    atom_batch_index=point_batch["atom_batch_index"],
-                    atom_offsets=point_batch["atom_offsets"],
-                    recycle_in=point_recycle,
+                    atom_feat=mixed_batch["atom_feat"],
+                    atom_coord_centered_world=mixed_batch["atom_coord_centered_world"],
+                    atom_batch_index=mixed_batch["atom_batch_index"],
+                    atom_offsets=mixed_batch["atom_offsets"],
+                    recycle_in=current_point_recycle,
                     point_feature_hook=point_feature_hook,
                     return_feature_names=self.point_feature_names_to_return,
                 )
 
-            # `point_return` 始终整理成 real-only 视图，用于下一轮 recycle 与对外返回。
-            point_return = point_output_dict  # 单纯用来最后的 return
-            atom_batch = point_batch   # 这里的atom_*,  表示用于 atom head 的 * (batch)
-            atom_point_feat = point_output_dict["point_feat"]
-            atom_point_state = point_output_dict["point_state"]
-            next_pseudo_point_recycle: torch.Tensor | None = None   # 用于点云分支 recycle 的伪原子特征
+            # dict[str, Any], real-only 视图的点分支输出, 用于下一轮 recycle 与对外返回; 初始值先指向 mixed 输出, 后续可能被覆盖。
+            real_point_output = point_output_dict
+            # dict[str, Any], 送入 atom head 的 batch; 可能是 mixed(lifecycle[2]=True) 或 real-only。
+            head_batch = mixed_batch
+            # torch.Tensor, (sumN_head, C_point), 送入 atom head 的点特征; sumN_head 取决于是否仍含伪原子。
+            point_feat_for_head = point_output_dict["point_feat"]
+            # dict[str, Any], 送入 atom head 的点状态(coord, batch, offset, grid_size)。
+            point_state_for_head = point_output_dict["point_state"]
+            # torch.Tensor | None, 下一轮伪原子的 point recycle 隐状态; 仅 `all` 策略下非 None。
+            next_pseudo_point_recycle: torch.Tensor | None = None
             if lifecycle[1] and mixed_split_info is not None:
                 if self.pseudo_atom_gen.keep_point_recycle_state_across_recycle():
+                    # torch.Tensor, (sumM, C_point), 从 mixed 输出中提取伪原子的 point_recycle_out。
                     next_pseudo_point_recycle = self.pseudo_atom_gen.extract_pseudo_tensor_from_mixed(
                         mixed_tensor=point_output_dict.get("point_recycle_out"),
                         split_info=mixed_split_info,
                     )
-                # point backbone 若带伪原子，保存 real-only 视图
+                # 从 mixed 输出中分离出 real-only 视图
                 (
                     _real_mask,
-                    real_batch_after_point,
-                    real_atom_point_feat,
-                    real_atom_point_state,
-                    point_return,
+                    real_batch,
+                    real_point_feat,
+                    real_point_state,
+                    real_point_output,
                 ) = self._build_real_views_from_mixed_point_output(
-                    batch=point_batch,
-                    fused_point_feat=atom_point_feat,
+                    batch=mixed_batch,
+                    fused_point_feat=point_feat_for_head,
                     point_output_dict=point_output_dict,
                     split_info=mixed_split_info,
                 )
                 # 如果伪原子不进入 atom head, 就切回 real-only 视图
                 if not lifecycle[2]:
-                    batch = real_batch_after_point
-                    atom_batch = real_batch_after_point
-                    atom_point_feat = real_atom_point_feat
-                    atom_point_state = real_atom_point_state
+                    head_batch = real_batch
+                    point_feat_for_head = real_point_feat
+                    point_state_for_head = real_point_state
                     mixed_split_info = None
+            # torch.Tensor | None, 更新伪原子的 point recycle 输入, 供下一轮使用。
             pseudo_point_recycle_in = next_pseudo_point_recycle
-            if pseudo_dict is not None:
-                pseudo_cache = pseudo_dict
-            # atom head 正式 forward
+            if current_pseudo_dict is not None:
+                pseudo_cache = current_pseudo_dict
+
+            # ------------------------------------- atom head -------------------------------------
+            # torch.Tensor, (sumN_head, C_point+3+1), atom token = [点特征, 中心化世界坐标, valid_mask]
             atom_tokens = torch.cat(
                 [
-                    atom_point_feat,
-                    atom_batch["atom_coord_centered_world"],
-                    atom_batch["atom_valid_mask"].to(dtype=atom_point_feat.dtype).unsqueeze(-1),
+                    point_feat_for_head,
+                    head_batch["atom_coord_centered_world"],
+                    head_batch["atom_valid_mask"].to(dtype=point_feat_for_head.dtype).unsqueeze(-1),
                 ],
                 dim=-1,
             )
+            # torch.Tensor, (sumN_head, C_hidden), 线性投影 + LayerNorm + 激活后的 atom 隐藏特征
             atom_hidden = self.atom_token_proj(atom_tokens)
+            # torch.Tensor, (sumN_head, C_hidden), 经 attention stack 处理后的 atom 隐藏特征
             atom_hidden = self.atom_attention_stack(
-                point_state=atom_point_state,
+                point_state=point_state_for_head,
                 token_feat=atom_hidden,
             )
+            # torch.Tensor, (sumN_head, C_logit), atom logit head 输出
             atom_logits = self.atom_logit_head(atom_hidden)
 
-            # atom head 结束后，只对真实原子保留输出；伪原子只作为消息传递节点，不进入监督。
+            # atom head 结束后, 只对真实原子保留输出; 伪原子只作为消息传递节点, 不进入监督。
             if lifecycle[2] and mixed_split_info is not None:
+                # torch.Tensor, (sumN_mixed,), bool, 真实原子位置为 True
                 real_mask = self.pseudo_atom_gen.build_real_mask(mixed_split_info).to(device=atom_logits.device)
                 atom_logits = atom_logits[real_mask]
                 atom_hidden = atom_hidden[real_mask]
                 atom_tokens = atom_tokens[real_mask]
-                atom_point_feat = atom_point_feat[real_mask]
-                batch = self.pseudo_atom_gen.remove(atom_batch, mixed_split_info)
-                atom_batch = batch
-
-
-
-
-
+                point_feat_for_head = point_feat_for_head[real_mask]
+                # dict[str, Any], 移除伪原子后恢复的 real-only batch
+                head_batch = self.pseudo_atom_gen.remove(head_batch, mixed_split_info)
 
             # ------------------------------------- 循环逻辑 -------------------------------------
-            # torch.Tensor | None, 下一轮体素 recycle 输入；按配置决定是否截断跨轮梯度。
+            # torch.Tensor | None, 下一轮体素 recycle 输入; 按配置决定是否截断跨轮梯度。
             voxel_recycle_in = voxel_output_dict["voxel_recycle_out"]
             if voxel_recycle_in is not None and self.detach_recycle_states:
                 voxel_recycle_in = voxel_recycle_in.detach()
 
             # torch.Tensor | None, 下一轮点分支针对真实原子的 recycle 输入。
-            # 伪原子的 recycle 隐状态单独存放在 `pseudo_point_recycle_in` 中, 不再与 real-only 视图耦合。
-            point_recycle_in = point_return["point_recycle_out"]
+            # 伪原子的 recycle 隐状态单独存放在 `pseudo_point_recycle_in` 中, 不与 real-only 视图耦合。
+            point_recycle_in = real_point_output["point_recycle_out"]
             if point_recycle_in is not None and self.detach_recycle_states:
                 point_recycle_in = point_recycle_in.detach()
             if pseudo_point_recycle_in is not None and self.detach_recycle_states:
                 pseudo_point_recycle_in = pseudo_point_recycle_in.detach()
 
             final_output_dict = {
-                "fused_point_feat": atom_point_feat,
+                "fused_point_feat": point_feat_for_head,
                 "atom_tokens": atom_tokens,
                 "atom_hidden": atom_hidden,
                 "atom_logits": atom_logits,
-                "atom_target": atom_batch.get("atom_label", batch.get("atom_label")),
-                "atom_valid_mask": atom_batch.get("atom_valid_mask", batch.get("atom_valid_mask")),
-                "atom_counts": atom_batch.get("atom_counts", batch.get("atom_counts")),
-                "atom_coord_local_voxel": atom_batch.get("atom_coord_local_voxel", batch.get("atom_coord_local_voxel")),
-                "atom_is_in_core_box": atom_batch.get("atom_is_in_core_box", batch.get("atom_is_in_core_box")),
-                "atom_global_indices": atom_batch.get("atom_global_indices", batch.get("atom_global_indices")),
-                
+                "atom_target": head_batch.get("atom_label"),
+                "atom_valid_mask": head_batch.get("atom_valid_mask"),
+                "atom_counts": head_batch.get("atom_counts"),
+                "atom_coord_local_voxel": head_batch.get("atom_coord_local_voxel"),
+                "atom_is_in_core_box": head_batch.get("atom_is_in_core_box"),
+                "atom_global_indices": head_batch.get("atom_global_indices"),
+
                 "sampled_point_fusion_feat_dict": sampled_point_fusion_feat_dict,   # dict[str, torch.Tensor], 记录每个命名点变量实际采样到的体素特征
                 "voxel_logits_aux": voxel_output_dict["voxel_logits_aux"],
                 "voxel_outputs": voxel_output_dict,
-                "point_outputs": point_return,
+                "point_outputs": real_point_output,
 
                 # embed head 输出(若启用)
                 "embed_output": embed_output,
 
-                # 下2个变量仅作为辅助, 返回的时候不管(所以注释里只写了前8个)
-                "voxel_recycle_out": voxel_output_dict["voxel_recycle_out"],        # 体素分支这一轮的体素特征
-                "point_recycle_out": point_return["point_recycle_out"],             # 点分支这一轮针对真实原子的点特征
+                # 下 2 个变量仅作为辅助冗余导出
+                "voxel_recycle_out": voxel_output_dict["voxel_recycle_out"],
+                "point_recycle_out": real_point_output["point_recycle_out"],
             }
 
         # int, 本次 forward 实际执行的 recycle 轮数。

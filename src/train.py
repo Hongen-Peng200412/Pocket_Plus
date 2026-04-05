@@ -177,6 +177,63 @@ def _restore_model_after_batch_size_tuning(model: torch.nn.Module, state: dict[s
         setattr(backbone, attr_name, attr_value)
 
 
+def _find_strict_batch_size(safe_bs: int, num_devices: int, global_batch_size: int) -> int | None:
+    """
+    从 safe_bs 向下搜索满足 global_batch_size % (bs * num_devices) == 0 的最大 bs。
+
+    输入参数:
+        - safe_bs: int, 标量, 安全系数缩放后的单卡 batch size 上界
+        - num_devices: int, 标量, 当前训练的总设备数 (world_size)
+        - global_batch_size: int, 标量, 目标全局 batch size
+
+    输出:
+        - strict_bs: int | None, 标量, 满足整除约束的最大 bs; 若不存在返回 None
+    """
+    for bs in range(safe_bs, 0, -1):
+        if global_batch_size % (bs * num_devices) == 0:
+            return bs
+    return None
+
+
+def _align_global_batch_size(
+    per_device_bs: int,
+    num_devices: int,
+    global_batch_size: int,
+    strict: bool,
+    verbose: bool,
+) -> tuple[int, int]:
+    """
+    根据 per_device_bs 与 num_devices 反算 accumulate_steps, 可选严格对齐。
+
+    输入参数:
+        - per_device_bs: int, 标量, 当前单卡 batch size
+        - num_devices: int, 标量, 总设备数
+        - global_batch_size: int, 标量, 目标全局 batch size
+        - strict: bool, 标量, 是否严格对齐 (向下微调 per_device_bs 使得整除)
+        - verbose: bool, 标量, 是否打印调试信息
+
+    输出:
+        - (aligned_bs, accumulate_steps): tuple[int, int]
+            - aligned_bs: int, 标量, 对齐后的单卡 batch size (strict=False 时等于输入)
+            - accumulate_steps: int, 标量, 梯度累积步数
+    """
+    if strict:
+        strict_bs = _find_strict_batch_size(per_device_bs, num_devices, global_batch_size)
+        if strict_bs is not None:
+            accumulate_steps = global_batch_size // (strict_bs * num_devices)
+            return strict_bs, accumulate_steps
+        else:
+            if verbose:
+                print(
+                    f"[Train] [WARN] strict_global_batch_size 无法找到满足整除的 bs "
+                    f"(safe_bs={per_device_bs}, devices={num_devices}, target={global_batch_size}), "
+                    f"退回 floor-div 行为"
+                )
+    # 非严格模式或严格模式退回: 使用 floor-div
+    accumulate_steps = max(1, global_batch_size // (per_device_bs * num_devices))
+    return per_device_bs, accumulate_steps
+
+
 @hydra.main(version_base="1.3", config_path="../configs", config_name=_CONFIG_NAME)
 
 
@@ -362,7 +419,12 @@ def main(cfg: DictConfig):
         print(f"[Train] 实例化(Instantiate)模型的名字: {cfg.model.name}")
         print(f"[Train] 实例化(Instantiate)模型的路径: {cfg.model._target_}")
     global_batch_size = cfg.train.get("global_batch_size", None)
-    batch_size_tuning_enabled = global_batch_size is not None and global_batch_size > 0
+    enable_batch_size_tuning = bool(cfg.train.get("enable_batch_size_tuning", False))
+    batch_size_tuning_enabled = (
+        enable_batch_size_tuning
+        and global_batch_size is not None
+        and global_batch_size > 0
+    )
     compile_requested = bool(cfg.model.get("compile", False))
     compile_deferred = bool(compile_requested and batch_size_tuning_enabled)
     if compile_deferred and exp_manager.is_rank_zero:
@@ -575,62 +637,94 @@ def main(cfg: DictConfig):
 
     # -------------- 8.5 自动推导全局 Batch Size 与 Accumulate Steps --------------
     if global_batch_size is not None and global_batch_size > 0:
-        if exp_manager.is_rank_zero:
-            print(f"[Train] 开始自动探测显存，寻找最佳 Batch Size (目标 Global Batch = {global_batch_size})...")
-        
-        from lightning.pytorch.tuner import Tuner
-        tuner = Tuner(trainer)
-        init_val = cfg.train.get("tuning_init_batch_size", 2)
-        tuning_state = _prepare_model_for_batch_size_tuning(model, verbose=exp_manager.is_rank_zero)
-        try:
-            # Search maximum batch size that fits in memory, with exact integer precision
-            tuner.scale_batch_size(
-                model,
-                datamodule=dm,
-                mode="binsearch",
-                init_val=init_val,
-                max_trials=25
-            )
-        finally:
-            _restore_model_after_batch_size_tuning(model, tuning_state)
-
-        # Tuner only samples a few batches; leave headroom for heavier real batches.
-        found_bs = int(dm.batch_size)
-        safety_factor = float(cfg.train.get("batch_size_tuning_safety_factor", 0.7))
-        safe_bs = max(1, int(found_bs * safety_factor))
-        if safe_bs > found_bs:
-            safe_bs = found_bs
-        if found_bs > 1 and safe_bs == found_bs and safety_factor < 1.0:
-            safe_bs = found_bs - 1
-        dm.batch_size = safe_bs
-        try:
-            cfg.train.batch_size = safe_bs
-        except Exception:
-            pass
-
-        # Calculate actual accumulate_grad_batches based on the safe batch size
+        strict_global = bool(cfg.train.get("strict_global_batch_size", False))
         num_devices = trainer.world_size
-        accumulate_steps = max(1, global_batch_size // (safe_bs * num_devices))
-        
-        # Dynamically modify trainer's runtime property
-        trainer.accumulate_grad_batches = accumulate_steps
 
-        if exp_manager.is_rank_zero:
-            print(f"[Train] => Target Global Batch Size: {global_batch_size}")
-            print(f"[Train] => Initial per-device guess: {init_val}")
-            print(f"[Train] => Tuned per-device batch size: {found_bs}")
-            print(f"[Train] => Safe per-device batch size: {safe_bs} (safety_factor={safety_factor:.2f})")
-            print(f"[Train] => Accumulate Steps: {accumulate_steps}")
-            print(f"[Train] => world_size: {num_devices}")
-            print(f"[Train] => Effective Global Batch Size: {safe_bs * num_devices * accumulate_steps}")
+        if batch_size_tuning_enabled:
+            # ---- 分支 A: 启用自动搜索 ----
+            if exp_manager.is_rank_zero:
+                print(f"[Train] 开始自动探测显存，寻找最佳 Batch Size (目标 Global Batch = {global_batch_size})...")
 
-        if False and exp_manager.is_rank_zero:
-            print(f"[Train] => 目标 Global Batch Size: {global_batch_size}")
-            print(f"[Train] => 初始猜测单卡 Batch Size: {init_val}")
-            print(f"[Train] => 实际探测最佳单卡 Batch Size: {found_bs}")
-            print(f"[Train] => 计算得 Accumulate Steps: {accumulate_steps}")
-            print(f"[Train] => 总并行硬件数 (world_size): {num_devices}")
-            print(f"[Train] => 实际等效 Global Batch Size: {found_bs * num_devices * accumulate_steps}")
+            from lightning.pytorch.tuner import Tuner
+            tuner = Tuner(trainer)
+            init_val = cfg.train.get("tuning_init_batch_size", 2)
+            tuning_state = _prepare_model_for_batch_size_tuning(model, verbose=exp_manager.is_rank_zero)
+            try:
+                tuner.scale_batch_size(
+                    model,
+                    datamodule=dm,
+                    mode="binsearch",
+                    steps_per_trial=cfg.train.get("tuning_steps_per_trial", 5),
+                    init_val=init_val,
+                    max_trials=25
+                )
+            finally:
+                _restore_model_after_batch_size_tuning(model, tuning_state)
+
+            # Tuner 只采样少量 batch; 留出余量应对真实训练中更重的 batch
+            found_bs = int(dm.batch_size)
+            safety_factor = float(cfg.train.get("batch_size_tuning_safety_factor", 0.7))
+            safe_bs = max(1, int(found_bs * safety_factor))
+            if safe_bs > found_bs:
+                safe_bs = found_bs
+            if found_bs > 1 and safe_bs == found_bs and safety_factor < 1.0:
+                safe_bs = found_bs - 1
+
+            # 严格对齐: 向下微调 safe_bs 使得 global_batch_size 能被 (bs * devices) 整除
+            pre_align_bs = safe_bs
+            safe_bs, accumulate_steps = _align_global_batch_size(
+                safe_bs, num_devices, global_batch_size, strict_global,
+                verbose=exp_manager.is_rank_zero,
+            )
+
+            dm.batch_size = safe_bs
+            try:
+                cfg.train.batch_size = safe_bs
+            except Exception:
+                pass
+            trainer.accumulate_grad_batches = accumulate_steps
+
+            if exp_manager.is_rank_zero:
+                print(f"[Train] => Target Global Batch Size: {global_batch_size}")
+                print(f"[Train] => Initial per-device guess: {init_val}")
+                print(f"[Train] => Tuned per-device batch size: {found_bs}")
+                print(f"[Train] => Safe per-device batch size (before align): {pre_align_bs} (safety_factor={safety_factor:.2f})")
+                print(f"[Train] => Final per-device batch size: {safe_bs}")
+                print(f"[Train] => Accumulate Steps: {accumulate_steps}")
+                print(f"[Train] => world_size: {num_devices}")
+                effective = safe_bs * num_devices * accumulate_steps
+                print(f"[Train] => Effective Global Batch Size: {effective}")
+                if strict_global and effective == global_batch_size:
+                    print(f"[Train] => [OK] 严格对齐成功: effective == target")
+                elif strict_global:
+                    print(f"[Train] => [WARN] 严格对齐未能完全匹配 (effective={effective}, target={global_batch_size})")
+        else:
+            # ---- 分支 B: 不启用搜索, 使用 batch_size 预设值 ----
+            per_device_bs = int(cfg.train.batch_size)
+            pre_align_bs = per_device_bs
+            per_device_bs, accumulate_steps = _align_global_batch_size(
+                per_device_bs, num_devices, global_batch_size, strict_global,
+                verbose=exp_manager.is_rank_zero,
+            )
+
+            if per_device_bs != pre_align_bs:
+                dm.batch_size = per_device_bs
+                try:
+                    cfg.train.batch_size = per_device_bs
+                except Exception:
+                    pass
+            trainer.accumulate_grad_batches = accumulate_steps
+
+            if exp_manager.is_rank_zero:
+                print(f"[Train] Batch size tuning 未启用, 使用预设 per-device batch_size")
+                print(f"[Train] => Target Global Batch Size: {global_batch_size}")
+                print(f"[Train] => Preset per-device batch size: {pre_align_bs}")
+                if per_device_bs != pre_align_bs:
+                    print(f"[Train] => Aligned per-device batch size: {per_device_bs} (strict_global_batch_size={strict_global})")
+                print(f"[Train] => Accumulate Steps: {accumulate_steps}")
+                print(f"[Train] => world_size: {num_devices}")
+                effective = per_device_bs * num_devices * accumulate_steps
+                print(f"[Train] => Effective Global Batch Size: {effective}")
 
     if compile_deferred:
         if exp_manager.is_rank_zero:

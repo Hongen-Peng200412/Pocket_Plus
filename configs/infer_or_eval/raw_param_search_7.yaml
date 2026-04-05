@@ -164,6 +164,27 @@ windows_size: 72
 #   作用: 分割判决阈值。将预测概率转换为二值口袋判定线的基准值，大于此值判定为口袋。
 threshold: 0.5
 
+# merge_mode: str, 鏍囬噺
+#   浼犲叆: run.py _run_raw_param_search_mode() -> run_raw_point_pipeline(merge_mode=...) -> merge_box_atom_results()
+#   浣滅敤: 澶?BOX 鍘熷瓙棰勬祴鑱氬悎绛栫暐銆傞粯璁? "logit_mean" 鍏堝姞鏉冨钩鍧?logit 鍐嶅仛 sigmoid銆?
+merge_mode: "logit_mean"
+
+# semantic_segment_method: str, 鏍囬噺
+#   浼犲叆: run.py _run_raw_param_search_mode() -> point_semantic_segment()
+#   浣滅敤: 鍘熷瓙姒傜巼 -> 璇箟鍒嗗壊鐨勬€诲叆鍙ｃ€傞粯璁? "threshold" 浠呭仛闃堝€间簩鍊煎寲;
+#         鍙€夌敤 "dbscan" 鍦ㄩ槇鍊煎悗鍐嶅仛鑱氱被鍘诲櫔銆?
+semantic_segment_method: "threshold"
+
+# dbscan_eps: float, 鏍囬噺 (脜)
+#   浼犲叆: point_semantic_segment(dbscan_eps=...)
+#   浣滅敤: DBSCAN 鍗婂緞鍙傛暟 eps銆備粎鍦?semantic_segment_method="dbscan" 鏃剁敓鏁堛€?
+dbscan_eps: 2.0
+
+# dbscan_min_samples: int, 鏍囬噺
+#   浼犲叆: point_semantic_segment(dbscan_min_samples=...)
+#   浣滅敤: DBSCAN 鐨勬牳蹇冪偣鏈€灏戦偦灞呮暟銆備粎鍦?semantic_segment_method="dbscan" 鏃剁敓鏁堛€?
+dbscan_min_samples: 3
+
 # point_assign_radius: float, 标量 (Å)
 #   传入: assign_prob_to_atoms(radius=...)
 #   作用: 原子赋分半径。体素概率向原子点云映射时的考察物理搜索半径。

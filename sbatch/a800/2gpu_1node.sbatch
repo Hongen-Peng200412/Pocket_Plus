@@ -7,8 +7,8 @@
 # ============================================================
 #SBATCH -o /home/penghongen/My_Project/feedback_plus/logs/_temp_slurm/%x_%j.out
 #SBATCH -e /home/penghongen/My_Project/feedback_plus/logs/_temp_slurm/%x_%j.err
-#SBATCH -p a800
-#SBATCH --qos=a800g2
+#SBATCH -p nvlink
+#SBATCH --qos=nvlinkg8
 #SBATCH --job-name=train
 #SBATCH --nodes=1
 #SBATCH --gres=gpu:a800:2

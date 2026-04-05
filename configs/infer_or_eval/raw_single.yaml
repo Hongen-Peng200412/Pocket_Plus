@@ -164,6 +164,28 @@ valid_crop_margin: 0
 #   作用: 空间权重高斯核 sigma = sigma_ratio × 密度图最大半径。→ 1.0 表示权重衰减很缓, 0.3 表示快速衰减。用于多角度重叠原子的归一化信任分布修正。
 box_spatial_weight_sigma_ratio: 0.5
 
+# merge_mode: str, 鏍囬噺
+#   浼犲叆: run.py _run_raw_single_mode() -> run_raw_point_pipeline(merge_mode=...) -> merge_box_atom_results()
+#   浣滅敤: 澶?BOX 鍘熷瓙棰勬祴鑱氬悎绛栫暐銆? "logit_mean" 琛ㄧず鍏堝姞鏉冨钩鍧?logit 鍐嶅仛 sigmoid;
+#         "prob_mean" 琛ㄧず鍏堟妸姣忎釜 BOX 鐨?logit 杞负 prob, 鍐嶅姞鏉冨钩鍧?prob銆?
+merge_mode: "logit_mean"
+
+# semantic_segment_method: str, 鏍囬噺
+#   浼犲叆: run.py _run_raw_single_mode() -> run_raw_point_pipeline(semantic_segment_method=...) -> point_semantic_segment()
+#   浣滅敤: 鍘熷瓙姒傜巼 -> 璇箟鍒嗗壊鐨勬€诲叆鍙ｃ€? "threshold" 琛ㄧず浠呭仛闃堝€间簩鍊煎寲;
+#         "dbscan" 琛ㄧず鍦ㄩ槇鍊煎悗鍐嶇敤 DBSCAN 鍘婚櫎瀛ょ珛鐐广€?
+semantic_segment_method: "threshold"
+
+# dbscan_eps: float, 鏍囬噺 (脜)
+#   浼犲叆: point_semantic_segment(dbscan_eps=...)
+#   浣滅敤: DBSCAN 鍗婂緞鍙傛暟 eps銆備粎鍦?semantic_segment_method="dbscan" 鏃剁敓鏁堛€?
+dbscan_eps: 2.0
+
+# dbscan_min_samples: int, 鏍囬噺
+#   浼犲叆: point_semantic_segment(dbscan_min_samples=...)
+#   浣滅敤: DBSCAN 鐨勬牳蹇冪偣鏈€灏戦偦灞呮暟銆備粎鍦?semantic_segment_method="dbscan" 鏃剁敓鏁堛€?
+dbscan_min_samples: 3
+
 
 # --- 旧版体素后处理参数 (已迁移至 legacy/, 保留供参考) ---
 # point_assign_radius: 2.0

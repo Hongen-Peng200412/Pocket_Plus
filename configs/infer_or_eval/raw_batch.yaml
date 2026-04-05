@@ -121,6 +121,28 @@ core_offset: 2
 #   作用: 分割概率线。大于此值通过。
 threshold: 0.5
 
+# merge_mode: str, 鏍囬噺
+#   浼犲叆: run.py _run_raw_batch_mode() -> run_raw_point_pipeline(merge_mode=...) -> merge_box_atom_results()
+#   浣滅敤: 澶?BOX 鍘熷瓙棰勬祴鑱氬悎绛栫暐銆? "logit_mean" 琛ㄧず鍏堝姞鏉冨钩鍧?logit 鍐嶅仛 sigmoid;
+#         "prob_mean" 琛ㄧず鍏堟妸姣忎釜 BOX 鐨?logit 杞负 prob, 鍐嶅姞鏉冨钩鍧?prob銆?
+merge_mode: "logit_mean"
+
+# semantic_segment_method: str, 鏍囬噺
+#   浼犲叆: run.py _run_raw_batch_mode() -> run_raw_point_pipeline(semantic_segment_method=...) -> point_semantic_segment()
+#   浣滅敤: 鍘熷瓙姒傜巼 -> 璇箟鍒嗗壊鐨勬€诲叆鍙ｃ€? "threshold" 琛ㄧず浠呭仛闃堝€间簩鍊煎寲;
+#         "dbscan" 琛ㄧず鍦ㄩ槇鍊煎悗鍐嶇敤 DBSCAN 鍘婚櫎瀛ょ珛鐐广€?
+semantic_segment_method: "threshold"
+
+# dbscan_eps: float, 鏍囬噺 (脜)
+#   浼犲叆: point_semantic_segment(dbscan_eps=...)
+#   浣滅敤: DBSCAN 鍗婂緞鍙傛暟 eps銆備粎鍦?semantic_segment_method="dbscan" 鏃剁敓鏁堛€?
+dbscan_eps: 2.0
+
+# dbscan_min_samples: int, 鏍囬噺
+#   浼犲叆: point_semantic_segment(dbscan_min_samples=...)
+#   浣滅敤: DBSCAN 鐨勬牳蹇冪偣鏈€灏戦偦灞呮暟銆備粎鍦?semantic_segment_method="dbscan" 鏃剁敓鏁堛€?
+dbscan_min_samples: 3
+
 # point_assign_* 系列: float, 标量 (Å)
 #   传入: assign_prob_to_atoms() 后处理
 #   作用: 控制三维体素概率汇总到原子层级点云的具体半径与权重。推荐缺省值：2.0/1.0/0.5/0.35/0.15。

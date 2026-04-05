@@ -38,6 +38,7 @@ import numpy as np
 import torch
 import hydra
 from omegaconf import DictConfig, OmegaConf
+from typing import Any, Dict, List, Optional, Union
 import rootutils
 
 ROOT = rootutils.setup_root(__file__, indicator=".project-root", pythonpath=True)
@@ -262,6 +263,7 @@ def run_raw_point_pipeline(
     compute_density: bool,
     select_first_model: bool,
     eval_gt: bool,
+
     filter_preset: str,         # None 表示不筛选
     class_mapping: list,        # None 表示不做映射
     threshold: float,           # 建议值 0.5
@@ -272,6 +274,10 @@ def run_raw_point_pipeline(
     atom_buffer_radius: float,  # 建议值 4.0
     valid_crop_margin: int,     # 建议值 0
     box_spatial_weight_sigma_ratio: float,  # 建议值 0.5
+    merge_mode: str,            # "logit_mean" / "prob_mean"
+    semantic_segment_method: str,  # "threshold" / "dbscan"
+    dbscan_eps: float,          # 建议值 2.0
+    dbscan_min_samples: int,    # 建议值 3
 
     stride: int,                # 建议值 36
     windows_size: int,          # 建议值 80
@@ -282,9 +288,11 @@ def run_raw_point_pipeline(
 ) -> dict:
     """
     单样本点云推断完整流水线。
-
-    流程: load_from_raw_cif → split_volume_to_boxes → 逐 batch run_point_inference
-          → merge_box_atom_results → point_semantic_segment  →  (可选) evaluator
+    
+    保存结果:(路径如 output_dir / atom_probs.npz ) 
+        - atom_probs.npz: 原子概率
+        - pred_atom_coords.npz: 预测原子坐标
+        - gt_points.npz: GT 原子坐标 (可选)
 
     输入参数:
         - model: nn.Module, eval 模式的 VolumePointStage1Model
@@ -307,6 +315,10 @@ def run_raw_point_pipeline(
         - atom_buffer_radius: float, 原子 buffer 半径 (Å), 建议与训练对齐
         - valid_crop_margin: int, 监督区域裁边量(注意这是原始训练数据的一部分), 建议与训练对齐
         - box_spatial_weight_sigma_ratio: float, 空间权重高斯核 sigma 与密度图半径的比值, 建议值 0.5
+        - merge_mode: str, 多 BOX 聚合方式 ("logit_mean" / "prob_mean")
+        - semantic_segment_method: str, 推断后处理方式 ("threshold" / "dbscan")
+        - dbscan_eps: float, DBSCAN 半径参数 eps, 建议值 2.0
+        - dbscan_min_samples: int, DBSCAN 最少邻居数, 建议值 3
 
         - stride: int, 滑窗步幅, 建议 40
         - windows_size: int, 滑窗边长, 建议与训练对齐(80)
@@ -349,13 +361,11 @@ def run_raw_point_pipeline(
         origin = data["origin"]             # np.ndarray, (3,)
         voxel_sz = data["voxel_size"]       # np.ndarray, (3,)
         emdb_channels = data["emdb_channels"]  # int
-
-        # ---- 2. 原子特征已随 load_from_raw_cif 一并返回 ----
         atom_feat = data["atom_feat"]         # np.ndarray, (N_atom, F)
         if show_progress:
             print(f"  [run] 原子特征: {atom_feat.shape}, 体素网格: {grid.shape}")
 
-        # ---- 3. 可选: 提取 GT 标签————只有在 eval_gt 时才试图提取 ----
+        # ---- 2. 可选: 提取 GT 标签————只有在 eval_gt 时才试图提取 ----
         gt_data = None
         if eval_gt:
             # str, 场景A(无 cif_gt_path)时回退到 cif_path、场景B(有 cif_gt_path)时使用真实结构
@@ -371,7 +381,8 @@ def run_raw_point_pipeline(
                 error_dir=error_dir,
             )
 
-        # ---- 4. 切分 BOX ----
+
+        # ---- 3. 切分 BOX ----
         box_dicts = split_volume_to_boxes(
             grid=grid,
             atom_coords_world=atom_coords,
@@ -385,18 +396,10 @@ def run_raw_point_pipeline(
             emdb_channels=emdb_channels,
         )
 
-        # ---- 5. 初始化 BOX 空间权重 (以各 BOX 自身中心为原点的高斯衰减) ----
-        box_spatial_weights = init_box_spatial_weights(
-            box_dicts=box_dicts,
-            voxel_size=voxel_sz,
-            window_size=windows_size,
-            sigma_ratio=box_spatial_weight_sigma_ratio,
-        )
 
-        # ---- 6. 分 batch 推断 ----
+        # ---- 4. 分 batch 推断 ----
         batched = prepare_batched_boxes(box_dicts, batch_size, device)
         all_box_results = []
-        box_weight_idx = 0
 
         import tqdm as _tqdm
         total_boxes = len(box_dicts)
@@ -408,35 +411,35 @@ def run_raw_point_pipeline(
             leave=False,
             disable=not show_progress,
         )
-
         for batch_dict in batched:
             outputs = run_point_inference(model, device, batch_dict)
             batch_results = _unpack_batch_results(batch_dict, outputs)
-
-            # 附加空间权重
-            for br in batch_results:
-                br["box_spatial_weight"] = box_spatial_weights[box_weight_idx]
-                br["box_confidence_weight"] = 1.0   # 预留: 后续可基于 logit 分散度动态设定
-                box_weight_idx += 1
-
             all_box_results.extend(batch_results)
             pbar.update(len(batch_results))
-
         pbar.close()
 
-        # ---- 7. 聚合 ----
+
+        # ---- 5. 聚合 ----
         atom_probs = merge_box_atom_results(
             box_results=all_box_results,
             total_atom_count=len(atom_coords),
             core_decay_mode=core_decay_mode,
             core_offset=core_offset,
+            merge_mode=merge_mode,
+            voxel_size=voxel_sz,
+            window_size=windows_size,
+            box_spatial_weight_sigma_ratio=box_spatial_weight_sigma_ratio,
         )
 
-        # ---- 8. 二值化 ----
+
+        # ---- 6. 二值化 ----
         pred_atom_coords = point_semantic_segment(
             atom_probs=atom_probs,
             atom_coords=atom_coords,
             threshold=threshold,
+            semantic_segment_method=semantic_segment_method,
+            dbscan_eps=dbscan_eps,
+            dbscan_min_samples=dbscan_min_samples,
         )
 
         result["atom_probs"] = atom_probs
@@ -449,7 +452,8 @@ def run_raw_point_pipeline(
         if show_progress:
             print(f"  [run] 预测正类原子: {pred_atom_coords.shape[0]} / {len(atom_coords)}")
 
-        # ---- 9. 评估 (可选) ----
+
+        # ---- 7. 评估 (可选) ----
         if gt_data is not None:
             metrics = semantic_evaluate(
                 pred_atom_coords=pred_atom_coords,
@@ -460,7 +464,8 @@ def run_raw_point_pipeline(
             if show_progress:
                 print_metrics(metrics, prefix="  ")
 
-        # ---- 10. 保存结果 ----
+
+        # ---- 8. 保存结果 ----  # NOTE
         if output_dir is not None:
             os.makedirs(output_dir, exist_ok=True)
             # 保存原子概率
@@ -473,12 +478,6 @@ def run_raw_point_pipeline(
             np.savez_compressed(
                 os.path.join(output_dir, "pred_atom_coords.npz"),
                 pred_atom_coords=pred_atom_coords,
-            )
-            # 保存逐 BOX logits (用于参数搜索缓存)
-            _save_box_logits_cache(
-                all_box_results=all_box_results,
-                save_path=os.path.join(output_dir, "box_logits_cache.npz"),
-                atom_coords=atom_coords,
             )
             if gt_data is not None:
                 np.savez_compressed(
@@ -523,7 +522,6 @@ def _save_box_logits_cache(
         save_dict[f"box_{i}_is_in_core"] = br["atom_is_in_core"]
         save_dict[f"box_{i}_coord_local"] = br["atom_coord_local_voxel"]
         save_dict[f"box_{i}_shape_zyx"] = br["box_shape_zyx"]
-        save_dict[f"box_{i}_spatial_weight"] = np.asarray(br.get("box_spatial_weight", np.ones(0)), dtype=np.float32)
         save_dict[f"box_{i}_confidence_weight"] = np.array(float(br.get("box_confidence_weight", 1.0)), dtype=np.float32)
 
     np.savez_compressed(save_path, **save_dict)
@@ -551,7 +549,6 @@ def _load_box_logits_cache(cache_path: str) -> tuple:
                 "atom_is_in_core": cache[f"box_{i}_is_in_core"],
                 "atom_coord_local_voxel": cache[f"box_{i}_coord_local"],
                 "box_shape_zyx": cache[f"box_{i}_shape_zyx"],
-                "box_spatial_weight": cache[f"box_{i}_spatial_weight"],
                 "box_confidence_weight": float(cache[f"box_{i}_confidence_weight"]),
             })
     return all_box_results, atom_coords
@@ -591,6 +588,10 @@ def _run_raw_single_mode(cfg_dict, model, device, output_root):
         class_mapping=cfg_dict.get("class_mapping"),
         threshold=cfg_dict["threshold"],
         dist_threshold=cfg_dict["dist_threshold"],
+        merge_mode=cfg_dict["merge_mode"],
+        semantic_segment_method=cfg_dict["semantic_segment_method"],
+        dbscan_eps=cfg_dict["dbscan_eps"],
+        dbscan_min_samples=cfg_dict["dbscan_min_samples"],
         core_decay_mode=cfg_dict["core_decay_mode"],
         core_offset=cfg_dict["core_offset"],
         atom_buffer_radius=cfg_dict["atom_buffer_radius"],
@@ -651,6 +652,10 @@ def _run_raw_batch_mode(cfg_dict, model, device, output_root):
             class_mapping=cfg_dict.get("class_mapping"),
             threshold=cfg_dict["threshold"],
             dist_threshold=cfg_dict["dist_threshold"],
+            merge_mode=cfg_dict["merge_mode"],
+            semantic_segment_method=cfg_dict["semantic_segment_method"],
+            dbscan_eps=cfg_dict["dbscan_eps"],
+            dbscan_min_samples=cfg_dict["dbscan_min_samples"],
             core_decay_mode=cfg_dict["core_decay_mode"],
             core_offset=cfg_dict["core_offset"],
             atom_buffer_radius=cfg_dict["atom_buffer_radius"],
@@ -736,6 +741,10 @@ def _run_raw_param_search_mode(cfg_dict, model, device, output_root):
                 class_mapping=cfg_dict.get("class_mapping"),
                 threshold=cfg_dict["threshold"],
                 dist_threshold=cfg_dict["dist_threshold"],
+                merge_mode=cfg_dict["merge_mode"],
+                semantic_segment_method=cfg_dict["semantic_segment_method"],
+                dbscan_eps=cfg_dict["dbscan_eps"],
+                dbscan_min_samples=cfg_dict["dbscan_min_samples"],
                 core_decay_mode="none", core_offset=0,
                 atom_buffer_radius=cfg_dict["atom_buffer_radius"],
                 valid_crop_margin=cfg_dict["valid_crop_margin"],
@@ -796,17 +805,28 @@ def _run_raw_param_search_mode(cfg_dict, model, device, output_root):
             _core_decay = params.get("core_decay_mode", cfg_dict["core_decay_mode"])
             _core_off = params.get("core_offset", cfg_dict["core_offset"])
             _threshold = params.get("threshold", cfg_dict["threshold"])
+            _merge_mode = params.get("merge_mode", cfg_dict["merge_mode"])
+            _semantic_segment_method = params.get("semantic_segment_method", cfg_dict["semantic_segment_method"])
+            _dbscan_eps = params.get("dbscan_eps", cfg_dict["dbscan_eps"])
+            _dbscan_min_samples = params.get("dbscan_min_samples", cfg_dict["dbscan_min_samples"])
 
             atom_probs = merge_box_atom_results(
                 box_results=box_results,
                 total_atom_count=len(atom_coords),
                 core_decay_mode=_core_decay,
                 core_offset=_core_off,
+                merge_mode=_merge_mode,
+                voxel_size=cfg_dict["target_voxel_size"],
+                window_size=cfg_dict["windows_size"],
+                box_spatial_weight_sigma_ratio=cfg_dict["box_spatial_weight_sigma_ratio"],
             )
             pred_coords = point_semantic_segment(
                 atom_probs=atom_probs,
                 atom_coords=atom_coords,
                 threshold=_threshold,
+                semantic_segment_method=_semantic_segment_method,
+                dbscan_eps=_dbscan_eps,
+                dbscan_min_samples=_dbscan_min_samples,
             )
 
             if info.get("gt_data") is not None:
@@ -874,6 +894,10 @@ def _run_raw_param_search_mode(cfg_dict, model, device, output_root):
         best_threshold = best.get("threshold", cfg_dict["threshold"])
         best_core_decay = best.get("core_decay_mode", cfg_dict["core_decay_mode"])
         best_core_offset = best.get("core_offset", cfg_dict["core_offset"])
+        best_merge_mode = best.get("merge_mode", cfg_dict["merge_mode"])
+        best_semantic_segment_method = best.get("semantic_segment_method", cfg_dict["semantic_segment_method"])
+        best_dbscan_eps = best.get("dbscan_eps", cfg_dict["dbscan_eps"])
+        best_dbscan_min_samples = best.get("dbscan_min_samples", cfg_dict["dbscan_min_samples"])
 
         for i, info in enumerate(cached_info):
             if info["error"] is not None:
@@ -888,11 +912,18 @@ def _run_raw_param_search_mode(cfg_dict, model, device, output_root):
                 total_atom_count=len(atom_coords),
                 core_decay_mode=best_core_decay,
                 core_offset=best_core_offset,
+                merge_mode=best_merge_mode,
+                voxel_size=cfg_dict["target_voxel_size"],
+                window_size=cfg_dict["windows_size"],
+                box_spatial_weight_sigma_ratio=cfg_dict["box_spatial_weight_sigma_ratio"],
             )
             pred_coords = point_semantic_segment(
                 atom_probs=atom_probs,
                 atom_coords=atom_coords,
                 threshold=best_threshold,
+                semantic_segment_method=best_semantic_segment_method,
+                dbscan_eps=best_dbscan_eps,
+                dbscan_min_samples=best_dbscan_min_samples,
             )
             _build_vis_bundle_safe(
                 cfg_dict=cfg_dict,

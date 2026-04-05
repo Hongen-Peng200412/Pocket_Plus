@@ -200,10 +200,10 @@ class PseudoAtomGenerator:
         self.lifecycle = [bool(v) for v in lifecycle]
         # str, 标量, recycle 阶段的伪原子生命周期策略
         self.recycle_policy = str(recycle_policy).strip().lower()
-        if self.recycle_policy not in {"non", "pos", "all"}:
+        if self.recycle_policy not in {"non", "pos", "all", "fixed"}:
             raise ValueError(
                 "recycle_policy must be one of "
-                "['non', 'pos', 'all']"
+                "['non', 'pos', 'all', 'fixed']"
             )
 
     def keep_position_across_recycle(self) -> bool:
@@ -213,16 +213,17 @@ class PseudoAtomGenerator:
         输出:
             - keep_position: bool, 标量, True 表示下一轮沿用上一轮的伪原子几何布局
         """
-        return self.recycle_policy in {"pos", "all"}
+        return self.recycle_policy in {"pos", "all", "fixed"}
 
     def keep_features_across_recycle(self) -> bool:
         """
         返回当前策略是否跨 recycle 保留伪原子属性。
+        `non`/`pos`/`all` 每轮重新初始化 feat; `fixed` 直接沿用上一轮的 pseudo_feat。
 
         输出:
-            - keep_features: bool, 标量, True 表示下一轮直接沿用上一轮的 `pseudo_feat`
+            - keep_features: bool, 标量, 仅 `fixed` 为 True
         """
-        return self.recycle_policy == "all"
+        return self.recycle_policy == "fixed"
 
     def keep_point_recycle_state_across_recycle(self) -> bool:
         """
@@ -231,7 +232,7 @@ class PseudoAtomGenerator:
         输出:
             - keep_point_state: bool, 标量, True 表示下一轮复用伪原子的 `point_recycle_out`
         """
-        return self.recycle_policy == "all"
+        return self.recycle_policy in {"all", "fixed"}
 
     def prepare_pseudo_dict_for_recycle(
         self,
@@ -251,17 +252,9 @@ class PseudoAtomGenerator:
         if cached_pseudo_dict is None or not self.keep_position_across_recycle():
             return self.generate(batch)
         if self.keep_features_across_recycle():
-            cached_feat = cached_pseudo_dict.get("pseudo_feat")
-            if cached_feat is None:
-                raise RuntimeError("cached_pseudo_dict is missing 'pseudo_feat' under recycle_policy='all'.")
-            target_dim = int(batch["atom_feat"].shape[1])
-            cached_dim = int(cached_feat.shape[1])
-            if cached_dim != target_dim:
-                raise RuntimeError(
-                    f"cached pseudo feature dim mismatch under recycle_policy='all': "
-                    f"cached={cached_dim}, current={target_dim}"
-                )
+            # fixed: 保留位置 + feat, 直接沿用缓存
             return {**cached_pseudo_dict}
+        # pos / all: 保留位置, 重新初始化 feat
         return self.reinitialize_pseudo_features(batch=batch, pseudo_dict=cached_pseudo_dict)
 
 

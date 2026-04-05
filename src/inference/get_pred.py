@@ -21,6 +21,10 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 
+
+# =============================================================================
+# 1. 模型加载
+# =============================================================================
 def _extract_backbone_cfg(config_obj: Any) -> dict[str, Any] | None:
     """
     从用户传入配置、checkpoint 超参数或训练配置快照中提取 VolumePointStage1Model 的 Hydra 配置。
@@ -60,7 +64,6 @@ def _extract_backbone_cfg(config_obj: Any) -> dict[str, Any] | None:
 
     return None
 
-
 def _load_backbone_cfg_from_training_snapshot(ckpt_path: str) -> tuple[dict[str, Any] | None, str | None]:
     """
     从 checkpoint 同一 run 目录下保存的训练配置快照中恢复 backbone 配置。
@@ -91,10 +94,40 @@ def _load_backbone_cfg_from_training_snapshot(ckpt_path: str) -> tuple[dict[str,
 
     return None, None
 
+def _infer_in_channels(ckpt: dict) -> int:
+    """
+    从 Lightning checkpoint 推断 backbone 输入通道数。
 
-# =============================================================================
-# 1. 模型加载
-# =============================================================================
+    优先级:
+        1. hyper_parameters 中显式记录的 in_channels
+        2. 从 state_dict 第一个 Conv3d 权重推断
+
+    输入参数:
+        - ckpt: dict, Lightning checkpoint
+
+    输出:
+        - in_channels: int, 推断出的输入通道数
+    """
+    # 尝试从 hyper_parameters 直接获取
+    hp = ckpt.get("hyper_parameters", {})
+    if "in_channels" in hp:
+        return int(hp["in_channels"])
+
+    # 从 state_dict 推断
+    state_dict = ckpt.get("state_dict", {})
+    for key in state_dict.keys():
+        if key.startswith("backbone.") and key.endswith(".weight") and "conv" in key.lower():
+            w = state_dict[key]
+            if w.dim() == 5:  # Conv3d: (out_ch, in_ch, kD, kH, kW)
+                in_ch = w.shape[1]
+                if in_ch <= 128:
+                    print(f"[get_pred] 从 {key} 推断 in_channels={in_ch}")
+                    return in_ch
+
+    print("[get_pred] ⚠️ 无法推断 in_channels, 使用默认值 1")
+    return 1
+
+# 总函数
 def load_model(
     ckpt_path: str,
     device: str | torch.device,
@@ -184,38 +217,8 @@ def load_model(
     return model
 
 
-def _infer_in_channels(ckpt: dict) -> int:
-    """
-    从 Lightning checkpoint 推断 backbone 输入通道数。
 
-    优先级:
-        1. hyper_parameters 中显式记录的 in_channels
-        2. 从 state_dict 第一个 Conv3d 权重推断
 
-    输入参数:
-        - ckpt: dict, Lightning checkpoint
-
-    输出:
-        - in_channels: int, 推断出的输入通道数
-    """
-    # 尝试从 hyper_parameters 直接获取
-    hp = ckpt.get("hyper_parameters", {})
-    if "in_channels" in hp:
-        return int(hp["in_channels"])
-
-    # 从 state_dict 推断
-    state_dict = ckpt.get("state_dict", {})
-    for key in state_dict.keys():
-        if key.startswith("backbone.") and key.endswith(".weight") and "conv" in key.lower():
-            w = state_dict[key]
-            if w.dim() == 5:  # Conv3d: (out_ch, in_ch, kD, kH, kW)
-                in_ch = w.shape[1]
-                if in_ch <= 128:
-                    print(f"[get_pred] 从 {key} 推断 in_channels={in_ch}")
-                    return in_ch
-
-    print("[get_pred] ⚠️ 无法推断 in_channels, 使用默认值 1")
-    return 1
 
 
 

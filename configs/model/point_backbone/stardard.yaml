@@ -1,10 +1,10 @@
 # @package _global_
-# 点云分支变体: PTV3 Dense (基线)
+# 减小层数、mlp_ratio，增大 patch_size
 model:
   backbone:
     point_backbone:
       _target_: src.model.stage1_point_backbone.Stage1PointBackbone
-      backend: zeros                  # str, "ptv3" / "zeros"(消融用全零)
+      backend: ptv3                  # str, "ptv3" / "zeros"(消融用全零)
       atom_feature_dim: 49           # int, 原子原始特征维度; 与数据集 atom_feat 通道一致
                                      #   选择 embed_head/default.yaml 时会自动覆盖为 embed_point_out_channels
       point_grid_size: 0.25          # float, 离散化粒度(Å)
@@ -25,11 +25,11 @@ model:
       enc_depths: [2, 2, 2, 2, 2]   # list[int], 编码器每层 Block 数
       enc_channels: [64, 64, 128, 256, 512]
       enc_num_head: [2, 4, 8, 16, 32]
-      enc_patch_size: [512, 256, 128, 96, 72]
-      dec_depths: [3, 3, 3, 3, 6]   # list[int], 解码器; dec4=0 跳过最低分辨率(旧版兼容)
+      enc_patch_size: [1024, 512, 256, 128, 96]
+      dec_depths: [2, 2, 2, 2, 6]   # list[int], 解码器; dec4=0 跳过最低分辨率(旧版兼容)
       dec_channels: [96, 96, 128, 256, 512]
       dec_num_head: [4, 4, 8, 16, 32]
-      dec_patch_size: [512, 256, 128, 96, 72]
+      dec_patch_size: [1024, 512, 256, 128, 96]
 
       # --- 嵌入层 ---
       embedding_kernel_size: 5       # int, sparseconv 卷积核
@@ -46,7 +46,7 @@ model:
       dec_cpe_receptive_field: [2.0, 2.0, 8.0, 12.0, 16.0]
 
       # --- 注意力与正则化 ---
-      mlp_ratio: 4                   # int, FFN 膨胀倍率
+      mlp_ratio: 3                   # int, FFN 膨胀倍率
       qkv_bias: true
       qk_scale: null
       attn_drop: 0.2                 # float, 注意力 dropout

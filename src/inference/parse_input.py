@@ -50,7 +50,7 @@ from src.datasets.box_sample_builder import build_box_point_numpy_sample, to_tor
 
 
 # =============================================================================
-# 从原始文件加载特征/标签（无需预处理 BOX）  # FIXME: 未来加入更多密度信息(如差图) 时, 需要更改此函数
+# 从原始文件加载特征/标签（无需预处理 BOX）  # TODO: 未来加入更多密度信息(如差图) 时, 需要更改此函数
 # =============================================================================
 def load_from_raw_cif(
     cif_path: str,
@@ -371,6 +371,7 @@ def split_volume_to_boxes(
 
     输出:
         - box_dicts: list[dict], 每个 dict 为一个 BOX 的完整推断输入, 包含:
+
             1. 以下 torch.Tensor 字段 (与训练 sample dict 同构):
                 - "voxel_grid":              torch.Tensor, (C, D_box, H_box, W_box), float32
                 - "voxel_label":             torch.Tensor, (D_box, H_box, W_box), int64, 全零占位
@@ -386,12 +387,14 @@ def split_volume_to_boxes(
                 - "atom_label":              torch.Tensor, (N_box,), int64, 全零占位
                 - "atom_is_in_core_box":      torch.Tensor, (N_box,), bool
                 - "atom_valid_mask":          torch.Tensor, (N_box,), bool
+
             2. 元信息字段 (Python 原生类型):
                 - "sample_name":  str, 形如 "infer_box_0"
                 - "pdb_id":       str, 固定 "infer"
                 - "class_name":   str, 固定 "infer"
                 - "instance_id":  int, 固定 0
                 - "is_center_box": bool, 固定 False
+
             3. 推断专用 sidecar 字段:
                 - "global_atom_indices": np.ndarray, (N_box,), int64, 该 BOX 选中原子在全局原子数组中的索引
                 - "box_position_zyx":   tuple[int, int, int], 该 BOX 在整体体积中的滑窗起始坐标 (z0, y0, x0)
@@ -497,8 +500,8 @@ def prepare_batched_boxes(
 
     输出:
         - batches: list[dict], 每个 dict 为一个 batch (即一组 batch_size 个样本经 box_point_collate 后的结果), 包含:
-            1. box_point_collate 产出的标准字段 (见 box_point_collate 文档)
-            2. 额外字段:
+            - 1. box_point_collate 产出的标准字段 (见 box_point_collate 文档)
+            - 2. 额外字段:
                 - "atom_global_indices": torch.Tensor, (sumN,), long, 展平后的全局原子索引, 与 atom_coord_world 等长
                 - "_box_meta": list[dict], 长度=当前 batch 的 BOX 数, 每个 dict 含:
                     - "box_position_zyx": tuple[int, int, int], 该 BOX 在整体体积中的滑窗起始坐标
@@ -519,7 +522,7 @@ def prepare_batched_boxes(
             box_meta_list.append({
                 "box_position_zyx": box_dict.pop("box_position_zyx"),
             })
-        # list[list[int]]: global_atom_indices 先 pop 出来, collate 后再拼成扁平 tensor
+        # list[list[int]]
         per_box_global_indices = [box_dict.pop("global_atom_indices") for box_dict in group]
 
         # dict[str, Any], box_point_collate 需要标准字段

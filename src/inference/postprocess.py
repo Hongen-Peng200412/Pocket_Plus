@@ -1,94 +1,62 @@
 """
-postprocess.py — 后处理模块
+postprocess.py - 后处理模块
 
 点云推断后处理:
-    1. init_box_spatial_weights(): 为每个 BOX 的原子初始化空间权重 (以该 BOX 自身中心为原点的高斯衰减)
-    2. merge_box_atom_results(): 合并多 BOX 的原子预测结果 (logit 或 prob 级聚合)
-    3. point_semantic_segment(): 对原子概率做阈值二值化
+    1. _compute_per_atom_spatial_weight()、 _compute_per_atom_core_weight: 为每个 BOX 的原子初始化空间权重
+    2. merge_box_atom_results(): 合并多 BOX 的原子预测结果
+    3. point_semantic_segment(): 原子概率 -> 语义分割（二值化）
 
-旧版体素→原子映射 (assign_prob_to_atoms) 已迁移至 src/inference/legacy/postprocess_voxel.py
+旧版体素 -> 原子映射逻辑已迁移至 src/inference/legacy/postprocess_voxel.py
 """
 
+from __future__ import annotations
+
 import numpy as np
-import math
-from typing import Optional
+from scipy.spatial import cKDTree
 
 
 # =============================================================================
-# 1. BOX 空间权重: 全BOX的高斯核 * 专门针对边界 core_offset 的额外衰减
+# 1. BOX 空间权重: 高斯核衰减 + 边缘衰减
 # =============================================================================
-# 高斯核衰减
-def init_box_spatial_weights(
-    box_dicts: list,
+def _compute_per_atom_spatial_weight(
+    atom_coord_local_voxel: np.ndarray,
+    box_shape_zyx: np.ndarray,
     voxel_size: np.ndarray,
     window_size: int,
     sigma_ratio: float,
-) -> list:
+) -> np.ndarray:
     """
     为每个 BOX 内的原子计算以该 BOX 自身中心为原点的高斯衰减权重。
 
-    每个 BOX 共用同一种高斯核: sigma = sigma_ratio × BOX 半径 (Å)。原子距自己所在 BOX 的中心越近, 权重越高 (≈1); 越靠近 BOX 边缘, 权重越低。
-
     输入参数:
-        - box_dicts: list[dict], split_volume_to_boxes() 返回的 BOX 列表, 每个 dict 含:
-            - "atom_coord_local_voxel": torch.Tensor, (N_box, 3), 原子的连续 voxel 坐标 (x, y, z)
-            - "box_shape_zyx": torch.Tensor, (3,), BOX 体素形状
-        - voxel_size: np.ndarray, (3,), float, 体素大小 (x, y, z), 单位 Å
+        - atom_coord_local_voxel: torch.Tensor, (N_box, 3), 原子的连续 voxel 坐标 (x, y, z)
+        - box_shape_zyx: torch.Tensor, (3,), BOX 体素形状
+        - voxel_size: np.ndarray, (3,), float, 体素大小 (x, y, z), 单位 A
         - window_size: int, 标量, BOX 窗口边长 (voxel)
-        - sigma_ratio: float, 标量, 高斯核 sigma 与 BOX 半径之比, 建议值 0.5
-            sigma = sigma_ratio × BOX 中心到角点的距离 (Å)
+        - sigma_ratio: float, 标量, 高斯核 sigma 与 BOX 半径之比
 
     输出:
-        - box_spatial_weights: list[np.ndarray], 长度与 box_dicts 相同
-            每项 np.ndarray, (N_box_atoms,), float32, 该 BOX 内每个原子的空间权重 ∈ (0, 1]
+        - box_spatial_weights: np.ndarray, (N_box,), float32, 该 BOX 内每个原子的空间权重
     """
-    import torch
+    n_atom = int(atom_coord_local_voxel.shape[0])
+    if n_atom == 0:
+        return np.empty((0,), dtype=np.float32)
+
     voxel_size = np.asarray(voxel_size, dtype=np.float64).reshape(3)
+    half_box_world = 0.5 * float(window_size) * voxel_size
+    box_radius = float(np.linalg.norm(half_box_world))
+    sigma = max(float(sigma_ratio) * box_radius, 1e-6)
+    two_sigma2 = 2.0 * sigma * sigma
 
-    # float, BOX 半边长 (voxel) 转为世界坐标后的对角线半径 (Å)
-    # 所有 BOX 共享同一个 window_size, 因此 sigma 也是统一的
-    half_box_world = 0.5 * float(window_size) * voxel_size  # np.ndarray, (3,)
-    box_radius = float(np.linalg.norm(half_box_world))      # float, BOX 中心到角点的距离 (Å)
-    sigma = max(sigma_ratio * box_radius, 1e-6)             # float, 高斯核标准差 (Å)
-    two_sigma2 = 2.0 * sigma * sigma                        # float, 分母预计算
+    box_shape_xyz = np.asarray(box_shape_zyx, dtype=np.float64)[[2, 1, 0]]
+    box_center_voxel_xyz = box_shape_xyz * 0.5
+    offset_voxel = np.asarray(atom_coord_local_voxel, dtype=np.float64) - box_center_voxel_xyz[np.newaxis, :]
+    offset_world = offset_voxel * voxel_size[np.newaxis, :]
+    dist2 = np.sum(offset_world * offset_world, axis=1)
+    return np.exp(-dist2 / two_sigma2).astype(np.float32)
 
-    box_spatial_weights = []
-    for box_dict in box_dicts:
-        # 获取原子坐标
-        atom_local = box_dict["atom_coord_local_voxel"]
-        if isinstance(atom_local, torch.Tensor):
-            atom_local = atom_local.numpy()
-        # np.ndarray, (N_box, 3), float32, 原子的连续 voxel 坐标 (x, y, z)
-        atom_local = np.asarray(atom_local, dtype=np.float64)
-
-        box_shape = box_dict["box_shape_zyx"]
-        if isinstance(box_shape, torch.Tensor):
-            box_shape = box_shape.numpy()
-        # np.ndarray, (3,), float64, BOX 体素形状 (Z, Y, X)
-        box_shape = np.asarray(box_shape, dtype=np.float64)
-        # np.ndarray, (3,), float64, BOX 中心的 voxel 坐标 (x, y, z)
-        box_center_voxel_xyz = box_shape[[2, 1, 0]] * 0.5
-        if atom_local.shape[0] == 0:
-            box_spatial_weights.append(np.empty(0, dtype=np.float32))
-            continue
-
-        # np.ndarray, (N_box, 3), float64, 原子到 BOX 中心的偏移 (voxel, x/y/z)
-        offset_voxel = atom_local - box_center_voxel_xyz[np.newaxis, :]
-        # np.ndarray, (N_box, 3), float64, 偏移转为世界坐标 (Å)
-        offset_world = offset_voxel * voxel_size[np.newaxis, :]
-        # np.ndarray, (N_box,), float64, 距离平方
-        dist2 = np.sum(offset_world ** 2, axis=1)
-        # np.ndarray, (N_box,), float32, 高斯衰减权重
-        weights = np.exp(-dist2 / two_sigma2).astype(np.float32)
-
-        box_spatial_weights.append(weights)
-
-    return box_spatial_weights
-
-# core offset 额外衰减
 def _compute_per_atom_core_weight(
     atom_coord_local_voxel: np.ndarray,
-    atom_is_in_core: np.ndarray,
     box_shape_zyx: np.ndarray,
     core_offset: int,
     core_decay_mode: str,
@@ -98,40 +66,33 @@ def _compute_per_atom_core_weight(
 
     输入参数:
         - atom_coord_local_voxel: np.ndarray, (N, 3), float32, 连续 voxel 坐标 (x, y, z)
-        - atom_is_in_core: np.ndarray, (N,), bool
-        - box_shape_zyx: np.ndarray, (3,), int64
+        - box_shape_zyx: np.ndarray, (3,), int64, BOX 形状, 顺序 (Z, Y, X)
         - core_offset: int, 标量, 裁边 voxel 数
-        - core_decay_mode: str, "hard" / "linear" / "none"
+        - core_decay_mode: str, 衰减模式, 可选 "hard" / "linear" / "none"
 
     输出:
-        - weight: np.ndarray, (N,), float32, 衰减权重 ∈ [0, 1]
+        - weight: np.ndarray, (N,), float32, 边界衰减权重
     """
-    n = atom_coord_local_voxel.shape[0]
-    if n == 0:
-        return np.empty(0, dtype=np.float32)
-
+    n_atom = int(atom_coord_local_voxel.shape[0])
+    if n_atom == 0:
+        return np.empty((0,), dtype=np.float32)
     if core_decay_mode == "none":
-        return np.ones(n, dtype=np.float32)
-
+        return np.ones((n_atom,), dtype=np.float32)
     if core_offset <= 0:
-        return np.ones(n, dtype=np.float32)
+        return np.ones((n_atom,), dtype=np.float32)
 
-    # 计算每个原子到 BOX 六面边界的最短距离 (voxel 单位)
-    # atom_coord_local_voxel 是 (x, y, z), box_shape_zyx 是 (Z, Y, X)
+    # np.ndarray, (3,), float32, BOX 形状, 顺序 (x, y, z)
     box_shape_xyz = box_shape_zyx[[2, 1, 0]].astype(np.float32)
-    # np.ndarray, (N, 3), float32, 到下边界的距离
+    # np.ndarray, (N, 3), float32, 到低边界的距离
     dist_lower = atom_coord_local_voxel
-    # np.ndarray, (N, 3), float32, 到上边界的距离
+    # np.ndarray, (N, 3), float32, 到高边界的距离
     dist_upper = box_shape_xyz[np.newaxis, :] - atom_coord_local_voxel
     # np.ndarray, (N,), float32, 到最近边界的距离
     margin_dist = np.minimum(dist_lower, dist_upper).min(axis=1)
 
     if core_decay_mode == "hard":
-        # 距边界 >= core_offset 的原子权重 1.0, 否则 0.0
         weight = (margin_dist >= float(core_offset)).astype(np.float32)
     elif core_decay_mode == "linear":
-        # 距边界 >= core_offset 的原子权重 1.0
-        # 距边界 < core_offset 的原子线性衰减到 0
         weight = np.clip(margin_dist / float(core_offset), 0.0, 1.0).astype(np.float32)
     else:
         raise ValueError(f"未知 core_decay_mode: {core_decay_mode}")
@@ -141,98 +102,121 @@ def _compute_per_atom_core_weight(
 
 
 
+
 # =============================================================================
-# 2. 多 BOX 原子预测聚合
+# 2. 多 BOX 原子预测聚合, 变为全局结果
 # =============================================================================
 def merge_box_atom_results(
     box_results: list,
     total_atom_count: int,
     core_decay_mode: str,
     core_offset: int,
+    merge_mode: str,
+    voxel_size: np.ndarray,
+    window_size: int,
+    box_spatial_weight_sigma_ratio: float,
 ) -> np.ndarray:
     """
-    合并多 BOX 的原子预测结果: 加权平均 logit → sigmoid → prob。
+    合并多 BOX 的原子预测结果。
 
     输入参数:
-        - box_results: list[dict], 每项含:
-            - "global_atom_indices": np.ndarray, (N_box,), int, 全局原子索引
+        - box_results: list[dict], 每项包含一个 BOX 的原子级预测结果
+            - "global_atom_indices": np.ndarray, (N_box,), int64, 该 BOX 内原子的全局索引
             - "atom_logits": np.ndarray, (N_box,) 或 (N_box, 1), float32, 原始 logits
-            - "atom_is_in_core": np.ndarray, (N_box,), bool, 是否在 core box 内
+            - "atom_is_in_core": np.ndarray, (N_box,), bool, 是否在 core BOX 内
             - "atom_coord_local_voxel": np.ndarray, (N_box, 3), float32, 连续 voxel 坐标
             - "box_shape_zyx": np.ndarray, (3,), int64, BOX 体素形状
-            - "box_spatial_weight": np.ndarray, (N_box,), float32, 以 BOX 中心为原点的高斯衰减权重
-            - "box_confidence_weight": float, 样本置信度权重 (预留, 默认 1.0)
+            - "box_confidence_weight": float, 标量, 该 BOX 的额外置信度权重
         - total_atom_count: int, 标量, 全局原子总数
-        - core_decay_mode: str, 核心区衰减方式
-            - "hard": 核心区权重 1.0, 非核心区权重 0.0
-            - "linear": 从核心区边界到 BOX 边界线性衰减
-            - "none": 不做衰减
-        - core_offset: int, 标量, 裁边 voxel 数
+        - core_decay_mode: str, core 区边界衰减模式, 可选 "hard" / "linear" / "none"
+        - core_offset: int, 标量, core 区裁边厚度, 单位 voxel
+        - merge_mode: str, 标量, 多 BOX 聚合策略
+            - "logit_mean": 先加权平均 logit, 再做 sigmoid
+            - "prob_mean": 先将每个 BOX 的 logit 转为 prob, 再加权平均 prob
+        - (以下三个参数用于高斯衰减核的生成)
+        - voxel_size: np.ndarray, (3,), float32, 体素大小 (x, y, z), 单位 A
+        - window_size: int, 标量, BOX 窗口边长 (voxel)
+        - box_spatial_weight_sigma_ratio: float, 标量, 高斯核 sigma 与 BOX 半径之比
 
     输出:
-        - atom_probs: np.ndarray, (total_atom_count,), float32, 每个原子的最终概率
+        - atom_probs: np.ndarray, (total_atom_count,), float32, 每个全局原子的最终概率
     """
     if len(box_results) == 0:
-        return np.zeros(total_atom_count, dtype=np.float32)
+        return np.zeros((total_atom_count,), dtype=np.float32)
+    if merge_mode not in {"logit_mean", "prob_mean"}:
+        raise ValueError(f"未知 merge_mode: {merge_mode}")
 
-    # np.ndarray, (total_atom_count,), float64, 加权 logit 累加
-    logit_sum = np.zeros(total_atom_count, dtype=np.float64)
+    # np.ndarray, (total_atom_count,), float64, 加权数值累加
+    value_sum = np.zeros((total_atom_count,), dtype=np.float64)
     # np.ndarray, (total_atom_count,), float64, 权重累加
-    weight_sum = np.zeros(total_atom_count, dtype=np.float64)
+    weight_sum = np.zeros((total_atom_count,), dtype=np.float64)
 
     for box_res in box_results:
-        indices = box_res["global_atom_indices"]
-        logits = box_res["atom_logits"]
+        # np.ndarray, (N_box,), int64, 当前 BOX 的原子全局索引
+        indices = np.asarray(box_res["global_atom_indices"], dtype=np.int64)
+        # np.ndarray, (N_box,) 或 (N_box, 1), float64, 当前 BOX 的原始 logits
+        logits = np.asarray(box_res["atom_logits"], dtype=np.float64)
         if logits.ndim == 2 and logits.shape[1] == 1:
             logits = logits[:, 0]
         elif logits.ndim != 1:
             raise ValueError(f"Logits shape {logits.shape} is not supported.")
-        logits = logits.astype(np.float64)
 
-        # np.ndarray, (N_box,), float32, 以 BOX 中心为原点的高斯空间权重
-        spatial_w = box_res.get("box_spatial_weight")
-        if spatial_w is None or (isinstance(spatial_w, (int, float)) and spatial_w == 1.0):
-            spatial_w = np.ones(len(indices), dtype=np.float32)
-        spatial_w = np.asarray(spatial_w, dtype=np.float64)
-        # float, 置信度权重 (预留)
+        if merge_mode == "logit_mean":
+            # np.ndarray, (N_box,), float64, 待聚合的数值为 logit
+            values = logits
+        else:
+            # np.ndarray, (N_box,), float64, 待聚合的数值为 probability
+            values = _sigmoid(logits.astype(np.float32)).astype(np.float64)
+
+        # np.ndarray, (N_box,), float64, BOX 中心高斯空间权重
+        spatial_w = _compute_per_atom_spatial_weight(
+            atom_coord_local_voxel=np.asarray(box_res["atom_coord_local_voxel"], dtype=np.float32),
+            box_shape_zyx=np.asarray(box_res["box_shape_zyx"], dtype=np.int64),
+            voxel_size=voxel_size,
+            window_size=window_size,
+            sigma_ratio=box_spatial_weight_sigma_ratio,
+        ).astype(np.float64)
+
+        # float, BOX 级置信度权重
         conf_w = float(box_res.get("box_confidence_weight", 1.0))
-        # np.ndarray, (N_box,), float32, 核心区衰减权重
+        # np.ndarray, (N_box,), float32, core 区边界衰减权重
         core_w = _compute_per_atom_core_weight(
-            atom_coord_local_voxel=box_res["atom_coord_local_voxel"],
-            atom_is_in_core=box_res["atom_is_in_core"],
-            box_shape_zyx=box_res["box_shape_zyx"],
+            atom_coord_local_voxel=np.asarray(box_res["atom_coord_local_voxel"], dtype=np.float32),
+            box_shape_zyx=np.asarray(box_res["box_shape_zyx"], dtype=np.int64),
             core_offset=core_offset,
             core_decay_mode=core_decay_mode,
         )
-        # np.ndarray, (N_box,), float64, 每个原子的最终权重 = 空间 × 核心衰减 × 置信度
+        # np.ndarray, (N_box,), float64, 当前 BOX 对原子的最终有效权重
         effective_w = spatial_w * core_w.astype(np.float64) * conf_w
 
-        np.add.at(logit_sum, indices, logits * effective_w)
+        np.add.at(value_sum, indices, values * effective_w)
         np.add.at(weight_sum, indices, effective_w)
 
-    # 加权均值 logit
-    # np.ndarray, (total_atom_count,), bool, 有被覆盖的原子
+    # np.ndarray, (total_atom_count,), bool, 是否至少被一个 BOX 覆盖
     covered = weight_sum > 0.0
-    # np.ndarray, (total_atom_count,), float64
-    mean_logit = np.zeros(total_atom_count, dtype=np.float64)
-    mean_logit[covered] = logit_sum[covered] / weight_sum[covered]
+    # np.ndarray, (total_atom_count,), float64, 聚合后的中间结果
+    merged_value = np.zeros((total_atom_count,), dtype=np.float64)
+    merged_value[covered] = value_sum[covered] / weight_sum[covered]
 
-    # np.ndarray, (total_atom_count,), float32, sigmoid
-    atom_probs = _sigmoid(mean_logit.astype(np.float32))
-    # 未被任何 BOX 覆盖到的原子概率设为 0
+    if merge_mode == "logit_mean":
+        # np.ndarray, (total_atom_count,), float32, 对加权平均 logit 做 sigmoid
+        atom_probs = _sigmoid(merged_value.astype(np.float32))
+    else:
+        # np.ndarray, (total_atom_count,), float32, 加权平均 probability
+        atom_probs = np.clip(merged_value, 0.0, 1.0).astype(np.float32)
+
     atom_probs[~covered] = 0.0
     return atom_probs
-
 
 def _sigmoid(x: np.ndarray) -> np.ndarray:
     """
     数值稳定的 sigmoid 函数。
 
     输入参数:
-        - x: np.ndarray, 任意形状, logit 值
+        - x: np.ndarray, 任意形状, logit 数组
 
     输出:
-        - np.ndarray, 与 x 同形, sigmoid 概率值
+        - y: np.ndarray, 与 x 同形, sigmoid 概率
     """
     return np.where(
         x >= 0,
@@ -243,31 +227,148 @@ def _sigmoid(x: np.ndarray) -> np.ndarray:
 
 
 
+
 # =============================================================================
-# 3. 原子概率 → 语义分割（二值化）
+# 3. (全局结果)原子概率 -> 语义分割（二值化）
 # =============================================================================
+def _point_semantic_segment_by_dbscan(
+    atom_probs: np.ndarray,
+    atom_coords: np.ndarray,
+    threshold: float,
+    dbscan_eps: float,
+    dbscan_min_samples: int,
+) -> np.ndarray:
+    """
+    使用 DBSCAN 对阈值后的正类原子点云做去孤立点后处理。
+
+    输入参数:
+        - atom_probs: np.ndarray, (N_atom,), float32, 全部原子的口袋概率
+        - atom_coords: np.ndarray, (N_atom, 3), float32, 全部原子的世界坐标 (x, y, z), 单位 A
+        - threshold: float, 标量, 概率阈值
+        - dbscan_eps: float, 标量, DBSCAN 半径参数 eps, 单位 A
+        - dbscan_min_samples: int, 标量, DBSCAN 的核心点最少邻居数
+
+    输出:
+        - pred_atom_coords: np.ndarray, (N_pred, 3), float32, DBSCAN 过滤后的正类原子坐标
+    """
+    if dbscan_eps <= 0.0:
+        raise ValueError(f"dbscan_eps 必须 > 0, 当前值为 {dbscan_eps}")
+    if dbscan_min_samples <= 0:
+        raise ValueError(f"dbscan_min_samples 必须 > 0, 当前值为 {dbscan_min_samples}")
+
+    # np.ndarray, (N_atom,), bool, 阈值后的正类掩码
+    positive_mask = atom_probs >= threshold
+    # np.ndarray, (N_pos, 3), float32, 正类原子坐标
+    positive_coords = atom_coords[positive_mask].astype(np.float32, copy=False)
+    n_positive = int(positive_coords.shape[0])
+    if n_positive == 0:
+        return np.empty((0, 3), dtype=np.float32)
+    if n_positive < dbscan_min_samples:
+        return np.empty((0, 3), dtype=np.float32)
+
+    # cKDTree, 正类原子坐标的空间索引
+    neighbor_tree = cKDTree(positive_coords)
+    # list[list[int]], 每个点在 eps 半径内的邻居索引, 含自身
+    neighbor_indices = neighbor_tree.query_ball_point(positive_coords, r=float(dbscan_eps))
+    # np.ndarray, (N_pos,), int32, 每个点的邻居数, 含自身
+    neighbor_count = np.asarray([len(indices) for indices in neighbor_indices], dtype=np.int32)
+
+    # np.ndarray, (N_pos,), int32, 聚类标签; -1 表示噪声点
+    labels = np.full((n_positive,), -1, dtype=np.int32)
+    # np.ndarray, (N_pos,), bool, 是否已访问
+    visited = np.zeros((n_positive,), dtype=bool)
+    cluster_id = 0
+
+    for seed_idx in range(n_positive):
+        if visited[seed_idx]:
+            continue
+
+        visited[seed_idx] = True
+        if neighbor_count[seed_idx] < dbscan_min_samples:
+            continue
+
+        labels[seed_idx] = cluster_id
+
+        # list[int], 当前聚类的待扩展队列
+        queue = list(neighbor_indices[seed_idx])
+        # np.ndarray, (N_pos,), bool, 是否已经入队
+        in_queue = np.zeros((n_positive,), dtype=bool)
+        in_queue[np.asarray(queue, dtype=np.int64)] = True
+        head = 0
+
+        while head < len(queue):
+            # int, 当前弹出的点索引
+            point_idx = int(queue[head])
+            head += 1
+
+            if not visited[point_idx]:
+                visited[point_idx] = True
+                if neighbor_count[point_idx] >= dbscan_min_samples:
+                    # np.ndarray, (N_neighbor,), int64, 当前点的全部邻居索引
+                    expand_indices = np.asarray(neighbor_indices[point_idx], dtype=np.int64)
+                    # np.ndarray, (N_new,), int64, 尚未入队的新邻居索引
+                    new_indices = expand_indices[~in_queue[expand_indices]]
+                    if new_indices.size > 0:
+                        queue.extend(new_indices.tolist())
+                        in_queue[new_indices] = True
+
+            if labels[point_idx] == -1:
+                labels[point_idx] = cluster_id
+
+        cluster_id += 1
+
+    # np.ndarray, (N_pos,), bool, 非噪声点掩码
+    keep_mask = labels >= 0
+    return positive_coords[keep_mask].astype(np.float32, copy=False)
+
+
 def point_semantic_segment(
     atom_probs: np.ndarray,
     atom_coords: np.ndarray,
     threshold: float,
-) -> np.ndarray:   # see me: 这实际是对点云的后处理, 后续需要加入相关机制, 如 DBscan 筛选
+    semantic_segment_method: str,
+
+    dbscan_eps: float,
+    dbscan_min_samples: int,
+) -> np.ndarray:
     """
-    对原子概率做阈值二值化，返回预测为正类的原子坐标。
+    对原子概率做语义分割后处理，返回预测为正类的原子坐标。
 
     输入参数:
-        - atom_probs:   np.ndarray, float32, (N_atom,), 每个原子的口袋概率 [0, 1]
-        - atom_coords:  np.ndarray, float32, (N_atom, 3), 所有原子的世界坐标 (x, y, z), 单位 Å
-        - threshold:    float, 概率阈值，>= threshold → 正类
+        - atom_probs: np.ndarray, (N_atom,), float32, 每个原子的口袋概率
+        - atom_coords: np.ndarray, (N_atom, 3), float32, 原子的世界坐标 (x, y, z), 单位 A
+        - threshold: float, 标量, 概率阈值
+        - semantic_segment_method: str, 标量, 语义分割后处理方式
+            - "threshold": 仅做阈值二值化
+            - "dbscan": 先做阈值二值化, 再做 DBSCAN 去孤立点
+
+        - dbscan_eps: float, 标量, DBSCAN 半径参数 eps, 仅在 method="dbscan" 时生效
+        - dbscan_min_samples: int, 标量, DBSCAN 最少邻居数, 仅在 method="dbscan" 时生效
 
     输出:
-        - pred_atom_coords: np.ndarray, float32, (N_pred, 3), 预测为口袋正类的原子世界坐标
+        - pred_atom_coords: np.ndarray, (N_pred, 3), float32, 最终预测为正类的原子坐标
     """
     if atom_probs.size == 0:
         return np.empty((0, 3), dtype=np.float32)
+    if atom_probs.shape[0] != atom_coords.shape[0]:
+        raise ValueError(
+            f"atom_probs 与 atom_coords 长度不一致: "
+            f"atom_probs.shape={atom_probs.shape}, atom_coords.shape={atom_coords.shape}"
+        )
 
-    # np.ndarray, bool, (N_atom,), 正类掩码
-    mask = atom_probs >= threshold
-    # np.ndarray, float32, (N_pred, 3), 正类原子坐标
-    pred_atom_coords = atom_coords[mask].astype(np.float32)
-    return pred_atom_coords
+    if semantic_segment_method == "threshold":
+        # np.ndarray, (N_atom,), bool, 正类掩码
+        positive_mask = atom_probs >= threshold
+        # np.ndarray, (N_pred, 3), float32, 阈值后的正类原子坐标
+        return atom_coords[positive_mask].astype(np.float32, copy=False)
 
+    if semantic_segment_method == "dbscan":
+        return _point_semantic_segment_by_dbscan(
+            atom_probs=atom_probs,
+            atom_coords=atom_coords,
+            threshold=threshold,
+            dbscan_eps=dbscan_eps,
+            dbscan_min_samples=dbscan_min_samples,
+        )
+
+    raise ValueError(f"未知 semantic_segment_method: {semantic_segment_method}")

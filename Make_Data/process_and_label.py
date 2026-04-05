@@ -60,6 +60,11 @@ from labels.filter_config import (
 from labels.instance_labels import compute_binding_labels, save_labels_npz
 
 
+DEFAULT_PARSE_ATOMS = True
+DEFAULT_PARSE_RESIDUES = False
+DEFAULT_PARSE_GRAPH = False
+
+
 def _normalize_filter_preset_name(value: str) -> str:
     """
     规范化命令行传入的预设名（去首尾空格并转小写）。
@@ -231,6 +236,9 @@ def process_and_label_single_file(
     compute_density: bool = True,
     select_first_model: bool = False,
     filter_config: LigandFilterConfig = None,
+    parse_atoms: bool = DEFAULT_PARSE_ATOMS,
+    parse_residues: bool = DEFAULT_PARSE_RESIDUES,
+    parse_graph: bool = DEFAULT_PARSE_GRAPH,
 ) -> Tuple[str, bool, Optional[str]]:
     """
     Mode A: 从零开始处理单个结构文件（解析 + 特征提取 + 打标签）。
@@ -298,22 +306,25 @@ def process_and_label_single_file(
 
 
         # ===== 4. 计算原子特征 / Compute atom features =====
-        atom_features = compute_atom_features(parsed_data, compute_density=compute_density)
-        save_atoms_npz(parsed_data, atom_features, str(sample_output_dir / "atoms.npz"))
+        if parse_atoms:
+            atom_features = compute_atom_features(parsed_data, compute_density=compute_density)
+            save_atoms_npz(parsed_data, atom_features, str(sample_output_dir / "atoms.npz"))
         # ===== 5. 计算残基特征和局部坐标系 / Compute residue features and local frames =====
-        residue_features = compute_residue_features(parsed_data)
-        local_frames, frames_mask = compute_local_frames(
-            parsed_data,
-            error_dir=error_dir,
-            sample_id=sample_id,
-            file_path=input_path,
-        )
-        save_residues_npz(
-            parsed_data, residue_features, local_frames, frames_mask,
-            str(sample_output_dir / "residues.npz")
-        )
+        if parse_residues:
+            residue_features = compute_residue_features(parsed_data)
+            local_frames, frames_mask = compute_local_frames(
+                parsed_data,
+                error_dir=error_dir,
+                sample_id=sample_id,
+                file_path=input_path,
+            )
+            save_residues_npz(
+                parsed_data, residue_features, local_frames, frames_mask,
+                str(sample_output_dir / "residues.npz")
+            )
         # ===== 6. 保存图结构 / Save graph structure =====
-        save_graph_npz(parsed_data, graph_cutoff, str(sample_output_dir / "graph.npz"))
+        if parse_graph:
+            save_graph_npz(parsed_data, graph_cutoff, str(sample_output_dir / "graph.npz"))
 
 
 
@@ -615,6 +626,12 @@ def main():
                         help="跳过密度特征计算（更快）")
     parser.add_argument("--select_first_model", action="store_true",
                         help="多 model 时仅取第一个")
+    parser.add_argument("--parse_atoms", action=argparse.BooleanOptionalAction, default=DEFAULT_PARSE_ATOMS,
+                        help="Whether to really build atoms_dict / atoms.npz")
+    parser.add_argument("--parse_residues", action=argparse.BooleanOptionalAction, default=DEFAULT_PARSE_RESIDUES,
+                        help="Whether to really build residues_dict / residues.npz")
+    parser.add_argument("--parse_graph", action=argparse.BooleanOptionalAction, default=DEFAULT_PARSE_GRAPH,
+                        help="Whether to really build graph_dict / graph.npz")
     parser.add_argument(
         "--filter_preset", "--class_name",
         dest="filter_preset",
@@ -640,6 +657,7 @@ def main():
     print(f"Output: {args.output_dir}")
     print(f"Shard:  {args.part_id + 1}/{args.total_parts}")
     print(f"Jobs:   {args.n_jobs}")
+    print(f"Parse:  atoms={args.parse_atoms}, residues={args.parse_residues}, graph={args.parse_graph}")
 
     # LigandFilterConfig, 按预设名读取筛选配置
     filter_config = get_filter_preset(args.filter_preset)
@@ -695,6 +713,9 @@ def main():
                 compute_density=not args.no_compute_density,
                 select_first_model=args.select_first_model,
                 filter_config=filter_config,
+                parse_atoms=args.parse_atoms,
+                parse_residues=args.parse_residues,
+                parse_graph=args.parse_graph,
             )
             for file_path in shard_items
         )
@@ -816,7 +837,10 @@ def get_features_when_infer(
     error_dir: str = None,
     graph_cutoff: float = GRAPH_CUTOFF,
     compute_density: bool = True, 
-    select_first_model: bool = False
+    select_first_model: bool = False,
+    parse_atoms: bool = DEFAULT_PARSE_ATOMS,
+    parse_residues: bool = DEFAULT_PARSE_RESIDUES,
+    parse_graph: bool = DEFAULT_PARSE_GRAPH,
 ) -> Optional[Tuple[dict, dict, dict]]:
     """
     推断时提取单个结构文件的三类特征，不保存任何文件、不计算标签。
@@ -883,13 +907,15 @@ def get_features_when_infer(
 
         # 2. 原子级特征 / Atom-level features
         # np.ndarray, (N_atoms, 49), float32, 原子特征矩阵
-        atom_feat = compute_atom_features(
-            parsed_data,
-            compute_density=compute_density,
-        )
+        atom_feat = None
+        if parse_atoms:
+            atom_feat = compute_atom_features(
+                parsed_data,
+                compute_density=compute_density,
+            )
 
         # dict, 与 atoms.npz 内容完全对齐
-        atoms_dict = {
+        atoms_dict = None if not parse_atoms else {
             "coords":        parsed_data.atom_coords,                           # np.ndarray, (N_atoms, 3), float32
             "features":      atom_feat,                                         # np.ndarray, (N_atoms, 49), float32
             "elements":      np.array(parsed_data.atom_elements, dtype=object), # np.ndarray, (N_atoms,), str
@@ -901,18 +927,23 @@ def get_features_when_infer(
 
         # 3. 残基级特征 + 局部坐标系 / Residue-level features + local frames
         # np.ndarray, (N_res, 33), float32, 残基特征矩阵
-        res_feat = compute_residue_features(parsed_data)
+        res_feat = None
+        if parse_residues:
+            res_feat = compute_residue_features(parsed_data)
         # np.ndarray, (N_res, 3, 3), float32, 局部坐标系旋转矩阵
         # np.ndarray, (N_res,), bool, 坐标系有效性掩码
-        local_frames, frames_mask = compute_local_frames(
-            parsed_data,
-            error_dir=error_dir,
-            sample_id=sample_id,
-            file_path=input_path,
-        )
+        local_frames = None
+        frames_mask = None
+        if parse_residues:
+            local_frames, frames_mask = compute_local_frames(
+                parsed_data,
+                error_dir=error_dir,
+                sample_id=sample_id,
+                file_path=input_path,
+            )
 
         # dict, 与 residues.npz 内容完全对齐
-        residues_dict = {
+        residues_dict = None if not parse_residues else {
             "coords":            parsed_data.res_coords,                             # np.ndarray, (N_res, 3), float32
             "features":          res_feat,                                           # np.ndarray, (N_res, 33), float32
             "names":             np.array(parsed_data.res_names, dtype=object),       # np.ndarray, (N_res,), str
@@ -930,14 +961,20 @@ def get_features_when_infer(
         # np.ndarray, (N_edges,), int32, 源节点索引
         # np.ndarray, (N_edges,), int32, 目标节点索引
         # np.ndarray, (N_edges,), float32, 边距离
-        row_idx, col_idx, distances = build_graph_edges_sparse(
-            parsed_data.atom_coords, graph_cutoff
-        )
+        row_idx = None
+        col_idx = None
+        distances = None
+        if parse_graph:
+            row_idx, col_idx, distances = build_graph_edges_sparse(
+                parsed_data.atom_coords, graph_cutoff
+            )
         # np.ndarray, (N_edges,), float32, 边权重 = 1 / (距离 + epsilon)
-        weights = 1.0 / (distances + 1e-6)
+        weights = None
+        if parse_graph:
+            weights = 1.0 / (distances + 1e-6)
 
         # dict, 与 graph.npz 内容完全对齐
-        graph_dict = {
+        graph_dict = None if not parse_graph else {
             "edge_row":    row_idx.astype(np.int32),      # np.ndarray, (N_edges,), int32
             "edge_col":    col_idx.astype(np.int32),      # np.ndarray, (N_edges,), int32
             "edge_dist":   distances.astype(np.float32),  # np.ndarray, (N_edges,), float32

@@ -50,8 +50,6 @@ class Stage1PointBackbone(nn.Module):
         out_channels: int,  # 64
         recycle_feature_dim: int,  # 64
         recycle_in_norm_mode: str,  # "layernorm"
-        recycle_use_gate: bool,  # True
-        recycle_gate_init: float,  # 0.0
         serialization_orders: Sequence[str],  # ("z", "z-trans", "hilbert", "hilbert-trans")
         shuffle_orders: bool,  # True
         stride: Sequence[int],  # (4, 2, 2, 2)
@@ -106,8 +104,6 @@ class Stage1PointBackbone(nn.Module):
                 - out_channels: int, 点云分支最终输出维度
                 - recycle_feature_dim: int, 点分支 recycle 特征维度
                 - recycle_in_norm_mode: str, recycle 输入归一化模式, 可选 "layernorm" 或 "none"
-                - recycle_use_gate: bool, 是否对 recycle 残差启用可学习门控
-                - recycle_gate_init: float, 标量, recycle 残差门控的初始化值
                 - embedding_impl: str, embedding 实现方式, "sparseconv" 或 "pointconv"
                 - cpe_impl: str, Block CPE 实现方式, "sparseconv" 或 "pointconv"
                 - embedding_receptive_field: float, embedding 世界坐标感受野(Å)(仅 pointconv)
@@ -136,8 +132,6 @@ class Stage1PointBackbone(nn.Module):
         self.out_channels = int(out_channels)
         self.recycle_feature_dim = int(recycle_feature_dim)
         self.recycle_in_norm_mode = str(recycle_in_norm_mode)
-        self.recycle_use_gate = bool(recycle_use_gate)
-        self.recycle_gate_init = float(recycle_gate_init)
         self.embedding_kernel_size = int(embedding_kernel_size)
         self.embedding_impl = str(embedding_impl)
         self.cpe_impl = str(cpe_impl)
@@ -211,13 +205,6 @@ class Stage1PointBackbone(nn.Module):
         )
         # nn.Linear, `(sumN, C_recycle) -> (sumN, F_atom)`，将上一轮 point recycle 状态投影回当前 atom 特征空间
         self.recycle_input_proj = nn.Linear(self.recycle_feature_dim, self.atom_feature_dim)
-        if self.recycle_use_gate:
-            # nn.Parameter, `(F_atom,)`，逐通道控制 recycle 残差注入强度
-            self.recycle_input_gate = nn.Parameter(
-                torch.full((self.atom_feature_dim,), self.recycle_gate_init, dtype=torch.float32)
-            )
-        else:
-            self.register_parameter("recycle_input_gate", None)
         # nn.Sequential, `(sumN, F_atom) -> (sumN, C_input_embed)`，输入到点主干前的原子特征投影。
         self.atom_input_proj = nn.Sequential(
             nn.Linear(self.atom_feature_dim, int(input_embed_hidden_dim)),
@@ -369,11 +356,6 @@ class Stage1PointBackbone(nn.Module):
         )
         # torch.Tensor, `(sumN, F_atom)`, recycle 残差投影回 atom 特征空间
         recycle_residual = self.recycle_input_proj(recycle_feat)
-        if self.recycle_input_gate is not None:
-            recycle_residual = recycle_residual * self.recycle_input_gate.to(
-                device=recycle_residual.device,
-                dtype=recycle_residual.dtype,
-            ).view(1, -1)
         # torch.Tensor, `(sumN, F_atom)`, 融合 recycle 残差后的 atom 特征
         fused_atom_feat = atom_feat + recycle_residual
         # torch.Tensor, `(sumN, C_input_embed)`, 输入到点主干前的投影特征

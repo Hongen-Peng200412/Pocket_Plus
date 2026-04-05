@@ -1,0 +1,43 @@
+# @package _global_
+# 减小层数、mlp_ratio，增大 patch_size
+model:
+  backbone:
+    embed_head:
+      _target_: src.model.stage1_embed_head.Stage1EmbedHead
+      atom_feature_dim: 49         # int, 原子原始特征维度
+      embed_hidden_dim: 64         # int, 共享 trunk 隐藏通道数
+      embed_voxel_out_channels: 32 # int, scatter 到体素网格后的通道数
+      embed_point_out_channels: 64 # int, 输出给点分支的通道数
+      num_trunk_blocks: 1          # int, 共享 trunk block 数
+      num_voxel_blocks: 2          # int, 体素分支 block 数
+      num_point_blocks: 2          # int, 点分支 block 数
+      trunk_buffer_radii: [16.0]
+      voxel_buffer_radii: [8.0, 0.0]
+      point_buffer_radii: [8.0, 0.0]
+      num_heads: 4
+      patch_size: 256
+      serialization_orders: ["z", "z-trans", "hilbert", "hilbert-trans"]
+      shuffle_orders: true
+      qkv_bias: true
+      qk_scale: null
+      attn_drop: 0.2
+      proj_drop: 0.2
+      enable_rpe: false
+      enable_flash: true
+      upcast_attention: false
+      upcast_softmax: false
+      ffn_type: ${model.backbone.ffn_type}               # str, FFN 类型 (由 configs/experiment 覆盖)
+      mlp_ratio: 3
+      act_layer_name: ${model.backbone.act_layer_name}   # str, 激活函数 (由 configs/experiment 覆盖)
+      scatter_reduce: "mean"       # str, per-atom → voxel 聚合方式
+      point_grid_size: 0.25
+      cpe_impl: "pointconv"
+      cpe_kernel_size: 5
+      cpe_receptive_field: 2.0
+      pointconv_block_max_neighbors: 64
+      drop_path: 0.2
+      pre_norm: true
+
+    # embed head 启用时, 点分支 atom_feature_dim = embed_point_out_channels
+    point_backbone:
+      atom_feature_dim: 64

@@ -400,7 +400,7 @@ class BoxPointDataset(Dataset):
                     voxel_label = self._apply_class_mapping(voxel_label, self.class_mapping)
             else:
                 grid = grid.astype(np.float32, copy=False)   # feature 一律转 float32, 便于后续直接拼接
-                if "emdb" in folder_name:   # NOTE: 当前逻辑下 emdb 被强制归一化
+                if "emdb" in folder_name:   # TODO: 当前逻辑下 emdb 被强制归一化, 未来需要修改
                     grid = self._zscore_emdb_grid(grid)
                 voxel_parts.append(grid)
 

@@ -170,6 +170,27 @@ valid_crop_margin: 0
 #   作用: 高斯核 sigma 衰减率。高斯核 sigma = sigma_ratio × BOX 中心到角点的距离。用于融合时给距离中心较远的 logit 进行降权处理。
 box_spatial_weight_sigma_ratio: 0.5
 
+# merge_mode: str, 鏍囬噺
+#   浼犲叆: run.py _run_raw_param_search_mode() -> run_raw_point_pipeline(merge_mode=...) -> merge_box_atom_results()
+#   浣滅敤: 澶?BOX 鍘熷瓙棰勬祴鑱氬悎绛栫暐銆傞粯璁? "logit_mean" 鍏堝姞鏉冨钩鍧?logit 鍐嶅仛 sigmoid銆?
+merge_mode: "logit_mean"
+
+# semantic_segment_method: str, 鏍囬噺
+#   浼犲叆: run.py _run_raw_param_search_mode() -> point_semantic_segment()
+#   浣滅敤: 鍘熷瓙姒傜巼 -> 璇箟鍒嗗壊鐨勬€诲叆鍙ｃ€傞粯璁? "threshold" 浠呭仛闃堝€间簩鍊煎寲;
+#         鍙€夌敤 "dbscan" 鍦ㄩ槇鍊煎悗鍐嶅仛鑱氱被鍘诲櫔銆?
+semantic_segment_method: "threshold"
+
+# dbscan_eps: float, 鏍囬噺 (脜)
+#   浼犲叆: point_semantic_segment(dbscan_eps=...)
+#   浣滅敤: DBSCAN 鍗婂緞鍙傛暟 eps銆備粎鍦?semantic_segment_method="dbscan" 鏃剁敓鏁堛€?
+dbscan_eps: 2.0
+
+# dbscan_min_samples: int, 鏍囬噺
+#   浼犲叆: point_semantic_segment(dbscan_min_samples=...)
+#   浣滅敤: DBSCAN 鐨勬牳蹇冪偣鏈€灏戦偦灞呮暟銆備粎鍦?semantic_segment_method="dbscan" 鏃剁敓鏁堛€?
+dbscan_min_samples: 3
+
 
 # --- 网格调参配置 ---
 # search_params: dict
@@ -181,6 +202,16 @@ search_params:
     min: 0.30
     max: 0.50
     step: 0.01
+  # merge_mode: ["logit_mean", "prob_mean"]
+  # semantic_segment_method: ["threshold", "dbscan"]
+  # dbscan_eps:
+  #   min: 1.5
+  #   max: 3.0
+  #   step: 0.5
+  # dbscan_min_samples:
+  #   min: 2
+  #   max: 5
+  #   step: 1
   # core_offset:
   #   min: 0
   #   max: 4

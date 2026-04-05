@@ -1,13 +1,24 @@
 # ============================================================
 # Training Hyperparameters
-# Used as cfg.train.* by train.py and Lightning wrappers.
+# 此文件的所有配置项以 cfg.train.* 的形式被 train.py 和 Lightning wrappers 使用
 # ============================================================
 
-# --- DataLoader ---
-global_batch_size: 36
-tuning_init_batch_size: 5
-batch_size: ${train.tuning_init_batch_size}
-batch_size_tuning_safety_factor: 0.75
+# --- DataLoader / Batch Size ---
+global_batch_size: 36                       # int, 目标全局 batch size (per-device bs × devices × accumulate_steps)
+                                            # → train.py: 据此反算 accumulate_grad_batches
+enable_batch_size_tuning: true              # bool, 是否启用自动搜索 per-device batch_size
+                                            # → true: 运行 Tuner.scale_batch_size() 搜索最大可用 bs
+                                            # → false: 直接使用 batch_size 字段的预设值, 不做显存探测
+tuning_init_batch_size: 6                   # int, 自动搜索时的起始探测值
+batch_size: ${train.tuning_init_batch_size} # int, 实际 per-device batch_size
+                                            # → 启用搜索时: 初始值无关紧要, 会被 tuner 覆写
+                                            # → 不启用搜索时: 直接作为 per-device bs 使用
+batch_size_tuning_safety_factor: 0.8        # float, 搜索到最大 bs 后的缩放安全系数, 建议值 0.7-0.85
+tuning_steps_per_trial: 10                  # int, 每次尝试候选 bs 时运行的 step 数, 值越大判断越稳但搜索越慢
+strict_global_batch_size: true              # bool, 是否严格对齐 global_batch_size
+                                            # → true: 若 safe_bs × devices 不整除 global_batch_size,
+                                            #   自动向下微调 per-device bs 直到整除, 保证 effective == target
+                                            # → false: 保持 floor-div 行为, 允许 effective ≤ target
 num_workers: 20
 dataloader_backend: auto
 pin_memory: true

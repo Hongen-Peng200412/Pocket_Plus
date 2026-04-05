@@ -15,8 +15,6 @@ model:
       out_channels: 64               # int, 点分支最终输出通道数
       recycle_feature_dim: 64        # int, recycle 特征维度
       recycle_in_norm_mode: layernorm  # str, 对上一轮 point recycle_out 先做归一化再投影; "layernorm" / "none"
-      recycle_use_gate: true           # bool, 是否为 recycle 残差增加逐通道可学习门控
-      recycle_gate_init: 0.0           # float, 门控初始值; 0 表示从“几乎不注入 recycle 残差”开始学
 
       # --- 序列化 ---
       serialization_orders: ["z", "z-trans", "hilbert", "hilbert-trans"]

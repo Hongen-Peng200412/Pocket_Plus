@@ -379,11 +379,31 @@ class TestRecycleHelpers:
         assert torch.allclose(prepared["pseudo_coord_centered_world"], cached["pseudo_coord_centered_world"])
         assert not torch.allclose(prepared["pseudo_feat"], cached["pseudo_feat"])
 
-    def test_prepare_pseudo_dict_all_keeps_positions_and_features(self):
-        """`all` 应直接复用 cache 中的位置与 `pseudo_feat`。"""
+    def test_prepare_pseudo_dict_all_keeps_positions_and_reinitializes_features(self):
+        """`all` should keep positions but reinitialize feat (same as `pos`); only point_recycle_out is preserved across rounds."""
         torch.manual_seed(2)
         np.random.seed(2)
-        gen = _make_default_gen(base_count=2, scale_factor=0.0, recycle_policy="all")
+        gen = _make_default_gen(
+            base_count=2,
+            scale_factor=0.0,
+            recycle_policy="all",
+            init_feat_mode="neighbor_mean",
+            neighbor_radius=100.0,
+        )
+        batch = _make_batch(batch_size=1, atoms_per_box=(4,), feat_dim=4)
+        cached = gen.generate(batch)
+        cached = {**cached, "pseudo_feat": torch.full_like(cached["pseudo_feat"], 5.0)}
+
+        prepared = gen.prepare_pseudo_dict_for_recycle(batch=batch, cached_pseudo_dict=cached)
+
+        assert torch.allclose(prepared["pseudo_coord_centered_world"], cached["pseudo_coord_centered_world"])
+        assert not torch.allclose(prepared["pseudo_feat"], cached["pseudo_feat"])
+
+    def test_prepare_pseudo_dict_fixed_keeps_positions_and_features(self):
+        """`fixed` 保留位置与 `pseudo_feat`, 直接沿用缓存。"""
+        torch.manual_seed(5)
+        np.random.seed(5)
+        gen = _make_default_gen(base_count=2, scale_factor=0.0, recycle_policy="fixed")
         batch = _make_batch(batch_size=1, atoms_per_box=(4,), feat_dim=4)
         cached = gen.generate(batch)
         cached = {**cached, "pseudo_feat": torch.full_like(cached["pseudo_feat"], 5.0)}

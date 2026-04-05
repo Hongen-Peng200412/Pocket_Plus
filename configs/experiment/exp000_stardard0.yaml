@@ -1,0 +1,43 @@
+# @package _global_
+# ============================================================
+# 实验 001: baseline — 猜测的最佳参数
+# ============================================================
+# 用法:
+#   sbatch sbatch/h200/1gpu.sbatch base "+experiment=exp001_baseline"
+# ============================================================
+
+defaults:
+  - override /model/voxel_backbone: default       # 体素分支: RAUNet-64
+  - override /model/point_backbone: stardard      # 点云分支: PTV3 Dense
+  - override /model/fusion: e234d4             # 融合: 4 层级全融合
+  - override /model/atom_head: stardard               # Atom Head: 4 层
+  - override /model/pseudo_atom: "none"             # 伪原子
+  - override /model/embed_head: stardard                # Embed Head: 关闭
+  - override /loss: focal_default                   # 损失: Focal Loss
+  - override /dataset: unfused_embed                        # 数据集: fused
+  - override /train: B36_L2                         # 训练: H200 参数
+
+
+
+# --- 实验标识 ---
+name: exp000_stardard0
+tag: "标准0"
+experiment_group: "stardard"   # str, run_dir 父文件夹名称: 存放目录为: .../logs/ experiment_group / tag___timestamp
+project_name: PV_stardard         # wandb 的项目名称
+
+# --- 模型总体参数 ---
+model:
+  backbone:
+    # --- Logit 输出 ---
+    atom_logit_dim: 1                # int, atom 分类 logit 维度; 二分类=1
+
+    # --- Recycle 机制 ---
+    enable_recycling: true           # bool, 启用 recycle 循环(多轮迭代精化)
+    max_recycles: 3                  # int, 最大 recycle 轮数
+    randomize_recycles: true         # bool, 训练时在 [1, max_recycles] 内随机
+    detach_recycle_states: true      # bool, 跨轮截断梯度
+
+    # --- 统一激活函数 (全局源头, 子模块通过插值引用) ---
+    act_layer_name: "gelu"           # str, "gelu"/"silu"/"relu"/"leakyrelu"
+    ffn_type: "gated"                  # str, PTV3 Block FFN: "mlp" / "gated"
+    atom_head_ffn_type: "gated"       # str, atom head 可选 FFN: "mlp" / "gated" / "none"
