@@ -1030,7 +1030,10 @@ class PseudoAtomGenerator:
             raise RuntimeError(
                 f"Expected a pseudo tensor of length {total_pseudo}, but got {pseudo_tensor.shape[0]}."
             )
+
+        # 张量具体维度
         suffix_shape = tuple(real_tensor.shape[1:])
+        # 存储每个 BOX 的 real 和 pseudo 张量
         chunks: list[torch.Tensor] = []
         real_offset = 0
         pseudo_offset = 0
@@ -1059,7 +1062,7 @@ class PseudoAtomGenerator:
         split_info: list[tuple[int, int]],
     ) -> torch.Tensor | None:
         """
-        从 mixed 张量中抽取伪原子子张量。
+        从 mixed 张量中抽取伪原子张量。
 
         输入参数:
             - mixed_tensor: torch.Tensor | None, `(sumN_real+sumM, ...)`, 按 `[real_i, pseudo_i]` 交错布局的 mixed 张量
@@ -1075,6 +1078,7 @@ class PseudoAtomGenerator:
             raise RuntimeError(
                 f"Expected a mixed tensor of length {total_mixed}, but got {mixed_tensor.shape[0]}."
             )
+        # 存储每个 BOX 的 pseudo 张量
         chunks: list[torch.Tensor] = []
         offset = 0
         for nr, np_ in split_info:
