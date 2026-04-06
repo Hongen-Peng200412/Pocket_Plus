@@ -34,7 +34,7 @@ model:
       # --- 嵌入层 ---
       embedding_kernel_size: 5       # int, sparseconv 卷积核
       embedding_impl: pointconv      # str, "sparseconv" / "pointconv"
-      embedding_receptive_field: 5.0 # float, pointconv 感受野(Å)
+      embedding_receptive_field: 3.5 # float, pointconv 感受野(Å)
       pointconv_embed_max_neighbors: 256
 
       # --- CPE ---
@@ -42,8 +42,8 @@ model:
       pointconv_block_max_neighbors: 64
       enc_cpe_kernel_size: [5, 5, 5, 5, 5]
       dec_cpe_kernel_size: [5, 5, 5, 5, 5]
-      enc_cpe_receptive_field: [2.0, 2.0, 8.0, 12.0, 16.0]
-      dec_cpe_receptive_field: [2.0, 2.0, 8.0, 12.0, 16.0]
+      enc_cpe_receptive_field: [2.0, 3.0, 8.0, 12.0, 16.0]
+      dec_cpe_receptive_field: [2.0, 3.0, 8.0, 12.0, 16.0]
 
       # --- 注意力与正则化 ---
       mlp_ratio: 3                   # int, FFN 膨胀倍率

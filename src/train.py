@@ -4,10 +4,12 @@
 
 import sys
 import os
+import random
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "max_split_size_mb:256,expandable_segments:True")
 
 import rootutils
 from pathlib import Path
+import numpy as np
 
 # Setup Root, 设置根目录; rootutils, (module), 用于自动查找项目根目录的工具库
 ROOT = rootutils.setup_root(__file__, indicator=".project-root", pythonpath=True)
@@ -25,6 +27,8 @@ _fix_gloo_socket_ifname()
 
 import torch
 import torch.multiprocessing
+from torch.utils.data import Sampler
+from torch.utils.data.distributed import DistributedSampler
 torch.set_float32_matmul_precision("high")
 torch.multiprocessing.set_sharing_strategy('file_system')
 import hydra
@@ -234,6 +238,35 @@ def _align_global_batch_size(
     return per_device_bs, accumulate_steps
 
 
+class SeededEpochRandomSampler(Sampler[int]):
+    """Deterministic train sampler whose index order depends only on seed and epoch."""
+
+    def __init__(self, data_source, seed: int) -> None:
+        self.data_source = data_source
+        self.seed = int(seed)
+        self.epoch = 0
+
+    def set_epoch(self, epoch: int) -> None:
+        self.epoch = int(epoch)
+
+    def __iter__(self):
+        generator = torch.Generator()
+        generator.manual_seed(self.seed + self.epoch)
+        indices = torch.randperm(len(self.data_source), generator=generator).tolist()
+        return iter(indices)
+
+    def __len__(self) -> int:
+        return len(self.data_source)
+
+
+def _seed_worker(worker_id: int) -> None:
+    del worker_id
+    worker_seed = torch.initial_seed() % (2 ** 32)
+    random.seed(worker_seed)
+    np.random.seed(worker_seed)
+    torch.manual_seed(worker_seed)
+
+
 @hydra.main(version_base="1.3", config_path="../configs", config_name=_CONFIG_NAME)
 
 
@@ -252,6 +285,11 @@ def main(cfg: DictConfig):
             f"LOCAL_RANK={os.environ.get('LOCAL_RANK')}, "
             f"WORLD_SIZE={os.environ.get('WORLD_SIZE')}"
         )
+
+    train_seed = cfg.train.get("seed", None)
+    if train_seed is not None:
+        pl.seed_everything(int(train_seed), workers=bool(cfg.train.get("seed_workers", False)))
+        print(f"[Train] Global seed set to {int(train_seed)}")
 
     # 1. -------------- 初始化实验管理器, 创建目录并立即保存配置 --------------
     # ExperimentManager, (Object), 自定义的实验管理器实例，负责目录创建、配置备份和清理
@@ -356,7 +394,21 @@ def main(cfg: DictConfig):
                     self.train_ds = maybe_wrap_dataset(self.train_ds, "train", _ft_cfg)
                     self.val_ds = maybe_wrap_dataset(self.val_ds, "val", _ft_cfg)
 
-        def _get_dataloader(self, ds, shuffle=False):
+        def _get_stage_seed(self, stage: str) -> int:
+            base_seed = int(self.train_cfg.get("seed", 0) or 0)
+            offsets = self.train_cfg.get("dataloader_seed_offsets", {})
+            return base_seed + int(offsets.get(stage, 0))
+
+        def _build_sampler(self, ds, stage: str, shuffle: bool):
+            stage_seed = self._get_stage_seed(stage)
+            world_size = int(getattr(self.trainer, "world_size", 1) or 1)
+            if world_size > 1:
+                return DistributedSampler(ds, shuffle=(stage == "train" and shuffle), seed=stage_seed)
+            if stage == "train" and shuffle:
+                return SeededEpochRandomSampler(ds, seed=stage_seed)
+            return None
+
+        def _get_dataloader(self, ds, stage: str, shuffle: bool = False):
             """
             统一 DataLoader 的创建逻辑。
             支持根据样本类型自动选择 torch_geometric 或 torch.utils.data.DataLoader
@@ -385,15 +437,21 @@ def main(cfg: DictConfig):
             else:
                 loader_class = torch.utils.data.DataLoader
 
+            sampler = self._build_sampler(ds, stage=stage, shuffle=shuffle)
+            generator = torch.Generator()
+            generator.manual_seed(self._get_stage_seed(stage))
             collate_fn = None if use_pyg else getattr(ds, "collate_fn", None)
                 
             return loader_class(
                 ds,
                 batch_size=self.train_cfg.batch_size,
-                shuffle=shuffle,
+                shuffle=bool(shuffle and sampler is None),
+                sampler=sampler,
                 num_workers=self.train_cfg.num_workers,
                 pin_memory=self.train_cfg.get("pin_memory", True) if sys.platform != "win32" else False,
                 collate_fn=collate_fn,
+                worker_init_fn=_seed_worker,
+                generator=generator,
             )
 
         def train_dataloader(self):
@@ -401,14 +459,14 @@ def main(cfg: DictConfig):
             Returns:
                 - DataLoader, (torch.utils.data.DataLoader), 训练数据加载器
             """
-            return self._get_dataloader(self.train_ds, shuffle=True)
+            return self._get_dataloader(self.train_ds, stage="train", shuffle=True)
             
         def val_dataloader(self):
             """
             Returns:
                 - DataLoader, (torch.utils.data.DataLoader), 验证数据加载器
             """
-            return self._get_dataloader(self.val_ds, shuffle=False)
+            return self._get_dataloader(self.val_ds, stage="val", shuffle=False)
     
     dm = UnifiedDataModule(cfg.dataset, cfg.train)
 
@@ -628,8 +686,9 @@ def main(cfg: DictConfig):
         gradient_clip_val=cfg.train.gradient_clip_val,    # float, gradient clipping
         accumulate_grad_batches=cfg.train.get("accumulate_grad_batches", 1), # int, 默认 1
         check_val_every_n_epoch=cfg.train.check_val_every_n_epoch, # int
+        num_sanity_val_steps=2,
+        use_distributed_sampler=False,
         log_every_n_steps=cfg.train.get("log_every_n_steps", 10), # int, 控制wandb记录日志的频率
-        num_sanity_val_steps=2 # int, 用于检查bug
     )
     
 

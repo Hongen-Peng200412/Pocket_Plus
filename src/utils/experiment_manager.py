@@ -54,6 +54,7 @@ class ExperimentManager:
             print(f"[ExperimentManager] Run stamp: {self.run_stamp} (source: {self.run_stamp_source})")
             print(f"[ExperimentManager] 实验目录已创建: {self.run_dir}")
             self._save_config_snapshot()
+            self._archive_model_source()
             self._migrate_slurm_logs_to_run_dir()
             self._relocate_hydra_logging()
 
@@ -98,6 +99,18 @@ class ExperimentManager:
         if "train" in self.config:
             train_cfg_path = self.run_dir / "train.yaml"
             OmegaConf.save(self.config.train, train_cfg_path)
+
+    def _archive_model_source(self):
+        """
+        将 src/model/ (含 PTV3bakcbone) 复制到 run_dir/src_snapshot/。
+        确保推理时可以使用训练时的完整模型代码，不受后续代码迭代影响。
+        """
+        import shutil
+        src_model_dir = self.project_root / "src" / "model"
+        snapshot_dir = self.run_dir / "src_snapshot" / "model"
+        if src_model_dir.exists():
+            shutil.copytree(src_model_dir, snapshot_dir, dirs_exist_ok=True)
+            print(f"[ExperimentManager] 模型代码快照已保存: {snapshot_dir}")
 
     def _migrate_slurm_logs_to_run_dir(self):
         """

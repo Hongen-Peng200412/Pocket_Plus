@@ -7,7 +7,7 @@
 # ============================================================
 
 defaults:
-  - override /model/voxel_backbone: default       # 体素分支: RAUNet-64
+  - override /model/voxel_backbone: stardard       # 体素分支: RAUNet-64
   - override /model/point_backbone: stardard      # 点云分支: PTV3 Dense
   - override /model/fusion: e234d4             # 融合: 4 层级全融合
   - override /model/atom_head: stardard               # Atom Head: 4 层

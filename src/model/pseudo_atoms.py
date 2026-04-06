@@ -246,14 +246,18 @@ class PseudoAtomGenerator:
         cached_pseudo_dict: dict[str, Any] | None,
     ) -> dict[str, Any]:
         """
-        根据当前 recycle policy 的策略, 依据 batch 调整当前伪原子字典 cached_pseudo_dict。
+        根据当前 recycle policy 的策略, 依据 batch(可能用来提供近邻特征) 调整当前伪原子字典 cached_pseudo_dict。
 
         输入参数:
             - batch: dict[str, Any], 当前轮 real-only batch 视图
             - cached_pseudo_dict: dict[str, Any] | None, 上一轮或 embed 阶段缓存的伪原子模板
 
         输出:
-            - pseudo_dict: dict[str, Any], 与当前 batch 对齐的本轮伪原子字典
+            - pseudo_dict: dict[str, Any], 与当前 batch 对齐的本轮伪原子字典, 有如下选项：
+                - self.keep_position_across_recycle() == False: 直接调用 generate(batch), 从头构建伪原子
+                - self.keep_position_across_recycle() == True:
+                    - self.keep_features_across_recycle() == True: 直接沿用缓存
+                    - self.keep_features_across_recycle() == False: 重新初始化特征
         """
         if cached_pseudo_dict is None or not self.keep_position_across_recycle():
             return self.generate(batch)

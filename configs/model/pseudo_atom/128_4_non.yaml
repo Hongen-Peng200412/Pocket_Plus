@@ -4,7 +4,7 @@ model:
   backbone:
     pseudo_atom_cfg:
       base_count: 128               # int, 固定基数
-      scale_factor: 0.3            # float, 比例系数 k
+      scale_factor: 0.4            # float, 比例系数 k
       max_sample_rounds: 10         # int, 采样-删除循环最大轮次
       init_feat_mode: "zero"       # str, "zero" / "neighbor_mean", 初始化伪原子特征
       init_feat_noise_std: 0.1
@@ -17,7 +17,7 @@ model:
       lifecycle: [false, true, false]  # list[bool], 长度=3, 依次表示 [embed_head, point_backbone, atom_head] 三个阶段是否存在伪原子
 
       # --- recycle 语义控制 ---
-      recycle_policy: "pos"                   # str, recycle 中伪原子的跨轮保留策略
+      recycle_policy: "non"                   # str, recycle 中伪原子的跨轮保留策略
                                               # 可选: "non" | "pos" | "all"
                                               # → src/model/pseudo_atoms.py: PseudoAtomGenerator.__init__
                                               # → src/model/stage1_model.py: VolumePointStage1Model.forward

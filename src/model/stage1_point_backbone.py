@@ -7,7 +7,7 @@ from torch import nn
 
 _PTV3_IMPORT_ERROR: Exception | None = None
 try:
-    from PTV3bakcbone.model import Point, PointTransformerV3
+    from src.model.PTV3bakcbone.model import Point, PointTransformerV3
 except Exception as exc:  # pragma: no cover - 依赖当前本地环境
     Point = None
     PointTransformerV3 = None
@@ -195,7 +195,7 @@ class Stage1PointBackbone(nn.Module):
 
 
         # 组件
-        from PTV3bakcbone.model import resolve_act_layer as _resolve_act
+        from src.model.PTV3bakcbone.model import resolve_act_layer as _resolve_act
         _act_cls = _resolve_act(self.act_layer_name)
         # nn.Module | None, `(sumN, C_recycle) -> (sumN, C_recycle)`，recycle 输入的可选归一化层
         self.recycle_input_norm = (

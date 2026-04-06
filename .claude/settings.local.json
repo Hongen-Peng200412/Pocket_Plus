@@ -4,7 +4,8 @@
       "Bash(pip show pytest)",
       "Bash(python -c \"import pytest; pytest.main\\([''-x'', ''tests/model/test_stage1_model.py'']\\)\")",
       "Bash(pip list)",
-      "Bash(/c/Users/15919/miniconda/envs/Pocket_Plus_windows/python.exe -m pytest tests/model/test_stage1_model.py -x)"
+      "Bash(/c/Users/15919/miniconda/envs/Pocket_Plus_windows/python.exe -m pytest tests/model/test_stage1_model.py -x)",
+      "Bash(python -c \"import torch; print\\(''torch ok''\\)\")"
     ]
   }
 }

@@ -25,7 +25,7 @@ from torch import nn
 
 _PTV3_HEAD_IMPORT_ERROR: Exception | None = None
 try:
-    from PTV3bakcbone.model import (
+    from src.model.PTV3bakcbone.model import (
         Point,
         Block,
         resolve_act_layer,
@@ -278,9 +278,10 @@ class Stage1EmbedHead(nn.Module):
         pointconv_block_max_neighbors: int,
         drop_path: float,
         pre_norm: bool,
-        embed_residual_enabled: bool = True,    # bool, 是否启用残差融合
-        embed_point_gate_enabled: bool = True,   # bool, point 路径 gate 是否可学习 (仅 embed_residual_enabled=True 时有效)
-        embed_voxel_gate_enabled: bool = True,   # bool, voxel 路径 gate 是否可学习 (仅 embed_residual_enabled=True 时有效)
+
+        embed_residual_enabled: bool,    # bool, 是否启用残差融合
+        embed_point_gate_enabled: bool,   # bool, point 路径 gate 是否可学习 (仅 embed_residual_enabled=True 时有效)
+        embed_voxel_gate_enabled: bool,   # bool, voxel 路径 gate 是否可学习 (仅 embed_residual_enabled=True 时有效)
     ) -> None:
         """
         Stage1 embed head 前置模块, 将原子级点云编码为体素网格嵌入特征和(可选的)点特征。
@@ -322,6 +323,10 @@ class Stage1EmbedHead(nn.Module):
             - pointconv_block_max_neighbors: int, pointconv CPE 每个点最大邻居数(仅 cpe_impl="pointconv" 时生效), 建议值 16
             - drop_path: float, 随机深度(stochastic depth) drop 概率, 建议值 0.0
             - pre_norm: bool, 是否使用预归一化(True: pre-LN, False: post-LN), 建议值 True
+
+            - embed_residual_enabled: bool, 是否启用残差融合
+            - embed_point_gate_enabled: bool, point 路径 gate 是否可学习 (仅 embed_residual_enabled=True 时有效)
+            - embed_voxel_gate_enabled: bool, voxel 路径 gate 是否可学习 (仅 embed_residual_enabled=True 时有效)
 
         前向输入:
             - atom_feat, atom_coord_centered_world, atom_batch_index, atom_offsets,
@@ -605,6 +610,7 @@ class Stage1EmbedHead(nn.Module):
                 - "voxel_batch_index": (sumN',), voxel 路径的 batch 索引
                 - "voxel_coord_local_voxel": (sumN', 3), voxel 路径的局部体素坐标
 
+
                 - "embed_point_feat": (sumN', embed_point_out_channels) 或 None
                 - "atom_feat": (sumN', F_atom), 裁剪后原子的原始特征(49)
                 - "atom_coord_centered_world": (sumN', 3)
@@ -783,14 +789,18 @@ class Stage1EmbedHead(nn.Module):
             trimmed_atom_feat_for_point = atom_feat[global_keep_mask]
             trimmed_atom_feat_for_voxel = atom_feat[v_global_keep]
 
-        # --- 残差融合: point 路径 ---
+
+
+        # ---------- 残差融合: point 路径 ----------
         if self.embed_point_add_proj is not None and embed_point_feat is not None:
             # torch.Tensor, (N', embed_point_out_channels), 原始原子特征投影到 embed 空间
             projected_atom_for_point = self.embed_point_add_proj(trimmed_atom_feat_for_point)
             # torch.Tensor, (N', embed_point_out_channels), 投影后的原子特征 + gated embed 特征
             embed_point_feat = projected_atom_for_point + self.embed_point_gate * embed_point_feat
 
-        # --- 残差融合: voxel 路径 (per-atom, scatter 前) ---
+
+
+        # ---------- 残差融合: voxel 路径 (per-atom, scatter 前) ----------
         if self.embed_voxel_add_proj is not None:
             # torch.Tensor, (N', embed_voxel_out_channels), 原始原子特征投影到 embed voxel 空间
             projected_atom_for_voxel = self.embed_voxel_add_proj(trimmed_atom_feat_for_voxel)
@@ -806,10 +816,8 @@ class Stage1EmbedHead(nn.Module):
                 reduce=self.scatter_reduce,
             )
 
-        # --- 确定最终 atom_feat: 残差启用且有 point 输出时为 64 维, 否则为 49 维 ---
+        # -------- 确定最终 atom_feat: 残差启用且有 point 输出时为 64 维, 否则为 49 维 --------
         if self.embed_residual_enabled and self.has_point_output and embed_point_feat is not None:
-            # point 残差已经做了 projected_atom_for_point + gate * embed_point_feat
-            # final_atom_feat = embed_point_feat (已经是融合后的 64 维)
             final_atom_feat = embed_point_feat
         else:
             # 无残差或无点分支: 返回原始 49 维特征

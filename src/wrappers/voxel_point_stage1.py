@@ -391,6 +391,44 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
     # 优化器 & 调度器
     # ------------------------------------------------------------------
 
+    def _build_warmup_only_scheduler(
+        self,
+        optimizer: torch.optim.Optimizer,
+        sched_cfg: Any,
+    ) -> torch.optim.lr_scheduler.LRScheduler:
+        total_steps = sched_cfg.get("total_steps", None)
+        if total_steps is None:
+            total_steps = getattr(self.trainer, "estimated_stepping_batches", None)
+        if total_steps is None or int(total_steps) <= 0:
+            raise RuntimeError("warmup_only scheduler requires a positive total_steps value.")
+        total_steps = int(total_steps)
+
+        warmup_steps = sched_cfg.get("warmup_steps", None)
+        if warmup_steps is None:
+            warmup_ratio = float(sched_cfg.get("warmup_ratio", 0.0) or 0.0)
+            if not (0.0 <= warmup_ratio < 1.0):
+                raise ValueError(f"warmup_ratio must be in [0, 1), got {warmup_ratio}.")
+            warmup_steps = int(round(total_steps * warmup_ratio))
+        warmup_steps = int(warmup_steps)
+        if warmup_steps < 0 or warmup_steps > total_steps:
+            raise ValueError(
+                f"warmup_steps must be in [0, total_steps], got warmup_steps={warmup_steps}, total_steps={total_steps}."
+            )
+
+        start_factor = float(sched_cfg.get("warmup_start_factor", 0.1))
+        if not (0.0 < start_factor <= 1.0):
+            raise ValueError(f"warmup_start_factor must be in (0, 1], got {start_factor}.")
+
+        if warmup_steps == 0 or start_factor == 1.0:
+            return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda _: 1.0)
+
+        return torch.optim.lr_scheduler.LinearLR(
+            optimizer,
+            start_factor=start_factor,
+            end_factor=1.0,
+            total_iters=warmup_steps,
+        )
+
     def configure_optimizers(self) -> dict[str, Any]:
         """
         配置优化器与学习率调度器。
@@ -434,6 +472,8 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
             scheduler = sched_cfg(optimizer=optimizer)
         elif callable(sched_cfg) and not hasattr(sched_cfg, "keys"):
             scheduler = sched_cfg(optimizer=optimizer)
+        elif hasattr(sched_cfg, "get") and sched_cfg.get("name", None) == "warmup_only":
+            scheduler = self._build_warmup_only_scheduler(optimizer=optimizer, sched_cfg=sched_cfg)
         else:
             scheduler = instantiate(sched_cfg, optimizer=optimizer)
             # 某些调度器工厂返回的是 callable 而非真正的 scheduler 实例，需要额外调用一次

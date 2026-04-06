@@ -154,6 +154,15 @@ def load_model(
             f"请确认文件是 Lightning .ckpt 格式: {ckpt_path}"
         )
 
+    # ---- 0. 注入训练时的代码快照 (如果存在) ----
+    ckpt_file = Path(ckpt_path).resolve()
+    if len(ckpt_file.parents) >= 2:
+        run_dir = ckpt_file.parents[1]
+        snapshot_dir = run_dir / "src_snapshot"
+        if snapshot_dir.exists() and str(snapshot_dir) not in sys.path:
+            sys.path.insert(0, str(snapshot_dir))
+            print(f"[get_pred] 已注入代码快照: {snapshot_dir}")
+
     # ---- 1. 构建模型 ----
     if backbone_override is not None:
         backbone_cfg = _extract_backbone_cfg(backbone_override)

@@ -22,6 +22,11 @@ strict_global_batch_size: true              # bool, 是否严格对齐 global_ba
 num_workers: 20
 dataloader_backend: auto
 pin_memory: true
+seed: 3407
+seed_workers: true
+dataloader_seed_offsets:
+  train: 0
+  val: 1
 
 # --- Data Fault Tolerance ---
 data_fault_tolerance:
@@ -30,13 +35,13 @@ data_fault_tolerance:
     - train
     - val
   max_resample_attempts: 8
-  sample_timeout_sec: 20
+  sample_timeout_sec: 200
   log_first_n: 50
 
 # --- Trainer ---
 nnodes: 1
 devices: 1
-max_epochs: 100
+max_epochs: 20
 accelerator: auto
 ddp_find_unused_parameters: false
 precision: "bf16-mixed"
@@ -52,7 +57,12 @@ optimizer:
   weight_decay: 0.01
 
 # --- LR Scheduler ---
-scheduler: null
+scheduler:
+  name: warmup_only
+  total_steps: null
+  warmup_steps: null
+  warmup_ratio: 0.025
+  warmup_start_factor: 0.1
 # scheduler:
 #   _target_: torch.optim.lr_scheduler.OneCycleLR
 #   _partial_: true
