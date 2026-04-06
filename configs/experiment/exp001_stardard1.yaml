@@ -11,7 +11,7 @@ defaults:
   - override /model/point_backbone: stardard      # 点云分支: PTV3 Dense
   - override /model/fusion: e234d4             # 融合: 4 层级全融合
   - override /model/atom_head: stardard               # Atom Head: 4 层
-  - override /model/pseudo_atom: "64_2_pos"             # 伪原子
+  - override /model/pseudo_atom: "128_3_pos"             # 伪原子
   - override /model/embed_head: stardard                # Embed Head: 关闭
   - override /loss: focal_default                   # 损失: Focal Loss
   - override /dataset: unfused_embed                        # 数据集: fused
@@ -41,7 +41,3 @@ model:
     act_layer_name: "gelu"           # str, "gelu"/"silu"/"relu"/"leakyrelu"
     ffn_type: "gated"                  # str, PTV3 Block FFN: "mlp" / "gated"
     atom_head_ffn_type: "gated"       # str, atom head 可选 FFN: "mlp" / "gated" / "none"
-
-    # --- Embed Head Gate ---
-    embed_point_gate_enabled: true   # bool, point 路径 gate 是否可学习
-    embed_voxel_gate_enabled: true   # bool, voxel 路径 gate 是否可学习

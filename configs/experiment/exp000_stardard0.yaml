@@ -41,3 +41,7 @@ model:
     act_layer_name: "gelu"           # str, "gelu"/"silu"/"relu"/"leakyrelu"
     ffn_type: "gated"                  # str, PTV3 Block FFN: "mlp" / "gated"
     atom_head_ffn_type: "gated"       # str, atom head 可选 FFN: "mlp" / "gated" / "none"
+
+    # --- Embed Head Gate ---
+    embed_point_gate_enabled: false   # bool, point 路径 gate 是否可学习
+    embed_voxel_gate_enabled: false   # bool, voxel 路径 gate 是否可学习

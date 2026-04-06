@@ -3,8 +3,8 @@
 model:
   backbone:
     pseudo_atom_cfg:
-      base_count: 64               # int, 固定基数
-      scale_factor: 0.2            # float, 比例系数 k
+      base_count: 128               # int, 固定基数
+      scale_factor: 0.3            # float, 比例系数 k
       max_sample_rounds: 10         # int, 采样-删除循环最大轮次
       init_feat_mode: "zero"       # str, "zero" / "neighbor_mean", 初始化伪原子特征
       init_feat_noise_std: 0.1
