@@ -7,6 +7,8 @@ import torch.nn.functional as F
 from hydra.utils import instantiate
 from torch import nn
 
+from src.model.stage1_embed_head import scatter_to_voxel_grid
+
 from src.model.pseudo_atoms import PseudoAtomGenerator
 
 _PTV3_HEAD_IMPORT_ERROR: Exception | None = None
@@ -199,6 +201,7 @@ class VolumePointStage1Model(nn.Module):
         atom_head_pointconv_max_neighbors: int,  # 16, atom head Block 的 pointconv CPE 最大邻居数
         atom_head_drop_path: float,    # 0.0, atom head Block 的随机深度 drop 概率
         atom_head_pre_norm: bool,      # True, atom head Block 是否使用预归一化
+        atom_head_append_coord_mask: bool,  # 是否将 3D 相对坐标(3) + 监督掩码(1) 拼入 atom token
         embed_head: nn.Module | Any | None = None,  # embed head 模块或 Hydra 配置; None 时不启用
         pseudo_atom_cfg: dict | None = None,  # 伪原子配置; None 时不启用
     ) -> None:
@@ -250,6 +253,7 @@ class VolumePointStage1Model(nn.Module):
                 - atom_head_pointconv_max_neighbors: int, 标量, atom head Block 的 pointconv CPE 最大邻居数
                 - atom_head_drop_path: float, 标量, atom head Block 的随机深度 dropout 概率
                 - atom_head_pre_norm: bool, 标量, atom head Block 是否使用预归一化
+                - atom_head_append_coord_mask: bool, 标量, 是否将 3D 相对坐标(3) + 监督掩码(1) 拼入 atom token
                 - embed_head: nn.Module | Any | None, 无固定形状, embed head 模块或 Hydra 配置
 
     
@@ -386,7 +390,12 @@ class VolumePointStage1Model(nn.Module):
 
 
         # 为 atom head 设定模块
-        atom_token_input_dim = int(self.point_backbone.out_channels) + 3 + 1
+        # bool, 是否将 3D 相对坐标(3) + 监督掩码(1) 拼入 atom token
+        self.atom_head_append_coord_mask = bool(atom_head_append_coord_mask)
+        # int, atom token 输入维度: 纯点特征 或 点特征 + coord(3) + valid_mask(1)
+        atom_token_input_dim = int(self.point_backbone.out_channels)
+        if self.atom_head_append_coord_mask:
+            atom_token_input_dim += 3 + 1  # coord(3) + valid_mask(1)
         self.atom_token_proj = nn.Sequential(
             nn.Linear(atom_token_input_dim, int(atom_head_hidden_dim)),
             nn.LayerNorm(int(atom_head_hidden_dim)),
@@ -422,18 +431,6 @@ class VolumePointStage1Model(nn.Module):
             act_cls(),
             nn.Linear(int(atom_head_hidden_dim), int(atom_logit_dim)),
         )
-
-        # --- embed head 残差加和融合(仅 embed head 有点云相关输出时创建) ---
-        if self.embed_head is not None and self.embed_head.has_point_output:
-            # nn.Linear, (embed_head.atom_feature_dim -> embed_point_out_channels), 将 embed head 输出保留的原始 atom_feat(49) 做线性投影残差
-            _atom_feat_dim = int(self.embed_head.atom_feature_dim)
-            _embed_point_dim = int(self.embed_head.embed_point_out_channels)
-            self.embed_point_add_proj = nn.Linear(_atom_feat_dim, _embed_point_dim)
-            # nn.Parameter, 标量, 可学习的残差缩放门; 初始化为小值以稳定训练初期
-            self.embed_point_gate = nn.Parameter(torch.tensor(0.01))
-        else:
-            self.embed_point_add_proj = None
-            self.embed_point_gate = None
 
 
 
@@ -771,13 +768,6 @@ class VolumePointStage1Model(nn.Module):
             if embed_split_info is not None:
                 embed_split_info = self._update_split_info_after_trim(embed_split_info, global_keep_mask)
 
-            # ---- 残差加和: 原始 atom_feat 投影到 embed 表示空间后与 embed_point_feat 相加 ----
-            if self.embed_point_add_proj is not None and embed_output.get("embed_point_feat") is not None:
-                # torch.Tensor, (sumN', embed_point_out_channels), 原始原子特征投影到 embed 空间
-                projected_atom = self.embed_point_add_proj(batch["atom_feat"])
-                # torch.Tensor, (sumN', embed_point_out_channels), 投影后的原子特征 + gated embed 特征
-                batch["atom_feat"] = projected_atom + self.embed_point_gate * embed_output["embed_point_feat"]
-
         # embed 阶段之后，统一回到 real-only canonical batch，并缓存当前特征空间下的伪原子模板
         if embed_split_info is not None:
             pseudo_cache = self._capture_pseudo_dict_from_batch(
@@ -793,11 +783,20 @@ class VolumePointStage1Model(nn.Module):
         final_output_dict: dict[str, Any] = {}
         for _ in range(recycle_steps):
             # ---- 组装体素输入: 数据通道 + embed head 体素通道(若启用) ----
-            if embed_output is not None:
-                # torch.Tensor, (B, C_data + C_embed, D, H, W), 数据通道与 embed head 输出拼接
-                voxel_input = torch.cat([batch["voxel_grid"], embed_output["voxel_pdb_embed_grid"]], dim=1)
+            if embed_output is not None and embed_output.get("voxel_embed_per_atom") is not None:
+                # embed head 已完成残差融合, 直接 scatter
+                fused_voxel_grid = scatter_to_voxel_grid(
+                    point_feat=embed_output["voxel_embed_per_atom"],  # 已融合的 N' 维特征
+                    atom_coord_local_voxel=embed_output["voxel_coord_local_voxel"],
+                    point_batch=embed_output["voxel_batch_index"],
+                    box_shape_zyx=batch["box_shape_zyx"],
+                    batch_size=int(batch["box_shape_zyx"].shape[0]),
+                    reduce="mean",
+                )
+                voxel_input = torch.cat([batch["voxel_grid"], fused_voxel_grid], dim=1)
             else:
                 voxel_input = batch["voxel_grid"]
+
 
 
 
@@ -911,15 +910,20 @@ class VolumePointStage1Model(nn.Module):
                 pseudo_cache = current_pseudo_dict
 
             # ------------------------------------- atom head -------------------------------------
-            # torch.Tensor, (sumN_head, C_point+3+1), atom token = [点特征, 中心化世界坐标, valid_mask]
-            atom_tokens = torch.cat(
-                [
-                    point_feat_for_head,
-                    head_batch["atom_coord_centered_world"],
-                    head_batch["atom_valid_mask"].to(dtype=point_feat_for_head.dtype).unsqueeze(-1),
-                ],
-                dim=-1,
-            )
+            # torch.Tensor, (sumN_head, C_token_in), atom token; 维度取决于 atom_head_append_coord_mask
+            if self.atom_head_append_coord_mask:
+                # (sumN_head, C_point+3+1), atom token = [点特征, 中心化世界坐标, valid_mask]
+                atom_tokens = torch.cat(
+                    [
+                        point_feat_for_head,
+                        head_batch["atom_coord_centered_world"],
+                        head_batch["atom_valid_mask"].to(dtype=point_feat_for_head.dtype).unsqueeze(-1),
+                    ],
+                    dim=-1,
+                )
+            else:
+                # (sumN_head, C_point), atom token = 纯点特征
+                atom_tokens = point_feat_for_head
             # torch.Tensor, (sumN_head, C_hidden), 线性投影 + LayerNorm + 激活后的 atom 隐藏特征
             atom_hidden = self.atom_token_proj(atom_tokens)
             # torch.Tensor, (sumN_head, C_hidden), 经 attention stack 处理后的 atom 隐藏特征
@@ -1016,12 +1020,13 @@ class VolumePointStage1Model(nn.Module):
             return pseudo_dict
 
         if (
-            self.embed_point_add_proj is not None
-            and pseudo_dim == int(self.embed_point_add_proj.in_features)
-            and target_dim == int(self.embed_point_add_proj.out_features)
+            self.embed_head is not None
+            and self.embed_head.embed_point_add_proj is not None
+            and pseudo_dim == int(self.embed_head.embed_point_add_proj.in_features)
+            and target_dim == int(self.embed_head.embed_point_add_proj.out_features)
         ):
             aligned_pseudo_dict = {**pseudo_dict}
-            aligned_pseudo_dict["pseudo_feat"] = self.embed_point_add_proj(pseudo_feat)
+            aligned_pseudo_dict["pseudo_feat"] = self.embed_head.embed_point_add_proj(pseudo_feat)
             return aligned_pseudo_dict
 
         raise RuntimeError(

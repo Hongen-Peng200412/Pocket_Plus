@@ -278,6 +278,9 @@ class Stage1EmbedHead(nn.Module):
         pointconv_block_max_neighbors: int,
         drop_path: float,
         pre_norm: bool,
+        embed_residual_enabled: bool = True,    # bool, 是否启用残差融合
+        embed_point_gate_enabled: bool = True,   # bool, point 路径 gate 是否可学习 (仅 embed_residual_enabled=True 时有效)
+        embed_voxel_gate_enabled: bool = True,   # bool, voxel 路径 gate 是否可学习 (仅 embed_residual_enabled=True 时有效)
     ) -> None:
         """
         Stage1 embed head 前置模块, 将原子级点云编码为体素网格嵌入特征和(可选的)点特征。
@@ -339,7 +342,7 @@ class Stage1EmbedHead(nn.Module):
         super().__init__()
 
         # 参数校验
-        if len(trunk_buffer_radii) != num_trunk_blocks:
+        if num_trunk_blocks > 0 and len(trunk_buffer_radii) != num_trunk_blocks:
             raise ValueError(f"trunk_buffer_radii 长度({len(trunk_buffer_radii)}) != num_trunk_blocks({num_trunk_blocks})")
         if len(voxel_buffer_radii) != num_voxel_blocks:
             raise ValueError(f"voxel_buffer_radii 长度({len(voxel_buffer_radii)}) != num_voxel_blocks({num_voxel_blocks})")
@@ -366,9 +369,36 @@ class Stage1EmbedHead(nn.Module):
         self.has_point_output = self.embed_point_out_channels > 0
         self.point_grid_size = float(point_grid_size)
         self.cpe_impl = str(cpe_impl)
+        self.embed_residual_enabled = bool(embed_residual_enabled)
 
         # type, 激活函数类
         act_cls = resolve_act_layer(str(act_layer_name))
+
+        # --- 残差融合 ---
+        if self.embed_residual_enabled:
+            # point 路径: linear(atom_feature_dim → embed_point_out_channels) + gate
+            if self.has_point_output:
+                self.embed_point_add_proj = nn.Linear(self.atom_feature_dim, self.embed_point_out_channels)
+                if embed_point_gate_enabled:
+                    self.embed_point_gate = nn.Parameter(torch.tensor(0.1))
+                else:
+                    self.register_buffer("embed_point_gate", torch.tensor(1.0))
+            else:
+                self.embed_point_add_proj = None
+                self.register_buffer("embed_point_gate", torch.tensor(1.0))
+
+            # voxel 路径: linear(atom_feature_dim → embed_voxel_out_channels) + gate
+            self.embed_voxel_add_proj = nn.Linear(self.atom_feature_dim, self.embed_voxel_out_channels)
+            if embed_voxel_gate_enabled:
+                self.embed_voxel_gate = nn.Parameter(torch.tensor(0.1))
+            else:
+                self.register_buffer("embed_voxel_gate", torch.tensor(1.0))
+        else:
+            # 不启用残差: 所有投影层为 None，gate 为 buffer(1.0)
+            self.embed_point_add_proj = None
+            self.register_buffer("embed_point_gate", torch.tensor(1.0))
+            self.embed_voxel_add_proj = None
+            self.register_buffer("embed_voxel_gate", torch.tensor(1.0))
 
         # --- 通用 Block 参数(所有 block 共享) ---
         _block_kwargs = dict(
@@ -571,14 +601,18 @@ class Stage1EmbedHead(nn.Module):
         输出:
             - dict[str, torch.Tensor | None]:
                 - "voxel_pdb_embed_grid": (B, embed_voxel_out_channels, D, H, W)
-                - "embed_point_feat": (sumN', embed_point_out_channels) 或 None
+                - "voxel_embed_per_atom": (sumN', embed_voxel_out_channels), scatter 前 per-atom 特征
+                - "voxel_batch_index": (sumN',), voxel 路径的 batch 索引
+                - "voxel_coord_local_voxel": (sumN', 3), voxel 路径的局部体素坐标
 
+                - "embed_point_feat": (sumN', embed_point_out_channels) 或 None
                 - "atom_feat": (sumN', F_atom), 裁剪后原子的原始特征(49)
                 - "atom_coord_centered_world": (sumN', 3)
                 - "atom_batch_index": (sumN',)
                 - "atom_offsets": (B,)
                 - "atom_coord_local_voxel": (sumN', 3)
                 - "atom_is_in_core_box": (sumN',) bool
+                
                 - "global_keep_mask": (sumN,) bool
         """
         batch_size = int(atom_offsets.shape[0])
@@ -735,6 +769,9 @@ class Stage1EmbedHead(nn.Module):
             final_offset = p_offset
             final_core = p_core
             final_local_voxel = p_local_voxel
+            # 保存裁剪前 atom_feat 对应的原始特征子集 (供残差使用)
+            trimmed_atom_feat_for_point = atom_feat[p_global_keep]
+            trimmed_atom_feat_for_voxel = atom_feat[v_global_keep]
         else:
             # 无点分支: 使用 trunk 的裁剪结果
             final_global_keep = global_keep_mask
@@ -743,19 +780,55 @@ class Stage1EmbedHead(nn.Module):
             final_offset = cur_offset
             final_core = cur_core
             final_local_voxel = cur_local_voxel
+            trimmed_atom_feat_for_point = atom_feat[global_keep_mask]
+            trimmed_atom_feat_for_voxel = atom_feat[v_global_keep]
 
-        # 裁剪原始 atom_feat(49)
-        final_atom_feat = atom_feat[final_global_keep]
+        # --- 残差融合: point 路径 ---
+        if self.embed_point_add_proj is not None and embed_point_feat is not None:
+            # torch.Tensor, (N', embed_point_out_channels), 原始原子特征投影到 embed 空间
+            projected_atom_for_point = self.embed_point_add_proj(trimmed_atom_feat_for_point)
+            # torch.Tensor, (N', embed_point_out_channels), 投影后的原子特征 + gated embed 特征
+            embed_point_feat = projected_atom_for_point + self.embed_point_gate * embed_point_feat
+
+        # --- 残差融合: voxel 路径 (per-atom, scatter 前) ---
+        if self.embed_voxel_add_proj is not None:
+            # torch.Tensor, (N', embed_voxel_out_channels), 原始原子特征投影到 embed voxel 空间
+            projected_atom_for_voxel = self.embed_voxel_add_proj(trimmed_atom_feat_for_voxel)
+            # torch.Tensor, (N', embed_voxel_out_channels), 投影后的原子特征 + gated embed 特征
+            voxel_feat_per_atom = projected_atom_for_voxel + self.embed_voxel_gate * voxel_feat_per_atom
+            # 重新 scatter 到体素网格
+            voxel_pdb_embed_grid = scatter_to_voxel_grid(
+                point_feat=voxel_feat_per_atom,
+                atom_coord_local_voxel=v_local_voxel,
+                point_batch=v_batch,
+                box_shape_zyx=box_shape_zyx,
+                batch_size=batch_size,
+                reduce=self.scatter_reduce,
+            )
+
+        # --- 确定最终 atom_feat: 残差启用且有 point 输出时为 64 维, 否则为 49 维 ---
+        if self.embed_residual_enabled and self.has_point_output and embed_point_feat is not None:
+            # point 残差已经做了 projected_atom_for_point + gate * embed_point_feat
+            # final_atom_feat = embed_point_feat (已经是融合后的 64 维)
+            final_atom_feat = embed_point_feat
+        else:
+            # 无残差或无点分支: 返回原始 49 维特征
+            final_atom_feat = atom_feat[final_global_keep]
 
         return {
             "voxel_pdb_embed_grid": voxel_pdb_embed_grid,
-            "embed_point_feat": embed_point_feat,
-            # 裁剪后的原子字段, stage1_model 用这些替换 batch
-            "atom_feat": final_atom_feat,
+            "voxel_embed_per_atom": voxel_feat_per_atom,  # (N', embed_voxel_out_channels), 残差融合后 per-atom 特征
+            "voxel_batch_index": v_batch,                  # voxel 路径的 batch 索引
+            "voxel_coord_local_voxel": v_local_voxel,     # voxel 路径的局部体素坐标
+
+            "embed_point_feat": embed_point_feat,         # 残差融合后的点特征
+            "atom_feat": final_atom_feat,                  # 64 维(残差启用+点分支) 或 49 维
             "atom_coord_centered_world": final_coord,
             "atom_batch_index": final_batch,
             "atom_offsets": final_offset,
             "atom_coord_local_voxel": final_local_voxel,
             "atom_is_in_core_box": final_core,
+
             "global_keep_mask": final_global_keep,
+            "embed_point_add_proj": self.embed_point_add_proj,  # Linear(49→64), 供伪原子对齐(可能为 None)
         }

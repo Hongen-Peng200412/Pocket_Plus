@@ -159,28 +159,30 @@ class PseudoAtomGenerator:
         density_prob_base: float,
         delete_too_close_radius: float,
         delete_too_far_radius: float,
+
         lifecycle: list[bool],
         recycle_policy: str = "pos",
     ) -> None:
         """
-            为每个 BOX 生成伪原子，并统一管理注入 / 移除与 recycle 语义。
-            输入参数:
-                - base_count: int, 标量, 每个 BOX 的固定伪原子基数 b
-                - scale_factor: float, 标量, 按真实原子数放大的比例系数 k
-                - max_sample_rounds: int, 标量, “采样 → 删除过滤 → 补采”的最大循环轮次
-                - init_feat_mode: str, 标量, 伪原子初始特征模式, 可选 "zero" / "neighbor_mean"
-                - init_feat_noise_std: float, 标量, 伪原子特征初始化时叠加的高斯噪声标准差
-                - neighbor_radius: float, 标量, "neighbor_mean" 模式的邻域半径, 单位 Å
-                - enable_density_weighting: bool, 标量, 是否按 `voxel_grid` 密度图做加权采样
-                - density_channel_index: int, 标量, 密度采样使用的 `voxel_grid` 通道索引
-                - density_prob_base: float, 标量, 密度采样的概率基底项
-                - delete_too_close_radius: float, 标量, 聚类稀疏化半径 r0, 0.0 表示关闭
-                - delete_too_far_radius: float, 标量, 远距离删除半径 r1, 0.0 表示关闭
-                - lifecycle: list[bool], 长度 = 3, 依次表示 [embed_head, point_backbone, atom_head] 三个阶段是否存在伪原子
-                - recycle_policy: str, 标量, recycle 期间伪原子的跨轮保留策略
-                    - "non": 不保留任何伪原子状态; 下一轮重新采样位置并重新初始化属性
-                    - "pos": 仅保留位置与静态元数据; 下一轮按 `init_feat_mode` 重新初始化属性
-                    - "all": 保留位置、属性与 point recycle 隐状态; 语义上最接近旧版 persist
+        为每个 BOX 生成伪原子，并统一管理注入 / 移除与 recycle 语义。
+        输入参数:
+            - base_count: int, 每个 BOX 的固定伪原子基数 b
+            - scale_factor: float, 按真实原子数放大的比例系数 k
+            - max_sample_rounds: int, “采样 → 删除过滤 → 补采”的最大循环轮次
+            - init_feat_mode: str, 伪原子初始特征模式, 可选 "zero" / "neighbor_mean"
+            - init_feat_noise_std: float, 伪原子特征初始化时叠加的高斯噪声标准差
+            - neighbor_radius: float, "neighbor_mean" 模式的邻域半径, 单位 Å
+            - enable_density_weighting: bool, 是否按 `voxel_grid` 密度图做加权采样
+            - density_channel_index: int, 密度采样使用的 `voxel_grid` 通道索引
+            - density_prob_base: float, 密度采样的概率基底项
+            - delete_too_close_radius: float, 聚类稀疏化半径 r0, 0.0 表示关闭
+            - delete_too_far_radius: float, 远距离删除半径 r1, 0.0 表示关闭
+
+            - lifecycle: list[bool], 长度 = 3, 依次表示 [embed_head, point_backbone, atom_head] 三个阶段是否存在伪原子
+            - recycle_policy: str, recycle 期间伪原子的跨轮保留策略
+                - "non": 不保留任何伪原子状态; 下一轮重新采样位置并重新初始化属性
+                - "pos": 仅保留位置与静态元数据; 下一轮按 `init_feat_mode` 重新初始化属性
+                - "all": 保留位置、属性与 point recycle 隐状态; 语义上最接近旧版 persist
         """
         self.base_count = int(base_count)
         self.scale_factor = float(scale_factor)
@@ -206,14 +208,6 @@ class PseudoAtomGenerator:
                 "['non', 'pos', 'all', 'fixed']"
             )
 
-    def keep_position_across_recycle(self) -> bool:
-        """
-        返回当前策略是否跨 recycle 保留伪原子位置。
-
-        输出:
-            - keep_position: bool, 标量, True 表示下一轮沿用上一轮的伪原子几何布局
-        """
-        return self.recycle_policy in {"pos", "all", "fixed"}
 
     def keep_features_across_recycle(self) -> bool:
         """
@@ -234,6 +228,18 @@ class PseudoAtomGenerator:
         """
         return self.recycle_policy in {"all", "fixed"}
 
+    def keep_position_across_recycle(self) -> bool:
+        """
+        返回当前策略是否跨 recycle 保留伪原子位置。
+
+        输出:
+            - keep_position: bool, 标量, True 表示下一轮沿用上一轮的伪原子几何布局
+        """
+        return self.recycle_policy in {"pos", "all", "fixed"}
+
+
+
+    # 这个函数最后阅读(调用很多前面的函数)
     def prepare_pseudo_dict_for_recycle(
         self,
         batch: dict[str, Any],
@@ -746,7 +752,7 @@ class PseudoAtomGenerator:
         split_info: list[tuple[int, int]],
     ) -> dict[str, Any]:
         """
-        从当前 mixed batch 中提取伪原子子字典，供阶段切换或下一轮 recycle 缓存使用。
+        从当前 mixed batch 中提取伪原子子字典(不该 batch)。
 
         输入参数:
             - batch: dict[str, Any], 当前 mixed batch; 原子布局满足 `[real_i, pseudo_i]` 交错约定
@@ -793,7 +799,7 @@ class PseudoAtomGenerator:
         pseudo_dict: dict[str, Any],
     ) -> tuple[dict[str, Any], list[tuple[int, int]]]:
         """
-        将伪原子注入 batch: 对于每个样本, 把伪原子对应的信息与特征追加在真实原子之后。
+        将伪原子注入 real-only batch: 对于每个样本, 把伪原子对应的信息与特征追加在真实原子之后。
 
         输入参数:
             - batch: dict[str, Any], 当前 batch (浅拷贝后修改)
@@ -900,14 +906,14 @@ class PseudoAtomGenerator:
         split_info: list[tuple[int, int]],
     ) -> dict[str, Any]:
         """
-        从 batch 中移除伪原子，恢复为仅含真实原子。
+        从 mixed batch 中移除伪原子，恢复为仅含真实原子的 real-only batch。
 
         输入参数:
             - batch: dict[str, Any], 含伪原子的 batch(由 def inject 生成, 同样本真实原子在前, 伪原子在后)
             - split_info: list[tuple[int, int]], 每个 BOX 的 (n_real, n_pseudo)
 
         输出:
-            - new_batch: dict[str, Any], 仅含真实原子的 batch
+            - new_batch: dict[str, Any], 仅含真实原子的 real-only batch
         """
         device = batch["atom_coord_centered_world"].device
         batch_size = len(split_info)

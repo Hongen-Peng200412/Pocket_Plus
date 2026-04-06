@@ -23,3 +23,4 @@ model:
     atom_head_pointconv_max_neighbors: 16
     atom_head_drop_path: 0.0
     atom_head_pre_norm: true
+    atom_head_append_coord_mask: false  # bool, 是否将 3D 相对坐标(3) + 监督掩码(1) 拼入 atom token

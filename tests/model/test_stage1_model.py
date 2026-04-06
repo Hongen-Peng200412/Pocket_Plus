@@ -121,6 +121,7 @@ def _make_model(**overrides) -> VolumePointStage1Model:
         atom_head_pointconv_max_neighbors=16,
         atom_head_drop_path=0.0,
         atom_head_pre_norm=True,
+        atom_head_append_coord_mask=False,
     )
     kwargs.update(overrides)
     return VolumePointStage1Model(**kwargs)
@@ -148,14 +149,8 @@ def test_volume_point_stage1_skips_point_forward_when_backend_is_zeros() -> None
 
     outputs = model(batch)
 
-    expected_tokens = torch.cat(
-        [
-            torch.zeros((3, point_backbone.out_channels), dtype=torch.float32),
-            batch["atom_coord_centered_world"],
-            batch["atom_valid_mask"].float().unsqueeze(-1),
-        ],
-        dim=-1,
-    )
+    # atom_head_append_coord_mask=False(默认) → token = 纯点特征
+    expected_tokens = torch.zeros((3, point_backbone.out_channels), dtype=torch.float32)
     assert point_backbone.build_zeros_output_called is True
     assert point_backbone.forward_called is False
     assert outputs["sampled_point_fusion_feat_dict"] == {}
@@ -196,3 +191,46 @@ def test_update_split_info_after_trim_tracks_real_and_pseudo_counts_per_box() ->
     )
 
     assert updated == [(1, 1), (0, 1)]
+
+
+def test_atom_token_append_coord_mask_false() -> None:
+    """atom_head_append_coord_mask=False 时, atom_tokens 仅含点特征, 维度 = out_channels。"""
+    point_backbone = _DummyZerosPointBackbone(out_channels=4, point_grid_size=0.25)
+    model = _make_model(point_backbone=point_backbone, atom_head_append_coord_mask=False)
+    attention_stack = _DummyAttentionStack()
+    model.atom_token_proj = nn.Identity()
+    model.atom_attention_stack = attention_stack
+    model.atom_logit_head = nn.Identity()
+
+    batch = {
+        "voxel_grid": torch.zeros((1, 1, 2, 2, 2), dtype=torch.float32),
+        "atom_feat": torch.randn((2, 5), dtype=torch.float32),
+        "atom_coord_centered_world": torch.tensor([[0.0, 0.0, 0.0], [1.0, -1.0, 0.5]], dtype=torch.float32),
+        "atom_batch_index": torch.tensor([0, 0], dtype=torch.long),
+        "atom_offsets": torch.tensor([2], dtype=torch.long),
+        "atom_valid_mask": torch.tensor([True, False]),
+    }
+    outputs = model(batch)
+    assert outputs["atom_tokens"].shape == (2, point_backbone.out_channels)
+
+
+def test_atom_token_append_coord_mask_true() -> None:
+    """atom_head_append_coord_mask=True 时, atom_tokens 含点特征 + coord(3) + valid_mask(1)。"""
+    point_backbone = _DummyZerosPointBackbone(out_channels=4, point_grid_size=0.25)
+    model = _make_model(point_backbone=point_backbone, atom_head_append_coord_mask=True)
+    attention_stack = _DummyAttentionStack()
+    model.atom_token_proj = nn.Identity()
+    model.atom_attention_stack = attention_stack
+    model.atom_logit_head = nn.Identity()
+
+    batch = {
+        "voxel_grid": torch.zeros((1, 1, 2, 2, 2), dtype=torch.float32),
+        "atom_feat": torch.randn((2, 5), dtype=torch.float32),
+        "atom_coord_centered_world": torch.tensor([[0.0, 0.0, 0.0], [1.0, -1.0, 0.5]], dtype=torch.float32),
+        "atom_batch_index": torch.tensor([0, 0], dtype=torch.long),
+        "atom_offsets": torch.tensor([2], dtype=torch.long),
+        "atom_valid_mask": torch.tensor([True, False]),
+    }
+    outputs = model(batch)
+    # out_channels(4) + coord(3) + valid_mask(1) = 8
+    assert outputs["atom_tokens"].shape == (2, point_backbone.out_channels + 4)

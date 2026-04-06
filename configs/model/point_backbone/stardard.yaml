@@ -21,15 +21,15 @@ model:
       shuffle_orders: true           # bool, 训练时随机打乱序列化顺序
 
       # --- 编码器/解码器 ---
-      stride: [4, 2, 2, 2]          # list[int], 各层下采样步幅
+      stride: [8, 2, 2, 2]          # list[int], 各层下采样步幅
       enc_depths: [2, 2, 2, 2, 2]   # list[int], 编码器每层 Block 数
       enc_channels: [64, 64, 128, 256, 512]
       enc_num_head: [2, 4, 8, 16, 32]
-      enc_patch_size: [1024, 512, 256, 128, 96]
+      enc_patch_size: [1024, 256, 128, 72, 64]
       dec_depths: [2, 2, 2, 2, 6]   # list[int], 解码器; dec4=0 跳过最低分辨率(旧版兼容)
       dec_channels: [96, 96, 128, 256, 512]
       dec_num_head: [4, 4, 8, 16, 32]
-      dec_patch_size: [1024, 512, 256, 128, 96]
+      dec_patch_size: [1024, 256, 128, 72, 64]
 
       # --- 嵌入层 ---
       embedding_kernel_size: 5       # int, sparseconv 卷积核
