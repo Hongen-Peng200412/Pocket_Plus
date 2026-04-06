@@ -339,7 +339,7 @@ class Stage1EmbedHead(nn.Module):
         super().__init__()
 
         # 参数校验
-        if len(trunk_buffer_radii) != num_trunk_blocks:
+        if num_trunk_blocks > 0 and len(trunk_buffer_radii) != num_trunk_blocks:
             raise ValueError(f"trunk_buffer_radii 长度({len(trunk_buffer_radii)}) != num_trunk_blocks({num_trunk_blocks})")
         if len(voxel_buffer_radii) != num_voxel_blocks:
             raise ValueError(f"voxel_buffer_radii 长度({len(voxel_buffer_radii)}) != num_voxel_blocks({num_voxel_blocks})")
@@ -750,6 +750,10 @@ class Stage1EmbedHead(nn.Module):
         return {
             "voxel_pdb_embed_grid": voxel_pdb_embed_grid,
             "embed_point_feat": embed_point_feat,
+            # scatter 前 per-atom 特征（供 stage1_model voxel 残差融合使用）
+            "voxel_embed_per_atom": voxel_feat_per_atom,  # (N', embed_voxel_out_channels)
+            "voxel_batch_index": v_batch,                  # voxel 路径的 batch 索引
+            "voxel_coord_local_voxel": v_local_voxel,     # voxel 路径的局部体素坐标
             # 裁剪后的原子字段, stage1_model 用这些替换 batch
             "atom_feat": final_atom_feat,
             "atom_coord_centered_world": final_coord,
