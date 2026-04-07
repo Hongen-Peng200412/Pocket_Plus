@@ -9,7 +9,7 @@ global_batch_size: 36                       # int, 目标全局 batch size (per-
 enable_batch_size_tuning: true              # bool, 是否启用自动搜索 per-device batch_size
                                             # → true: 运行 Tuner.scale_batch_size() 搜索最大可用 bs
                                             # → false: 直接使用 batch_size 字段的预设值, 不做显存探测
-tuning_init_batch_size: 6                   # int, 自动搜索时的起始探测值
+tuning_init_batch_size: 10                   # int, 自动搜索时的起始探测值
 batch_size: ${train.tuning_init_batch_size} # int, 实际 per-device batch_size
                                             # → 启用搜索时: 初始值无关紧要, 会被 tuner 覆写
                                             # → 不启用搜索时: 直接作为 per-device bs 使用
