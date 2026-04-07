@@ -1,43 +1,53 @@
 # @package _global_
 # ============================================================
-# 实验 001: baseline — 猜测的最佳参数
+# 实验 004: UNet-only 消融 — 纯体素 UNet, 无点分支/融合/atom head
 # ============================================================
 # 用法:
-#   sbatch sbatch/h200/1gpu.sbatch base "+experiment=exp001_baseline"
+#   sbatch sbatch/h200/1gpu.sbatch base "+experiment=exp004_zeros"
 # ============================================================
 
 defaults:
-  - override /model/voxel_backbone: zeros       # 体素分支: RAUNet-64
-  - override /model/point_backbone: stardard      # 点云分支: PTV3 Dense
-  - override /model/fusion: e234d4             # 融合: 4 层级全融合
-  - override /model/atom_head: stardard               # Atom Head: 4 层
-  - override /model/pseudo_atom: "none"             # 伪原子
+  - override /model/voxel_backbone: ablation       # 体素分支: RAUNet
+  - override /model/point_backbone: zeros           # 点云分支: 全零(不参与)
+  - override /model/fusion: none                    # 融合: 关闭(无 voxel->point 融合)
+  - override /model/atom_head: stardard             # Atom Head: 配置仍加载, 但 enable_atom_head=false 时不构建
+  - override /model/pseudo_atom: "none"             # 伪原子: 关闭
   - override /model/embed_head: none                # Embed Head: 关闭
-  - override /loss: focal_default                   # 损失: Focal Loss
+  - override /loss: only_voxel                      # 损失: 仅体素损失
   - override /dataset: fused                        # 数据集: fused
   - override /train: B36_L2                         # 训练: H200 参数
 
 
 
 # --- 实验标识 ---
-name: exp004_zeros
-tag: "zeros"
+name: exp004_unet_only
+tag: "unet_only"
 experiment_group: "ablation"   # str, run_dir 父文件夹名称: 存放目录为: .../logs/ experiment_group / tag___timestamp
 project_name: PV_ablation         # wandb 的项目名称
 
 # --- 模型总体参数 ---
 model:
   backbone:
+    # --- atom head 关闭 ---
+    enable_atom_head: false          # bool, 关闭 atom head; 不构建 atom_token_proj / atom_attention_stack / atom_logit_head
+
     # --- Logit 输出 ---
-    atom_logit_dim: 1                # int, atom 分类 logit 维度; 二分类=1
+    atom_logit_dim: 1                # int, atom 分类 logit 维度; 二分类=1 (enable_atom_head=false 时无效但保留以通过参数校验)
 
     # --- Recycle 机制 ---
-    enable_recycling: true           # bool, 启用 recycle 循环(多轮迭代精化)
-    max_recycles: 3                  # int, 最大 recycle 轮数
-    randomize_recycles: true         # bool, 训练时在 [1, max_recycles] 内随机
+    enable_recycling: false          # bool, UNet-only 不使用 recycle
+    max_recycles: 1                  # int, 固定 1 轮
+    randomize_recycles: false        # bool, 不随机
     detach_recycle_states: true      # bool, 跨轮截断梯度
 
     # --- 统一激活函数 (全局源头, 子模块通过插值引用) ---
     act_layer_name: "gelu"           # str, "gelu"/"silu"/"relu"/"leakyrelu"
     ffn_type: "gated"                  # str, PTV3 Block FFN: "mlp" / "gated"
-    atom_head_ffn_type: "gated"       # str, atom head 可选 FFN: "mlp" / "gated" / "none"
+    atom_head_ffn_type: "gated"       # str, atom head 可选 FFN (enable_atom_head=false 时无效)
+
+  # --- 监控指标 ---
+  # UNet-only 无 atom PR-AUC, 改为监控 val/loss
+  monitor_metric: val/loss
+
+train:
+  batch_size_tuning_safety_factor: 1.0

@@ -33,7 +33,7 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
     def __init__(
         self,
         backbone: nn.Module,
-        atom_loss: nn.Module,
+        atom_loss: nn.Module | None = None,
         voxel_aux_loss: nn.Module | None = None,
         optimizer: Optional[Dict[str, Any]] = None,
         scheduler: Optional[Dict[str, Any]] = None,
@@ -51,8 +51,12 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
 
         # nn.Module, 体素+点融合主干网络（VolumePointStage1Model）
         self.backbone = backbone if isinstance(backbone, nn.Module) else instantiate(backbone)
-        # nn.Module, 原子级二分类损失函数
-        self.atom_loss = atom_loss if isinstance(atom_loss, nn.Module) else instantiate(atom_loss)
+        # nn.Module | None, 原子级二分类损失函数; 为 None 时不计算 atom 损失(UNet-only 消融模式)
+        self.atom_loss = (
+            atom_loss
+            if (atom_loss is None or isinstance(atom_loss, nn.Module))
+            else instantiate(atom_loss)
+        )
         # nn.Module | None, 体素辅助监督损失函数；为 None 时不参与梯度
         self.voxel_aux_loss = (
             voxel_aux_loss
@@ -63,10 +67,11 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
         if compile:
             self.backbone = torch.compile(self.backbone)
 
-        from torchmetrics.classification import BinaryAveragePrecision
-
         # BinaryAveragePrecision, 验证阶段的原子级 PR-AUC 指标（在 CPU 上计算以节省显存）
-        self.val_atom_pr_auc = BinaryAveragePrecision(compute_on_cpu=True)
+        # 仅在 atom_loss 存在时构建（UNet-only 模式无 atom 预测，无需此指标）
+        if self.atom_loss is not None:
+            from torchmetrics.classification import BinaryAveragePrecision
+            self.val_atom_pr_auc = BinaryAveragePrecision(compute_on_cpu=True)
 
     # ------------------------------------------------------------------
     # 工具方法
@@ -107,17 +112,19 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
         """
         return self.backbone(batch)
 
-    def _compute_atom_loss(self, outputs: dict[str, Any], batch: dict[str, Any]) -> torch.Tensor:   # TODO: 原子级别的二分类focal_loss还没写
+    def _compute_atom_loss(self, outputs: dict[str, Any], batch: dict[str, Any]) -> torch.Tensor | None:
         """
-        计算原子级二分类损失。
+        计算原子级二分类损失。若 atom_loss 模块为 None 则返回 None。
 
         输入参数:
             - outputs: dict[str, Any], backbone 前向输出
             - batch: dict[str, Any], 当前 batch 字典
 
         输出:
-            - atom_loss: torch.Tensor, 标量, 原子级损失值(reduction=sum)
+            - atom_loss: torch.Tensor | None, 标量, 原子级损失值; None 表示不计算
         """
+        if self.atom_loss is None:
+            return None
         # torch.Tensor, (sumN, 1), 原子级预测 logits
         atom_logits = outputs["atom_logits"]
         # torch.Tensor, (sumN,), 原子级真值标签(0/1)
@@ -200,11 +207,15 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
                 - "voxel_aux_loss": 体素辅助损失(仅当启用时)
                 - "total_loss": 最终加权总损失
         """
-        # torch.Tensor, 标量, 原子级损失
+        loss_dict: dict[str, torch.Tensor] = {}
+        # torch.Tensor, 标量, 累积总损失; 初始化为 0
+        total_loss = torch.tensor(0.0, device=self.device, dtype=torch.float32)
+
+        # torch.Tensor | None, 标量, 原子级损失
         atom_loss = self._compute_atom_loss(outputs=outputs, batch=batch)
-        # torch.Tensor, 标量, 按权重加权后的总损失（先加原子部分）
-        total_loss = float(self.hparams.atom_loss_weight) * atom_loss
-        loss_dict: dict[str, torch.Tensor] = {"atom_loss": atom_loss}
+        if atom_loss is not None:
+            total_loss = total_loss + float(self.hparams.atom_loss_weight) * atom_loss
+            loss_dict["atom_loss"] = atom_loss
 
         # torch.Tensor | None, 标量, 体素辅助损失
         voxel_aux_loss = self._compute_voxel_aux_loss(outputs=outputs, batch=batch)
@@ -222,6 +233,7 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
     def _update_val_atom_metric(self, outputs: dict[str, Any], batch: dict[str, Any]) -> None:
         """
         用当前 batch 的预测与真值更新验证阶段的 atom PR-AUC 指标。
+        当 atom_loss 为 None (UNet-only 模式) 时直接跳过。
 
         仅对 atom_valid_mask 为 True 且标签不等于 ignore_index 的原子进行统计。
 
@@ -229,6 +241,8 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
             - outputs: dict[str, Any], backbone 前向输出
             - batch: dict[str, Any], 当前 batch 字典
         """
+        if self.atom_loss is None:
+            return
         # torch.Tensor, (sumN, 1), 原子级预测 logits
         atom_logits = outputs["atom_logits"]
         # torch.Tensor, (sumN,), 原子级真值标签
@@ -280,15 +294,16 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
 
         # 记录总损失
         self.log("train/loss", total_loss, prog_bar=True, on_step=True, on_epoch=True, sync_dist=True)
-        # 记录原子损失
-        self.log(
-            "train/atom_loss",
-            loss_dict["atom_loss"],
-            prog_bar=False,
-            on_step=True,
-            on_epoch=True,
-            sync_dist=True,
-        )
+        # 记录原子损失（仅当 atom_loss 启用时）
+        if "atom_loss" in loss_dict:
+            self.log(
+                "train/atom_loss",
+                loss_dict["atom_loss"],
+                prog_bar=False,
+                on_step=True,
+                on_epoch=True,
+                sync_dist=True,
+            )
         # 记录体素辅助损失（仅当启用时）
         if "voxel_aux_loss" in loss_dict:
             self.log(
@@ -329,15 +344,16 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
 
         # 记录总损失
         self.log("val/loss", total_loss, prog_bar=True, on_step=False, on_epoch=True, sync_dist=True)
-        # 记录原子损失
-        self.log(
-            "val/atom_loss",
-            loss_dict["atom_loss"],
-            prog_bar=False,
-            on_step=False,
-            on_epoch=True,
-            sync_dist=True,
-        )
+        # 记录原子损失（仅当 atom_loss 启用时）
+        if "atom_loss" in loss_dict:
+            self.log(
+                "val/atom_loss",
+                loss_dict["atom_loss"],
+                prog_bar=False,
+                on_step=False,
+                on_epoch=True,
+                sync_dist=True,
+            )
         # 记录体素辅助损失（仅当启用时）
         if "voxel_aux_loss" in loss_dict:
             self.log(
@@ -362,12 +378,15 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
     def on_validation_epoch_end(self) -> None:
         """
         验证 epoch 结束时，在本地 GPU 上计算 PR-AUC 并通过 sync_dist 汇聚到所有进程。
+        当 atom_loss 为 None (UNet-only 模式) 时直接跳过。
 
         流程:
             1. 临时关闭自动同步，在各 GPU 本地 compute PR-AUC
             2. 将结果移到当前 GPU，通过 self.log(sync_dist=True) 做跨卡平均
             3. reset 指标状态，为下一 epoch 做准备
         """
+        if not hasattr(self, "val_atom_pr_auc"):
+            return
         # 临时禁用 torchmetrics 内置同步，手动在 GPU 上做 sync_dist
         prev_to_sync = getattr(self.val_atom_pr_auc, "_to_sync", True)
         self.val_atom_pr_auc._to_sync = False

@@ -1,0 +1,9 @@
+# @package _global_
+# 融合逻辑变体: Dense 4-hook (基线) — 4 层级全融合
+model:
+  backbone:
+    point_fusion_map: null
+    point_fusion_modes: []
+    sampler_modes: []
+    fusion_mlp_ratio: 0.0         # float, 融合 MLP 膨胀倍率
+    fusion_proj_drop: 0.2         # float, 融合层 dropout

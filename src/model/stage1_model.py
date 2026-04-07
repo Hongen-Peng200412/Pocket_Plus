@@ -167,7 +167,7 @@ class VolumePointStage1Model(nn.Module):
         self,
         voxel_backbone: nn.Module | Any,
         point_backbone: nn.Module | Any,
-        point_fusion_map: dict[str, str],
+        point_fusion_map: dict[str, str] | None,
         point_fusion_modes: Sequence[str],
         sampler_modes: Sequence[str],
         fusion_mlp_ratio: float,
@@ -202,6 +202,7 @@ class VolumePointStage1Model(nn.Module):
         atom_head_drop_path: float,    # 0.0, atom head Block 的随机深度 drop 概率
         atom_head_pre_norm: bool,      # True, atom head Block 是否使用预归一化
         atom_head_append_coord_mask: bool,  # 是否将 3D 相对坐标(3) + 监督掩码(1) 拼入 atom token
+        enable_atom_head: bool = True,         # bool, 是否构建 atom head; False 时跳过 atom_token_proj / atom_attention_stack / atom_logit_head
         embed_head: nn.Module | Any | None = None,  # embed head 模块或 Hydra 配置; None 时不启用
         pseudo_atom_cfg: dict | None = None,  # 伪原子配置; None 时不启用
     ) -> None:
@@ -288,7 +289,7 @@ class VolumePointStage1Model(nn.Module):
         self.point_backbone = point_backbone if isinstance(point_backbone, nn.Module) else instantiate(point_backbone)
         self.point_fusion_items = tuple(
             (str(point_name), voxel_name_str)
-            for point_name, voxel_name in point_fusion_map.items()
+            for point_name, voxel_name in (point_fusion_map or {}).items()
             if voxel_name is not None and (voxel_name_str := str(voxel_name).strip()) != ""
         )
         # tuple[str, ...]，与 `point_fusion_items` 逐项对应的融合策略列表。
@@ -390,47 +391,56 @@ class VolumePointStage1Model(nn.Module):
 
 
         # 为 atom head 设定模块
-        # bool, 是否将 3D 相对坐标(3) + 监督掩码(1) 拼入 atom token
-        self.atom_head_append_coord_mask = bool(atom_head_append_coord_mask)
-        # int, atom token 输入维度: 纯点特征 或 点特征 + coord(3) + valid_mask(1)
-        atom_token_input_dim = int(self.point_backbone.out_channels)
-        if self.atom_head_append_coord_mask:
-            atom_token_input_dim += 3 + 1  # coord(3) + valid_mask(1)
-        self.atom_token_proj = nn.Sequential(
-            nn.Linear(atom_token_input_dim, int(atom_head_hidden_dim)),
-            nn.LayerNorm(int(atom_head_hidden_dim)),
-            act_cls(),
-        )
-        self.atom_attention_stack = Stage1SerializedAttentionStack(
-            channels=int(atom_head_hidden_dim),
-            num_heads=int(atom_head_num_heads),
-            patch_size=int(atom_head_patch_size),
-            num_layers=int(atom_head_num_layers),
-            serialization_orders=atom_head_serialization_orders,
-            shuffle_orders=bool(atom_head_shuffle_orders),
-            qkv_bias=bool(atom_head_qkv_bias),
-            qk_scale=atom_head_qk_scale,
-            attn_drop=float(atom_head_attn_drop),
-            proj_drop=float(atom_head_proj_drop),
-            enable_rpe=bool(atom_head_enable_rpe),
-            enable_flash=bool(atom_head_enable_flash),
-            upcast_attention=bool(atom_head_upcast_attention),
-            upcast_softmax=bool(atom_head_upcast_softmax),
-            atom_head_ffn_type=str(atom_head_ffn_type),
-            mlp_ratio=int(atom_head_mlp_ratio),
-            act_layer=act_cls,
-            cpe_impl=str(atom_head_cpe_impl),
-            cpe_kernel_size=int(atom_head_cpe_kernel_size),
-            cpe_receptive_field=float(atom_head_cpe_receptive_field),
-            pointconv_block_max_neighbors=int(atom_head_pointconv_max_neighbors),
-            drop_path=float(atom_head_drop_path),
-            pre_norm=bool(atom_head_pre_norm),
-        )
-        self.atom_logit_head = nn.Sequential(
-            nn.Linear(int(atom_head_hidden_dim), int(atom_head_hidden_dim)),
-            act_cls(),
-            nn.Linear(int(atom_head_hidden_dim), int(atom_logit_dim)),
-        )
+        # bool, 是否启用 atom head; False 时跳过全部构建
+        self.enable_atom_head = bool(enable_atom_head)
+        if self.enable_atom_head:
+            # bool, 是否将 3D 相对坐标(3) + 监督掩码(1) 拼入 atom token
+            self.atom_head_append_coord_mask = bool(atom_head_append_coord_mask)
+            # int, atom token 输入维度: 纯点特征 或 点特征 + coord(3) + valid_mask(1)
+            atom_token_input_dim = int(self.point_backbone.out_channels)
+            if self.atom_head_append_coord_mask:
+                atom_token_input_dim += 3 + 1  # coord(3) + valid_mask(1)
+            self.atom_token_proj = nn.Sequential(
+                nn.Linear(atom_token_input_dim, int(atom_head_hidden_dim)),
+                nn.LayerNorm(int(atom_head_hidden_dim)),
+                act_cls(),
+            )
+            self.atom_attention_stack = Stage1SerializedAttentionStack(
+                channels=int(atom_head_hidden_dim),
+                num_heads=int(atom_head_num_heads),
+                patch_size=int(atom_head_patch_size),
+                num_layers=int(atom_head_num_layers),
+                serialization_orders=atom_head_serialization_orders,
+                shuffle_orders=bool(atom_head_shuffle_orders),
+                qkv_bias=bool(atom_head_qkv_bias),
+                qk_scale=atom_head_qk_scale,
+                attn_drop=float(atom_head_attn_drop),
+                proj_drop=float(atom_head_proj_drop),
+                enable_rpe=bool(atom_head_enable_rpe),
+                enable_flash=bool(atom_head_enable_flash),
+                upcast_attention=bool(atom_head_upcast_attention),
+                upcast_softmax=bool(atom_head_upcast_softmax),
+                atom_head_ffn_type=str(atom_head_ffn_type),
+                mlp_ratio=int(atom_head_mlp_ratio),
+                act_layer=act_cls,
+                cpe_impl=str(atom_head_cpe_impl),
+                cpe_kernel_size=int(atom_head_cpe_kernel_size),
+                cpe_receptive_field=float(atom_head_cpe_receptive_field),
+                pointconv_block_max_neighbors=int(atom_head_pointconv_max_neighbors),
+                drop_path=float(atom_head_drop_path),
+                pre_norm=bool(atom_head_pre_norm),
+            )
+            self.atom_logit_head = nn.Sequential(
+                nn.Linear(int(atom_head_hidden_dim), int(atom_head_hidden_dim)),
+                act_cls(),
+                nn.Linear(int(atom_head_hidden_dim), int(atom_logit_dim)),
+            )
+        else:
+            # UNet-only 模式: 不构建 atom head 相关模块
+            self.atom_head_append_coord_mask = False
+            self.atom_token_proj = None
+            self.atom_attention_stack = None
+            self.atom_logit_head = None
 
 
 
@@ -958,36 +968,42 @@ class VolumePointStage1Model(nn.Module):
                 }
 
         # ------------------------------------- atom head (仅在最后一轮 recycle 后执行) -------------------------------------
-        # 从最后一轮 backbone 输出中提取 atom head 所需数据
-        point_feat_for_head = final_output_dict["fused_point_feat"]
-        point_state_for_head = final_output_dict["point_state"]
-        # torch.Tensor, (sumN_head, C_token_in), atom token; 维度取决于 atom_head_append_coord_mask
-        if self.atom_head_append_coord_mask:
-            # (sumN_head, C_point+3+1), atom token = [点特征, 中心化世界坐标, valid_mask]
-            atom_tokens = torch.cat(
-                [
-                    point_feat_for_head,
-                    batch["atom_coord_centered_world"],
-                    final_output_dict["atom_valid_mask"].to(dtype=point_feat_for_head.dtype).unsqueeze(-1),
-                ],
-                dim=-1,
+        if self.enable_atom_head:
+            # 从最后一轮 backbone 输出中提取 atom head 所需数据
+            point_feat_for_head = final_output_dict["fused_point_feat"]
+            point_state_for_head = final_output_dict["point_state"]
+            # torch.Tensor, (sumN_head, C_token_in), atom token; 维度取决于 atom_head_append_coord_mask
+            if self.atom_head_append_coord_mask:
+                # (sumN_head, C_point+3+1), atom token = [点特征, 中心化世界坐标, valid_mask]
+                atom_tokens = torch.cat(
+                    [
+                        point_feat_for_head,
+                        batch["atom_coord_centered_world"],
+                        final_output_dict["atom_valid_mask"].to(dtype=point_feat_for_head.dtype).unsqueeze(-1),
+                    ],
+                    dim=-1,
+                )
+            else:
+                # (sumN_head, C_point), atom token = 纯点特征
+                atom_tokens = point_feat_for_head
+            # torch.Tensor, (sumN_head, C_hidden), 线性投影 + LayerNorm + 激活后的 atom 隐藏特征
+            atom_hidden = self.atom_token_proj(atom_tokens)
+            # torch.Tensor, (sumN_head, C_hidden), 经 attention stack 处理后的 atom 隐藏特征
+            atom_hidden = self.atom_attention_stack(
+                point_state=point_state_for_head,
+                token_feat=atom_hidden,
             )
-        else:
-            # (sumN_head, C_point), atom token = 纯点特征
-            atom_tokens = point_feat_for_head
-        # torch.Tensor, (sumN_head, C_hidden), 线性投影 + LayerNorm + 激活后的 atom 隐藏特征
-        atom_hidden = self.atom_token_proj(atom_tokens)
-        # torch.Tensor, (sumN_head, C_hidden), 经 attention stack 处理后的 atom 隐藏特征
-        atom_hidden = self.atom_attention_stack(
-            point_state=point_state_for_head,
-            token_feat=atom_hidden,
-        )
-        # torch.Tensor, (sumN_head, C_logit), atom logit head 输出
-        atom_logits = self.atom_logit_head(atom_hidden)
+            # torch.Tensor, (sumN_head, C_logit), atom logit head 输出
+            atom_logits = self.atom_logit_head(atom_hidden)
 
-        final_output_dict["atom_tokens"] = atom_tokens
-        final_output_dict["atom_hidden"] = atom_hidden
-        final_output_dict["atom_logits"] = atom_logits
+            final_output_dict["atom_tokens"] = atom_tokens
+            final_output_dict["atom_hidden"] = atom_hidden
+            final_output_dict["atom_logits"] = atom_logits
+        else:
+            # UNet-only 模式: 不执行 atom head, 不产出 atom logits
+            final_output_dict["atom_tokens"] = None
+            final_output_dict["atom_hidden"] = None
+            final_output_dict["atom_logits"] = None
 
         # int, 本次 forward 实际执行的 recycle 轮数。
         final_output_dict["recycle_passes_used"] = recycle_steps

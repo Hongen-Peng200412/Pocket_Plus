@@ -65,14 +65,17 @@ class Stage1VoxelBackbone(SimpleUnet):
             "voxel_final": self.feature_channels,
         }
 
-        # nn.Sequential，`(B, C_final, D, H, W) -> (B, 1, D, H, W)`，体素辅助监督头。
-        self.voxel_aux_head = nn.Sequential(
-            nn.Conv3d(self.feature_channels, int(aux_head_hidden_channels), kernel_size=3, padding=1),
-            nn.ReLU(),
-            nn.Conv3d(int(aux_head_hidden_channels), int(aux_head_hidden_channels), kernel_size=3, padding=1),
-            nn.ReLU(),
-            nn.Conv3d(int(aux_head_hidden_channels), 1, kernel_size=1),
-        )
+        # nn.Sequential | None，`(B, C_final, D, H, W) -> (B, 1, D, H, W)`，体素辅助监督头。
+        if int(aux_head_hidden_channels) > 0:
+            self.voxel_aux_head = nn.Sequential(
+                nn.Conv3d(self.feature_channels, int(aux_head_hidden_channels), kernel_size=3, padding=1),
+                nn.ReLU(),
+                nn.Conv3d(int(aux_head_hidden_channels), int(aux_head_hidden_channels), kernel_size=3, padding=1),
+                nn.ReLU(),
+                nn.Conv3d(int(aux_head_hidden_channels), 1, kernel_size=1),
+            )
+        else:   # aux_head_hidden_channels <= 0 时不构建(消融模式: 直接用 voxel_final 作为 logit, 节省显存)
+            self.voxel_aux_head = None
 
         # nn.Conv3d，`(B, C_final, D, H, W) -> (B, C_recycle, D, H, W)`，体素 voxel_final 的简单投影。
         self.voxel_recycle_proj = nn.Conv3d(
@@ -220,7 +223,11 @@ class Stage1VoxelBackbone(SimpleUnet):
         selected_feature_dict = {key_name: all_feature_dict[key_name] for key_name in requested_feature_keys}
 
         # torch.Tensor，`(B, 1, D, H, W)`，体素辅助监督 logits。
-        voxel_logits_aux = self.voxel_aux_head(all_feature_dict["voxel_final"])
+        # voxel_aux_head 为 None 时直接用 voxel_final 作为 logit(需 feature_channels=1)
+        if self.voxel_aux_head is not None:
+            voxel_logits_aux = self.voxel_aux_head(all_feature_dict["voxel_final"])
+        else:
+            voxel_logits_aux = all_feature_dict["voxel_final"]
         # torch.Tensor，`(B, C_recycle, D, H, W)`，下一轮体素 recycle 输入。
         voxel_recycle_out = self.voxel_recycle_proj(all_feature_dict["voxel_final"])  # 简单的1x1卷积
 

@@ -1,0 +1,16 @@
+# @package _global_
+# 损失函数变体: 仅体素损失 (UNet-only 消融实验用)
+model:
+  atom_loss: null                    # Module|null, null=不实例化 atom 级损失(UNet-only)
+  atom_loss_weight: 0.0              # float, 权重清零(冗余安全)
+
+  voxel_aux_loss:
+    _target_: src.modules.losses.BinaryFocalLossWithAlpha
+    gamma: 2.0
+    ignore_index: null
+    eps: 1.0e-6
+    scale: 1.0
+    alpha_tune: [0.75, 0.25]
+    use_adaptive_alpha: false
+
+  voxel_aux_loss_weight: 1.0         # float, 体素损失权重; UNet-only 模式下作为唯一损失

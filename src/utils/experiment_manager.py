@@ -102,15 +102,19 @@ class ExperimentManager:
 
     def _archive_model_source(self):
         """
-        将 src/model/ (含 PTV3bakcbone) 复制到 run_dir/src_snapshot/。
+        将 src/model/ (含 PTV3bakcbone) 复制到 run_dir/src_snapshot/src/model/。
         确保推理时可以使用训练时的完整模型代码，不受后续代码迭代影响。
         """
         import shutil
-        src_model_dir = self.project_root / "src" / "model"
-        snapshot_dir = self.run_dir / "src_snapshot" / "model"
+        # 用 __file__ 推导 Pocket_Plus 根目录，避免受 .project-root 解析位置影响
+        pocket_root = Path(__file__).resolve().parents[2]  # src/utils/ → src → Pocket_Plus
+        src_model_dir = pocket_root / "src" / "model"
+        snapshot_dir = self.run_dir / "src_snapshot" / "src" / "model"
         if src_model_dir.exists():
             shutil.copytree(src_model_dir, snapshot_dir, dirs_exist_ok=True)
             print(f"[ExperimentManager] 模型代码快照已保存: {snapshot_dir}")
+        else:
+            print(f"[ExperimentManager] 模型代码目录不存在: {src_model_dir}")
 
     def _migrate_slurm_logs_to_run_dir(self):
         """

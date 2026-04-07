@@ -6,12 +6,12 @@ model:
       _target_: src.model.stage1_embed_head.Stage1EmbedHead
       atom_feature_dim: 49         # int, 原子原始特征维度
       embed_hidden_dim: 128         # int, 共享 trunk 隐藏通道数
-      embed_voxel_out_channels: 32 # int, scatter 到体素网格后的通道数
+      embed_voxel_out_channels: 36 # int, scatter 到体素网格后的通道数
       embed_point_out_channels: 64 # int, 输出给点分支的通道数
-      num_trunk_blocks: 1          # int, 共享 trunk block 数 (0=跳过 trunk)
+      num_trunk_blocks: 0          # int, 共享 trunk block 数 (0=跳过 trunk)
       num_voxel_blocks: 2          # int, 体素分支 block 数
       num_point_blocks: 2          # int, 点分支 block 数
-      trunk_buffer_radii: [0.0]
+      trunk_buffer_radii: []
       voxel_buffer_radii: [0.0, 0.0]
       point_buffer_radii: [0.0, 0.0]
       num_heads: 4
@@ -38,8 +38,8 @@ model:
       drop_path: 0.2
       pre_norm: true
       embed_residual_enabled: true       # bool, 是否启用残差融合
-      embed_point_gate_enabled: true     # bool, point 路径 gate 是否可学习
-      embed_voxel_gate_enabled: true     # bool, voxel 路径 gate 是否可学习
+      embed_point_gate_enabled: false     # bool, point 路径 gate 是否可学习
+      embed_voxel_gate_enabled: false     # bool, voxel 路径 gate 是否可学习
 
     # embed head 启用时, 点分支 atom_feature_dim = embed_point_out_channels
     point_backbone:
