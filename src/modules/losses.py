@@ -1953,3 +1953,204 @@ class AutomaticWeightedLoss(nn.Module):
 #     print("✓ 混合损失函数已成功实现并测试完毕！")
 #     print("=" * 70)
 
+
+# ============================================================
+# BinaryTverskyLoss
+# 与 BinaryFocalLossWithAlpha 接口完全一致，可直接替换或组合使用
+# ============================================================
+class BinaryTverskyLoss(nn.Module):
+    """
+    二值 Tversky Loss，用于单通道二分类分割。
+
+    Tversky 指数: TI = (TP + smooth) / (TP + α·FP + β·FN + smooth)
+    Loss = 1 - TI
+
+    当 α=β=0.5 时等价于标准 Dice Loss。
+    增大 β 可以更重地惩罚 FN（漏报），适合小目标检测。
+
+    输入参数:
+        - alpha: float, FP 惩罚系数, 建议值 0.5
+        - beta: float, FN 惩罚系数, 建议值 0.5
+        - smooth: float, 拉普拉斯平滑项, 建议值 1.0 (nnU-Net 默认)
+        - from_logits: bool, True 表示输入 logits，内部自动 sigmoid
+
+    前向输入:
+        - logits: torch.Tensor, (N, 1, ...) 或 (N, 1), 预测值
+        - target: torch.Tensor, (N, ...) 或 (N,), 真值 {0, 1}
+        - reduction: str, 保留参数（与 BinaryFocalLossWithAlpha 接口一致），当前忽略
+        - hardmask: torch.Tensor | None, 与 target 同形状的有效区域掩码
+
+    前向输出:
+        - loss: torch.Tensor, 标量
+    """
+
+    def __init__(
+        self,
+        alpha: float,
+        beta: float,
+        smooth: float,
+        from_logits: bool,
+    ) -> None:
+        super().__init__()
+        # float, 标量, FP 惩罚系数
+        self.alpha = float(alpha)
+        # float, 标量, FN 惩罚系数
+        self.beta = float(beta)
+        # float, 标量, 拉普拉斯平滑项
+        self.smooth = float(smooth)
+        # bool, 是否从 logits 计算 sigmoid
+        self.from_logits = bool(from_logits)
+
+    def forward(
+        self,
+        logits: torch.Tensor,
+        target: torch.Tensor,
+        reduction: str = "mean",
+        hardmask: torch.Tensor | None = None,
+        **_kwargs,
+    ) -> torch.Tensor:
+        """
+        前向计算 Tversky Loss。
+
+        输入参数:
+            - logits: torch.Tensor, (N, 1, ...) 或 (N, 1)
+            - target: torch.Tensor, (N, ...) 或 (N,), 真值 {0, 1}
+            - reduction: str, 保留参数，与调用协议对齐，当前不影响计算
+            - hardmask: torch.Tensor | None, 有效区域掩码，与 target 同形
+
+        输出:
+            - loss: torch.Tensor, 标量
+        """
+        device = logits.device
+        if logits.shape[1] != 1:
+            raise ValueError(f"BinaryTverskyLoss 期望单通道 logits，实际 shape={tuple(logits.shape)}")
+        # torch.Tensor, (N, ...), 预测概率（去掉 channel 维）
+        prob = torch.sigmoid(logits).squeeze(1) if self.from_logits else logits.squeeze(1)
+        # torch.Tensor, (N, ...), float32 真值
+        target_float = target.to(dtype=prob.dtype, device=device)
+
+        if hardmask is not None:
+            # torch.Tensor, (N, ...), float32 掩码；与 prob 对齐形状
+            mask_float = hardmask.to(dtype=prob.dtype, device=device)
+            if mask_float.ndim == prob.ndim + 1 and mask_float.shape[1] == 1:
+                mask_float = mask_float.squeeze(1)
+            # hardmask=0 的位置: prob 和 target 均置零，不贡献 TP/FP/FN
+            prob = prob * mask_float
+            target_float = target_float * mask_float
+
+        # torch.Tensor, 标量, True Positive 之和
+        tp = (prob * target_float).sum()
+        # torch.Tensor, 标量, False Positive 之和
+        fp = (prob * (1.0 - target_float)).sum()
+        # torch.Tensor, 标量, False Negative 之和
+        fn = ((1.0 - prob) * target_float).sum()
+
+        # torch.Tensor, 标量, Tversky 指数
+        tversky_index = (tp + self.smooth) / (tp + self.alpha * fp + self.beta * fn + self.smooth)
+        return 1.0 - tversky_index
+
+
+# ============================================================
+# FocalTverskyCombinedLoss
+# Focal Loss + Tversky Loss 的加权和，接口与 BinaryFocalLossWithAlpha 完全一致
+# ============================================================
+class FocalTverskyCombinedLoss(nn.Module):
+    """
+    Focal Loss + Tversky Loss 加权求和的联合损失。
+
+    输入参数:
+        - focal_weight: float, Focal 损失权重, 建议值 1.0
+        - dice_weight: float, Tversky 损失权重, 建议值 1.0
+        - tversky_alpha: float, Tversky FP 惩罚系数, 建议值 0.5
+        - tversky_beta: float, Tversky FN 惩罚系数, 建议值 0.5
+        - tversky_smooth: float, Tversky 平滑项, 建议值 1.0
+        - (其余参数透传给 BinaryFocalLossWithAlpha):
+            - gamma: float, Focal 聚焦参数
+            - ignore_index: int | None
+            - eps: float
+            - scale: float
+            - alpha_tune: list[float] | None
+            - use_adaptive_alpha: bool
+            - from_logits: bool, 建议值 True
+            - flatten_count: float
+
+    前向输入:
+        - logits: torch.Tensor, (N, 1, ...)
+        - target: torch.Tensor, (N, ...)
+        - reduction: str, "mean" 传递给 Focal；Tversky 强制全局 mean
+        - hardmask: torch.Tensor | None
+
+    前向输出:
+        - loss: torch.Tensor, 标量
+    """
+
+    def __init__(
+        self,
+        focal_weight: float,
+        dice_weight: float,
+        tversky_alpha: float,
+        tversky_beta: float,
+        tversky_smooth: float,
+        gamma: float,
+        ignore_index,
+        eps: float,
+        scale: float,
+        alpha_tune,
+        use_adaptive_alpha: bool,
+        from_logits: bool = True,
+        flatten_count: float = 1.0,
+    ) -> None:
+        super().__init__()
+        # float, 标量, Focal 损失权重
+        self.focal_weight = float(focal_weight)
+        # float, 标量, Tversky 损失权重
+        self.dice_weight = float(dice_weight)
+
+        # BinaryFocalLossWithAlpha, Focal 损失子模块
+        self.focal_loss = BinaryFocalLossWithAlpha(
+            from_logits=from_logits,
+            gamma=gamma,
+            ignore_index=ignore_index,
+            eps=eps,
+            flatten_count=flatten_count,
+            alpha_tune=alpha_tune,
+            use_adaptive_alpha=use_adaptive_alpha,
+            scale=scale,
+        )
+        # BinaryTverskyLoss, Tversky 损失子模块（α=β=0.5 时等价于 Dice）
+        self.tversky_loss = BinaryTverskyLoss(
+            alpha=tversky_alpha,
+            beta=tversky_beta,
+            smooth=tversky_smooth,
+            from_logits=from_logits,
+        )
+
+    def forward(
+        self,
+        logits: torch.Tensor,
+        target: torch.Tensor,
+        reduction: str = "mean",
+        hardmask: torch.Tensor | None = None,
+        **kwargs,
+    ) -> torch.Tensor:
+        """
+        前向计算 Focal + Tversky 联合损失。
+
+        输入参数:
+            - logits: torch.Tensor, (N, 1, ...) 或 (N, 1)
+            - target: torch.Tensor, (N, ...) 或 (N,)
+            - reduction: str, 传递给 Focal 子模块；Tversky 固定为全局 mean
+            - hardmask: torch.Tensor | None
+
+        输出:
+            - loss: torch.Tensor, 标量，等于 focal_weight·focal + dice_weight·tversky
+        """
+        # torch.Tensor, 标量, Focal 损失值
+        focal = self.focal_loss(
+            logits, target, reduction=reduction, hardmask=hardmask, **kwargs
+        )
+        # torch.Tensor, 标量, Tversky 损失值（强制全局 mean）
+        tversky = self.tversky_loss(
+            logits, target, reduction="mean", hardmask=hardmask
+        )
+        return self.focal_weight * focal + self.dice_weight * tversky

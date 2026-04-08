@@ -28,6 +28,13 @@ dataloader_seed_offsets:
   train: 0
   val: 1
 
+# --- nnU-Net 平衡前景采样 ---
+# 仅在使用 fused_balanced 数据集(含 random_BOX 目录)时启用
+use_balanced_foreground_sampler: false  # bool, 是否启用前景平衡采样; true 时每 batch 强制包含前景
+                                         # → train.py: _build_sampler() 中读取; 当前仅支持单机
+balanced_foreground_ratio: 0.33          # float, 每 batch 中前景最低占比; 建议值 0.33
+                                         # → BalancedForegroundSampler: n_fg = ceil(bs * ratio)
+
 # --- Data Fault Tolerance ---
 data_fault_tolerance:
   enabled: true

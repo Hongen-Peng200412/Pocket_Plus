@@ -18,6 +18,10 @@ conda activate "${CONDA_ENV_NAME}"
 set -u
 unset BOOST_ROOT
 
+# --- Locale (防止中文路径乱码) ---
+export LANG=en_US.UTF-8
+export LC_ALL=en_US.UTF-8
+
 export CUDA_HOME="${CUDA_HOME:-/usr/local/cuda}"
 export PATH="${CUDA_HOME}/bin:${PATH}"
 if [ -n "${LD_LIBRARY_PATH:-}" ]; then

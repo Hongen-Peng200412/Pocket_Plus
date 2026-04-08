@@ -7,7 +7,7 @@ import torch.nn.functional as F
 from hydra.utils import instantiate
 from torch import nn
 
-from src.model.stage1_embed_head import scatter_to_voxel_grid
+from src.model.stage1_embed_head import scatter_to_voxel_grid, soft_scatter_to_voxel_grid
 
 from src.model.pseudo_atoms import PseudoAtomGenerator
 
@@ -205,6 +205,7 @@ class VolumePointStage1Model(nn.Module):
         enable_atom_head: bool = True,         # bool, 是否构建 atom head; False 时跳过 atom_token_proj / atom_attention_stack / atom_logit_head
         embed_head: nn.Module | Any | None = None,  # embed head 模块或 Hydra 配置; None 时不启用
         pseudo_atom_cfg: dict | None = None,  # 伪原子配置; None 时不启用
+        prior_prob: float | None = None,       # float|None, RetinaNet 式先验正类概率; 不为 None 时将 logit head 末层 bias 初始化为 -log((1-π)/π)
     ) -> None:
         """
             Stage1 总装配模型。
@@ -442,7 +443,13 @@ class VolumePointStage1Model(nn.Module):
             self.atom_attention_stack = None
             self.atom_logit_head = None
 
-
+        # RetinaNet 式偏置初始化: atom_logit_head[2].bias ← -log((1-π)/π)
+        # 只在 prior_prob 不为 None 且 atom_logit_head 已构建时执行
+        # atom_logit_head 结构: [0] Linear, [1] act, [2] Linear(输出) ← 初始化目标
+        if prior_prob is not None and self.atom_logit_head is not None:
+            import math as _math
+            _bias_val = -_math.log((1.0 - float(prior_prob)) / float(prior_prob))
+            nn.init.constant_(self.atom_logit_head[2].bias, _bias_val)
 
     # -------------------------------------------------------- 工具函数 --------------------------------------------------------
     @staticmethod
@@ -513,10 +520,13 @@ class VolumePointStage1Model(nn.Module):
         输入参数:
             - in_channels: int, 数据集返回的 voxel_grid 通道数(不含 embed head 贡献)
         """
-        # int, 实际输入通道 = 数据通道 + embed head 体素通道(若启用)
+        # int, 实际输入通道 = 数据通道 + embed head 体素通道(若启用) + occupancy 通道(若启用)
         actual_in_channels = int(in_channels)
         if self.embed_head is not None:
-            actual_in_channels += int(self.embed_head.embed_voxel_out_channels)
+            extra = int(self.embed_head.embed_voxel_out_channels)
+            if self.embed_head.add_occupancy_channels:
+                extra += 2
+            actual_in_channels += extra
         if hasattr(self.voxel_backbone, "set_input_channels"):
             self.voxel_backbone.set_input_channels(actual_in_channels)
 
@@ -789,22 +799,30 @@ class VolumePointStage1Model(nn.Module):
 
 
 
+        # ---- 组装体素输入: 数据通道 + embed head 体素通道(若启用) ----
+        # embed_output 和 batch["voxel_grid"] 均为循环不变量, 只 scatter 一次
+        if embed_output is not None and embed_output.get("voxel_embed_per_atom") is not None:
+            _scatter_fn = (
+                soft_scatter_to_voxel_grid
+                if self.embed_head.use_soft_splatting
+                else scatter_to_voxel_grid
+            )
+            fused_voxel_grid = _scatter_fn(
+                point_feat=embed_output["voxel_embed_per_atom"],
+                atom_coord_local_voxel=embed_output["voxel_coord_local_voxel"],
+                point_batch=embed_output["voxel_batch_index"],
+                box_shape_zyx=batch["box_shape_zyx"],
+                batch_size=int(batch["box_shape_zyx"].shape[0]),
+                reduce=self.embed_head.scatter_reduce,
+                add_occupancy_channels=self.embed_head.add_occupancy_channels,
+            )
+            voxel_input = torch.cat([batch["voxel_grid"], fused_voxel_grid], dim=1)
+        else:
+            voxel_input = batch["voxel_grid"]
+
         # ----------------------------------------------------------------------------------------------------------------
         final_output_dict: dict[str, Any] = {}
         for _ in range(recycle_steps):
-            # ---- 组装体素输入: 数据通道 + embed head 体素通道(若启用) ----
-            if embed_output is not None and embed_output.get("voxel_embed_per_atom") is not None:
-                fused_voxel_grid = scatter_to_voxel_grid(
-                    point_feat=embed_output["voxel_embed_per_atom"],  # 已融合的 N' 维特征
-                    atom_coord_local_voxel=embed_output["voxel_coord_local_voxel"],
-                    point_batch=embed_output["voxel_batch_index"],
-                    box_shape_zyx=batch["box_shape_zyx"],
-                    batch_size=int(batch["box_shape_zyx"].shape[0]),
-                    reduce="mean",
-                )
-                voxel_input = torch.cat([batch["voxel_grid"], fused_voxel_grid], dim=1)
-            else:
-                voxel_input = batch["voxel_grid"]
 
 
 

@@ -236,17 +236,34 @@ class BoxPointDataset(Dataset):
         返回结果 `self.total_sample` 是 list[dict[str, Any]], 其每一项都显式保存:
             - `class_name`: 类别目录名(如"metal_ion")。
             - `sample_name`: 具体样本文件名（不含 `.npz` 后缀）。
+
+        且:
+            - 设置 `self.foreground_indices`: list[int], 保证含正类的样本索引 (class_name != "random_BOX" 的所有样本)
+            - 设置 `self.background_indices`: list[int], 多数为纯背景的样本索引 (class_name == "random_BOX" 的所有样本)
+            - 若数据集中无 "random_BOX" 类别，background_indices 为空列表
         """
         total_sample: list[dict[str, Any]] = []
+        # list[int], 保证含正类样本的索引，对应 class_name != "random_BOX" 的条目
+        self.foreground_indices: list[int] = []
+        # list[int], 多数为纯背景样本的索引，对应 class_name == "random_BOX" 的条目
+        self.background_indices: list[int] = []
         for class_idx, sample_names in enumerate(sample_name_lists):
             class_name = self.class_folder_names[class_idx]
+            # bool, 当前类别是否来自 random_BOX 目录（多数为纯背景）
+            is_random_box_class = (class_name == "random_BOX")
             for sample_name in sample_names:
+                # int, 当前样本在扁平索引中的位置
+                idx = len(total_sample)
                 total_sample.append(
                     {
                         "class_name": class_name,
                         "sample_name": sample_name,
                     }
                 )
+                if is_random_box_class:
+                    self.background_indices.append(idx)
+                else:
+                    self.foreground_indices.append(idx)
         return total_sample
 
 

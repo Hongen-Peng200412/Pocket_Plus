@@ -37,9 +37,12 @@ model:
       pointconv_block_max_neighbors: 64
       drop_path: 0.2
       pre_norm: true
-      embed_residual_enabled: true       # bool, 是否启用残差融合
+      embed_residual_enabled: true       # bool, 是否启用残差融合   # true
       embed_point_gate_enabled: false     # bool, point 路径 gate 是否可学习
       embed_voxel_gate_enabled: false     # bool, voxel 路径 gate 是否可学习
+      add_occupancy_channels: false       # bool, 是否添加 occupancy 通道  # false
+      use_soft_splatting: false           # bool, 是否使用 soft splatting # false
+      use_centroid_encoding: false        # bool, 是否使用 centroid-aware 偏移编码 # false
 
     # embed head 启用时, 点分支 atom_feature_dim = embed_point_out_channels
     point_backbone:

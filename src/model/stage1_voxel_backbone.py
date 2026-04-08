@@ -17,6 +17,7 @@ class Stage1VoxelBackbone(SimpleUnet):
         gradient_checkpoint: bool,
         return_feature_keys: Sequence[str],
         aux_head_hidden_channels: int,
+        prior_prob: float | None = None,  # float|None, RetinaNet 式先验正类概率; 不为 None 时初始化 voxel_aux_head[-1].bias
     ) -> None:
         """
         Stage1 体素主干网络。
@@ -76,6 +77,19 @@ class Stage1VoxelBackbone(SimpleUnet):
             )
         else:   # aux_head_hidden_channels <= 0 时不构建(消融模式: 直接用 voxel_final 作为 logit, 节省显存)
             self.voxel_aux_head = None
+
+        # RetinaNet 式偏置初始化: -log((1-π)/π)
+        # 有 voxel_aux_head 时: 初始化 voxel_aux_head[4].bias
+        #   结构: [0]Conv3d [1]ReLU [2]Conv3d [3]ReLU [4]Conv3d(out=1) ← 目标
+        # 无 voxel_aux_head 时 (消融模式, aux_head_hidden_channels<=0):
+        #   logit 来自 voxel_final = conv_end 输出 → 初始化 self.conv_end.bias
+        if prior_prob is not None:
+            import math as _math
+            _bias_val = -_math.log((1.0 - float(prior_prob)) / float(prior_prob))
+            if self.voxel_aux_head is not None:
+                nn.init.constant_(self.voxel_aux_head[4].bias, _bias_val)
+            elif self.conv_end.bias is not None:
+                nn.init.constant_(self.conv_end.bias, _bias_val)
 
         # nn.Conv3d，`(B, C_final, D, H, W) -> (B, C_recycle, D, H, W)`，体素 voxel_final 的简单投影。
         self.voxel_recycle_proj = nn.Conv3d(

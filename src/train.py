@@ -402,6 +402,32 @@ def main(cfg: DictConfig):
         def _build_sampler(self, ds, stage: str, shuffle: bool):
             stage_seed = self._get_stage_seed(stage)
             world_size = int(getattr(self.trainer, "world_size", 1) or 1)
+
+            # nnU-Net 平衡前景采样（仅训练阶段 + 单机 + 配置启用 + 数据集支持）
+            # → BalancedForegroundSampler 保证每 batch 中至少 foreground_ratio 的前景样本
+            use_balanced = bool(self.train_cfg.get("use_balanced_foreground_sampler", False))
+            if (
+                use_balanced
+                and stage == "train"
+                and shuffle
+                and world_size == 1
+                and hasattr(ds, "foreground_indices")
+                and hasattr(ds, "background_indices")
+                and len(ds.foreground_indices) > 0
+                and len(ds.background_indices) > 0
+            ):
+                from src.datasets.balanced_foreground_sampler import BalancedForegroundSampler
+                # float, 标量, 每 batch 中前景最低占比
+                fg_ratio = float(self.train_cfg.get("balanced_foreground_ratio", 0.33))
+                return BalancedForegroundSampler(
+                    foreground_indices=ds.foreground_indices,
+                    background_indices=ds.background_indices,
+                    total_size=len(ds),
+                    foreground_ratio=fg_ratio,
+                    batch_size=int(self.batch_size),
+                    seed=stage_seed,
+                )
+
             if world_size > 1:
                 return DistributedSampler(ds, shuffle=(stage == "train" and shuffle), seed=stage_seed)
             if stage == "train" and shuffle:
@@ -720,6 +746,12 @@ def main(cfg: DictConfig):
             finally:
                 _restore_model_after_batch_size_tuning(model, tuning_state)
 
+            # ======= 防护: 重新播种以消除 Tuner 的全局随机态消耗 =======
+            if train_seed is not None:
+                pl.seed_everything(int(train_seed), workers=bool(cfg.train.get("seed_workers", False)))
+                if exp_manager.is_rank_zero:
+                    print(f"[Train] Tuner探测完毕，已重新播种({int(train_seed)})以抵消Tuner执行前向传播对全局随机状态的消耗污染。")
+                    
             # Tuner 只采样少量 batch; 留出余量应对真实训练中更重的 batch
             found_bs = int(dm.batch_size)
             safety_factor = float(cfg.train.get("batch_size_tuning_safety_factor", 0.7))

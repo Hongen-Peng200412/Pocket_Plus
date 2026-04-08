@@ -9,6 +9,8 @@ import torch
 from src.model.stage1_embed_head import (
     trim_buffer_atoms,
     scatter_to_voxel_grid,
+    soft_scatter_to_voxel_grid,
+    compute_voxel_centroids,
 )
 
 
@@ -379,3 +381,334 @@ def test_embed_head_empty_atoms() -> None:
     assert out["embed_point_feat"].shape == (0, 16)
     assert out["global_keep_mask"].shape == (0,)
 
+
+
+# ==============================================================
+# 改进 1：add_occupancy_channels 测试
+# ==============================================================
+
+def test_scatter_with_occupancy() -> None:
+    """启用 occupancy 通道后，输出通道数应增加 2。"""
+    feat = torch.tensor([[1.0, 2.0], [3.0, 4.0]])
+    local_voxel = torch.tensor([[0.5, 0.5, 0.5], [0.5, 0.5, 0.5]])
+    batch = torch.tensor([0, 0], dtype=torch.long)
+    box_shape = torch.tensor([[2, 2, 2]], dtype=torch.long)
+
+    grid = scatter_to_voxel_grid(
+        point_feat=feat,
+        atom_coord_local_voxel=local_voxel,
+        point_batch=batch,
+        box_shape_zyx=box_shape,
+        batch_size=1,
+        reduce='mean',
+        add_occupancy_channels=True,
+    )
+    # C=2 原始通道 + 2 occupancy = 4
+    assert grid.shape == (1, 4, 2, 2, 2)
+    # 体素 (d=0, h=0, w=0) 的 occupancy 通道: log1p(2) 和 2/2=1.0
+    import math
+    log_count = grid[0, 2, 0, 0, 0].item()
+    norm_occ = grid[0, 3, 0, 0, 0].item()
+    assert abs(log_count - math.log1p(2.0)) < 1e-5
+    assert abs(norm_occ - 1.0) < 1e-5
+
+
+# ==============================================================
+# 改进 2：soft_scatter_to_voxel_grid 测试
+# ==============================================================
+
+def test_soft_scatter_basic() -> None:
+    """soft scatter 基本形状验证：输出维度正确。"""
+    N, C = 3, 4
+    feat = torch.randn(N, C)
+    local_voxel = torch.tensor([
+        [0.5, 0.5, 0.5],
+        [1.2, 0.8, 0.3],
+        [0.1, 1.9, 1.1],
+    ])
+    batch = torch.tensor([0, 0, 0], dtype=torch.long)
+    box_shape = torch.tensor([[3, 3, 3]], dtype=torch.long)
+
+    grid = soft_scatter_to_voxel_grid(
+        point_feat=feat,
+        atom_coord_local_voxel=local_voxel,
+        point_batch=batch,
+        box_shape_zyx=box_shape,
+        batch_size=1,
+        reduce='mean',
+    )
+    assert grid.shape == (1, C, 3, 3, 3)
+
+
+def test_soft_scatter_with_occupancy() -> None:
+    """soft scatter + occupancy 通道数应增加 2。"""
+    N, C = 2, 3
+    feat = torch.randn(N, C)
+    local_voxel = torch.tensor([[0.5, 0.5, 0.5], [1.5, 0.5, 0.5]])
+    batch = torch.tensor([0, 0], dtype=torch.long)
+    box_shape = torch.tensor([[2, 2, 2]], dtype=torch.long)
+
+    grid = soft_scatter_to_voxel_grid(
+        point_feat=feat,
+        atom_coord_local_voxel=local_voxel,
+        point_batch=batch,
+        box_shape_zyx=box_shape,
+        batch_size=1,
+        reduce='mean',
+        add_occupancy_channels=True,
+    )
+    assert grid.shape == (1, C + 2, 2, 2, 2)
+
+
+def test_soft_scatter_weights_sum() -> None:
+    """体素内部的原子，8 邻域三线性权重和应接近 1。"""
+    local_voxel = torch.tensor([[1.3, 1.7, 1.2]])
+    batch = torch.tensor([0], dtype=torch.long)
+    box_shape = torch.tensor([[4, 4, 4]], dtype=torch.long)
+
+    feat = torch.ones(1, 1)
+    grid = soft_scatter_to_voxel_grid(
+        point_feat=feat,
+        atom_coord_local_voxel=local_voxel,
+        point_batch=batch,
+        box_shape_zyx=box_shape,
+        batch_size=1,
+        reduce='sum',
+    )
+    total = grid.sum().item()
+    assert abs(total - 1.0) < 1e-5, f'weights sum = {total}, expected ~1.0'
+
+
+# ==============================================================
+# 改进 3：compute_voxel_centroids 测试
+# ==============================================================
+
+def test_compute_voxel_centroids_basic() -> None:
+    """单体素内 2 个原子的质心应为均值。"""
+    local_voxel = torch.tensor([[0.2, 0.3, 0.4], [0.8, 0.7, 0.6]])
+    batch = torch.tensor([0, 0], dtype=torch.long)
+    box_shape = torch.tensor([[2, 2, 2]], dtype=torch.long)
+
+    centroids = compute_voxel_centroids(
+        atom_coord_local_voxel=local_voxel,
+        point_batch=batch,
+        box_shape_zyx=box_shape,
+        batch_size=1,
+    )
+    assert centroids.shape == (8, 3)
+    expected_centroid = torch.tensor([(0.2 + 0.8) / 2, (0.3 + 0.7) / 2, (0.4 + 0.6) / 2])
+    actual = centroids[0]
+    assert torch.allclose(actual, expected_centroid, atol=1e-5)
+
+
+# ==============================================================
+# 三个开关全开的 Stage1EmbedHead 端到端测试
+# ==============================================================
+
+def test_embed_head_all_switches_enabled() -> None:
+    """三个改进开关全开时, embed head 前向输出形状正确。"""
+    try:
+        from src.model.stage1_embed_head import Stage1EmbedHead
+    except ImportError:
+        import pytest
+        pytest.skip('PTV3 依赖不可用')
+
+    B, N_per_box, F, D, H, W = 2, 10, 49, 4, 4, 4
+    C_voxel, C_point = 8, 16
+
+    embed = Stage1EmbedHead(
+        atom_feature_dim=F,
+        embed_hidden_dim=32,
+        embed_voxel_out_channels=C_voxel,
+        embed_point_out_channels=C_point,
+        num_trunk_blocks=1,
+        num_voxel_blocks=1,
+        num_point_blocks=1,
+        trunk_buffer_radii=[float('inf')],
+        voxel_buffer_radii=[float('inf')],
+        point_buffer_radii=[float('inf')],
+        num_heads=2,
+        patch_size=32,
+        serialization_orders=['z'],
+        shuffle_orders=False,
+        qkv_bias=True,
+        qk_scale=None,
+        attn_drop=0.0,
+        proj_drop=0.0,
+        enable_rpe=False,
+        enable_flash=False,
+        upcast_attention=False,
+        upcast_softmax=False,
+        scatter_reduce='mean',
+        ffn_type='mlp',
+        mlp_ratio=2,
+        act_layer_name='gelu',
+        point_grid_size=0.25,
+        cpe_impl='none',
+        cpe_kernel_size=5,
+        cpe_receptive_field=2.0,
+        pointconv_block_max_neighbors=16,
+        drop_path=0.0,
+        pre_norm=True,
+        embed_residual_enabled=False,
+        embed_point_gate_enabled=False,
+        embed_voxel_gate_enabled=False,
+        add_occupancy_channels=True,
+        use_soft_splatting=True,
+        use_centroid_encoding=True,
+    )
+    embed.eval()
+
+    dummy = _make_dummy_batch(B, N_per_box, F, D, H, W)
+    with torch.no_grad():
+        out = embed(**dummy)
+
+    # voxel grid: C_voxel + 2 (occupancy) = 10
+    assert out['voxel_pdb_embed_grid'].shape == (B, C_voxel + 2, D, H, W)
+    assert out['embed_point_feat'] is not None
+    assert out['embed_point_feat'].shape == (B * N_per_box, C_point)
+    assert out['global_keep_mask'].all()
+    assert out['atom_feat'].shape[0] == B * N_per_box
+
+
+# ==============================================================
+# 残差模式 Stage1EmbedHead 端到端测试
+# ==============================================================
+
+def test_embed_head_residual_enabled() -> None:
+    """残差模式启用时, embed head 前向输出形状正确且 atom_feat 为 64 维。"""
+    try:
+        from src.model.stage1_embed_head import Stage1EmbedHead
+    except ImportError:
+        import pytest
+        pytest.skip('PTV3 依赖不可用')
+
+    B, N_per_box, F, D, H, W = 2, 10, 49, 4, 4, 4
+    C_voxel, C_point = 36, 64
+
+    embed = Stage1EmbedHead(
+        atom_feature_dim=F,
+        embed_hidden_dim=32,
+        embed_voxel_out_channels=C_voxel,
+        embed_point_out_channels=C_point,
+        num_trunk_blocks=1,
+        num_voxel_blocks=1,
+        num_point_blocks=1,
+        trunk_buffer_radii=[float('inf')],
+        voxel_buffer_radii=[float('inf')],
+        point_buffer_radii=[float('inf')],
+        num_heads=2,
+        patch_size=32,
+        serialization_orders=['z'],
+        shuffle_orders=False,
+        qkv_bias=True,
+        qk_scale=None,
+        attn_drop=0.0,
+        proj_drop=0.0,
+        enable_rpe=False,
+        enable_flash=False,
+        upcast_attention=False,
+        upcast_softmax=False,
+        scatter_reduce='mean',
+        ffn_type='mlp',
+        mlp_ratio=2,
+        act_layer_name='gelu',
+        point_grid_size=0.25,
+        cpe_impl='none',
+        cpe_kernel_size=5,
+        cpe_receptive_field=2.0,
+        pointconv_block_max_neighbors=16,
+        drop_path=0.0,
+        pre_norm=True,
+        embed_residual_enabled=True,
+        embed_point_gate_enabled=False,
+        embed_voxel_gate_enabled=False,
+    )
+    embed.eval()
+
+    # 验证残差投影层确实被构建
+    import torch.nn as nn
+    assert embed.embed_point_add_proj is not None
+    assert embed.embed_voxel_add_proj is not None
+    # atom_feature_dim(49) != embed_point_out_channels(64), 应为 Linear
+    assert isinstance(embed.embed_point_add_proj, nn.Linear)
+    # atom_feature_dim(49) != embed_voxel_out_channels(36), 应为 Linear
+    assert isinstance(embed.embed_voxel_add_proj, nn.Linear)
+
+    dummy = _make_dummy_batch(B, N_per_box, F, D, H, W)
+    with torch.no_grad():
+        out = embed(**dummy)
+
+    # voxel grid: C_voxel = 36 (无 occupancy)
+    assert out['voxel_pdb_embed_grid'].shape == (B, C_voxel, D, H, W)
+    # 残差模式: atom_feat 应为 embed_point_out_channels(64) 维
+    assert out['atom_feat'].shape == (B * N_per_box, C_point)
+    assert out['embed_point_feat'] is not None
+    assert out['embed_point_feat'].shape == (B * N_per_box, C_point)
+    assert out['global_keep_mask'].all()
+
+
+def test_embed_head_residual_identity_shortcut() -> None:
+    """残差模式 + 维度匹配时, 投影层应为 nn.Identity。"""
+    try:
+        from src.model.stage1_embed_head import Stage1EmbedHead
+    except ImportError:
+        import pytest
+        pytest.skip('PTV3 依赖不可用')
+
+    B, N_per_box, F, D, H, W = 1, 8, 49, 4, 4, 4
+    # 让 voxel 和 point 输出维度都等于 atom_feature_dim=49
+    C_voxel, C_point = 49, 49
+
+    embed = Stage1EmbedHead(
+        atom_feature_dim=F,
+        embed_hidden_dim=32,
+        embed_voxel_out_channels=C_voxel,
+        embed_point_out_channels=C_point,
+        num_trunk_blocks=1,
+        num_voxel_blocks=1,
+        num_point_blocks=1,
+        trunk_buffer_radii=[float('inf')],
+        voxel_buffer_radii=[float('inf')],
+        point_buffer_radii=[float('inf')],
+        num_heads=2,
+        patch_size=32,
+        serialization_orders=['z'],
+        shuffle_orders=False,
+        qkv_bias=True,
+        qk_scale=None,
+        attn_drop=0.0,
+        proj_drop=0.0,
+        enable_rpe=False,
+        enable_flash=False,
+        upcast_attention=False,
+        upcast_softmax=False,
+        scatter_reduce='mean',
+        ffn_type='mlp',
+        mlp_ratio=2,
+        act_layer_name='gelu',
+        point_grid_size=0.25,
+        cpe_impl='none',
+        cpe_kernel_size=5,
+        cpe_receptive_field=2.0,
+        pointconv_block_max_neighbors=16,
+        drop_path=0.0,
+        pre_norm=True,
+        embed_residual_enabled=True,
+        embed_point_gate_enabled=False,
+        embed_voxel_gate_enabled=False,
+    )
+    embed.eval()
+
+    # 49 == 49: 应为 Identity
+    import torch.nn as nn
+    assert isinstance(embed.embed_point_add_proj, nn.Identity)
+    assert isinstance(embed.embed_voxel_add_proj, nn.Identity)
+
+    dummy = _make_dummy_batch(B, N_per_box, F, D, H, W)
+    with torch.no_grad():
+        out = embed(**dummy)
+
+    assert out['voxel_pdb_embed_grid'].shape == (B, C_voxel, D, H, W)
+    assert out['atom_feat'].shape == (B * N_per_box, C_point)
+    assert out['embed_point_feat'].shape == (B * N_per_box, C_point)

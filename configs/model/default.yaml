@@ -21,8 +21,9 @@ backbone:
   act_layer_name: "gelu"
   ffn_type: "mlp"
   atom_head_ffn_type: "mlp"
+  # prior_prob: 0.01  # see me: 注意需要启用
 
-# --- 调度器行为 ---  # see me: 调度器将会被改为 warmup+cosine，请确保 train configs 中的 scheduler 配置对应支持
+# --- 调度器行为 ---  
 interval: "step"                   # str, 调度器更新间隔
 frequency: 1                       # int, 更新频率
 monitor_metric: val/atom_pr_auc    # str, 监控指标

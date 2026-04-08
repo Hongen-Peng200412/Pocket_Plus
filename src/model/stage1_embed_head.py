@@ -169,6 +169,7 @@ def scatter_to_voxel_grid(
     box_shape_zyx: torch.Tensor,
     batch_size: int,
     reduce: str,
+    add_occupancy_channels: bool = False,
 ) -> torch.Tensor:
     """
     将 per-atom 特征 scatter 到体素网格上。
@@ -180,9 +181,10 @@ def scatter_to_voxel_grid(
         - box_shape_zyx: torch.Tensor, (B, 3), 体素网格尺寸 (Z, Y, X)
         - batch_size: int, batch 大小
         - reduce: str, 聚合方式, "mean" 或 "sum"
+        - add_occupancy_channels: bool, 是否添加 occupancy 通道 (log(1+N) 和归一化 occupancy)
 
     输出:
-        - voxel_grid: torch.Tensor, (B, C, D, H, W), 聚合后的体素网格
+        - voxel_grid: torch.Tensor, (B, C, D, H, W) 或 (B, C+2, D, H, W), 聚合后的体素网格
     """
     channels = int(point_feat.shape[1])
     # int, 体素网格各维度大小 (假设 batch 内所有 BOX 形状一致)
@@ -222,19 +224,217 @@ def scatter_to_voxel_grid(
     idx_expanded = linear_idx.unsqueeze(1).expand(-1, channels)
     voxel_sum.scatter_add_(dim=0, index=idx_expanded, src=point_feat)
 
+    # torch.Tensor, (total_voxels, 1), 每个体素接收的原子计数
+    voxel_count = point_feat.new_zeros((total_voxels, 1))
+    voxel_count.scatter_add_(
+        dim=0,
+        index=linear_idx.unsqueeze(1),
+        src=torch.ones(point_feat.shape[0], 1, device=point_feat.device, dtype=point_feat.dtype),
+    )
+
     if reduce == "mean":
-        # torch.Tensor, (total_voxels, 1), 每个体素接收的原子计数
-        voxel_count = point_feat.new_zeros((total_voxels, 1))
-        voxel_count.scatter_add_(
-            dim=0,
-            index=linear_idx.unsqueeze(1),
-            src=torch.ones(point_feat.shape[0], 1, device=point_feat.device, dtype=point_feat.dtype),
-        )
         # 避免除零
         voxel_sum = voxel_sum / voxel_count.clamp(min=1.0)
 
-    # torch.Tensor, (B, C, D, H, W), reshape 到体素网格
-    return voxel_sum.view(batch_size, d_val, h_val, w_val, channels).permute(0, 4, 1, 2, 3).contiguous()
+    # 可选：添加 occupancy 通道
+    if add_occupancy_channels:
+        # 1. log(1 + N(v))
+        log_count = torch.log1p(voxel_count)  # (total_voxels, 1)
+
+        # 2. 归一化 occupancy ρ(v)
+        max_count = voxel_count.max()
+        normalized_occupancy = voxel_count / max_count.clamp(min=1.0)  # (total_voxels, 1)
+
+        # 3. 拼接到特征后
+        voxel_sum = torch.cat([voxel_sum, log_count, normalized_occupancy], dim=1)  # (total_voxels, C+2)
+
+    # torch.Tensor, (B, C, D, H, W) 或 (B, C+2, D, H, W), reshape 到体素网格
+    final_channels = voxel_sum.shape[1]
+    return voxel_sum.view(batch_size, d_val, h_val, w_val, final_channels).permute(0, 4, 1, 2, 3).contiguous()
+
+
+def soft_scatter_to_voxel_grid(
+    point_feat: torch.Tensor,
+    atom_coord_local_voxel: torch.Tensor,
+    point_batch: torch.Tensor,
+    box_shape_zyx: torch.Tensor,
+    batch_size: int,
+    reduce: str = "mean",
+    add_occupancy_channels: bool = False,
+) -> torch.Tensor:
+    """
+    使用三线性插值将 per-atom 特征 soft scatter 到 8 个邻域体素。
+
+    输入参数:
+        - point_feat: torch.Tensor, (N, C), per-atom 特征
+        - atom_coord_local_voxel: torch.Tensor, (N, 3), 连续体素坐标 (x, y, z), corner 语义
+        - point_batch: torch.Tensor, (N,), batch 索引
+        - box_shape_zyx: torch.Tensor, (B, 3), 体素网格尺寸 (Z, Y, X)
+        - batch_size: int, batch 大小
+        - reduce: str, 聚合方式, "mean" 或 "sum"
+        - add_occupancy_channels: bool, 是否添加 occupancy 通道
+
+    输出:
+        - voxel_grid: torch.Tensor, (B, C, D, H, W) 或 (B, C+2, D, H, W), 聚合后的体素网格
+    """
+    channels = int(point_feat.shape[1])
+    d_val = int(box_shape_zyx[0, 0].item())
+    h_val = int(box_shape_zyx[0, 1].item())
+    w_val = int(box_shape_zyx[0, 2].item())
+    total_voxels = batch_size * d_val * h_val * w_val
+
+    if point_feat.shape[0] == 0:
+        return point_feat.new_zeros((batch_size, channels, d_val, h_val, w_val))
+
+    # 1. 计算 8 邻域体素索引
+    voxel_idx_floor = atom_coord_local_voxel.floor()  # (N, 3)
+    delta = atom_coord_local_voxel - voxel_idx_floor  # (N, 3), 相对偏移 [0, 1)
+
+    # 8 个邻域的偏移（立方体的 8 个角点）
+    # 注意：PyTorch grid_sample 始终使用 8 邻域三线性插值
+    # align_corners=True 只影响坐标归一化方式，不影响邻域数量
+    offsets = torch.tensor([
+        [0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1],
+        [1, 1, 0], [1, 0, 1], [0, 1, 1], [1, 1, 1]
+    ], device=point_feat.device, dtype=torch.float32)  # (8, 3)
+
+    # 2. 计算三线性权重并 scatter (完全向量化)
+    voxel_sum = point_feat.new_zeros((total_voxels, channels))  # (total_voxels, C)
+    voxel_weight_sum = point_feat.new_zeros((total_voxels, 1))  # (total_voxels, 1)
+
+    # 准备广播到 (N, 8, 3)
+    voxel_idx_floor_exp = voxel_idx_floor.unsqueeze(1)  # (N, 1, 3)
+    delta_exp = delta.unsqueeze(1)                      # (N, 1, 3)
+    offsets_exp = offsets.unsqueeze(0)                  # (1, 8, 3)
+
+    # 邻域体素坐标 (N, 8, 3)
+    neighbor_xyz = voxel_idx_floor_exp + offsets_exp
+
+    # 边界检查 (N, 8)
+    valid_mask = (
+        (neighbor_xyz[..., 0] >= 0) & (neighbor_xyz[..., 0] < w_val) &
+        (neighbor_xyz[..., 1] >= 0) & (neighbor_xyz[..., 1] < h_val) &
+        (neighbor_xyz[..., 2] >= 0) & (neighbor_xyz[..., 2] < d_val)
+    )
+
+    # 三线性权重 (N, 8)
+    weight = (
+        (1 - torch.abs(delta_exp[..., 0] - offsets_exp[..., 0])) *
+        (1 - torch.abs(delta_exp[..., 1] - offsets_exp[..., 1])) *
+        (1 - torch.abs(delta_exp[..., 2] - offsets_exp[..., 2]))
+    )
+    weight = weight * valid_mask.float()
+    # AMP 下 weight 可能为 float32 而 point_feat 为 bfloat16, 统一 dtype 防止 scatter_add_ 报错
+    weight = weight.to(dtype=point_feat.dtype)
+
+    # 线性索引 (越界体素已被 weight=0 屏蔽, clamp 仅保证索引合法)
+    neighbor_xyz_long = neighbor_xyz.long()  # (N, 8, 3)
+    neighbor_xyz_long[..., 0].clamp_(0, w_val - 1)
+    neighbor_xyz_long[..., 1].clamp_(0, h_val - 1)
+    neighbor_xyz_long[..., 2].clamp_(0, d_val - 1)
+    
+    point_batch_exp = point_batch.long().unsqueeze(1)  # (N, 1)
+    
+    linear_idx = (
+        point_batch_exp * (d_val * h_val * w_val)
+        + neighbor_xyz_long[..., 2] * (h_val * w_val)
+        + neighbor_xyz_long[..., 1] * w_val
+        + neighbor_xyz_long[..., 0]
+    )  # (N, 8)
+
+    # 展平为 1D/2D 以便调用 scatter_add_
+    # 加权特征 (N, 8, C)
+    weighted_feat = point_feat.unsqueeze(1) * weight.unsqueeze(2)
+    
+    weighted_feat_flat = weighted_feat.reshape(-1, channels)  # (N*8, C)
+    weight_flat = weight.reshape(-1, 1)                       # (N*8, 1)
+    linear_idx_flat = linear_idx.reshape(-1, 1)               # (N*8, 1)
+
+    # 聚合 (N*8 并行)
+    idx_expanded = linear_idx_flat.expand(-1, channels)  # (N*8, C)
+    voxel_sum.scatter_add_(dim=0, index=idx_expanded, src=weighted_feat_flat)
+    voxel_weight_sum.scatter_add_(dim=0, index=linear_idx_flat, src=weight_flat)
+
+    # 3. 根据 reduce 模式处理
+    if reduce == "mean":
+        voxel_sum = voxel_sum / voxel_weight_sum.clamp(min=1e-8)
+    elif reduce == "sum":
+        pass  # 保持原始加权和，不归一化
+
+    # 4. 可选：添加 occupancy 通道
+    if add_occupancy_channels:
+        log_weight_sum = torch.log1p(voxel_weight_sum)
+        max_weight = voxel_weight_sum.max()
+        normalized_weight = voxel_weight_sum / max_weight.clamp(min=1.0)
+        voxel_sum = torch.cat([voxel_sum, log_weight_sum, normalized_weight], dim=1)
+
+    # 5. Reshape
+    final_channels = voxel_sum.shape[1]
+    return voxel_sum.view(batch_size, d_val, h_val, w_val, final_channels).permute(0, 4, 1, 2, 3).contiguous()
+
+
+def compute_voxel_centroids(
+    atom_coord_local_voxel: torch.Tensor,
+    point_batch: torch.Tensor,
+    box_shape_zyx: torch.Tensor,
+    batch_size: int,
+) -> torch.Tensor:
+    """
+    计算每个体素内原子的质心坐标。
+
+    输入参数:
+        - atom_coord_local_voxel: torch.Tensor, (N, 3), 连续体素坐标 (x, y, z), corner 语义
+        - point_batch: torch.Tensor, (N,), batch 索引
+        - box_shape_zyx: torch.Tensor, (B, 3), 体素网格尺寸 (Z, Y, X)
+        - batch_size: int, batch 大小
+
+    输出:
+        - voxel_centroids: torch.Tensor, (total_voxels, 3), 每个体素的质心坐标（连续体素坐标）
+    """
+    d_val = int(box_shape_zyx[0, 0].item())
+    h_val = int(box_shape_zyx[0, 1].item())
+    w_val = int(box_shape_zyx[0, 2].item())
+    total_voxels = batch_size * d_val * h_val * w_val
+
+    # 体素索引
+    voxel_idx_xyz = atom_coord_local_voxel.floor().long()
+
+    # 边界检查
+    valid_mask = (
+        (voxel_idx_xyz[:, 0] >= 0) & (voxel_idx_xyz[:, 0] < w_val) &
+        (voxel_idx_xyz[:, 1] >= 0) & (voxel_idx_xyz[:, 1] < h_val) &
+        (voxel_idx_xyz[:, 2] >= 0) & (voxel_idx_xyz[:, 2] < d_val)
+    )
+
+    voxel_idx_xyz = voxel_idx_xyz[valid_mask]
+    atom_coord_valid = atom_coord_local_voxel[valid_mask]
+    point_batch_valid = point_batch[valid_mask]
+
+    # 线性索引
+    linear_idx = (
+        point_batch_valid.long() * (d_val * h_val * w_val)
+        + voxel_idx_xyz[:, 2] * (h_val * w_val)
+        + voxel_idx_xyz[:, 1] * w_val
+        + voxel_idx_xyz[:, 0]
+    )
+
+    # Scatter 坐标和
+    voxel_coord_sum = atom_coord_valid.new_zeros((total_voxels, 3))  # (total_voxels, 3)
+    voxel_count = atom_coord_valid.new_zeros((total_voxels, 1))  # (total_voxels, 1)
+
+    idx_expanded = linear_idx.unsqueeze(1).expand(-1, 3)  # (N, 3)
+    voxel_coord_sum.scatter_add_(dim=0, index=idx_expanded, src=atom_coord_valid)
+
+    voxel_count.scatter_add_(
+        dim=0,
+        index=linear_idx.unsqueeze(1),  # (N, 1)
+        src=torch.ones(atom_coord_valid.shape[0], 1, device=atom_coord_valid.device, dtype=atom_coord_valid.dtype),
+    )
+
+    # AMP 下 voxel_coord_sum 可能为 bfloat16, clamp(min=1.0) 需要同精度
+    voxel_centroids = voxel_coord_sum / voxel_count.clamp(min=1.0)
+
+    return voxel_centroids
 
 
 
@@ -279,9 +479,13 @@ class Stage1EmbedHead(nn.Module):
         drop_path: float,
         pre_norm: bool,
 
-        embed_residual_enabled: bool,    # bool, 是否启用残差融合
-        embed_point_gate_enabled: bool,   # bool, point 路径 gate 是否可学习 (仅 embed_residual_enabled=True 时有效)
-        embed_voxel_gate_enabled: bool,   # bool, voxel 路径 gate 是否可学习 (仅 embed_residual_enabled=True 时有效)
+        embed_residual_enabled: bool = False,    # bool, 是否启用残差融合
+        embed_point_gate_enabled: bool = False,   # bool, point 路径 gate 是否可学习 (仅 embed_residual_enabled=True 时有效)
+        embed_voxel_gate_enabled: bool = False,   # bool, voxel 路径 gate 是否可学习 (仅 embed_residual_enabled=True 时有效)
+
+        add_occupancy_channels: bool = False,  # bool, 是否添加 occupancy 通道
+        use_soft_splatting: bool = False,      # bool, 是否使用 soft splatting
+        use_centroid_encoding: bool = False,   # bool, 是否使用 centroid-aware 偏移编码
     ) -> None:
         """
         Stage1 embed head 前置模块, 将原子级点云编码为体素网格嵌入特征和(可选的)点特征。
@@ -327,6 +531,10 @@ class Stage1EmbedHead(nn.Module):
             - embed_residual_enabled: bool, 是否启用残差融合
             - embed_point_gate_enabled: bool, point 路径 gate 是否可学习 (仅 embed_residual_enabled=True 时有效)
             - embed_voxel_gate_enabled: bool, voxel 路径 gate 是否可学习 (仅 embed_residual_enabled=True 时有效)
+
+            - add_occupancy_channels: bool, 是否添加 occupancy 通道 (log(1+N) 和归一化 occupancy)
+            - use_soft_splatting: bool, 是否使用 soft splatting (三线性插值写入)
+            - use_centroid_encoding: bool, 是否使用 centroid-aware 偏移编码
 
         前向输入:
             - atom_feat, atom_coord_centered_world, atom_batch_index, atom_offsets,
@@ -375,16 +583,21 @@ class Stage1EmbedHead(nn.Module):
         self.point_grid_size = float(point_grid_size)
         self.cpe_impl = str(cpe_impl)
         self.embed_residual_enabled = bool(embed_residual_enabled)
-        self.embed_residual_enabled = bool(embed_residual_enabled)
+        self.add_occupancy_channels = bool(add_occupancy_channels)
+        self.use_soft_splatting = bool(use_soft_splatting)
+        self.use_centroid_encoding = bool(use_centroid_encoding)
 
         # type, 激活函数类
         act_cls = resolve_act_layer(str(act_layer_name))
 
         # --- 残差融合 ---
         if self.embed_residual_enabled:
-            # point 路径: linear(atom_feature_dim → embed_point_out_channels) + gate
+            # point 路径: proj(atom_feature_dim → embed_point_out_channels) + gate
             if self.has_point_output:
-                self.embed_point_add_proj = nn.Linear(self.atom_feature_dim, self.embed_point_out_channels)
+                if self.atom_feature_dim == self.embed_point_out_channels:
+                    self.embed_point_add_proj = nn.Identity()  # 维度匹配: identity shortcut
+                else:
+                    self.embed_point_add_proj = nn.Linear(self.atom_feature_dim, self.embed_point_out_channels)
                 if embed_point_gate_enabled:
                     self.embed_point_gate = nn.Parameter(torch.tensor(0.1))
                 else:
@@ -393,34 +606,11 @@ class Stage1EmbedHead(nn.Module):
                 self.embed_point_add_proj = None
                 self.register_buffer("embed_point_gate", torch.tensor(1.0))
 
-            # voxel 路径: linear(atom_feature_dim → embed_voxel_out_channels) + gate
-            self.embed_voxel_add_proj = nn.Linear(self.atom_feature_dim, self.embed_voxel_out_channels)
-            if embed_voxel_gate_enabled:
-                self.embed_voxel_gate = nn.Parameter(torch.tensor(0.1))
+            # voxel 路径: proj(atom_feature_dim → embed_voxel_out_channels) + gate
+            if self.atom_feature_dim == self.embed_voxel_out_channels:
+                self.embed_voxel_add_proj = nn.Identity()  # 维度匹配: identity shortcut
             else:
-                self.register_buffer("embed_voxel_gate", torch.tensor(1.0))
-        else:
-            # 不启用残差: 所有投影层为 None，gate 为 buffer(1.0)
-            self.embed_point_add_proj = None
-            self.register_buffer("embed_point_gate", torch.tensor(1.0))
-            self.embed_voxel_add_proj = None
-            self.register_buffer("embed_voxel_gate", torch.tensor(1.0))
-
-        # --- 残差融合 ---
-        if self.embed_residual_enabled:
-            # point 路径: linear(atom_feature_dim → embed_point_out_channels) + gate
-            if self.has_point_output:
-                self.embed_point_add_proj = nn.Linear(self.atom_feature_dim, self.embed_point_out_channels)
-                if embed_point_gate_enabled:
-                    self.embed_point_gate = nn.Parameter(torch.tensor(0.1))
-                else:
-                    self.register_buffer("embed_point_gate", torch.tensor(1.0))
-            else:
-                self.embed_point_add_proj = None
-                self.register_buffer("embed_point_gate", torch.tensor(1.0))
-
-            # voxel 路径: linear(atom_feature_dim → embed_voxel_out_channels) + gate
-            self.embed_voxel_add_proj = nn.Linear(self.atom_feature_dim, self.embed_voxel_out_channels)
+                self.embed_voxel_add_proj = nn.Linear(self.atom_feature_dim, self.embed_voxel_out_channels)
             if embed_voxel_gate_enabled:
                 self.embed_voxel_gate = nn.Parameter(torch.tensor(0.1))
             else:
@@ -485,11 +675,22 @@ class Stage1EmbedHead(nn.Module):
                     **_block_kwargs,
                 )
             )
-        # nn.Sequential, (sumN, embed_hidden_dim) -> (sumN, embed_voxel_out_channels), 体素输出投影
-        self.voxel_out_proj = nn.Sequential(
-            nn.LayerNorm(self.embed_hidden_dim),
-            nn.Linear(self.embed_hidden_dim, self.embed_voxel_out_channels),
-        )
+
+        # 体素输出投影层
+        if self.use_centroid_encoding:
+            # 使用 centroid encoding 时，输入维度为 embed_hidden_dim + 6
+            self.voxel_out_proj_with_offset = nn.Sequential(
+                nn.LayerNorm(self.embed_hidden_dim + 6),
+                nn.Linear(self.embed_hidden_dim + 6, self.embed_voxel_out_channels),
+            )
+            self.voxel_out_proj = None
+        else:
+            # 标准投影层
+            self.voxel_out_proj = nn.Sequential(
+                nn.LayerNorm(self.embed_hidden_dim),
+                nn.Linear(self.embed_hidden_dim, self.embed_voxel_out_channels),
+            )
+            self.voxel_out_proj_with_offset = None
 
         # ------------------ 点分支专用 blocks (可选) ------------------
         if self.has_point_output:
@@ -750,17 +951,49 @@ class Stage1EmbedHead(nn.Module):
             )
 
         # 体素输出投影 + scatter
-        # torch.Tensor, (N_voxel, embed_voxel_out_channels), 投影后的体素特征
-        voxel_feat_per_atom = self.voxel_out_proj(voxel_point.feat)
-        # torch.Tensor, (B, embed_voxel_out_channels, D, H, W), 聚合到体素网格
-        voxel_pdb_embed_grid = scatter_to_voxel_grid(
-            point_feat=voxel_feat_per_atom,
-            atom_coord_local_voxel=v_local_voxel,
-            point_batch=v_batch,
-            box_shape_zyx=box_shape_zyx,
-            batch_size=batch_size,
-            reduce=self.scatter_reduce,
-        )
+        if self.use_centroid_encoding:
+            # 计算体素质心和偏移编码
+            voxel_centroids = compute_voxel_centroids(
+                atom_coord_local_voxel=v_local_voxel,
+                point_batch=v_batch,
+                box_shape_zyx=box_shape_zyx,
+                batch_size=batch_size,
+            )
+
+            # 为每个原子查找其所属体素的质心
+            d_val = int(box_shape_zyx[0, 0].item())
+            h_val = int(box_shape_zyx[0, 1].item())
+            w_val = int(box_shape_zyx[0, 2].item())
+            voxel_idx_xyz = v_local_voxel.floor().long()
+            # 边界 clamp: 防止原子恰好在体素网格边缘时 index 越界
+            voxel_idx_xyz[:, 0].clamp_(0, w_val - 1)
+            voxel_idx_xyz[:, 1].clamp_(0, h_val - 1)
+            voxel_idx_xyz[:, 2].clamp_(0, d_val - 1)
+            linear_idx = (
+                v_batch.long() * (d_val * h_val * w_val)
+                + voxel_idx_xyz[:, 2] * (h_val * w_val)
+                + voxel_idx_xyz[:, 1] * w_val
+                + voxel_idx_xyz[:, 0]
+            )
+            atom_voxel_centroids = voxel_centroids[linear_idx]
+
+            # 计算偏移
+            atom_offset_from_centroid = v_local_voxel - atom_voxel_centroids
+            voxel_center = voxel_idx_xyz.float() + 0.5
+            centroid_offset_from_center = atom_voxel_centroids - voxel_center
+
+            # 拼接偏移到特征
+            voxel_feat_with_offset = torch.cat([
+                voxel_point.feat,
+                atom_offset_from_centroid,
+                centroid_offset_from_center
+            ], dim=1)
+
+            # 投影到输出维度
+            voxel_feat_per_atom = self.voxel_out_proj_with_offset(voxel_feat_with_offset)
+        else:
+            # 标准投影
+            voxel_feat_per_atom = self.voxel_out_proj(voxel_point.feat)
 
 
 
@@ -810,9 +1043,6 @@ class Stage1EmbedHead(nn.Module):
             # 保存裁剪前 atom_feat 对应的原始特征子集 (供残差使用)
             trimmed_atom_feat_for_point = atom_feat[p_global_keep]
             trimmed_atom_feat_for_voxel = atom_feat[v_global_keep]
-            # 保存裁剪前 atom_feat 对应的原始特征子集 (供残差使用)
-            trimmed_atom_feat_for_point = atom_feat[p_global_keep]
-            trimmed_atom_feat_for_voxel = atom_feat[v_global_keep]
         else:
             # 无点分支: 使用 trunk 的裁剪结果
             final_global_keep = global_keep_mask
@@ -837,11 +1067,23 @@ class Stage1EmbedHead(nn.Module):
 
         # ---------- 残差融合: voxel 路径 (per-atom, scatter 前) ----------
         if self.embed_voxel_add_proj is not None:
-            # torch.Tensor, (N', embed_voxel_out_channels), 原始原子特征投影到 embed voxel 空间
+            # torch.Tensor, (N', embed_voxel_out_channels), 原始原子特征投影(或 identity)到 embed voxel 空间
             projected_atom_for_voxel = self.embed_voxel_add_proj(trimmed_atom_feat_for_voxel)
             # torch.Tensor, (N', embed_voxel_out_channels), 投影后的原子特征 + gated embed 特征
             voxel_feat_per_atom = projected_atom_for_voxel + self.embed_voxel_gate * voxel_feat_per_atom
-            # 重新 scatter 到体素网格
+
+        # ---------- Scatter 到体素网格 (残差融合后只执行一次) ----------
+        if self.use_soft_splatting:
+            voxel_pdb_embed_grid = soft_scatter_to_voxel_grid(
+                point_feat=voxel_feat_per_atom,
+                atom_coord_local_voxel=v_local_voxel,
+                point_batch=v_batch,
+                box_shape_zyx=box_shape_zyx,
+                batch_size=batch_size,
+                reduce=self.scatter_reduce,
+                add_occupancy_channels=self.add_occupancy_channels,
+            )
+        else:
             voxel_pdb_embed_grid = scatter_to_voxel_grid(
                 point_feat=voxel_feat_per_atom,
                 atom_coord_local_voxel=v_local_voxel,
@@ -849,23 +1091,20 @@ class Stage1EmbedHead(nn.Module):
                 box_shape_zyx=box_shape_zyx,
                 batch_size=batch_size,
                 reduce=self.scatter_reduce,
+                add_occupancy_channels=self.add_occupancy_channels,
             )
 
-        # -------- 确定最终 atom_feat: 残差启用且有 point 输出时为 64 维, 否则为 49 维 --------
-        if self.embed_residual_enabled and self.has_point_output and embed_point_feat is not None:
+        # -------- 确定最终 atom_feat --------
+        # 有点分支输出时, 无论残差是否启用, 都使用 embed_point_feat (embed_point_out_channels 维)
+        # 残差已在上面融合(若启用); 无残差时 embed_point_feat 就是纯 embed 编码后的特征
+        if self.has_point_output and embed_point_feat is not None:
             final_atom_feat = embed_point_feat
         else:
-            # 无残差或无点分支: 返回原始 49 维特征
+            # 无点分支: 返回原始特征
             final_atom_feat = atom_feat[final_global_keep]
 
         return {
             "voxel_pdb_embed_grid": voxel_pdb_embed_grid,
-            "voxel_embed_per_atom": voxel_feat_per_atom,  # (N', embed_voxel_out_channels), 残差融合后 per-atom 特征
-            "voxel_batch_index": v_batch,                  # voxel 路径的 batch 索引
-            "voxel_coord_local_voxel": v_local_voxel,     # voxel 路径的局部体素坐标
-
-            "embed_point_feat": embed_point_feat,         # 残差融合后的点特征
-            "atom_feat": final_atom_feat,                  # 64 维(残差启用+点分支) 或 49 维
             "voxel_embed_per_atom": voxel_feat_per_atom,  # (N', embed_voxel_out_channels), 残差融合后 per-atom 特征
             "voxel_batch_index": v_batch,                  # voxel 路径的 batch 索引
             "voxel_coord_local_voxel": v_local_voxel,     # voxel 路径的局部体素坐标
@@ -878,8 +1117,6 @@ class Stage1EmbedHead(nn.Module):
             "atom_coord_local_voxel": final_local_voxel,
             "atom_is_in_core_box": final_core,
 
-
             "global_keep_mask": final_global_keep,
-            "embed_point_add_proj": self.embed_point_add_proj,  # Linear(49→64), 供伪原子对齐(可能为 None)
             "embed_point_add_proj": self.embed_point_add_proj,  # Linear(49→64), 供伪原子对齐(可能为 None)
         }
