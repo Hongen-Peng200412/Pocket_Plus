@@ -169,18 +169,18 @@ class LigandCandidate:
 
     ============================== 当前字段 ==============================
 
-    基本标识 / Basic Identity:
+    0. 基本标识 / Basic Identity:
         - candidate_id: int, 全局唯一候选编号 (从0开始, 0-indexed)
         - resname:       str, CCD 残基名 (如 'ATP', 'ZN', 'GOL')
         - chain_id:      str, 链标识符
         - res_id:        int, 残基序号
         - insertion_code: str, 插入码
 
-    坐标与几何 / Coordinates & Geometry:
+    0. 坐标与几何 / Coordinates & Geometry:
         - coords:        np.ndarray, (M, 3), float32, 全部重原子坐标
         - center:        np.ndarray, (3,), float32, 重心坐标
 
-    -----------------------------------------------------------------------
+    --------------------------------------
     1. 大小 / Size:
         - n_heavy_atoms: int, 重原子数目
         - molecular_weight: float, 配体所有重原子的质量之和 (Da, Biopython atom.mass)
@@ -451,7 +451,7 @@ def compute_contact_attributes(
         - candidates: list[LigandCandidate], 候选配体列表 (就地修改)
         - receptor_coords: np.ndarray, (N_rec, 3), float32, 受体重原子坐标
         - receptor_res_indices: np.ndarray, (N_rec,), int32, 受体原子→残基索引
-        - threshold: float, 接触距离阈值 (Å), 目前将会是 Pocket\Make_Data\labels\filter_config.py 里面各类配体自带的 binding_threshold 取最大值:, 即= max(r.binding_threshold for r in filter_config.rules)
+        - threshold: float, 接触距离阈值 (Å), 目前将会是 Pocket_Plus\Make_Data\labels\filter_config.py 里面各类配体自带的 binding_threshold 取最大值:, 即= max(r.binding_threshold for r in filter_config.rules)
 
     输出:
         - None (就地修改 candidates)
@@ -581,7 +581,7 @@ def _compute_polymer_segments(model) -> Dict[Tuple, int]:
 
 
 # ============================================================================
-# 主函数 / Main Functions(将被 Pocket\Make_Data\PDB_processor\parser.py 调用以保存候选配体信息 candidates.npz)
+# 主函数 / Main Functions(将被 Pocket_Plus\Make_Data\PDB_processor\parser.py 调用以保存候选配体信息 candidates.npz)
 # ============================================================================
 def find_all_hetatm_candidates(model) -> Tuple[List[LigandCandidate], int]:
     """

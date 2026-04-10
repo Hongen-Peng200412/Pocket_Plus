@@ -239,6 +239,7 @@ def process_and_label_single_file(
     parse_atoms: bool = DEFAULT_PARSE_ATOMS,
     parse_residues: bool = DEFAULT_PARSE_RESIDUES,
     parse_graph: bool = DEFAULT_PARSE_GRAPH,
+    allow_incomplete_backbone: bool = False,
 ) -> Tuple[str, bool, Optional[str]]:
     """
     Mode A: 从零开始处理单个结构文件（解析 + 特征提取 + 打标签）。
@@ -283,7 +284,8 @@ def process_and_label_single_file(
             error_dir,
             sample_id,
             require_ligand=require_ligand,
-            select_first_model=select_first_model
+            select_first_model=select_first_model,
+            allow_incomplete_backbone=allow_incomplete_backbone
         )
         if parsed_data is None:
             return sample_id, False, "Parse failed"
@@ -317,6 +319,7 @@ def process_and_label_single_file(
                 error_dir=error_dir,
                 sample_id=sample_id,
                 file_path=input_path,
+                allow_incomplete_backbone=allow_incomplete_backbone,
             )
             save_residues_npz(
                 parsed_data, residue_features, local_frames, frames_mask,
@@ -603,7 +606,12 @@ def main():
         "--overwrite", action=argparse.BooleanOptionalAction, default=False,
         help="覆盖已有输出文件 (默认跳过); 用 --overwrite 开启, --no-overwrite 关闭"
     )
-
+    parser.add_argument("--parse_atoms", action=argparse.BooleanOptionalAction, default=DEFAULT_PARSE_ATOMS,
+                        help="Whether to really build atoms_dict / atoms.npz")
+    parser.add_argument("--parse_residues", action=argparse.BooleanOptionalAction, default=DEFAULT_PARSE_RESIDUES,
+                        help="Whether to really build residues_dict / residues.npz")
+    parser.add_argument("--parse_graph", action=argparse.BooleanOptionalAction, default=DEFAULT_PARSE_GRAPH,
+                        help="Whether to really build graph_dict / graph.npz")
 
 
     # ========================================== 分片 ==========================================
@@ -626,12 +634,9 @@ def main():
                         help="跳过密度特征计算（更快）")
     parser.add_argument("--select_first_model", action="store_true",
                         help="多 model 时仅取第一个")
-    parser.add_argument("--parse_atoms", action=argparse.BooleanOptionalAction, default=DEFAULT_PARSE_ATOMS,
-                        help="Whether to really build atoms_dict / atoms.npz")
-    parser.add_argument("--parse_residues", action=argparse.BooleanOptionalAction, default=DEFAULT_PARSE_RESIDUES,
-                        help="Whether to really build residues_dict / residues.npz")
-    parser.add_argument("--parse_graph", action=argparse.BooleanOptionalAction, default=DEFAULT_PARSE_GRAPH,
-                        help="Whether to really build graph_dict / graph.npz")
+
+    parser.add_argument("--allow_incomplete_backbone", action="store_true",
+                        help="允许主链原子缺失并尝试补全 (默认 False, 严格模式)")
     parser.add_argument(
         "--filter_preset", "--class_name",
         dest="filter_preset",
@@ -716,6 +721,7 @@ def main():
                 parse_atoms=args.parse_atoms,
                 parse_residues=args.parse_residues,
                 parse_graph=args.parse_graph,
+                allow_incomplete_backbone=args.allow_incomplete_backbone,
             )
             for file_path in shard_items
         )
@@ -841,6 +847,7 @@ def get_features_when_infer(
     parse_atoms: bool = DEFAULT_PARSE_ATOMS,
     parse_residues: bool = DEFAULT_PARSE_RESIDUES,
     parse_graph: bool = DEFAULT_PARSE_GRAPH,
+    allow_incomplete_backbone: bool = False,
 ) -> Optional[Tuple[dict, dict, dict]]:
     """
     推断时提取单个结构文件的三类特征，不保存任何文件、不计算标签。
@@ -851,6 +858,7 @@ def get_features_when_infer(
         - graph_cutoff: float, 图边距离截断 (Å)
         - compute_density: bool, 是否计算原子局部密度特征
         - select_first_model: bool, 多模型时是否仅取第一个模型
+        - allow_incomplete_backbone: bool, 是否允许主链原子缺失并尝试补全, 建议值 False
 
     输出 / Output:
         成功时返回 (atoms_dict, residues_dict, graph_dict)，失败返回 None。
@@ -899,6 +907,7 @@ def get_features_when_infer(
             sample_id,
             require_ligand=False,  #    推断时 require_ligand=False，不要求配体存在
             select_first_model=select_first_model,
+            allow_incomplete_backbone=allow_incomplete_backbone,
         )
         if parsed_data is None:
             # 解析失败，错误信息已由 parse_structure 内部写入 error_dir
@@ -940,6 +949,7 @@ def get_features_when_infer(
                 error_dir=error_dir,
                 sample_id=sample_id,
                 file_path=input_path,
+                allow_incomplete_backbone=allow_incomplete_backbone,
             )
 
         # dict, 与 residues.npz 内容完全对齐

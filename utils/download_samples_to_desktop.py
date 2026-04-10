@@ -1,3 +1,7 @@
+"""
+根据 /storage/penghongen/dataset_mapping.json, 从服务器下载样本, 放到桌面上的四个文件夹里
+"""
+
 import os
 import json
 import subprocess

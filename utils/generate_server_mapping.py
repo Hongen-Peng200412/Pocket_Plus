@@ -1,3 +1,15 @@
+"""
+生成 6193 个数据集的 .json 文件 List[dict[str,str]], 每一条为一个样本, 如:
+    {
+        "pdb_id": "9e01",
+        "emdb_id": "EMD-47345",
+        "cif_path": "/storage/chenzhaoyang/cryo_em/CIF_3.5_cc_qscore/9E01.cif",
+        "map_path": "/storage/chenzhaoyang/cryo_em/EMDB_3.5/emd_47345.map",
+        "sim_cif_path": "/storage/chenzhaoyang/cryo_em/EMDB_simu_atom/emd_47345.mrc",  # 受体模拟密度图
+        "sim_all_path": "/storage/chenzhaoyang/cryo_em/EMDB_simu/emd_47345.mrc"  # 整体模拟密度图
+    },
+"""
+
 import os
 import csv
 import json

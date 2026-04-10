@@ -81,20 +81,24 @@ def compute_local_frames(
     error_dir: Optional[str] = None,
     sample_id: Optional[str] = None,
     file_path: str = "",
+    allow_incomplete_backbone: bool = False,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
     计算所有残基的局部坐标系
     Compute local coordinate frames for all residues
-    
+
     输入参数 / Input:
         - parsed_data: ParsedStructure, 解析后的结构数据
         - error_dir: Optional[str], 错误日志目录 (提供时会记录并抛出统一异常)
         - sample_id: Optional[str], 样本 ID
         - file_path: str, 输入结构文件路径
-    
+        - allow_incomplete_backbone: bool, 是否允许主链原子缺失, 建议值 False
+            - False: 严格模式, 主链缺失时报错 (向后兼容)
+            - True: 宽松模式, 使用单位矩阵并在 frames_mask 中标记为 False
+
     输出 / Output:
         - frames: np.ndarray, (N_res, 3, 3), float32, 局部坐标系矩阵
-        - frames_mask: np.ndarray, (N_res,), bool, 有效性掩码 (严格模式下全部为 True)
+        - frames_mask: np.ndarray, (N_res,), bool, 有效性掩码 (True 表示原始完整, False 表示补全或缺失)
     """
     # int, 残基数量
     n_residues = len(parsed_data.res_names)
@@ -113,39 +117,59 @@ def compute_local_frames(
             p1 = parsed_data.backbone_n_coords[i]
             p2 = parsed_data.backbone_ca_coords[i]
             p3 = parsed_data.backbone_c_coords[i]
-            # 严格模式：骨架不完整直接报错
+            # 骨架完整性检查: 检查三个主链原子坐标是否为零向量
             if np.allclose(p1, 0) or np.allclose(p2, 0) or np.allclose(p3, 0):
-                detail = (
-                    f"Incomplete protein backbone at residue_index={i}: "
-                    "require N/CA/C for local frame."
-                )
-                if error_dir:
-                    return_error_and_raise(
-                        file_path=file_path,
-                        line=-1,
-                        error_type=ErrorType.INCOMPLETE_BACKBONE,
-                        error_detail=detail,
-                        output_dir=error_dir,
-                        sample_id=sample_id,
+                if not allow_incomplete_backbone:
+                    # 严格模式: 主链原子缺失时报错并终止处理 (向后兼容行为)
+                    detail = (
+                        f"Incomplete protein backbone at residue_index={i}: "
+                        "require N/CA/C for local frame."
                     )
-                raise ProcessingError(ErrorType.INCOMPLETE_BACKBONE, detail)
+                    if error_dir:
+                        return_error_and_raise(
+                            file_path=file_path,
+                            line=-1,
+                            error_type=ErrorType.INCOMPLETE_BACKBONE,
+                            error_detail=detail,
+                            output_dir=error_dir,
+                            sample_id=sample_id,
+                        )
+                    raise ProcessingError(ErrorType.INCOMPLETE_BACKBONE, detail)
+                else:
+                    # 宽松模式: 使用单位矩阵作为占位符, 并在 mask 中标记为无效 (False)
+                    # np.ndarray, (3, 3), float32, 单位矩阵作为占位符
+                    frames[i] = np.eye(3, dtype=np.float32)
+                    # bool, 标量, False 表示该残基的局部坐标系无效或为补全
+                    frames_mask[i] = False
+                    continue
+
             try:
+                # np.ndarray, (3, 3), float32, 从三个主链原子计算的局部坐标系
                 frames[i] = compute_local_frame(p1, p2, p3)
+                # bool, 标量, True 表示该残基的局部坐标系成功构建且基于原始数据
                 frames_mask[i] = True
             except ValueError as exc:
-                detail = (
-                    f"Invalid protein local frame at residue_index={i}: {exc}"
-                )
-                if error_dir:
-                    return_error_and_raise(
-                        file_path=file_path,
-                        line=-1,
-                        error_type=ErrorType.INVALID_LOCAL_FRAME,
-                        error_detail=detail,
-                        output_dir=error_dir,
-                        sample_id=sample_id,
+                if not allow_incomplete_backbone:
+                    # 严格模式: 坐标系构建失败时报错并终止处理
+                    detail = (
+                        f"Invalid protein local frame at residue_index={i}: {exc}"
                     )
-                raise ProcessingError(ErrorType.INVALID_LOCAL_FRAME, detail) from exc
+                    if error_dir:
+                        return_error_and_raise(
+                            file_path=file_path,
+                            line=-1,
+                            error_type=ErrorType.INVALID_LOCAL_FRAME,
+                            error_detail=detail,
+                            output_dir=error_dir,
+                            sample_id=sample_id,
+                        )
+                    raise ProcessingError(ErrorType.INVALID_LOCAL_FRAME, detail) from exc
+                else:
+                    # 宽松模式: 使用单位矩阵作为占位符, 并在 mask 中标记为无效 (False)
+                    # np.ndarray, (3, 3), float32, 单位矩阵作为占位符
+                    frames[i] = np.eye(3, dtype=np.float32)
+                    # bool, 标量, False 表示该残基的局部坐标系无效或为补全
+                    frames_mask[i] = False
         
         else:  # 核苷酸
             # 核苷酸: C4'-C1'-N1/N9
@@ -153,37 +177,57 @@ def compute_local_frames(
             p2 = parsed_data.backbone_c1p_coords[i]
             p3 = parsed_data.backbone_n_base_coords[i]
             if np.allclose(p1, 0) or np.allclose(p2, 0) or np.allclose(p3, 0):
-                detail = (
-                    f"Incomplete nucleotide backbone at residue_index={i}: "
-                    "require C4'/C1'/N1-or-N9 for local frame."
-                )
-                if error_dir:
-                    return_error_and_raise(
-                        file_path=file_path,
-                        line=-1,
-                        error_type=ErrorType.INCOMPLETE_BACKBONE,
-                        error_detail=detail,
-                        output_dir=error_dir,
-                        sample_id=sample_id,
+                if not allow_incomplete_backbone:
+                    # 严格模式: 主链原子缺失时报错并终止处理 (向后兼容行为)
+                    detail = (
+                        f"Incomplete nucleotide backbone at residue_index={i}: "
+                        "require C4'/C1'/N1-or-N9 for local frame."
                     )
-                raise ProcessingError(ErrorType.INCOMPLETE_BACKBONE, detail)
+                    if error_dir:
+                        return_error_and_raise(
+                            file_path=file_path,
+                            line=-1,
+                            error_type=ErrorType.INCOMPLETE_BACKBONE,
+                            error_detail=detail,
+                            output_dir=error_dir,
+                            sample_id=sample_id,
+                        )
+                    raise ProcessingError(ErrorType.INCOMPLETE_BACKBONE, detail)
+                else:
+                    # 宽松模式: 使用单位矩阵作为占位符, 并在 mask 中标记为无效 (False)
+                    # np.ndarray, (3, 3), float32, 单位矩阵作为占位符
+                    frames[i] = np.eye(3, dtype=np.float32)
+                    # bool, 标量, False 表示该核苷酸的局部坐标系无效或为补全
+                    frames_mask[i] = False
+                    continue
+
             try:
+                # np.ndarray, (3, 3), float32, 从三个主链原子计算的局部坐标系
                 frames[i] = compute_local_frame(p1, p2, p3)
+                # bool, 标量, True 表示该核苷酸的局部坐标系成功构建且基于原始数据
                 frames_mask[i] = True
             except ValueError as exc:
-                detail = (
-                    f"Invalid nucleotide local frame at residue_index={i}: {exc}"
-                )
-                if error_dir:
-                    return_error_and_raise(
-                        file_path=file_path,
-                        line=-1,
-                        error_type=ErrorType.INVALID_LOCAL_FRAME,
-                        error_detail=detail,
-                        output_dir=error_dir,
-                        sample_id=sample_id,
+                if not allow_incomplete_backbone:
+                    # 严格模式: 坐标系构建失败时报错并终止处理
+                    detail = (
+                        f"Invalid nucleotide local frame at residue_index={i}: {exc}"
                     )
-                raise ProcessingError(ErrorType.INVALID_LOCAL_FRAME, detail) from exc
+                    if error_dir:
+                        return_error_and_raise(
+                            file_path=file_path,
+                            line=-1,
+                            error_type=ErrorType.INVALID_LOCAL_FRAME,
+                            error_detail=detail,
+                            output_dir=error_dir,
+                            sample_id=sample_id,
+                        )
+                    raise ProcessingError(ErrorType.INVALID_LOCAL_FRAME, detail) from exc
+                else:
+                    # 宽松模式: 使用单位矩阵作为占位符, 并在 mask 中标记为无效 (False)
+                    # np.ndarray, (3, 3), float32, 单位矩阵作为占位符
+                    frames[i] = np.eye(3, dtype=np.float32)
+                    # bool, 标量, False 表示该核苷酸的局部坐标系无效或为补全
+                    frames_mask[i] = False
     
     return frames, frames_mask
 

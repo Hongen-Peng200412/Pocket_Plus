@@ -20,19 +20,6 @@ from .ligand_filter import LigandFilterConfig, PocketClassRule
 # 预设定义 / Presets
 # ============================================================================
 
-BINARY_PRESET = LigandFilterConfig(
-    rules=[
-        PocketClassRule(
-            class_id=1,
-            class_name="pocket",
-            binding_threshold=4.0,
-            require_metal_ion=False,
-            require_peptide_like=False,
-            require_nucleotide_like=False,
-        ),
-    ]
-)
-
 FIVE_CLASS_PRESET = LigandFilterConfig(
     rules=[
         PocketClassRule(  # 优先使用前面的
@@ -103,6 +90,191 @@ FIVE_CLASS_5_PRESET = LigandFilterConfig(
             require_peptide_like=False,
             require_nucleotide_like=False,
             require_covalent=False,
+        ),
+    ]
+)
+
+
+
+
+
+
+FIVE_CLASS_RAW4_PRESET = LigandFilterConfig(
+    rules=[
+        PocketClassRule(  # 优先使用前面的
+            class_id=1,
+            class_name="metal_ion",
+            binding_threshold=4.0,
+            require_metal_ion=True,
+            require_covalent=False,
+        ),
+        PocketClassRule(
+            class_id=2,
+            class_name="peptide",
+            binding_threshold=4.0,
+            require_peptide_like=True,
+            max_peptide_length=None, 
+            require_covalent=False,
+        ),
+        PocketClassRule(
+            class_id=3,
+            class_name="nucleic",
+            binding_threshold=4.0,
+            require_nucleotide_like=True,
+            max_nucleic_length=None, 
+            require_covalent=False,
+        ),
+        PocketClassRule(
+            class_id=4,
+            class_name="small_molecule",
+            binding_threshold=4.0,
+            require_metal_ion=False,
+            require_peptide_like=False,
+            require_nucleotide_like=False,
+            require_covalent=False,
+        ),
+    ]
+)
+
+FIVE_CLASS_RAW5_PRESET = LigandFilterConfig(
+    rules=[
+        PocketClassRule(  # 优先使用前面的
+            class_id=1,
+            class_name="metal_ion",
+            binding_threshold=5.0,
+            require_metal_ion=True,
+            require_covalent=False,
+        ),
+        PocketClassRule(
+            class_id=2,
+            class_name="peptide",
+            binding_threshold=5.0,
+            require_peptide_like=True,
+            max_peptide_length=None, 
+            require_covalent=False,
+        ),
+        PocketClassRule(
+            class_id=3,
+            class_name="nucleic",
+            binding_threshold=5.0,
+            require_nucleotide_like=True,
+            max_nucleic_length=None, 
+            require_covalent=False,
+        ),
+        PocketClassRule(
+            class_id=4,
+            class_name="small_molecule",
+            binding_threshold=5.0,
+            require_metal_ion=False,
+            require_peptide_like=False,
+            require_nucleotide_like=False,
+            require_covalent=False,
+        ),
+    ]
+)
+
+
+
+
+
+
+FIVE_CLASS_MOD4_PRESET = LigandFilterConfig(
+    rules=[
+        PocketClassRule(  # 优先使用前面的
+            class_id=1,
+            class_name="metal_ion",
+            binding_threshold=4.0,
+            require_metal_ion=True,
+            require_covalent=False,
+            min_contact_residues=2
+        ),
+        PocketClassRule(
+            class_id=2,
+            class_name="peptide",
+            binding_threshold=4.0,
+            require_peptide_like=True,
+            max_peptide_length=30, 
+            require_covalent=False,
+            min_contact_residues=2
+        ),
+        PocketClassRule(
+            class_id=3,
+            class_name="nucleic",
+            binding_threshold=4.0,
+            require_nucleotide_like=True,
+            max_nucleic_length=10, 
+            require_covalent=False,
+            min_contact_residues=2
+        ),
+        PocketClassRule(
+            class_id=4,
+            class_name="small_molecule",
+            binding_threshold=4.0,
+            require_metal_ion=False,
+            require_peptide_like=False,
+            require_nucleotide_like=False,
+            require_covalent=False,
+            min_contact_residues=2
+        ),
+    ]
+)
+
+FIVE_CLASS_MOD5_PRESET = LigandFilterConfig(
+    rules=[
+        PocketClassRule(  # 优先使用前面的
+            class_id=1,
+            class_name="metal_ion",
+            binding_threshold=5.0,
+            require_metal_ion=True,
+            require_covalent=False,
+            min_contact_residues=2
+        ),
+        PocketClassRule(
+            class_id=2,
+            class_name="peptide",
+            binding_threshold=5.0,
+            require_peptide_like=True,
+            max_peptide_length=30,
+            require_covalent=False,
+            min_contact_residues=2
+        ),
+        PocketClassRule(
+            class_id=3,
+            class_name="nucleic",
+            binding_threshold=5.0,
+            require_nucleotide_like=True,
+            max_nucleic_length=10, 
+            require_covalent=False,
+            min_contact_residues=2
+        ),
+        PocketClassRule(
+            class_id=4,
+            class_name="small_molecule",
+            binding_threshold=5.0,
+            require_metal_ion=False,
+            require_peptide_like=False,
+            require_nucleotide_like=False,
+            require_covalent=False,
+            min_contact_residues=2
+        ),
+    ]
+)
+
+
+
+
+
+
+
+BINARY_PRESET = LigandFilterConfig(
+    rules=[
+        PocketClassRule(
+            class_id=1,
+            class_name="pocket",
+            binding_threshold=4.0,
+            require_metal_ion=False,
+            require_peptide_like=False,
+            require_nucleotide_like=False,
         ),
     ]
 )

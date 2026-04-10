@@ -37,6 +37,7 @@ from .config import (
 )
 from .error_logger import return_error_info, ErrorType
 from .ligand_candidates import LigandCandidate, find_all_hetatm_candidates, is_connected_to
+from .geometry.coordinate_reconstruction import reconstruct_protein_backbone, reconstruct_nucleotide_backbone
 
 
 # ============================================================================
@@ -181,20 +182,24 @@ def parse_structure(
     file_path: str,
     error_dir: str,
     sample_id: Optional[str] = None,
-    require_ligand: bool = True, 
-    select_first_model: bool = False
+    require_ligand: bool = True,
+    select_first_model: bool = False,
+    allow_incomplete_backbone: bool = False
 ) -> Optional[ParsedStructure]:
     """
     统一解析结构文件 (PDB 或 mmCIF)
     Unified structure file parsing (PDB or mmCIF)
-    
+
     输入参数 / Input:
         - file_path: str, 结构文件路径
         - error_dir: str, 输出目录 (仅用于错误日志)
         - sample_id: str, 样本ID (可选), 一般为pdb_id, 仅用于发消息
         - require_ligand: bool, 是否要求配体存在 (默认 True)
         - select_first_model: structure选择第一个model / 如果一个structure 含有多个model那么直接记入error_log并跳过处理
-    
+        - allow_incomplete_backbone: bool, 是否允许主链原子缺失并尝试补全, 建议值 False
+            - False: 严格模式, 主链缺失时跳过整个样本 (向后兼容)
+            - True: 宽松模式, 尝试补全缺失原子, 并在 backbone_complete_mask 中标记为 False
+
     输出 / Output:
         - ParsedStructure 或 None, 解析结果；失败返回 None
     """
@@ -431,7 +436,7 @@ def parse_structure(
         res_chain_indices.append(res['chain_idx'])
         res_seq_numbers.append(res['res_seq'])
         
-        # 代表坐标 + 严格骨架完整性检查
+        # 代表坐标 + 骨架完整性检查
         if res['type'] == 'protein':
             missing = []
             if res['n_coord'] is None:
@@ -440,17 +445,62 @@ def parse_structure(
                 missing.append('CA')
             if res['c_coord'] is None:
                 missing.append('C')
+
             if missing:
-                return_error_info(
-                    file_path,
-                    -1,
-                    ErrorType.INCOMPLETE_BACKBONE,
-                    f"Protein residue {res['name']} at {res_key} missing backbone atoms: {','.join(missing)}",
-                    error_dir,
-                    sample_id,
-                )
-                return None
+                if not allow_incomplete_backbone:
+                    # 严格模式: 主链原子缺失时报错并跳过整个样本 (向后兼容行为)
+                    return_error_info(
+                        file_path,
+                        -1,
+                        ErrorType.INCOMPLETE_BACKBONE,
+                        f"Protein residue {res['name']} at {res_key} missing backbone atoms: {','.join(missing)}",
+                        error_dir,
+                        sample_id,
+                    )
+                    return None
+                else:
+                    # 宽松模式: 尝试使用几何插值补全缺失的主链原子
+                    # list[dict], 可变长度, 已处理残基 + 当前残基 + 下一残基 (若存在) 的列表
+                    residues_list = [residue_info[k] for k in residue_order[:len(res_coords)]]
+                    # int, 标量, 当前残基在合并列表中的索引
+                    current_idx_in_list = len(residues_list)
+                    # int, 标量, 当前残基在 residue_order 中的位置
+                    current_pos = len(res_coords)
+                    # list[dict], 可变长度, 加入下一个残基以支持前后插值
+                    context_list = residues_list + [res]
+                    if current_pos + 1 < len(residue_order):
+                        next_key = residue_order[current_pos + 1]
+                        context_list.append(residue_info[next_key])
+                    # dict[str, np.ndarray], 无固定形状, 重建的原子坐标字典 (键为原子名, 值为 (3,) 坐标)
+                    reconstructed = reconstruct_protein_backbone(context_list, current_idx_in_list, missing)
+
+                    if reconstructed:
+                        # 补全成功: 更新残基字典中的坐标, 并在 mask 中标记为补全 (False)
+                        if 'N' in reconstructed:
+                            res['n_coord'] = reconstructed['N']
+                        if 'CA' in reconstructed:
+                            res['ca_coord'] = reconstructed['CA']
+                        if 'C' in reconstructed:
+                            res['c_coord'] = reconstructed['C']
+                        # bool, 标量, False 表示该残基的主链原子是通过补全得到的
+                        backbone_complete_mask.append(False)
+                    else:
+                        # 补全失败: 无法重建坐标时仍然跳过样本 (不强行保留低质量数据)
+                        return_error_info(
+                            file_path,
+                            -1,
+                            ErrorType.INCOMPLETE_BACKBONE,
+                            f"Protein residue {res['name']} at {res_key} missing backbone atoms: {','.join(missing)} (reconstruction failed)",
+                            error_dir,
+                            sample_id,
+                        )
+                        return None
+            else:
+                # bool, 标量, True 表示该残基的主链原子完整且为原始数据
+                backbone_complete_mask.append(True)
+
             res_coords.append(res['ca_coord'])
+
         else:  # 核苷酸
             missing = []
             if res['c4p_coord'] is None:
@@ -458,17 +508,69 @@ def parse_structure(
             if res['c1p_coord'] is None:
                 missing.append("C1'")
             if res['n_base_coord'] is None:
-                missing.append('N1/N9')
+                # 根据嘌呤/嘧啶类型使用对应的原子名, 使 reconstruct_nucleotide_backbone 能正确匹配
+                if is_purine(res['name']):
+                    missing.append('N9')
+                elif is_pyrimidine(res['name']):
+                    missing.append('N1')
+                else:
+                    missing.append('N1/N9')  # 未知碱基类型, 作为兜底; 重建函数会跳过
+
             if missing:
-                return_error_info(
-                    file_path,
-                    -1,
-                    ErrorType.INCOMPLETE_BACKBONE,
-                    f"Nucleotide residue {res['name']} at {res_key} missing backbone atoms: {','.join(missing)}",
-                    error_dir,
-                    sample_id,
-                )
-                return None
+                if not allow_incomplete_backbone:
+                    # 严格模式: 主链原子缺失时报错并跳过整个样本 (向后兼容行为)
+                    return_error_info(
+                        file_path,
+                        -1,
+                        ErrorType.INCOMPLETE_BACKBONE,
+                        f"Nucleotide residue {res['name']} at {res_key} missing backbone atoms: {','.join(missing)}",
+                        error_dir,
+                        sample_id,
+                    )
+                    return None
+                else:
+                    # 宽松模式: 尝试使用几何插值补全缺失的核酸主链原子
+                    # list[dict], 可变长度, 已处理残基 + 当前残基 + 下一残基 (若存在) 的列表
+                    residues_list = [residue_info[k] for k in residue_order[:len(res_coords)]]
+                    # int, 标量, 当前残基在合并列表中的索引
+                    current_idx_in_list = len(residues_list)
+                    # int, 标量, 当前残基在 residue_order 中的位置
+                    current_pos = len(res_coords)
+                    # list[dict], 可变长度, 加入下一个残基以支持前后插值
+                    context_list = residues_list + [res]
+                    if current_pos + 1 < len(residue_order):
+                        next_key = residue_order[current_pos + 1]
+                        context_list.append(residue_info[next_key])
+                    # dict[str, np.ndarray], 无固定形状, 重建的原子坐标字典 (键为原子名, 值为 (3,) 坐标)
+                    reconstructed = reconstruct_nucleotide_backbone(context_list, current_idx_in_list, missing)
+
+                    if reconstructed:
+                        # 补全成功: 更新残基字典中的坐标, 并在 mask 中标记为补全 (False)
+                        if "C4'" in reconstructed:
+                            res['c4p_coord'] = reconstructed["C4'"]
+                        if "C1'" in reconstructed:
+                            res['c1p_coord'] = reconstructed["C1'"]
+                        if "N1" in reconstructed:
+                            res['n_base_coord'] = reconstructed["N1"]
+                        if "N9" in reconstructed:
+                            res['n_base_coord'] = reconstructed["N9"]
+                        # bool, 标量, False 表示该核苷酸的主链原子是通过补全得到的
+                        backbone_complete_mask.append(False)
+                    else:
+                        # 补全失败: 无法重建坐标时仍然跳过样本 (不强行保留低质量数据)
+                        return_error_info(
+                            file_path,
+                            -1,
+                            ErrorType.INCOMPLETE_BACKBONE,
+                            f"Nucleotide residue {res['name']} at {res_key} missing backbone atoms: {','.join(missing)} (reconstruction failed)",
+                            error_dir,
+                            sample_id,
+                        )
+                        return None
+            else:
+                # bool, 标量, True 表示该核苷酸的主链原子完整且为原始数据
+                backbone_complete_mask.append(True)
+
             res_coords.append(res['c4p_coord'])
         
         # 骨架原子
@@ -489,9 +591,6 @@ def parse_structure(
             backbone_n_coords.append([np.nan, np.nan, np.nan])
             backbone_ca_coords.append([np.nan, np.nan, np.nan])
             backbone_c_coords.append([np.nan, np.nan, np.nan])
-
-        # 严格模式下走到这里说明骨架完整
-        backbone_complete_mask.append(True)
 
 
     result = ParsedStructure(
