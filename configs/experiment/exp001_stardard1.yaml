@@ -3,7 +3,7 @@
 # 实验 001: baseline — 猜测的最佳参数
 # ============================================================
 # 用法:
-#   sbatch sbatch/h200/1gpu.sbatch base "+experiment=exp001_baseline"
+#   sbatch sbatch/h200/1gpu.sbatch "+experiment=exp001_stardard1"
 # ============================================================
 
 defaults:

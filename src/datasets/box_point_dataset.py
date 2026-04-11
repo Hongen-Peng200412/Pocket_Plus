@@ -23,6 +23,18 @@ BoxPointDataset
     - voxel 侧返回 `voxel_grid / voxel_label / hardmask / voxel_valid_mask` 等字段。
     - atom 侧返回 `atom_coord_world / atom_coord_local_voxel / atom_coord_centered_world / atom_feat / atom_label / atom_is_in_core_box / atom_valid_mask` 等字段。
     - 元信息保留 `sample_name / pdb_id / class_name / instance_id / is_center_box`。
+
+典型数据目录结构:
+    all_data_path/
+    ├── emdb_BOX/            ← 密度图特征 (CDHW)
+    │   ├── small_molecule/
+    │   │   ├── 9f3f_0_0_0_0_C.npz(具体样本)
+    │   │   └── ...
+    │   └── metal_ion/ ...
+    ├── pdb_feature_BOX/     ← 原子特征 (CDHW)
+    │   └── ...
+    └── pdb_label_BOX/       ← 标签 (CDHW -> DHW)  [可选]
+        └── ... 
 =============================================================================
 """
 from __future__ import annotations
@@ -47,7 +59,7 @@ from .box_geometry import (
     select_atoms_for_box,
 )
 from .box_point_collate import box_point_collate
-from .box_sample_builder import build_box_point_numpy_sample, to_torch_sample
+from .box_sample_builder import apply_emdb_zscore, build_box_point_numpy_sample, to_torch_sample
 
 
 _SAMPLE_NAME_PATTERN = re.compile(
@@ -71,6 +83,7 @@ class BoxPointDataset(Dataset):
         cache_size: int = 128,
         valid_crop_margin: int = 2,
         enable_random_rotation: bool = True,
+        emdb_z_score: bool | int | list[int] = 1,  # see me: 注意这里的归一化逻辑
         **kwargs: Any,
     ) -> None:
         """
@@ -138,6 +151,7 @@ class BoxPointDataset(Dataset):
         self._validate_folder_layout()
         self.is_train = self._parse_mode(mode)
         self.enable_random_rotation = bool(enable_random_rotation and self.is_train)
+        self.emdb_z_score = emdb_z_score
 
         sample_name_lists = self._load_split_lists(split_file)
         self.total_sample = self._build_sample_index(sample_name_lists)
@@ -351,13 +365,7 @@ class BoxPointDataset(Dataset):
             raise ValueError(f"label grid should be 3D after squeeze, but got: {grid.shape}")
         return np.rint(grid).astype(np.int64, copy=False)
 
-    def _zscore_emdb_grid(self, grid: np.ndarray) -> np.ndarray:
-        """
-        对 EMDB 通道做 z-score 归一化: 默认把 EMDB 通道看成密度值或差图，用整体均值和整体标准差做标准化
-        """
-        grid_mean = float(np.mean(grid))
-        grid_std = float(np.std(grid))
-        return ((grid - grid_mean) / (grid_std + 1e-8)).astype(np.float32, copy=False)
+
 
     def _apply_class_mapping(self, label: np.ndarray, mapping: list[int]) -> np.ndarray:
         """
@@ -417,8 +425,8 @@ class BoxPointDataset(Dataset):
                     voxel_label = self._apply_class_mapping(voxel_label, self.class_mapping)
             else:
                 grid = grid.astype(np.float32, copy=False)   # feature 一律转 float32, 便于后续直接拼接
-                if "emdb" in folder_name:   # TODO: 当前逻辑下 emdb 被强制归一化, 未来需要修改
-                    grid = self._zscore_emdb_grid(grid)
+                if "emdb" in folder_name:
+                    grid = apply_emdb_zscore(grid, self.emdb_z_score)
                 voxel_parts.append(grid)
 
         if voxel_label is None:

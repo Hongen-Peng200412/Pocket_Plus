@@ -168,8 +168,8 @@ class Point(Dict):
 
         # 如果depth未指定,则自适应计算序列化深度
         if depth is None:
-            # int, 自适应测量序列化立方体的深度(边长 = 2^depth)
-            depth = int(self.grid_coord.max()).bit_length()
+            # int, 自适应测量序列化立方体的深度(边长 = 2^depth), 下限 1 防止全同坐标时 Hilbert 编码崩溃
+            depth = max(int(self.grid_coord.max()).bit_length(), 1)
         # int, 保存序列化深度
         self["serialized_depth"] = depth
         # 序列化编码的最大位长度为63(int64)

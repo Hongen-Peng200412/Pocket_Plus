@@ -20,6 +20,7 @@ from .box_geometry import (
     build_atom_valid_mask,
     build_hardmask_from_atom_coordinates,
     build_voxel_valid_mask,
+    resolve_emdb_zscore_mask,
     select_atoms_for_box,
 )
 
@@ -39,6 +40,32 @@ def _apply_class_mapping(label: np.ndarray, mapping: list[int]) -> np.ndarray:
     for old_id, new_id in enumerate(mapping):
         mapped[label == old_id] = int(new_id)
     return mapped
+
+
+def apply_emdb_zscore(emdb_grid: np.ndarray, emdb_z_score) -> np.ndarray:
+    """
+    对 EMDB 体素 grid 做按 emdb_z_score 控制的逐通道 z-score 归一化。
+
+    输入参数:
+        - emdb_grid: np.ndarray, (C, D, H, W), float32, EMDB 通道特征
+        - emdb_z_score: bool | int | list[int], 归一化控制参数
+            - false/0: 全部不归一化
+            - true/1: 全部归一化
+            - list[int]: 逐通道控制(1=归一化, 0=跳过)
+
+    输出:
+        - np.ndarray, (C, D, H, W), float32, 归一化后的结果
+    """
+    # list[bool], 长度 = C, True=归一化该通道
+    channel_mask = resolve_emdb_zscore_mask(emdb_z_score, n_emdb_channels=int(emdb_grid.shape[0]))
+    # np.ndarray, (C, D, H, W), float32, 待处理的副本
+    grid_out = emdb_grid.astype(np.float32, copy=True)
+    for ch_idx, do_norm in enumerate(channel_mask):
+        if do_norm:
+            # np.ndarray, (D, H, W), float32, 单通道数据
+            ch = grid_out[ch_idx]
+            grid_out[ch_idx] = (ch - ch.mean()) / (ch.std() + 1e-8)
+    return grid_out
 
 
 def build_box_point_numpy_sample(

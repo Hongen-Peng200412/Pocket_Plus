@@ -1,0 +1,11 @@
+- +cif_path=inference_output/7VX8.cif
+- +map_path=inference_output/emd_32171.map
+- ckpt_path=inference_output/_test_run/checkpoints/model.ckpt
+- eval_gt=true
+- device=cpu
+- output_root=inference_output/e2e_test
+- vis_enable=true
+- vis_output_root=inference_output/e2e_test_vis
+- batch_size=1
+- stride=36
+- windows_size=48

@@ -865,7 +865,7 @@ class Stage1EmbedHead(nn.Module):
             return {
                 "voxel_pdb_embed_grid": voxel_grid,
                 "embed_point_feat": point_out,
-                "atom_feat": atom_feat,
+                "atom_feat": point_out if self.has_point_output else atom_feat,
                 "atom_coord_centered_world": atom_coord_centered_world,
                 "atom_batch_index": atom_batch_index,
                 "atom_offsets": atom_offsets,

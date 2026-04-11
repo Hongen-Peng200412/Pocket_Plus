@@ -372,3 +372,36 @@ def point_semantic_segment(
         )
 
     raise ValueError(f"未知 semantic_segment_method: {semantic_segment_method}")
+
+
+# =============================================================================
+# 工具函数: 原子坐标 → 体素 mask
+# =============================================================================
+def build_voxel_mask_from_coords(
+    atom_coords_world: np.ndarray,
+    origin: np.ndarray,
+    voxel_size: np.ndarray,
+    grid_shape_zyx: np.ndarray,
+) -> np.ndarray:
+    """
+    将世界坐标下的原子集合映射为 (D, H, W) 的二值体素 mask。
+
+    一个体素被标记为 1, 当且仅当存在 ≥1 个原子的 home voxel 落在该体素位置。
+
+    输入参数:
+        - atom_coords_world: np.ndarray, (N, 3), (可能是正类原子, 也可能是所有原子)原子世界坐标 (x, y, z), 单位 Å
+        - origin: np.ndarray, (3,), 密度图原点 (x, y, z)
+        - voxel_size: np.ndarray, (3,), 体素大小 (x, y, z)
+        - grid_shape_zyx: np.ndarray, (3,), 密度图尺寸 (D, H, W)
+
+    输出:
+        - mask: np.ndarray, (D, H, W), int64, 取值 0 或 1
+    """
+    from src.datasets.box_geometry import build_hardmask_from_world_coordinates
+
+    return build_hardmask_from_world_coordinates(
+        atom_coords_world=np.asarray(atom_coords_world, dtype=np.float32),
+        box_origin_world=np.asarray(origin, dtype=np.float32),
+        voxel_size_world=np.asarray(voxel_size, dtype=np.float32),
+        box_shape_zyx=np.asarray(grid_shape_zyx, dtype=np.int64),
+    )

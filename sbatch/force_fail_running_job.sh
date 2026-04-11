@@ -1,32 +1,36 @@
 #!/bin/bash
 # ============================================================
-# Force one running Pocket_Plus training job to fail right now
+# Force one running Pocket_Plus job (e.g. training or inference) to fail right now
 # ============================================================
 # Usage:
-#   bash sbatch/force_fail_running_job.sh <SLURM_JOB_ID> [SIGNAL]
+#   bash sbatch/force_fail_running_job.sh <SLURM_JOB_ID> [SIGNAL] [PATTERN]
 #
 # Example:
 #   bash sbatch/force_fail_running_job.sh 123456
 #   bash sbatch/force_fail_running_job.sh 123456 ABRT
+#   bash sbatch/force_fail_running_job.sh 123456 ABRT "Pocket_Plus/src/.*\.py"
+#   bash sbatch/force_fail_running_job.sh 123456 ABRT "inference/run.py"
 #
 # Behavior:
 # - Opens an overlapping helper step inside the target allocation
 # - Finds only python processes whose environment contains SLURM_JOB_ID=<jobid>
-# - Further narrows to commands containing Pocket_Plus/src/train.py
+# - Further narrows to commands matching PATTERN (default: Pocket_Plus/src/.*\.py)
 # - Sends the requested signal only to those matched processes
 #
 # Notes:
 # - Default signal is ABRT so the failure is obvious in logs
 # - Pair with auto_retry_try_lock.sh if you want immediate retry
+# - Perfect for interrupting _train_core.sh loops to change scripts dynamically!
 # ============================================================
 
 set -euo pipefail
 
 JOB_ID="${1:-}"
 SIGNAL_NAME="${2:-ABRT}"
+PATTERN="${3:-Pocket_Plus/src/.*\\.py}"
 
 if [[ -z "${JOB_ID}" ]]; then
-    echo "Usage: bash sbatch/force_fail_running_job.sh <SLURM_JOB_ID> [SIGNAL]"
+    echo "Usage: bash sbatch/force_fail_running_job.sh <SLURM_JOB_ID> [SIGNAL] [PATTERN]"
     exit 1
 fi
 
@@ -62,6 +66,7 @@ echo "[Info] job_id=${JOB_ID}"
 echo "[Info] job_state=${JOB_STATE}"
 echo "[Info] node_count=${NODE_COUNT}"
 echo "[Info] signal=${SIGNAL_NAME}"
+echo "[Info] pattern=${PATTERN}"
 echo "[Info] opening an overlapping helper step inside the target allocation"
 
 srun \
@@ -75,12 +80,13 @@ set -euo pipefail
 
 TARGET_JOB_ID="'"${JOB_ID}"'"
 TARGET_SIGNAL="'"${SIGNAL_NAME}"'"
+TARGET_PATTERN="'"${PATTERN}"'"
 MATCHED=0
 
-mapfile -t CANDIDATES < <(pgrep -f "Pocket_Plus/src/train.py" || true)
+mapfile -t CANDIDATES < <(pgrep -f "${TARGET_PATTERN}" || true)
 
 if [[ "${#CANDIDATES[@]}" -eq 0 ]]; then
-    echo "[Host $(hostname)] no train.py process found on this node"
+    echo "[Host $(hostname)] no process matching '\''${TARGET_PATTERN}'\'' found on this node"
     exit 0
 fi
 
@@ -101,6 +107,6 @@ for PID in "${CANDIDATES[@]}"; do
 done
 
 if [[ "${MATCHED}" -eq 0 ]]; then
-    echo "[Host $(hostname)] matched no Pocket_Plus train.py process for SLURM_JOB_ID=${TARGET_JOB_ID}"
+    echo "[Host $(hostname)] matched no process matching '\''${TARGET_PATTERN}'\'' for SLURM_JOB_ID=${TARGET_JOB_ID}"
 fi
 '

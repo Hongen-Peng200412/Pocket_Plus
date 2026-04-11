@@ -19,4 +19,4 @@ SBATCH_ROOT="${POCKET_PLUS_SBATCH_ROOT:-/home/penghongen/My_Project/Pocket_Plus/
 export POCKET_PLUS_LOCK_PRE_ENABLED="${POCKET_PLUS_LOCK_PRE_ENABLED:-0}"
 export POCKET_PLUS_LOCK_AFTER_ENABLED="${POCKET_PLUS_LOCK_AFTER_ENABLED:-1}"
 source "${SBATCH_ROOT}/_common.sh"
-source "${SBATCH_ROOT}/_train_core.sh" "${1}" 1 2 "${2:-}"
+source "${SBATCH_ROOT}/_train_core.sh" "${1:-}" 1 2 "${2:-}"

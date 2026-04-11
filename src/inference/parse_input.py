@@ -2,21 +2,7 @@
 parse_input.py - 数据加载与特征整合模块
 
 负责将各种来源的数据整合为模型需要的输入格式。
-支持两种加载方式：
-  方式1. 从已处理的 .npz 文件（emdb_BOX / pdb_feature_BOX / pdb_label_BOX）加载（load_from_npz_dirs）——————移步到 inference.utils.pipline_for_box.py
-  方式2. 从原始 .cif + .map 文件实时提取特征（load_from_raw_cif）
-
-典型数据目录结构 (方式1):
-    all_data_path/
-    ├── emdb_BOX/            ← 密度图特征 (CDHW)
-    │   ├── small_molecule/
-    │   │   ├── 9f3f_0_0_0_0_C.npz(具体样本)
-    │   │   └── ...
-    │   └── metal_ion/ ...
-    ├── pdb_feature_BOX/     ← 原子特征 (CDHW)
-    │   └── ...
-    └── pdb_label_BOX/       ← 标签 (CDHW -> DHW)  [可选]
-        └── ... 
+加载方式： 从原始 .cif + .map 文件实时提取特征（load_from_raw_cif）
 """
 
 import sys
@@ -44,7 +30,7 @@ from src.datasets.box_geometry import (
     build_hardmask_from_atom_coordinates,
     build_hardmask_from_world_coordinates,
 )
-from src.datasets.box_sample_builder import build_box_point_numpy_sample, to_torch_sample
+from src.datasets.box_sample_builder import apply_emdb_zscore, build_box_point_numpy_sample, to_torch_sample
 
 
 
@@ -59,9 +45,12 @@ def load_from_raw_cif(
     compute_density: bool,
     select_first_model: bool,
     error_dir: str,
+
+    include_pdb_feature_in_grid: bool,
+    emdb_z_score,
 ) -> dict:
     """
-    从原始 .cif + .map 文件加载体素化特征与属性(hardmask)，返回包含 grid, hardmask, emdb_channels, sample_name, class_folder, voxel_size, origin, atom_coords 的 dict。
+    从原始 .cif + .map 文件加载全局数据(原始的密度图和原子信息)，返回包含 grid, hardmask, emdb_channels, sample_name, class_folder, voxel_size, origin, atom_coords 的 dict。
 
     Args:
         - cif_path:           str,   原始结构文件路径 (.cif / .pdb)
@@ -71,21 +60,25 @@ def load_from_raw_cif(
         - select_first_model: bool,  多模型 CIF 时是否仅取第一个模型
         - error_dir:          str|None, 错误日志目录（传给 get_features_when_infer）
 
+        - include_pdb_feature_in_grid: bool, 是否将 PDB 原子特征映射到 EMDB 网格并拼接; 依据训练配置 dataset.data_folder_names 决定
+        - emdb_z_score:       bool | int | list[int], EMDB 通道归一化控制; 0=不归一化, 1=全部归一化, list=逐通道; 依据训练配置 dataset.emdb_z_score 决定
+
     Returns:
         - result: dict, 与 load_from_npz_dirs() 返回格式一致，包含:
             - "grid":          np.ndarray, float32, (C, D, H, W), 拼接后的完整特征网格
             - "hardmask":      np.ndarray, int64,   (D, H, W),    硬掩膜（1=有原子, 0=无原子）
-            - "emdb_channels": int, EMDB 密度图占据的通道数（固定为 1）
+            - "emdb_channels": int, EMDB 密度图实际占据的通道数; 由加载后的数组维度自动推断
             - "sample_name":   str, 样本名（从 cif_path 文件名提取）
             - "class_folder":  str, 固定为 "raw"
             - "voxel_size":    np.ndarray, (3,), float, 重采样后的体素大小 (Å)
             - "origin":        np.ndarray, (3,), float, 密度图全局坐标原点 (Å)
             - "atom_coords":   np.ndarray, (N_atom, 3), float32, 所有原子的世界坐标 (x,y,z), 单位 Å
+            - "atom_feat":     np.ndarray, (N_atom, F), float32, per-atom 特征向量
 
     内部流程:
-        1. 加载并重采样 EMDB 密度图, 对密度图做 z-score 归一化
-        2. 调用 bind_AtomsFeature_to_EMDB(pdb_path=...) , 现场生成原子特征并映射到 EMDB 体素网格
-        3. 拼接 EMDB 密度图通道 + PDB 特征通道 → grid (C=50, D, H, W)
+        1. 加载并重采样 EMDB 密度图, 按 emdb_z_score 做逐通道 z-score 归一化
+        2. 解析原子信息, 计算特征
+        3. 按 include_pdb_feature_in_grid 条件拼接或仅保留 EMDB 通道 → grid
         4. 基于原子几何位置计算 hardmask
     """
     from Pocket.utils.mrc_tools import load_map, make_model_grid
@@ -98,14 +91,23 @@ def load_from_raw_cif(
     # ---- 1. 加载 EMDB 密度图并重采样 ----
     if not os.path.exists(map_path):
         raise FileNotFoundError(f"[parse_input.load_from_raw_cif] 密度图文件不存在: {map_path}")
-    emdb_grid_raw, voxel_size, origin = load_map(map_path)
+    emdb_grid_raw, voxel_size_orig, origin_orig = load_map(map_path)
+    # np.ndarray, (3,), float64, 原始密度图体素大小 (重采样前)
+    original_voxel_size = np.array(voxel_size_orig, dtype=np.float64)
+    # np.ndarray, (3,), float64, 原始密度图原点 (重采样前)
+    original_origin = np.array(origin_orig, dtype=np.float64)
+    # np.ndarray, (3,), int64, 原始密度图形状 (D, H, W) (重采样前)
+    original_grid_shape = np.array(emdb_grid_raw.shape, dtype=np.int64)
+
     emdb_grid, voxel_size, origin = make_model_grid(
-        emdb_grid_raw, voxel_size, origin, target_voxel_size
+        emdb_grid_raw, voxel_size_orig, origin_orig, target_voxel_size
     )
     # np.ndarray, (1, D, H, W), float32
     emdb_grid = emdb_grid[np.newaxis, ...]
-    # np.ndarray, (1, D, H, W), float32
-    emdb_normed = (emdb_grid - np.mean(emdb_grid)) / (np.std(emdb_grid) + 1e-8)
+
+    # ---- 按 emdb_z_score 做逐通道 z-score ----
+    # np.ndarray, (1, D, H, W), float32, 归一化后的 EMDB 密度图
+    emdb_normed = apply_emdb_zscore(emdb_grid, emdb_z_score)
 
 
     # ---- 2. 一次性解析原子信息, 保证坐标与特征严格同源 ----
@@ -123,23 +125,25 @@ def load_from_raw_cif(
     atom_feat = atom_info_dict['features'].astype(np.float32, copy=False)
 
 
-    # ---- 3. 将预解析的原子信息传入 binder, 映射到 EMDB 体素网格 ----
-    pdb_feature_grid, _ = bind_AtomsFeature_to_EMDB(
-        pre_parsed_atom_info=atom_info_dict,
-        emdb_path=map_path,
-        target_voxel_size=target_voxel_size,
-        output_path=None,
-        add_when_conflict=True,
-        overwrite_existing=False,
-        return_atom_pos_array=True,
-    )
+    # ---- 3. 如果需要, 将预解析的原子信息映射到体素网格并拼接 ----
+    if include_pdb_feature_in_grid:
+        pdb_feature_grid, _ = bind_AtomsFeature_to_EMDB(
+            pre_parsed_atom_info=atom_info_dict,
+            emdb_path=map_path,
+            target_voxel_size=target_voxel_size,
+            output_path=None,
+            add_when_conflict=True,
+            overwrite_existing=False,
+            return_atom_pos_array=True,
+        )
+        # np.ndarray, (1+C_feat, D', H', W'), float32
+        grid = np.concatenate([emdb_normed, pdb_feature_grid], axis=0).astype(np.float32)
+    else:
+        # 不拼 pdb_feature_grid, 与 data_folder_names 不含 pdb_feature_BOX 的训练配置对齐
+        grid = emdb_normed.astype(np.float32, copy=False)
 
-
-    # ---- 4. 拼接 EMDB 密度图通道 + PDB 特征通道 ----
-    # np.ndarray, (1+C_feat, D', H', W'), float32
-    grid = np.concatenate([emdb_normed, pdb_feature_grid], axis=0).astype(np.float32)
-    # int, EMDB 密度图占据的通道数（固定为 1）
-    emdb_channels = 1
+    # int, EMDB 密度图实际占据的通道数; 由加载后的数组维度自动推断
+    emdb_channels = int(emdb_normed.shape[0])
 
 
 
@@ -166,6 +170,12 @@ def load_from_raw_cif(
         "origin":        origin,
         "atom_coords":   atom_coords,
         "atom_feat":     atom_feat,
+        # 重采样后 EMDB 密度 (第一通道), 用于可视化 density_resampled_gt.map
+        "resampled_emdb": emdb_normed[0],   # np.ndarray, (D, H, W), float32
+        # 原始密度图元数据 (重采样前)
+        "original_voxel_size": original_voxel_size,
+        "original_origin":     original_origin,
+        "original_grid_shape": original_grid_shape,
     }
 
 
@@ -189,7 +199,7 @@ def load_gt_from_structure(
         - map_path:           str,         对应的 EMDB 密度图路径 (.map / .mrc)
         - target_voxel_size:  float,       重采样目标体素大小 (Å)，默认 0.7
         - filter_preset:      str,         配体筛选预设名，来自 labels/filter_config.py, 例如 "binary" / "five_class" / "cryoem_broad"
-        - class_mapping:      list[int]|None, 标签类别映射表，例如 [0,1,1,1,1] 在5分类（背景0）中将多类合并为二分类
+        - class_mapping:      list[int]|None, 标签类别映射表，例如 [0,1,1,1,1] 在5分类（背景0）中将多类合并为二分类; 依据训练配置 dataset.class_mapping 决定
         - select_first_model: bool,        structure选择第一个model / 如果一个structure 含有多个model那么直接记入error_log并跳过处理
         - error_dir:          str|None,    错误日志目录
 
@@ -365,8 +375,8 @@ def split_volume_to_boxes(
         - voxel_size: np.ndarray, (3,), float, 体素大小 (x, y, z)
         - window_size: int, 标量, BOX 窗口大小 (voxel)
         - stride: int, 标量, 滑窗步长 (voxel)
-        - atom_buffer_radius: float, 标量, 原子 buffer 半径 (Å)
-        - valid_crop_margin: int, 标量, 监督区域裁边量 (voxel)
+        - atom_buffer_radius: float, 标量, 原子 buffer 半径 (Å); 依据训练配置 dataset.atom_buffer_radius 决定
+        - valid_crop_margin: int, 标量, 监督区域裁边量 (voxel); 依据训练配置 dataset.valid_crop_margin 决定
         - emdb_channels: int, 标量, 旧接口保留参数; 当前仅用于与历史调用保持签名兼容
 
     输出:
@@ -502,7 +512,7 @@ def prepare_batched_boxes(
         - batches: list[dict], 每个 dict 为一个 batch (即一组 batch_size 个样本经 box_point_collate 后的结果), 包含:
             - 1. box_point_collate 产出的标准字段 (见 box_point_collate 文档)
             - 2. 额外字段:
-                - "atom_global_indices": torch.Tensor, (sumN,), long, 展平后的全局原子索引, 与 atom_coord_world 等长
+                - "atom_global_indices": torch.Tensor, (sumN,), long, 本batch_size内全部原子展平后的全局原子索引, 与 atom_coord_world 等长
                 - "_box_meta": list[dict], 长度=当前 batch 的 BOX 数, 每个 dict 含:
                     - "box_position_zyx": tuple[int, int, int], 该 BOX 在整体体积中的滑窗起始坐标
     """

@@ -996,7 +996,7 @@ class VolumePointStage1Model(nn.Module):
                 atom_tokens = torch.cat(
                     [
                         point_feat_for_head,
-                        batch["atom_coord_centered_world"],
+                        head_batch["atom_coord_centered_world"],
                         final_output_dict["atom_valid_mask"].to(dtype=point_feat_for_head.dtype).unsqueeze(-1),
                     ],
                     dim=-1,

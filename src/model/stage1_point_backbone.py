@@ -331,6 +331,9 @@ class Stage1PointBackbone(nn.Module):
         """
         # int, 当前轮参与点分支的 atom 数
         atom_count = int(atom_feat.shape[0])
+        if atom_count == 0:
+            # 空 batch: 直接返回正确维度的空张量, 跳过 recycle 投影(避免维度不匹配)
+            return atom_feat.new_zeros((0, self.input_embed_dim))
         if recycle_in is None:
             # torch.Tensor, `(sumN, C_recycle)`, 无 recycle 输入时使用全零占位
             point_recycle_in = atom_feat.new_zeros((atom_count, self.recycle_feature_dim))

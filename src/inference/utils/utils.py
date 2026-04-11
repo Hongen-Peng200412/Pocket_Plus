@@ -156,6 +156,51 @@ def write_param_search_excel(
             max_len = max((len(str(cell.value)) for cell in col if cell.value), default=10)
             ws_ps.column_dimensions[col[0].column_letter].width = max_len + 4
 
+    # ---- 新增: Best-Combination Sheet ----
+    if summary and "_per_sample" in summary[0]:
+        best_row = summary[0]
+        ws_best = wb.create_sheet("Best-Combination")
+        
+        # 在顶部写入这一组最优的参数组合信息
+        ws_best.append(["【最优参数】"] + [f"{k}={best_row[k]}" for k in param_names])
+        ws_best.append([])
+        
+        # 写入表头
+        headers_best = ["样本名", "Precision", "Recall", "F1", "IoU"]
+        ws_best.append(headers_best)
+        for cell in ws_best[ws_best.max_row]:
+            cell.font = Font(bold=True)
+            
+        # 写入最优组合下的逐样本数据
+        ps_records = best_row.get("_per_sample", [])
+        for rec in ps_records:
+            ws_best.append([
+                rec.get("sample_name", ""),
+                round(rec.get("precision", 0), 4),
+                round(rec.get("recall", 0), 4),
+                round(rec.get("f1", 0), 4),
+                round(rec.get("iou", 0), 4)
+            ])
+            
+        # 如果有数据，追加一个均值行
+        if ps_records:
+            ws_best.append([])
+            avg_row = [
+                "【均值】",
+                round(float(np.mean([r["precision"] for r in ps_records])), 4),
+                round(float(np.mean([r["recall"]    for r in ps_records])), 4),
+                round(float(np.mean([r["f1"]        for r in ps_records])), 4),
+                round(float(np.mean([r["iou"]       for r in ps_records])), 4)
+            ]
+            ws_best.append(avg_row)
+            for cell in ws_best[ws_best.max_row]:
+                cell.font = Font(bold=True)
+                
+        # 自动调整列宽
+        for col in ws_best.columns:
+            max_len = max((len(str(cell.value)) for cell in col if cell.value), default=12)
+            ws_best.column_dimensions[col[0].column_letter].width = max_len + 4
+
     os.makedirs(output_root, exist_ok=True)
     # str, Excel 文件名(不含后缀); 未指定则默认 "param_search_results"
     _fname = output_name if output_name else "param_search_results"
@@ -684,6 +729,55 @@ def write_point_cloud_cif(
     return out_path
 
 
+def write_grid_as_map(
+    data_zyx: np.ndarray,
+    out_path: str,
+    origin_xyz: np.ndarray,
+    voxel_size_xyz: np.ndarray,
+) -> str:
+    """
+    将 (D, H, W) 数组写为 MRC/MAP 文件, 手动设置 voxel_size 和 origin。
+
+    输入参数:
+        - data_zyx: np.ndarray, (D, H, W), float32, 体素数据 (ZYX 轴序)
+        - out_path: str, 输出文件路径
+        - origin_xyz: np.ndarray, (3,), 密度图原点 (x, y, z)
+        - voxel_size_xyz: np.ndarray, (3,), 体素大小 (x, y, z)
+
+    输出:
+        - saved_path: str, 写出路径; 写出失败返回 None
+    """
+    if data_zyx is None or out_path is None:
+        return None
+    import mrcfile
+    _safe_mkdir(os.path.dirname(out_path))
+    # np.ndarray, (D, H, W), float32, 确保类型正确
+    data = np.asarray(data_zyx, dtype=np.float32)
+    # np.ndarray, (3,), float64
+    origin = np.asarray(origin_xyz, dtype=np.float64).ravel()
+    voxel = np.asarray(voxel_size_xyz, dtype=np.float64).ravel()
+    try:
+        with mrcfile.new(out_path, overwrite=True) as mrc:
+            mrc.set_data(data)
+            # 设置 origin (x, y, z)
+            mrc.header.origin.x = float(origin[0])
+            mrc.header.origin.y = float(origin[1])
+            mrc.header.origin.z = float(origin[2])
+            # 设置 nxstart/nystart/nzstart 为 0
+            mrc.header.nxstart = 0
+            mrc.header.nystart = 0
+            mrc.header.nzstart = 0
+            # 设置 cella (单位格子的绝对尺寸 = 网格维度 × voxel_size)
+            # data shape 顺序为 (Z, Y, X), cella 顺序为 (X, Y, Z)
+            nz, ny, nx = data.shape
+            mrc.header.cella.x = float(nx * voxel[0])
+            mrc.header.cella.y = float(ny * voxel[1])
+            mrc.header.cella.z = float(nz * voxel[2])
+            mrc.update_header_stats()
+        return out_path
+    except Exception as e:
+        print(f"[write_grid_as_map] 写出失败: {out_path}, {e}")
+        return None
 
 
 def build_infer_vis_bundle(
@@ -697,9 +791,15 @@ def build_infer_vis_bundle(
     class_mapping: list,
     pdb_id: str,
     select_first_model: bool,
+    pred_voxel_mask: np.ndarray = None,
+    resampled_emdb: np.ndarray = None,
+    origin: np.ndarray = None,
+    voxel_size: np.ndarray = None,
 ) -> dict:
     """
     根据推断输入/输出打包可视化文件夹，结构为 output_root/<pdb_id>/{gt,pred}
+
+    gt/ 文件名加 _gt 后缀, pred/ 文件名加 _pred 后缀, 避免 PyMOL 同名冲突。
 
     输入参数:
         - output_root: str, 输出根目录
@@ -712,6 +812,10 @@ def build_infer_vis_bundle(
         - class_mapping: list[int] | None, 口袋类别重映射
         - pdb_id: str | None, 样本 ID（若 None 则从 cif_gt_path/cif_path 推断）
         - select_first_model: bool, 是否只使用第一个 model
+        - pred_voxel_mask: np.ndarray | None, (D, H, W), int64, 预测正类体素 mask (重采样空间)
+        - resampled_emdb: np.ndarray | None, (D, H, W), float32, 重采样后 EMDB 密度 (第一通道)
+        - origin: np.ndarray | None, (3,), 重采样后密度图原点 (x, y, z)
+        - voxel_size: np.ndarray | None, (3,), 重采样后体素大小 (x, y, z)
     
     返回:
         - result: dict, 各个输出文件路径的汇总字典
@@ -736,26 +840,35 @@ def build_infer_vis_bundle(
 
     # -------- 1. GT: 结构 + 密度图 --------
     gt_source = cif_gt_path if cif_gt_path else cif_path
-    gt_struct_path = os.path.join(gt_dir, "structure.cif")
+    gt_struct_path = os.path.join(gt_dir, "structure_gt.cif")
     result["gt_structure"] = write_structure_as_cif(gt_source, gt_struct_path, select_first_model)
 
     if map_path:
         suffix = "".join(Path(map_path).suffixes)
-        density_name = f"density{suffix if suffix else '.map'}"
+        density_name = f"density_gt{suffix if suffix else '.map'}"
         density_out = os.path.join(gt_dir, density_name)
         result["gt_density"] = _safe_copy_file(map_path, density_out)
     else:
         result["gt_density"] = None
 
+    # -------- 1b. GT: 重采样后密度图 --------
+    if resampled_emdb is not None and origin is not None and voxel_size is not None:
+        resampled_density_out = os.path.join(gt_dir, "density_resampled_gt.map")
+        result["gt_density_resampled"] = write_grid_as_map(
+            resampled_emdb, resampled_density_out, origin, voxel_size,
+        )
+    else:
+        result["gt_density_resampled"] = None
+
     # -------- 2. GT: 纯配体 + 口袋原子 --------
-    gt_ligand_out = os.path.join(gt_dir, "ligand.cif")
+    gt_ligand_out = os.path.join(gt_dir, "ligand_gt.cif")
     result["gt_ligand"] = export_selected_ligands_cif(
         gt_source,
         gt_ligand_out,
         filter_preset,
         select_first_model,
     )
-    gt_pocket_out = os.path.join(gt_dir, "pocket_atoms.cif")
+    gt_pocket_out = os.path.join(gt_dir, "pocket_atoms_gt.cif")
     result["gt_pocket_atoms"] = export_gt_pocket_atoms_cif(
         gt_source,
         gt_pocket_out,
@@ -765,7 +878,7 @@ def build_infer_vis_bundle(
     )
 
     # -------- 3. Pred: 模拟结构（如有） --------
-    pred_struct_path = os.path.join(pred_dir, "structure.cif")
+    pred_struct_path = os.path.join(pred_dir, "structure_pred.cif")
     if cif_path and cif_gt_path and os.path.exists(cif_path):  # 只有明确存在(预测结构, 真实结构)时, 才把cif_path当作预测结构并写入预测结构文件夹
         result["pred_structure"] = write_structure_as_cif(cif_path, pred_struct_path, select_first_model)
     else:
@@ -773,11 +886,39 @@ def build_infer_vis_bundle(
 
     # -------- 4. Pred: 口袋原子 --------
     th_tag = f"{prob_threshold:.3f}" if prob_threshold is not None else "na"
-    # 仍沿用 pocket_atoms_th*.cif 的命名，但内容为“点云伪原子”
-    pred_pocket_out = os.path.join(pred_dir, f"pocket_atoms_th{th_tag}.cif")
+    # 沿用 pocket_atoms_th*.cif 的命名，但内容为"点云伪原子"
+    pred_pocket_out = os.path.join(pred_dir, f"pocket_atoms_th{th_tag}_pred.cif")
     result["pred_pocket_atoms"] = write_point_cloud_cif(
         pred_atom_coords,
         pred_pocket_out,
     )
+
+    # -------- 5. Pred: 预测正类体素密度图 --------
+    if pred_voxel_mask is not None and origin is not None and voxel_size is not None:
+        # 5a. 始终生成二值 mask 可视化 (0/1)
+        pred_binary_out = os.path.join(pred_dir, "density_pred_binary.map")
+        result["pred_density_binary"] = write_grid_as_map(
+            pred_voxel_mask.astype(np.float32),
+            pred_binary_out,
+            origin,
+            voxel_size,
+        )
+
+        # 5b. 有 resampled_emdb 时, 额外生成连续密度可视化 (mask × EMDB)
+        if resampled_emdb is not None:
+            pred_density_out = os.path.join(pred_dir, "density_pred.map")
+            # np.ndarray, (D, H, W), float32, 预测区域的连续密度值
+            pred_density_data = pred_voxel_mask.astype(np.float32) * resampled_emdb.astype(np.float32)
+            result["pred_density"] = write_grid_as_map(
+                pred_density_data,
+                pred_density_out,
+                origin,
+                voxel_size,
+            )
+        else:
+            result["pred_density"] = None
+    else:
+        result["pred_density_binary"] = None
+        result["pred_density"] = None
 
     return result

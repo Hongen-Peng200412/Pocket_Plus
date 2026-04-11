@@ -1,11 +1,15 @@
 """
 evaluator.py - 评估指标模块
 
-提供点云级语义分割的评估指标:
+提供点云级与体素级语义分割的评估指标:
     - Precision (精确率)
     - Recall (召回率)
     - F1-Score (F1 分数)
     - IoU (交并比 / Jaccard Index)
+
+体素级评估完全依赖点云级评估的 hit 结果:
+    - 一个体素被预测为正类 ⟺ 该体素内存在 ≥1 个被预测为正类的受体原子
+    - 一个被预测为正类的体素是 hit ⟺ 该体素内有 ≥1 个预测正类原子在点云评估中处于 hit 状态
 """
 # see me: 目前的整个 pipline, 一律假定为 2 分类
 
@@ -15,6 +19,44 @@ import numpy as np
 # =============================================================================
 # 1. 点云级语义分割评估
 # =============================================================================
+def _compute_hit_mask(
+    src_points: np.ndarray,
+    tgt_points: np.ndarray,
+    dist_threshold: float,
+    chunk_size: int = 2048,
+) -> np.ndarray:
+    """
+    计算 src_points 中每个点是否被 tgt_points 命中（存在任意 tgt_points 距离 <= dist_threshold）。
+
+    输入参数:
+        - src_points: np.ndarray, (N_src, 3), 源点云 (世界坐标, 单位 Å)
+        - tgt_points: np.ndarray, (N_tgt, 3), 目标点云 (世界坐标, 单位 Å)
+        - dist_threshold: float, 距离阈值 (Å)
+        - chunk_size: int, 分块大小, 避免一次性占用过大内存
+
+    输出:
+        - hit_mask: np.ndarray, (N_src,), bool, 每个源点是否命中
+    """
+    if src_points.size == 0 or tgt_points.size == 0:
+        return np.zeros((src_points.shape[0],), dtype=bool)
+
+    # float, 命中阈值的平方
+    dist2_threshold = float(dist_threshold) ** 2
+    # np.ndarray, (N_src,), bool, 每个源点是否命中
+    hit_mask = np.zeros((src_points.shape[0],), dtype=bool)
+
+    for start in range(0, src_points.shape[0], chunk_size):
+        end = start + chunk_size
+        sub_points = src_points[start:end]
+        # np.ndarray, (M, N_tgt, 3), 点对差值
+        diff = sub_points[:, None, :] - tgt_points[None, :, :]
+        # np.ndarray, (M, N_tgt), 平方距离
+        dist2 = np.sum(diff * diff, axis=2)
+        hit_mask[start:end] = np.any(dist2 <= dist2_threshold, axis=1)
+
+    return hit_mask
+
+
 def _count_hits(
     src_points: np.ndarray,
     tgt_points: np.ndarray,
@@ -25,32 +67,15 @@ def _count_hits(
     统计 src_points 中被命中的点数（存在任意 tgt_points 距离 <= dist_threshold）。
 
     输入参数:
-        - src_points: np.ndarray, 形状 (N_src, 3), 源点云 (世界坐标, 单位 Å)
-        - tgt_points: np.ndarray, 形状 (N_tgt, 3), 目标点云 (世界坐标, 单位 Å)
+        - src_points: np.ndarray, (N_src, 3), 源点云 (世界坐标, 单位 Å)
+        - tgt_points: np.ndarray, (N_tgt, 3), 目标点云 (世界坐标, 单位 Å)
         - dist_threshold: float, 距离阈值 (Å)
-        - chunk_size: int, 分块大小，避免一次性占用过大内存
+        - chunk_size: int, 分块大小, 避免一次性占用过大内存
 
     输出:
         - hit_count: int, 命中点数量
     """
-    if src_points.size == 0 or tgt_points.size == 0:
-        return 0
-
-    # float, 命中阈值的平方
-    dist2_threshold = float(dist_threshold) ** 2
-    # np.ndarray, 形状 (N_src,), bool, 每个源点是否命中
-    hit_mask = np.zeros((src_points.shape[0],), dtype=bool)
-
-    for start in range(0, src_points.shape[0], chunk_size):
-        end = start + chunk_size
-        sub_points = src_points[start:end]
-        # np.ndarray, 形状 (M, N_tgt, 3), 点对差值
-        diff = sub_points[:, None, :] - tgt_points[None, :, :]
-        # np.ndarray, 形状 (M, N_tgt), 平方距离
-        dist2 = np.sum(diff * diff, axis=2)
-        hit_mask[start:end] = np.any(dist2 <= dist2_threshold, axis=1)
-
-    return int(np.sum(hit_mask))
+    return int(np.sum(_compute_hit_mask(src_points, tgt_points, dist_threshold, chunk_size)))
 
 
 def semantic_evaluate(
@@ -134,31 +159,150 @@ def semantic_evaluate(
 
 
 
+# =============================================================================
+# 2. 体素级语义分割评估
+# =============================================================================
+def _coords_to_voxel_set(
+    coords_world: np.ndarray,
+    origin: np.ndarray,
+    voxel_size: np.ndarray,
+    grid_shape_zyx: np.ndarray,
+) -> set:
+    """
+    将世界坐标映射为 voxel index 元组的集合 (去重)。
 
-# =============================================================================
-# 2. 预留接口: 实例分割评估
-# =============================================================================
-def instance_evaluate(
-    pred_instances: dict,
-    gt_instances: dict,
-    **kwargs,
+    输入参数:
+        - coords_world: np.ndarray, (N, 3), 世界坐标 (x, y, z), 单位 Å
+        - origin: np.ndarray, (3,), 密度图原点 (x, y, z)
+        - voxel_size: np.ndarray, (3,), 体素大小 (x, y, z)
+        - grid_shape_zyx: np.ndarray, (3,), 密度图尺寸 (D, H, W)
+
+    输出:
+        - voxel_set: set[tuple[int, int, int]], 有效 voxel 索引 (z, y, x) 的集合
+    """
+    if coords_world.size == 0:
+        return set()
+
+    # np.ndarray, (3,), float64
+    origin = np.asarray(origin, dtype=np.float64).reshape(3)
+    voxel_size = np.asarray(voxel_size, dtype=np.float64).reshape(3)
+    grid_shape_zyx = np.asarray(grid_shape_zyx, dtype=np.int64).reshape(3)
+
+    # np.ndarray, (N, 3), float64, 连续 voxel 坐标 (x, y, z)
+    local_voxel = (np.asarray(coords_world, dtype=np.float64) - origin[None, :]) / voxel_size[None, :]
+    # np.ndarray, (N, 3), int64, home voxel 索引 (x, y, z)
+    voxel_idx_xyz = np.floor(local_voxel).astype(np.int64)
+
+    # int, int, int, 网格空间上界
+    depth, height, width = int(grid_shape_zyx[0]), int(grid_shape_zyx[1]), int(grid_shape_zyx[2])
+
+    # np.ndarray, (N,), bool, 过滤越界索引
+    valid_mask = np.all(voxel_idx_xyz >= 0, axis=1)
+    valid_mask &= voxel_idx_xyz[:, 0] < width
+    valid_mask &= voxel_idx_xyz[:, 1] < height
+    valid_mask &= voxel_idx_xyz[:, 2] < depth
+
+    # np.ndarray, (N_valid, 3), int64, 合法 voxel 索引 (x, y, z)
+    valid_idx = voxel_idx_xyz[valid_mask]
+    # set[tuple], 转为 (z, y, x) 元组集合
+    return {(int(row[2]), int(row[1]), int(row[0])) for row in valid_idx}
+
+
+def voxel_semantic_evaluate(
+    pred_atom_coords: np.ndarray,
+    atom_gt: np.ndarray,
+    dist_threshold: float,
+    origin: np.ndarray,
+    voxel_size: np.ndarray,
+    grid_shape_zyx: np.ndarray,
 ) -> dict:
     """
-    [预留接口] 实例分割评估。
+    基于点云 hit 结果进行体素级语义分割评估。
 
-    Args:
-        - pred_instances: dict, 预测实例信息（格式待定义）
-        - gt_instances:   dict, 真实实例信息（格式待定义）
+    体素正负类别完全依赖于原子正负类别:
+        - 一个体素被预测为正类 ⟺ 该体素内存在 ≥1 个被预测为正类的受体原子
+        - 一个被预测为正类的体素是 hit ⟺ 该体素内有 ≥1 个预测正类原子在点云评估中处于 hit 状态
 
-    Returns:
-        - metrics: dict, 实例分割评估指标
+    输入参数:
+        - pred_atom_coords: np.ndarray, (N_pred, 3), 预测为正类的原子坐标 (由 point_semantic_segment 产出)
+        - atom_gt: np.ndarray, (N_gt, 3), GT 正类原子坐标
+        - dist_threshold: float, 命中距离阈值 (Å)
+        - origin: np.ndarray, (3,), 密度图原点 (x, y, z)
+        - voxel_size: np.ndarray, (3,), 体素大小 (x, y, z)
+        - grid_shape_zyx: np.ndarray, (3,), 密度图尺寸 (D, H, W)
 
-    Raises:
-        NotImplementedError
+    输出:
+        - metrics: dict, 包含:
+            - "mode": "voxel"
+            - "precision": float
+            - "recall": float
+            - "f1": float
+            - "iou": float
+            - "num_pred": int, 预测正类体素数
+            - "num_gt": int, GT 正类体素数
+            - "hit_pred": int, 被命中的预测正类体素数
+            - "hit_gt": int, 被命中的 GT 正类体素数
     """
-    raise NotImplementedError(
-        "[evaluator] instance_evaluate() 尚未实现。"
-    )
+    # np.ndarray, (N_pred, 3)
+    pred_points = np.asarray(pred_atom_coords, dtype=np.float32).reshape(-1, 3)
+    # np.ndarray, (N_gt, 3)
+    gt_points = np.asarray(atom_gt, dtype=np.float32).reshape(-1, 3)
+    num_pred_atoms = int(pred_points.shape[0])
+    num_gt_atoms = int(gt_points.shape[0])
+
+    # 特殊情况: 没有任何正类且模型也没预测出正类 → 完美
+    if num_pred_atoms == 0 and num_gt_atoms == 0:
+        return {
+            "mode": "voxel",
+            "precision": 1.0, "recall": 1.0, "f1": 1.0, "iou": 1.0,
+            "num_pred": 0, "num_gt": 0, "hit_pred": 0, "hit_gt": 0,
+        }
+
+    # ---- 1. 计算原子级 hit mask ----
+    # np.ndarray, (N_pred,), bool, 每个预测正类原子是否命中某个 GT 原子
+    pred_hit_mask = _compute_hit_mask(pred_points, gt_points, dist_threshold)
+    # np.ndarray, (N_gt,), bool, 每个 GT 正类原子是否被某个预测原子命中
+    gt_hit_mask = _compute_hit_mask(gt_points, pred_points, dist_threshold)
+
+    # ---- 2. 映射到 voxel 集合 ----
+    # set[tuple], 全部预测正类原子对应的 voxel 集合
+    pred_voxels = _coords_to_voxel_set(pred_points, origin, voxel_size, grid_shape_zyx)
+    # set[tuple], 被命中的预测正类原子对应的 voxel 集合
+    hit_pred_voxels = _coords_to_voxel_set(pred_points[pred_hit_mask], origin, voxel_size, grid_shape_zyx)
+    # set[tuple], 全部 GT 正类原子对应的 voxel 集合
+    gt_voxels = _coords_to_voxel_set(gt_points, origin, voxel_size, grid_shape_zyx)
+    # set[tuple], 被命中的 GT 正类原子对应的 voxel 集合
+    hit_gt_voxels = _coords_to_voxel_set(gt_points[gt_hit_mask], origin, voxel_size, grid_shape_zyx)
+
+    # ---- 3. 计算指标 ----
+    num_pred = len(pred_voxels)
+    num_gt = len(gt_voxels)
+    hit_pred = len(hit_pred_voxels)
+    hit_gt = len(hit_gt_voxels)
+
+    precision = hit_pred / num_pred if num_pred > 0 else 0.0
+    recall = hit_gt / num_gt if num_gt > 0 else 0.0
+    f1 = (2 * precision * recall / (precision + recall)
+          if (precision + recall) > 0 else 0.0)
+
+    tp = hit_pred
+    fp = num_pred - hit_pred
+    fn = num_gt - hit_gt
+    iou = tp / (tp + fp + fn) if (tp + fp + fn) > 0 else 0.0
+
+    return {
+        "mode": "voxel",
+        "precision": float(precision),
+        "recall": float(recall),
+        "f1": float(f1),
+        "iou": float(iou),
+        "num_pred": num_pred,
+        "num_gt": num_gt,
+        "hit_pred": hit_pred,
+        "hit_gt": hit_gt,
+    }
+
+
 
 
 # =============================================================================
@@ -168,21 +312,24 @@ def print_metrics(metrics: dict, prefix: str = "") -> None:
     """
     将评估指标格式化打印到控制台。
 
-    # 输入参数:
-        - metrics: dict, semantic_evaluate() 的返回值
+    输入参数:
+        - metrics: dict, semantic_evaluate() 或 voxel_semantic_evaluate() 的返回值
         - prefix: str, 打印前缀（如样本名）
     """
+    mode = metrics.get("mode", "point")
     if prefix:
         print(f"  {prefix}")
-    print(f"    Precision = {metrics['precision']:.4f}")
-    print(f"    Recall    = {metrics['recall']:.4f}")
-    print(f"    F1        = {metrics['f1']:.4f}")
-    print(f"    IoU       = {metrics['iou']:.4f}")
 
-    if metrics.get("mode") == "point":
-        print(f"    ( num_pred={metrics['num_pred']}  num_gt={metrics['num_gt']}  "
+    mode_label = "[点云级]" if mode == "point" else "[体素级]"
+    print(f"    {mode_label} Precision = {metrics['precision']:.4f}")
+    print(f"    {mode_label} Recall    = {metrics['recall']:.4f}")
+    print(f"    {mode_label} F1        = {metrics['f1']:.4f}")
+    print(f"    {mode_label} IoU       = {metrics['iou']:.4f}")
+
+    if mode in ("point", "voxel"):
+        unit = "原子" if mode == "point" else "体素"
+        print(f"    ( num_pred_{unit}={metrics['num_pred']}  num_gt_{unit}={metrics['num_gt']}  "
               f"hit_pred={metrics['hit_pred']}  hit_gt={metrics['hit_gt']} )")
     else:
-        print(f"    ( TP={metrics['tp']}  FP={metrics['fp']}  "
-              f"FN={metrics['fn']}  TN={metrics['tn']}  "
-              f"评估体素数={metrics['num_eval']} )")
+        print(f"    ( TP={metrics.get('tp', '?')}  FP={metrics.get('fp', '?')}  "
+              f"FN={metrics.get('fn', '?')}  TN={metrics.get('tn', '?')} )")

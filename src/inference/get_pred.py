@@ -94,39 +94,6 @@ def _load_backbone_cfg_from_training_snapshot(ckpt_path: str) -> tuple[dict[str,
 
     return None, None
 
-def _infer_in_channels(ckpt: dict) -> int:
-    """
-    从 Lightning checkpoint 推断 backbone 输入通道数。
-
-    优先级:
-        1. hyper_parameters 中显式记录的 in_channels
-        2. 从 state_dict 第一个 Conv3d 权重推断
-
-    输入参数:
-        - ckpt: dict, Lightning checkpoint
-
-    输出:
-        - in_channels: int, 推断出的输入通道数
-    """
-    # 尝试从 hyper_parameters 直接获取
-    hp = ckpt.get("hyper_parameters", {})
-    if "in_channels" in hp:
-        return int(hp["in_channels"])
-
-    # 从 state_dict 推断
-    state_dict = ckpt.get("state_dict", {})
-    for key in state_dict.keys():
-        if key.startswith("backbone.") and key.endswith(".weight") and "conv" in key.lower():
-            w = state_dict[key]
-            if w.dim() == 5:  # Conv3d: (out_ch, in_ch, kD, kH, kW)
-                in_ch = w.shape[1]
-                if in_ch <= 128:
-                    print(f"[get_pred] 从 {key} 推断 in_channels={in_ch}")
-                    return in_ch
-
-    print("[get_pred] ⚠️ 无法推断 in_channels, 使用默认值 1")
-    return 1
-
 # 总函数
 def load_model(
     ckpt_path: str,
@@ -155,13 +122,31 @@ def load_model(
         )
 
     # ---- 0. 注入训练时的代码快照 (如果存在) ----
+    # 当 checkpoint 所在 run 目录下存在 src_snapshot 时，模型类必须从快照中加载，以保证 state_dict key 与模型结构一致。
     ckpt_file = Path(ckpt_path).resolve()
     if len(ckpt_file.parents) >= 2:
         run_dir = ckpt_file.parents[1]
         snapshot_dir = run_dir / "src_snapshot"
-        if snapshot_dir.exists() and str(snapshot_dir) not in sys.path:
-            sys.path.insert(0, str(snapshot_dir))
+        snapshot_src_dir = snapshot_dir / "src"
+        if snapshot_src_dir.exists():
+            # str, snapshot 中的 src/ 目录绝对路径
+            snapshot_src_str = str(snapshot_src_dir.resolve())
+
+            # list[str], 需要从 sys.modules 中移除的 src.model.* 缓存条目
+            stale_module_keys = [
+                mod_name for mod_name in sys.modules
+                if mod_name == "src.model" or mod_name.startswith("src.model.")
+            ]
+            for mod_name in stale_module_keys:
+                del sys.modules[mod_name]
+            # 将 snapshot/src 插入 src 包的 __path__ 最前面, 使后续 import src.model.* 优先从 snapshot 解析
+            import src as _src_pkg
+            if snapshot_src_str not in _src_pkg.__path__:
+                _src_pkg.__path__.insert(0, snapshot_src_str)
+
             print(f"[get_pred] 已注入代码快照: {snapshot_dir}")
+            if stale_module_keys:
+                print(f"[get_pred] 已清除 {len(stale_module_keys)} 个 src.model.* 缓存模块")
 
     # ---- 1. 构建模型 ----
     if backbone_override is not None:
@@ -195,17 +180,12 @@ def load_model(
                 "请提供 backbone_override，或确认 run_dir/config.yaml 存在且包含 model.backbone。"
             )
 
-    # ---- 2. 推断 in_channels 并设置 ----
-    in_channels = _infer_in_channels(ckpt)
-    if hasattr(model, "set_input_channels"):
-        model.set_input_channels(in_channels)
-        print(f"[get_pred] 设置 model.set_input_channels({in_channels})")
 
     # ---- 3. 提取并加载 backbone 权重 ----
-    # dict[str, torch.Tensor], 去掉 "backbone." 前缀后的权重字典
+    # dict[str, torch.Tensor], 仅剥掉开头 "backbone." 前缀后的权重字典
     state_dict = ckpt["state_dict"]
     backbone_state = {
-        k.replace("backbone.", ""): v
+        k[len("backbone."):]: v
         for k, v in state_dict.items()
         if k.startswith("backbone.")
     }
@@ -213,17 +193,75 @@ def load_model(
         backbone_state = state_dict
         print("[get_pred] ⚠️ 未找到 backbone.* 前缀, 尝试直接加载全部权重")
 
-    # strict=False 以容忍 Lightning 包装器附带的额外键
-    load_result = model.load_state_dict(backbone_state, strict=False)
-    if load_result.missing_keys:
-        print(f"[get_pred] ⚠️ 缺失的键: {load_result.missing_keys}")
-    if load_result.unexpected_keys:
-        print(f"[get_pred] ⚠️ 多余的键 (已忽略): {load_result.unexpected_keys}")
+    # strict=True: 任何 key 不匹配立即报错, 避免静默加载随机权重
+    model.load_state_dict(backbone_state, strict=True)
 
     model.to(device)
     model.eval()
     print(f"[get_pred] 模型加载成功, device={device}")
     return model
+
+
+
+
+"""
+=============================================================================
+1.5 训练配置加载
+=============================================================================
+推理管线的参数按来源分为三类:
+
+A. 训练契约类 —— 应自动从训练 config 的 dataset.* 继承
+   ┌────────────────────┬──────────────────────────┐
+   │ 参数               │ 训练 config 路径          │
+   ├────────────────────┼──────────────────────────┤
+   │ data_folder_names  │ dataset.data_folder_names │
+   │ class_mapping      │ dataset.class_mapping     │
+   │ atom_buffer_radius │ dataset.atom_buffer_radius│
+   │ valid_crop_margin  │ dataset.valid_crop_margin │
+   │ emdb_z_score       │ dataset.emdb_z_score      │
+   │ (未来新增参数)      │ dataset.*                 │
+   └────────────────────┴──────────────────────────┘
+   → 由 load_training_config() 自动提取, 推理管线直接使用。
+   → 如需覆盖, 可在推理 YAML 中显式设置同名字段 (_get_cfg 优先级最高)。
+
+B. 推理专属类 —— 只存在于推理 YAML
+   threshold, dist_threshold, core_decay_mode, core_offset,
+   merge_mode, semantic_segment_method, dbscan_eps, dbscan_min_samples,
+   box_spatial_weight_sigma_ratio, stride, windows_size, batch_size,
+   output_dir, show_progress, error_dir
+
+C. 数据处理类 —— 推理 YAML 中有, 训练 config 中不一定有
+   target_voxel_size, compute_density, select_first_model
+"""
+
+def load_training_config(ckpt_path: str) -> dict[str, Any]:
+    """
+    从 checkpoint 所在的训练 run 目录中提取完整训练配置。
+
+    输入参数:
+        - ckpt_path: str, Lightning checkpoint 路径
+
+    输出:
+        - train_cfg: dict[str, Any], 训练时的完整配置(顶层 dict, 含 model/dataset/train 等子键)
+
+    异常:
+        - FileNotFoundError: 若无法从 checkpoint 路径推断 run 目录, 或 run 目录下无 config.yaml
+    """
+    ckpt_file = Path(ckpt_path).resolve()
+    if len(ckpt_file.parents) < 2:
+        raise FileNotFoundError(
+            f"无法从 checkpoint 路径推断 run 目录: {ckpt_path}"
+        )
+    run_dir = ckpt_file.parents[1]
+    for config_path in (run_dir / "config.yaml", run_dir / ".hydra" / "config.yaml"):
+        if config_path.exists():
+            loaded = OmegaConf.load(config_path)
+            cfg_dict = OmegaConf.to_container(loaded, resolve=True)
+            print(f"[get_pred] 已加载训练配置: {config_path}")
+            return cfg_dict
+    raise FileNotFoundError(
+        f"在 run 目录 {run_dir} 下未找到 config.yaml 或 .hydra/config.yaml"
+    )
 
 
 
@@ -252,7 +290,7 @@ def run_point_inference(
     输出:
         - outputs: dict[str, Any], 模型前向输出, 至少包含:
             - "atom_logits": torch.Tensor, (sumN_final, C_logit), 原始 atom 分类 logits, 未经 sigmoid
-            - 以及与最终原子视图对齐的辅助字段(atom_counts / atom_coord_local_voxel / atom_is_in_core_box 等)
+            - 以及与最终原子视图对齐的辅助字段(global_atom_indices / atom_counts / atom_coord_local_voxel / atom_is_in_core_box 等)
     """
     with torch.no_grad():
         # dict[str, Any], 模型前向输出

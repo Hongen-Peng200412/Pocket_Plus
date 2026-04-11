@@ -286,3 +286,32 @@ def build_hardmask_from_world_coordinates(
         atom_is_in_core_box=atom_is_in_core_box,
         box_shape_zyx=np.asarray(box_shape_zyx, dtype=np.int64),
     )
+
+
+def resolve_emdb_zscore_mask(emdb_z_score, n_emdb_channels: int) -> list[bool]:
+    """
+    将 emdb_z_score 参数解析为逐通道归一化掩码。
+
+    输入参数:
+        - emdb_z_score: bool | int | list[int], 归一化控制
+            - false/0: 全部不归一化
+            - true/1: 全部归一化
+            - list[int]: 逐通道控制(1=归一化, 0=跳过), 长度须等于 n_emdb_channels
+        - n_emdb_channels: int, 标量, EMDB 通道总数
+
+    输出:
+        - mask: list[bool], 长度 = n_emdb_channels, True=归一化该通道
+    """
+    if isinstance(emdb_z_score, (bool, int, float)):
+        flag = bool(emdb_z_score)
+        return [flag] * n_emdb_channels
+    if isinstance(emdb_z_score, (list, tuple)):
+        if len(emdb_z_score) != n_emdb_channels:
+            raise ValueError(
+                f"emdb_z_score 的长度 ({len(emdb_z_score)}) "
+                f"与 EMDB 通道数 ({n_emdb_channels}) 不一致"
+            )
+        return [bool(v) for v in emdb_z_score]
+    raise TypeError(
+        f"emdb_z_score 必须是 bool/int 标量或 list[int], 当前类型: {type(emdb_z_score)}"
+    )

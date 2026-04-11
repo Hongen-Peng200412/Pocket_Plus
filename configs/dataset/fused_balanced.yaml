@@ -71,3 +71,4 @@ atom_buffer_radius: 0.0
 cache_size: 128
 valid_crop_margin: 0
 enable_random_rotation: true
+emdb_z_score: 1               # bool | int | list[int], EMDB 通道归一化控制; 0=不归一化, 1=全部归一化, list=逐通道

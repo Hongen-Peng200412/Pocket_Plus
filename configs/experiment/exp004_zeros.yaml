@@ -3,7 +3,7 @@
 # 实验 004: UNet-only 消融 — 纯体素 UNet, 无点分支/融合/atom head
 # ============================================================
 # 用法:
-#   sbatch sbatch/h200/1gpu.sbatch base "+experiment=exp004_zeros"
+#   sbatch sbatch/h200/1gpu.sbatch base "+experiment=exp004_zeros"  ; 这里的 base 可加可不加(因为会自动补全)
 # ============================================================
 
 defaults:
