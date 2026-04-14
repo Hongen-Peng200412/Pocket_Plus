@@ -1,4 +1,0 @@
-- ckpt_path=.codex_tmp_infer_smoke\exp_run\checkpoints\last.ckpt
-- device=cpu
-- raw_pairs_json=.codex_tmp_infer_smoke\raw_pairs.json
-- output_root=.codex_tmp_infer_smoke\out

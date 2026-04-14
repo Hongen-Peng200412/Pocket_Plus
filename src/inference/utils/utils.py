@@ -31,7 +31,7 @@ def write_batch_excel(results: list, output_root: str) -> str:
     ws = wb.active
     ws.title = "Results"
 
-    headers = ["类别", "样本名", "Precision", "Recall", "F1", "IoU", "预测正类数", "备注"]
+    headers = ["类别", "样本名", "Precision", "Recall", "F1", "IoU", "Voxel_Precision", "Voxel_Recall", "Voxel_F1", "Voxel_IoU", "预测正类数", "备注"]
     ws.append(headers)
     for cell in ws[1]:
         cell.font = Font(bold=True)
@@ -40,21 +40,31 @@ def write_batch_excel(results: list, output_root: str) -> str:
     for row in results:
         if row.get("error"):
             ws.append([row["class_folder"], row["sample_name"],
-                       "", "", "", "", "", f"错误: {row['error']}"])
+                       "", "", "", "", "", "", "", "", "", f"错误: {row['error']}"])
             continue
 
         m = row.get("metrics")
+        vm = row.get("voxel_metrics")
         if m is not None:
+            vp, vr, vf1, viou = ("", "", "", "")
+            if vm is not None:
+                vp = round(vm.get("precision", 0), 4)
+                vr = round(vm.get("recall", 0), 4)
+                vf1 = round(vm.get("f1", 0), 4)
+                viou = round(vm.get("iou", 0), 4)
+
             ws.append([
                 row["class_folder"], row["sample_name"],
                 round(m["precision"], 4), round(m["recall"], 4),
                 round(m["f1"], 4), round(m["iou"], 4),
+                vp, vr, vf1, viou,
                 row.get("num_pred_pos", ""), "",
             ])
-            eval_rows.append(m)
+            eval_rows.append((m, vm or {}))
         else:
             ws.append([
                 row["class_folder"], row["sample_name"],
+                "", "", "", "",
                 "", "", "", "",
                 row.get("num_pred_pos", ""), "无 GT, 仅推断",
             ])
@@ -62,12 +72,22 @@ def write_batch_excel(results: list, output_root: str) -> str:
     # 均值汇总行
     if eval_rows:
         ws.append([])
+        
+        m_list = [r[0] for r in eval_rows]
+        vm_list = [r[1] for r in eval_rows if r[1]]
+        
+        vm_p_mean = round(float(np.mean([x.get("precision", 0) for x in vm_list])), 4) if vm_list else ""
+        vm_r_mean = round(float(np.mean([x.get("recall", 0) for x in vm_list])), 4) if vm_list else ""
+        vm_f1_mean = round(float(np.mean([x.get("f1", 0) for x in vm_list])), 4) if vm_list else ""
+        vm_iou_mean = round(float(np.mean([x.get("iou", 0) for x in vm_list])), 4) if vm_list else ""
+
         avg_row = [
             "", "【均值】",
-            round(float(np.mean([r["precision"] for r in eval_rows])), 4),
-            round(float(np.mean([r["recall"]    for r in eval_rows])), 4),
-            round(float(np.mean([r["f1"]        for r in eval_rows])), 4),
-            round(float(np.mean([r["iou"]       for r in eval_rows])), 4),
+            round(float(np.mean([r["precision"] for r in m_list])), 4),
+            round(float(np.mean([r["recall"]    for r in m_list])), 4),
+            round(float(np.mean([r["f1"]        for r in m_list])), 4),
+            round(float(np.mean([r["iou"]       for r in m_list])), 4),
+            vm_p_mean, vm_r_mean, vm_f1_mean, vm_iou_mean,
             "", "",
         ]
         ws.append(avg_row)
@@ -105,7 +125,7 @@ def write_param_search_excel(
     ws = wb.active
     ws.title = "ParamSearch"
 
-    headers = param_names + ["avg_Precision", "avg_Recall", "avg_F1", "avg_IoU"]
+    headers = param_names + ["avg_Precision", "avg_Recall", "avg_F1", "avg_IoU", "avg_Voxel_Precision", "avg_Voxel_Recall", "avg_Voxel_F1", "avg_Voxel_IoU"]
     ws.append(headers)
     for cell in ws[1]:
         cell.font = Font(bold=True)
@@ -117,8 +137,10 @@ def write_param_search_excel(
     for i, row in enumerate(summary):
         ws.append(
             [row[k] for k in param_names]
-            + [round(row["avg_P"], 4), round(row["avg_R"], 4),
-               round(row["avg_F1"], 4), round(row["avg_IoU"], 4)]
+            + [round(row.get("avg_P", 0), 4), round(row.get("avg_R", 0), 4),
+               round(row.get("avg_F1", 0), 4), round(row.get("avg_IoU", 0), 4),
+               round(row.get("avg_voxel_P", 0), 4), round(row.get("avg_voxel_R", 0), 4),
+               round(row.get("avg_voxel_F1", 0), 4), round(row.get("avg_voxel_IoU", 0), 4)]
         )
         if i == 0:
             for cell in ws[ws.max_row]:
@@ -135,7 +157,7 @@ def write_param_search_excel(
     has_per_sample = any("_per_sample" in row for row in summary)
     if has_per_sample:
         ws_ps = wb.create_sheet("Per-Sample")
-        headers_ps = param_names + ["sample_name", "Precision", "Recall", "F1", "IoU"]
+        headers_ps = param_names + ["sample_name", "Precision", "Recall", "F1", "IoU", "Voxel_Precision", "Voxel_Recall", "Voxel_F1", "Voxel_IoU"]
         ws_ps.append(headers_ps)
         for cell in ws_ps[1]:
             cell.font = Font(bold=True)
@@ -149,7 +171,11 @@ def write_param_search_excel(
                     round(rec["precision"], 4),
                     round(rec["recall"], 4),
                     round(rec["f1"], 4),
-                    round(rec["iou"], 4)
+                    round(rec["iou"], 4),
+                    round(rec.get("voxel_precision", 0), 4),
+                    round(rec.get("voxel_recall", 0), 4),
+                    round(rec.get("voxel_f1", 0), 4),
+                    round(rec.get("voxel_iou", 0), 4)
                 ])
                 
         for col in ws_ps.columns:
@@ -166,7 +192,7 @@ def write_param_search_excel(
         ws_best.append([])
         
         # 写入表头
-        headers_best = ["样本名", "Precision", "Recall", "F1", "IoU"]
+        headers_best = ["样本名", "Precision", "Recall", "F1", "IoU", "Voxel_Precision", "Voxel_Recall", "Voxel_F1", "Voxel_IoU"]
         ws_best.append(headers_best)
         for cell in ws_best[ws_best.max_row]:
             cell.font = Font(bold=True)
@@ -179,7 +205,11 @@ def write_param_search_excel(
                 round(rec.get("precision", 0), 4),
                 round(rec.get("recall", 0), 4),
                 round(rec.get("f1", 0), 4),
-                round(rec.get("iou", 0), 4)
+                round(rec.get("iou", 0), 4),
+                round(rec.get("voxel_precision", 0), 4),
+                round(rec.get("voxel_recall", 0), 4),
+                round(rec.get("voxel_f1", 0), 4),
+                round(rec.get("voxel_iou", 0), 4)
             ])
             
         # 如果有数据，追加一个均值行
@@ -190,7 +220,11 @@ def write_param_search_excel(
                 round(float(np.mean([r["precision"] for r in ps_records])), 4),
                 round(float(np.mean([r["recall"]    for r in ps_records])), 4),
                 round(float(np.mean([r["f1"]        for r in ps_records])), 4),
-                round(float(np.mean([r["iou"]       for r in ps_records])), 4)
+                round(float(np.mean([r["iou"]       for r in ps_records])), 4),
+                round(float(np.mean([r.get("voxel_precision", 0) for r in ps_records])), 4),
+                round(float(np.mean([r.get("voxel_recall", 0)    for r in ps_records])), 4),
+                round(float(np.mean([r.get("voxel_f1", 0)        for r in ps_records])), 4),
+                round(float(np.mean([r.get("voxel_iou", 0)       for r in ps_records])), 4)
             ]
             ws_best.append(avg_row)
             for cell in ws_best[ws_best.max_row]:

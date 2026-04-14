@@ -3,6 +3,41 @@ parse_input.py - 数据加载与特征整合模块
 
 负责将各种来源的数据整合为模型需要的输入格式。
 加载方式： 从原始 .cif + .map 文件实时提取特征（load_from_raw_cif）
+
+评估模式 (eval_mode) 数据流对比:
+
+    Trivial 模式 (eval_mode="trivial"):
+        cif_path (真实结构)  ──→ 模型推断 ──→ pred (根据受体预测的结合原子坐标) ———————————————————————————————─┐
+                                                                                                            │
+        cif_path (真实结构)  ──→ 提取配体 ——————————————────┐                                                │
+        cif_path (真实结构)  ──→ 提供受体原子 ──→ compute_binding_labels ——————──→ atom_gt                    │
+                                                                                    │                       │
+                                                                    semantic_evaluate(pred, atom_gt, dist_threshold)
+
+        cif_gt_path 被完全忽略（即使用户提供也不使用）。
+        pred ∈ cif_path, GT ∈ cif_path, 且 cif_path 本身含配体 → 最简单的评估场景
+
+    Easy 模式 (eval_mode="easy", 默认):
+        cif_path (预测受体)  ──→ 模型推断 ──→ pred (根据受体预测的结合原子坐标) ———————————————————————————————─┐
+                                                                                                            │
+        cif_gt_path (真实全复合物) ──→ 提取配体 ————————————─┐                                                │
+        cif_path (预测受体)  ──→ 提供受体原子 ──→ compute_binding_labels ——————──→ atom_gt                    │
+                                                                                    │                       │
+                                                                    semantic_evaluate(pred, atom_gt, dist_threshold)
+
+        pred ∈ cif_path 的原子集, GT 也 ∈ cif_path 的原子集, 两者必然匹配良好 → 降低了难度
+
+    Hard 模式 (eval_mode="hard"):
+        cif_path (预测受体)  ──→ 模型推断 ──→ pred (根据受体预测的结合原子坐标) ———————————————————————————————─┐
+                                                                                                            │
+        cif_gt_path (真实全复合物) ──→ 提取配体 ————————————─┐                                                │
+        cif_gt_path (真实全复合物) ──→ 提供受体原子 ──→ compute_binding_labels ──→ atom_gt                    │
+                                                                                    │                       │
+                                                                    semantic_evaluate(pred, atom_gt, dist_threshold)
+
+        pred ∈ cif_path 的原子集, GT ∈ cif_gt_path 的原子集, 两者是不同坐标系的原子 → 评估更严格
+
+    注意: 当 cif_gt_path 为 None 时 (场景A), easy 与 hard 行为完全一致, 因为 cif_gt_path 回退到 cif_path。
 """
 
 import sys
@@ -188,6 +223,7 @@ def load_gt_from_structure(
     class_mapping: list,
     select_first_model: bool,
     error_dir: str,
+    eval_mode: str,         # "easy" 或 "hard"
 ) -> Optional[dict]:
     """
     从原始 .cif / .pdb 文件提取点云级 Ground Truth 标签:  按 Pocket/Make_Data/labels/filter_config.py 定义的预设读取配体筛选规则，
@@ -202,6 +238,10 @@ def load_gt_from_structure(
         - class_mapping:      list[int]|None, 标签类别映射表，例如 [0,1,1,1,1] 在5分类（背景0）中将多类合并为二分类; 依据训练配置 dataset.class_mapping 决定
         - select_first_model: bool,        structure选择第一个model / 如果一个structure 含有多个model那么直接记入error_log并跳过处理
         - error_dir:          str|None,    错误日志目录
+        - eval_mode:          str,         评估模式: "trivial"、"easy" 或 "hard"
+            - "trivial": 若提供 cif_gt_path，则完全使用 cif_gt_path 提取配体和受体（否则回退到 cif_path）
+            - "easy": 结合位点标注基于 cif_path 的受体原子 (预测结构)
+            - "hard": 结合位点标注基于 cif_gt_path 的受体原子 (真实结构)
 
     输出:
         - gt_data: dict, 包含:
@@ -212,13 +252,23 @@ def load_gt_from_structure(
         1. parse_structure()         解析 .cif 得到原子坐标和配体候选列表
         2. filter_and_classify()     按 filter_preset 筛选配体并分配口袋类别
         3. compute_binding_labels()  计算每个原子的口袋类别 ID
+           - easy 模式: 受体原子来自 cif_path (parsed_data)
+           - hard 模式: 受体原子来自 cif_gt_path (parsed_gt_data)
         4. class_mapping（可选）      对类别做映射
     """
     from Make_Data.PDB_processor.parser import parse_structure
     from Make_Data.labels.ligand_filter import filter_and_classify
     from Make_Data.labels.filter_config import get_filter_preset
     from Make_Data.labels.instance_labels import compute_binding_labels
-    cif_gt_path = cif_gt_path if cif_gt_path is not None else cif_path
+    if eval_mode not in ("easy", "hard", "trivial"):
+        raise ValueError(f"[parse_input.load_gt_from_structure] eval_mode 必须为 'easy'、'hard' 或 'trivial', 收到: '{eval_mode}'")
+    # trivial 模式: 若提供 cif_gt_path，则推理输入、配体筛选与 GT 统一基于真实结构 cif_gt_path
+    if eval_mode == "trivial":
+        if cif_gt_path:
+            cif_path = cif_gt_path
+        cif_gt_path = cif_path
+    else:
+        cif_gt_path = cif_gt_path if cif_gt_path is not None else cif_path
     sample_name = Path(cif_path).stem
 
     # ---- 0. 读取配体筛选配置 ----
@@ -227,10 +277,7 @@ def load_gt_from_structure(
     if filter_config is None:
         from Make_Data.labels.filter_config import list_filter_preset_names
         available = list_filter_preset_names()
-        raise ValueError(
-            f"[parse_input.load_gt_from_structure] 未知 filter_preset: '{filter_preset}'\n"
-            f"可用预设: {available}"
-        )
+        raise ValueError(f"[parse_input.load_gt_from_structure] 未知 filter_preset: '{filter_preset}'\n可用预设: {available}")
 
 
     # ---- 1. 解析 .cif 结构文件 ----
@@ -275,9 +322,13 @@ def load_gt_from_structure(
 
 
     # ---- 3. 计算原子级标签 ----
+    # trivial/easy 模式: 受体原子来自 cif_path (parsed_data)
+    # hard 模式: 受体原子来自 cif_gt_path (parsed_gt_data)
+    # ParsedStructure, 决定结合位点标注所依赖的受体结构
+    labeling_structure = parsed_gt_data if eval_mode == "hard" else parsed_data
     # dict 或 None, 含 pocket_class_ids: np.ndarray (N_atoms,) int32
     binding_labels = compute_binding_labels(
-        parsed_data,
+        labeling_structure,
         selected_candidates=selected,
         pocket_class_map=pocket_class_map,
         error_dir=error_dir,
@@ -294,7 +345,7 @@ def load_gt_from_structure(
 
     # np.ndarray, 形状 (N_atoms,), int32, 每个原子的口袋类别 ID
     if binding_labels is None or "pocket_class_ids" not in binding_labels:
-        pocket_class_ids = np.zeros((parsed_data.atom_coords.shape[0],), dtype=np.int32)
+        pocket_class_ids = np.zeros((labeling_structure.atom_coords.shape[0],), dtype=np.int32)
     else:
         # np.ndarray, (N_atoms,), int32, 每个原子的口袋类别 ID
         pocket_class_ids = binding_labels["pocket_class_ids"]  
@@ -306,7 +357,7 @@ def load_gt_from_structure(
         pocket_class_ids = mapped_ids
 
     # np.ndarray, 形状 (N_atoms, 3), float32, 原子坐标 (X, Y, Z)
-    atom_coords = parsed_data.atom_coords.astype(np.float32)
+    atom_coords = labeling_structure.atom_coords.astype(np.float32)
     # np.ndarray, 形状 (N_gt, 3), float32, 正类原子坐标
     atom_gt = atom_coords[pocket_class_ids > 0]
 
@@ -495,21 +546,24 @@ def split_volume_to_boxes(
 
 
 
+from typing import Iterator
+
 def prepare_batched_boxes(
     box_dicts: list,
     batch_size: int,
     device: str,
-) -> list:
+) -> Iterator[dict]:
     """
     将 split_volume_to_boxes() 返回的 BOX 列表按 batch_size 分组, 对每组调用 box_point_collate() 产出 batch dict 。
+    使用 yield 生成器返回，防止一次性将所有 batch 移至显存导致 OOM。
 
     输入参数:
         - box_dicts: list[dict], split_volume_to_boxes 的返回值
         - batch_size: int, 标量, 每个 batch 包含的 BOX 数
         - device: str, 目标设备
 
-    输出:
-        - batches: list[dict], 每个 dict 为一个 batch (即一组 batch_size 个样本经 box_point_collate 后的结果), 包含:
+    输出 (yield):
+        - batch_dict: dict, 每个 iter 返回一个 batch (即一组 batch_size 个样本经 box_point_collate 后的结果), 包含:
             - 1. box_point_collate 产出的标准字段 (见 box_point_collate 文档)
             - 2. 额外字段:
                 - "atom_global_indices": torch.Tensor, (sumN,), long, 本batch_size内全部原子展平后的全局原子索引, 与 atom_coord_world 等长
@@ -519,7 +573,6 @@ def prepare_batched_boxes(
     from src.datasets.box_point_collate import box_point_collate
     from src.inference.get_pred import move_batch_to_device
 
-    batches = []
     n_boxes = len(box_dicts)
 
     for start in range(0, n_boxes, batch_size):
@@ -556,6 +609,4 @@ def prepare_batched_boxes(
             box_dict["global_atom_indices"] = per_box_global_indices[i]
             box_dict["box_position_zyx"] = box_meta_list[i]["box_position_zyx"]
 
-        batches.append(batch_dict)
-
-    return batches
+        yield batch_dict

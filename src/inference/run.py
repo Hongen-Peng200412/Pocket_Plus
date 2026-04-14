@@ -48,6 +48,14 @@ if str(POCKET_ROOT) in sys.path:
     sys.path.remove(str(POCKET_ROOT))
 sys.path.insert(0, str(POCKET_ROOT))
 
+# --- 强制 stdout/stderr 行缓冲 ---
+# 在 Slurm 非交互环境下, Python 默认对 stdout 采用全缓冲 (4KB+),导致 print() 输出被攒满才写入 .out 日志, 看起来像"任务卡住"。
+# 此处强制切换为行缓冲: 每遇到换行符立即 flush 到文件, 与 _train_core.sh 中的 stdbuf -oL -eL 形成双重保障)
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(line_buffering=True)
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(line_buffering=True)
+
 
 # --- 导入推断模块 ---
 from src.inference.parse_input import (
@@ -339,6 +347,7 @@ def run_raw_point_pipeline(
     train_dataset_cfg: dict,    # 训练 dataset 配置, 包含 data_folder_names / class_mapping / atom_buffer_radius / valid_crop_margin / emdb_z_score 等
 
     eval_gt: bool,
+    eval_mode: str,             # "easy" / "hard" / "trivial" (不接受 "all", "all" 由外层 mode handler 编排)
     filter_preset: str,         # None 表示不筛选
     threshold: float,           # 建议值 0.5
     dist_threshold: float,      # 建议值 3.0
@@ -381,6 +390,9 @@ def run_raw_point_pipeline(
             内含 data_folder_names / class_mapping / atom_buffer_radius / valid_crop_margin / emdb_z_score 等数据契约参数
 
         - eval_gt: bool, 是否提取 GT 标签进行评估
+        - eval_mode: str, 评估模式: "easy" / "hard" / "trivial" (不接受 "all"; "all" 由外层 mode handler 编排)
+            - "easy": 结合位点标注基于 cif_path 的受体原子 (预测结构)
+            - "hard": 结合位点标注基于 cif_gt_path 的受体原子 (真实结构)
         - filter_preset: str, 配体筛选预设名 (用于 GT 提取); 依据训练配置 dataset.filter_preset 决定
         - threshold: float, 语义分割阈值, 建议值 0.5
         - dist_threshold: float, 点云评估距离阈值 (Å), 建议值 3.0
@@ -438,9 +450,12 @@ def run_raw_point_pipeline(
     )
 
     try:
+        # trivial 模式: 若提供真实结构 cif_gt_path，则推断输入结构也强制使用真实结构
+        infer_cif_path = cif_gt_path if (eval_mode == "trivial" and cif_gt_path) else cif_path
+
         # ---- 1. 加载原始数据 ----
         data = load_from_raw_cif(
-            cif_path=cif_path,
+            cif_path=infer_cif_path,
             map_path=map_path,
             target_voxel_size=target_voxel_size,
             compute_density=compute_density,
@@ -462,10 +477,10 @@ def run_raw_point_pipeline(
         # ---- 2. 可选: 提取 GT 标签————只有在 eval_gt 时才试图提取 ----
         gt_data = None
         if eval_gt:
-            # str, 场景A(无 cif_gt_path)时回退到 cif_path、场景B(有 cif_gt_path)时使用真实结构
+            # str, 场景A(无 cif_gt_path)回退到 cif_path；场景B使用真实结构 cif_gt_path
             _effective_gt_cif = cif_gt_path if cif_gt_path else cif_path
             gt_data = load_gt_from_structure(
-                cif_path=cif_path,              # 受体结构（场景B时为预测结构）
+                cif_path=infer_cif_path,         # 受体结构（trivial 时与 GT 相同；否则为推断用结构）
                 cif_gt_path=_effective_gt_cif,  # 真实结构（含配体信息）；场景A时与 cif_path 相同
                 map_path=map_path,
                 target_voxel_size=target_voxel_size,
@@ -473,6 +488,7 @@ def run_raw_point_pipeline(
                 class_mapping=class_mapping,
                 select_first_model=select_first_model,
                 error_dir=error_dir,
+                eval_mode=eval_mode,
             )
 
 
@@ -504,6 +520,7 @@ def run_raw_point_pipeline(
             position=0,
             leave=False,
             disable=not show_progress,
+            mininterval=10.0,  # 稀疏打印控制, 最少每 5 秒输出一次进度
         )
         for batch_dict in batched:
             # 跳过不含任何原子的空 BOX: 无原子级结果, 且 embed head 不产出体素通道
@@ -577,26 +594,24 @@ def run_raw_point_pipeline(
                 grid_shape_zyx=result["grid_shape_zyx"],
             )
             result["voxel_metrics"] = voxel_metrics
-            if show_progress:
-                print_metrics(voxel_metrics, prefix="  ")
 
 
         # ---- 8. 保存结果 ----
         if output_dir is not None:
             os.makedirs(output_dir, exist_ok=True)
             # 保存原子概率
-            np.savez_compressed(
+            np.savez(
                 os.path.join(output_dir, "atom_probs.npz"),
                 atom_probs=atom_probs,
                 atom_coords=atom_coords,
             )
             # 保存预测点云
-            np.savez_compressed(
+            np.savez(
                 os.path.join(output_dir, "pred_atom_coords.npz"),
                 pred_atom_coords=pred_atom_coords,
             )
             if gt_data is not None:
-                np.savez_compressed(
+                np.savez(
                     os.path.join(output_dir, "gt_points.npz"),
                     atom_gt=gt_data["atom_gt"],
                     atom_coords=gt_data["atom_coords"],
@@ -712,12 +727,179 @@ def _load_box_logits_cache(cache_path: str) -> tuple:
 # =============================================================================
 # mode 处理函数
 # =============================================================================
+def _build_pipeline_kwargs(cfg_dict: dict) -> dict:
+    """
+    从 cfg_dict 构建 run_raw_point_pipeline 的通用关键字参数字典。
+    不含 model, device, cif_path, map_path, cif_gt_path,
+    eval_gt, eval_mode, output_dir, show_progress 等样本级参数。
+
+    输入参数:
+        - cfg_dict: dict, Hydra 配置的扁平字典
+
+    输出:
+        - kwargs: dict, 可直接 **kwargs 展开传入 run_raw_point_pipeline
+    """
+    return {
+        "target_voxel_size": cfg_dict["target_voxel_size"],
+        "compute_density": cfg_dict["compute_density"],
+        "select_first_model": cfg_dict["select_first_model"],
+        "train_dataset_cfg": cfg_dict["_train_dataset_cfg"],
+        "filter_preset": _get_cfg(cfg_dict, "filter_preset", required=False),
+        "threshold": cfg_dict["threshold"],
+        "dist_threshold": cfg_dict["dist_threshold"],
+        "merge_mode": cfg_dict["merge_mode"],
+        "semantic_segment_method": cfg_dict["semantic_segment_method"],
+        "dbscan_eps": cfg_dict["dbscan_eps"],
+        "dbscan_min_samples": cfg_dict["dbscan_min_samples"],
+        "core_decay_mode": cfg_dict["core_decay_mode"],
+        "core_offset": cfg_dict["core_offset"],
+        "box_spatial_weight_sigma_ratio": cfg_dict["box_spatial_weight_sigma_ratio"],
+        "stride": cfg_dict["stride"],
+        "windows_size": cfg_dict["windows_size"],
+        "batch_size": cfg_dict["batch_size"],
+        "error_dir": cfg_dict.get("error_dir"),
+    }
+
+
+def _evaluate_and_save_sub_mode(
+    sub_mode: str,
+    cfg_dict: dict,
+    cif_path: str,
+    map_path: str,
+    cif_gt_path: str,
+    pred_atom_coords: np.ndarray,
+    origin: np.ndarray,
+    voxel_size: np.ndarray,
+    grid_shape_zyx: np.ndarray,
+    resampled_emdb: np.ndarray,
+    sub_output_root: str,
+    sample_name: str,
+    pdb_id: str,
+    show_progress: bool,
+):
+    """
+    单子模式 (easy / hard) 的 GT 提取 + 评估 + 保存 + 可视化。
+    供 eval_mode="all" 编排时复用。
+
+    输入参数:
+        - sub_mode: str, "easy"、"hard" 或 "trivial"
+        - cfg_dict: dict, 当前 Hydra 配置的扁平字典
+        - cif_path: str, 推断用结构文件路径
+        - map_path: str, 对应密度图路径
+        - cif_gt_path: str | None, 真实结构路径
+        - pred_atom_coords: np.ndarray, (N_pred, 3), 预测为正类的原子坐标
+        - origin: np.ndarray, (3,), 密度图原点
+        - voxel_size: np.ndarray, (3,), 体素大小
+        - grid_shape_zyx: np.ndarray, (3,), 密度图尺寸
+        - resampled_emdb: np.ndarray | None, (D, H, W), 重采样后密度
+        - sub_output_root: str, 当前子模式的输出根目录 (如 {output_root}_easy)
+        - sample_name: str, 样本名称
+        - pdb_id: str | None, 样本 ID
+        - show_progress: bool, 是否打印进度
+
+    输出:
+        - sub_result: dict, 包含 metrics / voxel_metrics / error 等
+    """
+    sub_result = {"eval_mode": sub_mode, "metrics": None, "voxel_metrics": None, "error": None}
+    # str, 场景A(无 cif_gt_path)回退到 cif_path；场景B使用真实结构 cif_gt_path
+    _effective_gt_cif = cif_gt_path if cif_gt_path else cif_path
+
+    try:
+        gt_data = load_gt_from_structure(
+            cif_path=cif_path,
+            cif_gt_path=_effective_gt_cif,
+            map_path=map_path,
+            target_voxel_size=cfg_dict["target_voxel_size"],
+            filter_preset=_get_cfg(cfg_dict, "filter_preset", required=False),
+            class_mapping=_get_cfg(cfg_dict, "class_mapping", required=False),
+            select_first_model=cfg_dict["select_first_model"],
+            error_dir=cfg_dict.get("error_dir"),
+            eval_mode=sub_mode,
+        )
+
+        # 点云级评估
+        dist_threshold = cfg_dict["dist_threshold"]
+        metrics = semantic_evaluate(
+            pred_atom_coords=pred_atom_coords,
+            atom_gt=gt_data["atom_gt"],
+            dist_threshold=dist_threshold,
+        )
+        sub_result["metrics"] = metrics
+        if show_progress:
+            print(f"  [{sub_mode}]")
+            print_metrics(metrics, prefix="  ")
+
+        # 体素级评估
+        voxel_metrics = voxel_semantic_evaluate(
+            pred_atom_coords=pred_atom_coords,
+            atom_gt=gt_data["atom_gt"],
+            dist_threshold=dist_threshold,
+            origin=origin,
+            voxel_size=voxel_size,
+            grid_shape_zyx=grid_shape_zyx,
+        )
+        sub_result["voxel_metrics"] = voxel_metrics
+
+        # 保存 GT 点云
+        if sub_output_root is not None:
+            sample_out = os.path.join(sub_output_root, sample_name)
+            os.makedirs(sample_out, exist_ok=True)
+            np.savez(
+                os.path.join(sample_out, "gt_points.npz"),
+                atom_gt=gt_data["atom_gt"],
+                atom_coords=gt_data["atom_coords"],
+            )
+
+        # 可视化
+        pred_voxel_mask = None
+        if pred_atom_coords is not None and origin is not None:
+            pred_voxel_mask = build_voxel_mask_from_coords(
+                atom_coords_world=pred_atom_coords,
+                origin=origin,
+                voxel_size=voxel_size,
+                grid_shape_zyx=grid_shape_zyx,
+            )
+        # 临时覆盖 vis_output_root 使可视化输出到子模式目录
+        vis_output_root_orig = cfg_dict.get("vis_output_root")
+        if vis_output_root_orig:
+            cfg_dict_sub = dict(cfg_dict)
+            cfg_dict_sub["vis_output_root"] = f"{vis_output_root_orig}_{sub_mode}"
+        else:
+            cfg_dict_sub = cfg_dict
+        _build_vis_bundle_safe(
+            cfg_dict=cfg_dict_sub,
+            output_root=sub_output_root,
+            cif_path=cif_path,
+            map_path=map_path,
+            cif_gt_path=cif_gt_path,
+            pred_atom_coords=pred_atom_coords,
+            prob_threshold=cfg_dict["threshold"],
+            filter_preset=_get_cfg(cfg_dict, "filter_preset", required=False),
+            class_mapping=_get_cfg(cfg_dict, "class_mapping", required=False),
+            select_first_model=cfg_dict["select_first_model"],
+            pdb_id=pdb_id,
+            pred_voxel_mask=pred_voxel_mask,
+            resampled_emdb=resampled_emdb,
+            origin=origin,
+            voxel_size=voxel_size,
+        )
+
+    except Exception as e:
+        sub_result["error"] = str(e)
+        import traceback
+        print(f"  ⚠️ [{sub_mode}] GT 评估失败: {e}")
+        traceback.print_exc()
+
+    return sub_result
+
+
 def _run_raw_single_mode(cfg_dict, model, device, output_root):
     """mode=raw_single: 单样本原始文件推断 + 可选 GT 评估
     
     see me: 保存结果:
         - {output_root}/{sample_name}/ 目录下的推断结果 (如 atom_probs.npz 等)
         - {vis_output_root}/[vis_subdir]/{sample_name}/ 目录下的可视化文件 (含 pred、gt 2个文件夹; 若开启 vis_enable)
+        - eval_mode="all" 时路径自动分裂为 {output_root}_easy / {output_root}_hard
     """
     cif_path = cfg_dict.get("cif_path")
     map_path = cfg_dict.get("map_path")
@@ -728,64 +910,77 @@ def _run_raw_single_mode(cfg_dict, model, device, output_root):
         )
 
     cif_gt_path = cfg_dict.get("cif_gt_path")
-    sample_output_dir = os.path.join(output_root, Path(cif_path).stem) if output_root else None
+    eval_mode = cfg_dict.get("eval_mode", "easy")
+    sample_name = Path(cif_path).stem
+    # bool, 是否为 "all" 模式
+    is_all = (eval_mode == "all")
+    # list[str], 需要评估/保存的子模式
+    sub_modes = ["easy", "hard", "trivial"] if is_all else [eval_mode]
 
-    result = run_raw_point_pipeline(
+    # 推断一次 —— "all" 时跳过 GT; 否则按配置
+    r = run_raw_point_pipeline(
         model=model, device=device,
         cif_path=cif_path, map_path=map_path, cif_gt_path=cif_gt_path,
-        target_voxel_size=cfg_dict["target_voxel_size"],
-        compute_density=cfg_dict["compute_density"],
-        select_first_model=cfg_dict["select_first_model"],
-        train_dataset_cfg=cfg_dict["_train_dataset_cfg"],
-        eval_gt=cfg_dict["eval_gt"],
-        filter_preset=_get_cfg(cfg_dict, "filter_preset", required=False),
-        threshold=cfg_dict["threshold"],
-        dist_threshold=cfg_dict["dist_threshold"],
-        merge_mode=cfg_dict["merge_mode"],
-        semantic_segment_method=cfg_dict["semantic_segment_method"],
-        dbscan_eps=cfg_dict["dbscan_eps"],
-        dbscan_min_samples=cfg_dict["dbscan_min_samples"],
-        core_decay_mode=cfg_dict["core_decay_mode"],
-        core_offset=cfg_dict["core_offset"],
-        box_spatial_weight_sigma_ratio=cfg_dict["box_spatial_weight_sigma_ratio"],
-        stride=cfg_dict["stride"],
-        windows_size=cfg_dict["windows_size"],
-        batch_size=cfg_dict["batch_size"],
-        output_dir=sample_output_dir,
+        eval_gt=False if is_all else cfg_dict["eval_gt"],
+        eval_mode=sub_modes[0],
+        output_dir=None if is_all else (os.path.join(output_root, sample_name) if output_root else None),
         show_progress=True,
-        error_dir=cfg_dict.get("error_dir"),
+        **_build_pipeline_kwargs(cfg_dict),
     )
+    if r.get("error") is not None:
+        return r
 
-    # 可视化
-    if result.get("error") is None:
-        # np.ndarray, (D, H, W), int64, 预测正类体素 mask
-        pred_voxel_mask = None
-        if result.get("pred_atom_coords") is not None and result.get("origin") is not None:
-            pred_voxel_mask = build_voxel_mask_from_coords(
-                atom_coords_world=result["pred_atom_coords"],
-                origin=result["origin"],
-                voxel_size=result["voxel_size"],
-                grid_shape_zyx=result["grid_shape_zyx"],
+    # 逐子模式: 保存 + 评估 + 可视化
+    for sub_mode in sub_modes:
+        sub_root = f"{output_root}_{sub_mode}" if is_all else output_root
+        sample_out = os.path.join(sub_root, sample_name) if sub_root else None
+
+        # 保存推断结果 ("all" 时分别到子目录; 非 "all" 时 pipeline 已内部保存)
+        if is_all and sample_out:
+            os.makedirs(sample_out, exist_ok=True)
+            np.savez(os.path.join(sample_out, "atom_probs.npz"),
+                     atom_probs=r["atom_probs"], atom_coords=r["atom_coords"])
+            np.savez(os.path.join(sample_out, "pred_atom_coords.npz"),
+                     pred_atom_coords=r["pred_atom_coords"])
+
+        # 评估 + 可视化 (“all” 时外部评估; 非 "all" 时 pipeline 已内部评估 → 仅做可视化)
+        if is_all and cfg_dict.get("eval_gt", False):
+            _evaluate_and_save_sub_mode(
+                sub_mode=sub_mode, cfg_dict=cfg_dict,
+                cif_path=cif_path, map_path=map_path, cif_gt_path=cif_gt_path,
+                pred_atom_coords=r["pred_atom_coords"],
+                origin=r["origin"], voxel_size=r["voxel_size"],
+                grid_shape_zyx=r["grid_shape_zyx"],
+                resampled_emdb=r.get("resampled_emdb"),
+                sub_output_root=sub_root,
+                sample_name=sample_name, pdb_id=None,
+                show_progress=True,
             )
-        _build_vis_bundle_safe(
-            cfg_dict=cfg_dict,
-            output_root=output_root,
-            cif_path=cif_path,
-            map_path=map_path,
-            cif_gt_path=cif_gt_path,
-            pred_atom_coords=result.get("pred_atom_coords"),
-            prob_threshold=cfg_dict["threshold"],
-            filter_preset=_get_cfg(cfg_dict, "filter_preset", required=False),
-            class_mapping=_get_cfg(cfg_dict, "class_mapping", required=False),
-            select_first_model=cfg_dict["select_first_model"],
-            pdb_id=None,
-            pred_voxel_mask=pred_voxel_mask,
-            resampled_emdb=result.get("resampled_emdb"),
-            origin=result.get("origin"),
-            voxel_size=result.get("voxel_size"),
-        )
+        else:
+            # 非 "all" 或 eval_gt=False: 仅做可视化
+            pred_voxel_mask = None
+            if r.get("pred_atom_coords") is not None and r.get("origin") is not None:
+                pred_voxel_mask = build_voxel_mask_from_coords(
+                    atom_coords_world=r["pred_atom_coords"],
+                    origin=r["origin"], voxel_size=r["voxel_size"],
+                    grid_shape_zyx=r["grid_shape_zyx"],
+                )
+            _build_vis_bundle_safe(
+                cfg_dict=cfg_dict, output_root=sub_root,
+                cif_path=cif_path, map_path=map_path, cif_gt_path=cif_gt_path,
+                pred_atom_coords=r.get("pred_atom_coords"),
+                prob_threshold=cfg_dict["threshold"],
+                filter_preset=_get_cfg(cfg_dict, "filter_preset", required=False),
+                class_mapping=_get_cfg(cfg_dict, "class_mapping", required=False),
+                select_first_model=cfg_dict["select_first_model"],
+                pdb_id=None,
+                pred_voxel_mask=pred_voxel_mask,
+                resampled_emdb=r.get("resampled_emdb"),
+                origin=r.get("origin"),
+                voxel_size=r.get("voxel_size"),
+            )
 
-    return result
+    return r
 
 
 def _run_raw_batch_mode(cfg_dict, model, device, output_root):
@@ -795,6 +990,7 @@ def _run_raw_batch_mode(cfg_dict, model, device, output_root):
         - {output_root}/{sname}/: 单个样本 sname 的推断结果 (如 atom_probs.npz 等)
         - {vis_output_root}/[vis_subdir]/{sname}/: 存放单个样本的可视化包 (含 pred、gt 2个文件夹; 若开启 vis_enable)
         - {output_root}/*.xlsx: 批量推断与评估结果的 Excel 汇总表 (由 write_batch_excel 生成)
+        - eval_mode="all" 时路径自动分裂为 {output_root}_easy / {output_root}_hard
     """
     from src.inference.utils.yield_json_from_raw_sample import load_raw_pairs
 
@@ -805,72 +1001,103 @@ def _run_raw_batch_mode(cfg_dict, model, device, output_root):
     pairs = load_raw_pairs(raw_pairs_json)
     print(f"[raw_batch] 共 {len(pairs)} 个样本")
 
-    all_results = []
+    eval_mode = cfg_dict.get("eval_mode", "easy")
+    # bool, 是否为 "all" 模式
+    is_all = (eval_mode == "all")
+    # list[str], 需要评估/保存的子模式
+    sub_modes = ["easy", "hard", "trivial"] if is_all else [eval_mode]
+    # dict[str, list], 按子模式收集每个样本的评估结果 (用于 Excel)
+    all_results_by_mode = {m: [] for m in sub_modes}
+    pipeline_kwargs = _build_pipeline_kwargs(cfg_dict)
+
     for i, (cif_p, map_p, cif_gt_p) in enumerate(pairs):
         sname = Path(cif_p).stem
         print(f"\n[{i+1}/{len(pairs)}] {sname}")
-        sample_out = os.path.join(output_root, sname) if output_root else None
 
+        # 推断一次
         r = run_raw_point_pipeline(
             model=model, device=device,
             cif_path=cif_p, map_path=map_p, cif_gt_path=cif_gt_p,
-            target_voxel_size=cfg_dict["target_voxel_size"],
-            compute_density=cfg_dict["compute_density"],
-            select_first_model=cfg_dict["select_first_model"],
-            train_dataset_cfg=cfg_dict["_train_dataset_cfg"],
-            eval_gt=cfg_dict["eval_gt"],
-            filter_preset=_get_cfg(cfg_dict, "filter_preset", required=False),
-            threshold=cfg_dict["threshold"],
-            dist_threshold=cfg_dict["dist_threshold"],
-            merge_mode=cfg_dict["merge_mode"],
-            semantic_segment_method=cfg_dict["semantic_segment_method"],
-            dbscan_eps=cfg_dict["dbscan_eps"],
-            dbscan_min_samples=cfg_dict["dbscan_min_samples"],
-            core_decay_mode=cfg_dict["core_decay_mode"],
-            core_offset=cfg_dict["core_offset"],
-            box_spatial_weight_sigma_ratio=cfg_dict["box_spatial_weight_sigma_ratio"],
-            stride=cfg_dict["stride"],
-            windows_size=cfg_dict["windows_size"],
-            batch_size=cfg_dict["batch_size"],
-            output_dir=sample_out,
+            eval_gt=False if is_all else cfg_dict["eval_gt"],
+            eval_mode=sub_modes[0],
+            output_dir=None if is_all else (os.path.join(output_root, sname) if output_root else None),
             show_progress=True,
-            error_dir=cfg_dict.get("error_dir"),
+            **pipeline_kwargs,
         )
 
-        # 可视化
-        if r.get("error") is None:
-            pred_voxel_mask = None
-            if r.get("pred_atom_coords") is not None and r.get("origin") is not None:
-                pred_voxel_mask = build_voxel_mask_from_coords(
-                    atom_coords_world=r["pred_atom_coords"],
-                    origin=r["origin"],
-                    voxel_size=r["voxel_size"],
+        if r.get("error") is not None:
+            for sub_mode in sub_modes:
+                all_results_by_mode[sub_mode].append({
+                    "sample_name": sname, "class_folder": "raw",
+                    "metrics": None, "voxel_metrics": None, "error": r["error"],
+                })
+            continue
+
+        # 逐子模式: 保存 + 评估 + 可视化
+        for sub_mode in sub_modes:
+            sub_root = f"{output_root}_{sub_mode}" if is_all else output_root
+            sample_out = os.path.join(sub_root, sname) if sub_root else None
+
+            # 保存推断结果 ("all" 时分别到子目录; 非 "all" 时 pipeline 已内部保存)
+            if is_all and sample_out:
+                os.makedirs(sample_out, exist_ok=True)
+                np.savez(os.path.join(sample_out, "atom_probs.npz"),
+                         atom_probs=r["atom_probs"], atom_coords=r["atom_coords"])
+                np.savez(os.path.join(sample_out, "pred_atom_coords.npz"),
+                         pred_atom_coords=r["pred_atom_coords"])
+
+            # 评估 + 可视化
+            if is_all and cfg_dict.get("eval_gt", False):
+                sub_result = _evaluate_and_save_sub_mode(
+                    sub_mode=sub_mode, cfg_dict=cfg_dict,
+                    cif_path=cif_p, map_path=map_p, cif_gt_path=cif_gt_p,
+                    pred_atom_coords=r["pred_atom_coords"],
+                    origin=r["origin"], voxel_size=r["voxel_size"],
                     grid_shape_zyx=r["grid_shape_zyx"],
+                    resampled_emdb=r.get("resampled_emdb"),
+                    sub_output_root=sub_root,
+                    sample_name=sname, pdb_id=sname,
+                    show_progress=True,
                 )
-            _build_vis_bundle_safe(
-                cfg_dict=cfg_dict, output_root=output_root,
-                cif_path=cif_p, map_path=map_p, cif_gt_path=cif_gt_p,
-                pred_atom_coords=r.get("pred_atom_coords"),
-                prob_threshold=cfg_dict["threshold"],
-                filter_preset=_get_cfg(cfg_dict, "filter_preset", required=False),
-                class_mapping=_get_cfg(cfg_dict, "class_mapping", required=False),
-                select_first_model=cfg_dict["select_first_model"],
-                pdb_id=sname,
-                pred_voxel_mask=pred_voxel_mask,
-                resampled_emdb=r.get("resampled_emdb"),
-                origin=r.get("origin"),
-                voxel_size=r.get("voxel_size"),
-            )
+                sub_result["sample_name"] = sname
+                sub_result["class_folder"] = "raw"
+                all_results_by_mode[sub_mode].append(sub_result)
+            else:
+                # 非 "all" 或 eval_gt=False: 可视化 + 收集结果
+                pred_voxel_mask = None
+                if r.get("pred_atom_coords") is not None and r.get("origin") is not None:
+                    pred_voxel_mask = build_voxel_mask_from_coords(
+                        atom_coords_world=r["pred_atom_coords"],
+                        origin=r["origin"], voxel_size=r["voxel_size"],
+                        grid_shape_zyx=r["grid_shape_zyx"],
+                    )
+                _build_vis_bundle_safe(
+                    cfg_dict=cfg_dict, output_root=sub_root,
+                    cif_path=cif_p, map_path=map_p, cif_gt_path=cif_gt_p,
+                    pred_atom_coords=r.get("pred_atom_coords"),
+                    prob_threshold=cfg_dict["threshold"],
+                    filter_preset=_get_cfg(cfg_dict, "filter_preset", required=False),
+                    class_mapping=_get_cfg(cfg_dict, "class_mapping", required=False),
+                    select_first_model=cfg_dict["select_first_model"],
+                    pdb_id=sname,
+                    pred_voxel_mask=pred_voxel_mask,
+                    resampled_emdb=r.get("resampled_emdb"),
+                    origin=r.get("origin"),
+                    voxel_size=r.get("voxel_size"),
+                )
+                all_results_by_mode[sub_mode].append(r)
 
         # 释放大数组
         for key in ["all_box_results", "atom_probs", "pred_atom_coords", "atom_coords", "resampled_emdb"]:
             r.pop(key, None)
-        all_results.append(r)
 
     # Excel 汇总
     if output_root and cfg_dict.get("eval_gt", False):
-        excel_path = write_batch_excel(all_results, output_root)
-        print(f"[raw_batch] Excel 汇总已保存: {excel_path}")
+        for sub_mode in sub_modes:
+            sub_out = f"{output_root}_{sub_mode}" if is_all else output_root
+            os.makedirs(sub_out, exist_ok=True)
+            excel_path = write_batch_excel(all_results_by_mode[sub_mode], sub_out)
+            print(f"[raw_batch][{sub_mode}] Excel 汇总已保存: {excel_path}")
 
 
 # NOTE: 如果后处理程序要加入新的参数(如 dbscam_eps 这样的), 那就要改这个函数
@@ -890,6 +1117,11 @@ def _run_raw_param_search_mode(cfg_dict, model, device, output_root, ckpt_slug: 
 
     pairs = load_raw_pairs(raw_pairs_json)
     print(f"[raw_param_search] 共 {len(pairs)} 个样本")
+
+    # str, 评估模式 (param_search 不支持 "all")
+    eval_mode = cfg_dict.get("eval_mode", "easy")
+    if eval_mode == "all":
+        raise ValueError("[错误] raw_param_search 模式不支持 eval_mode='all'。请使用 'easy'、'hard' 或 'trivial'。")
 
     # 参数网格
     search_params = cfg_dict.get("search_params", {})
@@ -931,6 +1163,7 @@ def _run_raw_param_search_mode(cfg_dict, model, device, output_root, ckpt_slug: 
                 select_first_model=cfg_dict["select_first_model"],
                 train_dataset_cfg=cfg_dict["_train_dataset_cfg"],
                 eval_gt=False,
+                eval_mode=eval_mode,
                 filter_preset=_get_cfg(cfg_dict, "filter_preset", required=False),
                 threshold=cfg_dict["threshold"],
                 dist_threshold=cfg_dict["dist_threshold"],
@@ -973,6 +1206,7 @@ def _run_raw_param_search_mode(cfg_dict, model, device, output_root, ckpt_slug: 
                     class_mapping=_get_cfg(cfg_dict, "class_mapping", required=False),
                     select_first_model=cfg_dict["select_first_model"],
                     error_dir=cfg_dict.get("error_dir"),
+                    eval_mode=eval_mode,
                 )
                 info["gt_data"] = gt
             except Exception as e:
@@ -1032,7 +1266,24 @@ def _run_raw_param_search_mode(cfg_dict, model, device, output_root, ckpt_slug: 
                     dist_threshold=_dist_thresh,
                 )
                 metrics["sample_name"] = info["name"]
-                sample_metrics.append(metrics)
+                
+                voxel_metrics = voxel_semantic_evaluate(
+                    pred_atom_coords=pred_coords,
+                    atom_gt=info["gt_data"]["atom_gt"],
+                    dist_threshold=_dist_thresh,
+                    origin=_origin,
+                    voxel_size=voxel_size,
+                    grid_shape_zyx=_grid_shape,
+                )
+                
+                # combine metrics locally for averaging
+                combined = metrics.copy()
+                combined["voxel_precision"] = voxel_metrics["precision"]
+                combined["voxel_recall"] = voxel_metrics["recall"]
+                combined["voxel_f1"] = voxel_metrics["f1"]
+                combined["voxel_iou"] = voxel_metrics["iou"]
+                
+                sample_metrics.append(combined)
                 per_sample_records.append(
                     {
                         "sample_name": info["name"],
@@ -1040,6 +1291,10 @@ def _run_raw_param_search_mode(cfg_dict, model, device, output_root, ckpt_slug: 
                         "recall": metrics["recall"],
                         "f1": metrics["f1"],
                         "iou": metrics["iou"],
+                        "voxel_precision": voxel_metrics["precision"],
+                        "voxel_recall": voxel_metrics["recall"],
+                        "voxel_f1": voxel_metrics["f1"],
+                        "voxel_iou": voxel_metrics["iou"],
                     }
                 )
 
@@ -1048,8 +1303,13 @@ def _run_raw_param_search_mode(cfg_dict, model, device, output_root, ckpt_slug: 
             avg_r = float(np.mean([record["recall"] for record in sample_metrics]))
             avg_f1 = float(np.mean([record["f1"] for record in sample_metrics]))
             avg_iou = float(np.mean([record["iou"] for record in sample_metrics]))
+            avg_vp = float(np.mean([record["voxel_precision"] for record in sample_metrics]))
+            avg_vr = float(np.mean([record["voxel_recall"] for record in sample_metrics]))
+            avg_vf1 = float(np.mean([record["voxel_f1"] for record in sample_metrics]))
+            avg_viou = float(np.mean([record["voxel_iou"] for record in sample_metrics]))
         else:
             avg_p = avg_r = avg_f1 = avg_iou = 0.0
+            avg_vp = avg_vr = avg_vf1 = avg_viou = 0.0
 
         row = {
             **params,
@@ -1057,6 +1317,10 @@ def _run_raw_param_search_mode(cfg_dict, model, device, output_root, ckpt_slug: 
             "avg_R": avg_r,
             "avg_F1": avg_f1,
             "avg_IoU": avg_iou,
+            "avg_voxel_P": avg_vp,
+            "avg_voxel_R": avg_vr,
+            "avg_voxel_F1": avg_vf1,
+            "avg_voxel_IoU": avg_viou,
         }
         if per_sample_records:
             row["_per_sample"] = per_sample_records
@@ -1100,7 +1364,7 @@ def _run_raw_param_search_mode(cfg_dict, model, device, output_root, ckpt_slug: 
             if not os.path.exists(info["npz_path"]):
                 continue
 
-            print(f"[raw_param_search][正在可视化+体素评估 {i+1}/{len(cached_info)}] {info['name']}")
+            print(f"[raw_param_search][正在可视化 {i+1}/{len(cached_info)}] {info['name']}")
             box_results, atom_coords, voxel_size, cached_origin, cached_grid_shape, cached_emdb = _load_box_logits_cache(info["npz_path"])
             atom_probs = merge_box_atom_results(
                 box_results=box_results,
@@ -1120,19 +1384,6 @@ def _run_raw_param_search_mode(cfg_dict, model, device, output_root, ckpt_slug: 
                 dbscan_eps=best_dbscan_eps,
                 dbscan_min_samples=best_dbscan_min_samples,
             )
-
-            # 体素级评估 (仅在最优参数下算一次)
-            if info.get("gt_data") is not None and cached_origin is not None and cached_grid_shape is not None:
-                best_dist_thresh = best.get("dist_threshold", cfg_dict["dist_threshold"])
-                voxel_metrics = voxel_semantic_evaluate(
-                    pred_atom_coords=pred_coords,
-                    atom_gt=info["gt_data"]["atom_gt"],
-                    dist_threshold=best_dist_thresh,
-                    origin=cached_origin,
-                    voxel_size=voxel_size,
-                    grid_shape_zyx=cached_grid_shape,
-                )
-                print_metrics(voxel_metrics, prefix=f"  {info['name']}")
 
             # 建立预测体素 mask
             pred_voxel_mask = None
@@ -1207,7 +1458,7 @@ def main(cfg: DictConfig):
 
     print("=" * 60)
     print(f"  [inference/run] 点云推断与评估")
-    print(f"  模式: {mode}  |  配置: {_CONFIG_NAME}.yaml")
+    print(f"  模式: {mode}  |  评估: {cfg_dict.get('eval_mode', 'easy')}  |  配置: {_CONFIG_NAME}.yaml")
     print(f"  设备: {device_str}  |  checkpoint: {ckpt_path}")
     print("=" * 60)
 

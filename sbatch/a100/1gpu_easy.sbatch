@@ -1,25 +1,27 @@
 #!/bin/bash
 # ============================================================
-# H100 单卡训练 (1 GPU, 24 核 CPU)
+# A100 单卡训练 (1 GPU, 16 核 CPU)
 # ============================================================
-# 用法 (推荐): sbatch sbatch/h100/1gpu.sbatch "+experiment=exp001_baseline"
-# 用法 (旧配置): sbatch sbatch/h100/1gpu.sbatch CONFIG_NAME ["HYDRA_OVERRIDES"]
+# 用法 (推荐): sbatch sbatch/a100/1gpu.sbatch "+experiment=exp001_baseline"
+# 用法 (旧配置): sbatch sbatch/a100/1gpu.sbatch CONFIG_NAME ["HYDRA_OVERRIDES"]
 # ============================================================
 #SBATCH -o /home/penghongen/My_Project/feedback_plus/logs/_temp_slurm/%x_%j.out
 #SBATCH -e /home/penghongen/My_Project/feedback_plus/logs/_temp_slurm/%x_%j.err
-#SBATCH -p h100
-#SBATCH --qos=h100g2
+#SBATCH -p a100
+#SBATCH --qos=a100g2
 #SBATCH --job-name=train
 #SBATCH --nodes=1
-#SBATCH --gres=gpu:h100:1
+#SBATCH --gres=gpu:a100:1
 #SBATCH --ntasks-per-node=1
-#SBATCH --cpus-per-task=24
+#SBATCH --cpus-per-task=16
 
 SBATCH_ROOT="${POCKET_PLUS_SBATCH_ROOT:-/home/penghongen/My_Project/Pocket_Plus/sbatch}"
-export POCKET_PLUS_LOCK_PRE_ENABLED="${POCKET_PLUS_LOCK_PRE_ENABLED:-1}"
+export POCKET_PLUS_LOCK_PRE_ENABLED="${POCKET_PLUS_LOCK_PRE_ENABLED:-0}"
 export POCKET_PLUS_LOCK_AFTER_ENABLED="${POCKET_PLUS_LOCK_AFTER_ENABLED:-1}"
 export POCKET_PLUS_TRY_AFTER_END_ENABLED="${POCKET_PLUS_TRY_AFTER_END_ENABLED:-1}"
 source "${SBATCH_ROOT}/_common.sh"
+
+
 
 
 # ============================================================
@@ -47,12 +49,22 @@ write_custom_run_cmd_hook() {
     cat << EOF > "${TARGET_FILE}"
 
 #!/bin/bash
-python Pocket_Plus/src/inference/run.py --config=标准0_nucleic_30
-python Pocket_Plus/src/inference/run.py --config=标准0_protein_30
-python Pocket_Plus/src/inference/run.py --config=标准0_cryoatom_trivial_30
+python /home/penghongen/My_Project/Pocket_Plus/src/inference/run.py --config=标准0_cryoatom_easy
 
 EOF
 }
+# ============================================================
+# write_custom_run_cmd_hook() {
+#     local TARGET_FILE="$1"
+#     cat << EOF > "${TARGET_FILE}"
+# #!/bin/bash
+# python Pocket_Plus/src/inference/run.py \\
+#     --config=raw_single \\
+#     ckpt_path="feedback_plus/logs/.../checkpoints/last.ckpt"
+# EOF
+# }
+
+
 
 
 source "${SBATCH_ROOT}/_train_core.sh" "${1:-}" 1 1 "${2:-}"

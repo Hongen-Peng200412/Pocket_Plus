@@ -239,7 +239,7 @@ def _point_semantic_segment_by_dbscan(
     dbscan_min_samples: int,
 ) -> np.ndarray:
     """
-    使用 DBSCAN 对阈值后的正类原子点云做去孤立点后处理。
+    使用 DBSCAN 对阈值后的正类原子点云做去孤立点后处理: dbscan_eps <= 0.0 or dbscan_min_samples <= 1.0 回退至仅做 threshold 的情况。
 
     输入参数:
         - atom_probs: np.ndarray, (N_atom,), float32, 全部原子的口袋概率
@@ -251,15 +251,15 @@ def _point_semantic_segment_by_dbscan(
     输出:
         - pred_atom_coords: np.ndarray, (N_pred, 3), float32, DBSCAN 过滤后的正类原子坐标
     """
-    if dbscan_eps <= 0.0:
-        raise ValueError(f"dbscan_eps 必须 > 0, 当前值为 {dbscan_eps}")
-    if dbscan_min_samples <= 0:
-        raise ValueError(f"dbscan_min_samples 必须 > 0, 当前值为 {dbscan_min_samples}")
-
     # np.ndarray, (N_atom,), bool, 阈值后的正类掩码
     positive_mask = atom_probs >= threshold
     # np.ndarray, (N_pos, 3), float32, 正类原子坐标
     positive_coords = atom_coords[positive_mask].astype(np.float32, copy=False)
+
+    # 如果 DBSCAN 参数 <= 0，则视作退化为仅做 threshold 的情况
+    if dbscan_eps <= 0.0 or dbscan_min_samples <= 1.0:
+        return positive_coords
+
     n_positive = int(positive_coords.shape[0])
     if n_positive == 0:
         return np.empty((0, 3), dtype=np.float32)

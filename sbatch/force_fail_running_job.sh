@@ -72,6 +72,8 @@ echo "[Info] opening an overlapping helper step inside the target allocation"
 srun \
     --jobid="${JOB_ID}" \
     --overlap \
+    --mem=0 \
+    --oversubscribe \
     --nodes="${NODE_COUNT}" \
     --ntasks="${NODE_COUNT}" \
     --ntasks-per-node=1 \

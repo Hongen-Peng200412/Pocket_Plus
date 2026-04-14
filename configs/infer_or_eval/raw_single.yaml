@@ -82,6 +82,20 @@ select_first_model: false
 #   作用: 实时伴随评估。开启后将立刻从输入结构自带配体中算出口袋精度。
 eval_gt: false
 
+# eval_mode: str, 标量
+#   → _run_raw_single_mode(): 编排评估模式
+#   → run_raw_point_pipeline(eval_mode=...) → load_gt_from_structure(eval_mode=...)
+#   作用: 评估难度模式。
+#     "trivial": 忽略 cif_gt_path, 完全使用 cif_path 提取配体和受体; 适用于 cif_path 本身就是真实结构的场景
+#     "easy": cif_gt_path 仅提供配体信息, 结合位点标注基于 cif_path (预测受体), 降低评估难度
+#     "hard": cif_gt_path 同时提供配体信息和受体结构, 结合位点标注基于真实受体,
+#             模型预测原子与真实结合原子直接通过 dist_threshold 进行距离匹配评估
+#     "all":  先后运行 easy、hard、trivial 三种模式 (模型推断只执行一次);
+#             输出路径自动分裂为 {output_root}_easy / {output_root}_hard / {output_root}_trivial,
+#             {vis_output_root}_easy / {vis_output_root}_hard / {vis_output_root}_trivial
+#   注意: "all" 仅在 raw_single / raw_batch 模式下可用; raw_param_search 不支持
+eval_mode: "easy"
+
 # filter_preset: str, 标量
 #   → run.py _run_raw_single_mode() → run_raw_point_pipeline(filter_preset=...)
 #   → load_gt_from_structure(filter_preset=...)
