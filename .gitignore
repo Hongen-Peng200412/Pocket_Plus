@@ -7,12 +7,10 @@ __pycache__/
 .claude/
 .vscode/
 
-# 忽略实验数据和日志
+# 忽略实验数据和日志（如果你不希望它们占满 GitHub 空间）
 log/
 results/
 output/
-CLAUDE_PLANS/
-
-# 所有 .txt 和 测试 文件
 *.txt
+*.md
 tests/
