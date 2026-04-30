@@ -17,7 +17,7 @@ for _p in (str(_PROJECT_ROOT), str(_POCKET_ROOT), str(_BINDER_DIR)):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-from Pocket.utils.network_tools import apply_sharding, atomic_np_savez
+from Pocket_Plus.utils.network_tools import apply_sharding, atomic_np_savez
 warnings.filterwarnings("ignore")
 
 
@@ -109,7 +109,7 @@ def Split_Data_into_Box_PocketCentered(
         - cut_length:               int, inner 区域裁掉的边缘宽度 (体素数)
 
         - output_root_folder:       str, 输出根文件夹
-        - name_list:                list[str], 子文件夹名, name_list[i] 对应 grids[i] 保存的文件夹名, 暂时为["pdb_label_BOX", "emdb_BOX", "pdb_feature_BOX"]
+        - name_list:                list[str], 子文件夹名, name_list[i] 对应 grids[i] 保存的文件夹名, 暂时为["pdb_label_BOX", "emdb_exp_BOX", "emdb_sim_BOX"]
         - overwrite_existing:       bool, 是否覆盖已有 .npz
         - pocket_atom_counts:       list[int] | None, 长度 N_pockets, 每个口袋的蛋白质结合原子数 (用于统计)
         - ligand_atom_counts:       list[int] | None, 长度 N_pockets, 每个口袋对应配体的原子数 (用于统计)
@@ -288,9 +288,7 @@ def Split_Data_into_Box_PocketCentered(
                         y_range = (origin[1] + yy * voxel_size[1], origin[1] + (yy + window_size) * voxel_size[1])
                         z_range = (origin[2] + zz * voxel_size[2], origin[2] + (zz + window_size) * voxel_size[2])
                         # tuple(float,float,float), 当前 BOX 原点的世界坐标
-                        global_origin = (origin[0] + xx * voxel_size[0],
-                                         origin[1] + yy * voxel_size[1],
-                                         origin[2] + zz * voxel_size[2])
+                        global_origin = (origin[0] + xx * voxel_size[0], origin[1] + yy * voxel_size[1], origin[2] + zz * voxel_size[2])
                         if num == 0:  # label — 用于检验
                             # 生成该 class_id 的二值掩码
                             label_mask = (block[0] == class_id)
@@ -358,9 +356,11 @@ def Split_Data_into_Box_PocketCentered(
 def _process_one_sample(
     item,
 
-    pdb_label_npz_folder, map_npz_folder, pdb_feature_npz_folder,
+    pdb_label_npz_folder, 
+    map_npz_folder,
+    sim_npz_folder,
+    ligand_dist_npz_folder,
     sample_root_path,
-    valid_id_set,
 
     window_size, stride,
     r_expand, edge_expand, all_pos_ratio, center_pos_ratio,
@@ -373,7 +373,7 @@ def _process_one_sample(
     overwrite_existing,
 ):
     """
-    处理单个 EMDB-PDB 样本: 加载三个 .npz 文件(密度图、PDB特征图、PDB标签图) + 原始标签   
+    处理单个 EMDB-PDB 样本: 加载两个 .npz 文件(密度图、PDB标签图) + 原始标签   
         →   调用 Split_Data_into_Box_PocketCentered 做口袋中心裁剪 → 保存 BOX.
     该函数由 joblib.Parallel 在 Split_Datas_into_Box 内部并行调用.
 
@@ -382,9 +382,8 @@ def _process_one_sample(
 
         - pdb_label_npz_folder:     str, bind_AtomsLabel_to_EMDB 保存的 .npz 母文件夹路径, 含有 .npz:(grid, origin, voxel_size)
         - map_npz_folder:           str, 密度图经 bind.py 重采样(目前为0.7A)后的 .npz 母文件夹路径, 含有 .npz:(grid, origin, voxel_size)
-        - pdb_feature_npz_folder:   str, bind_AtomsFeature_to_EMDB 保存的 .npz 母文件夹路径, 含有 .npz:(grid, origin, voxel_size)
+        - sim_npz_folder:           str|None, bind.py 额外保存的模拟密度图 .npz 母文件夹路径
         - sample_root_path:         str, PDB_processor/run_preprocess.py 解析后的样本根目录, 子文件夹为 {pdb_id}/, 含 labels.npz 和 atoms.npz
-        - valid_id_set:             set[str], 以上所有源文件中都存在的 pdb_id 交集 (小写)
 
         - window_size:              int, 滑动窗口边长 (体素数)
         - stride:                   int, 滑动窗口步长 (体素数)
@@ -394,7 +393,7 @@ def _process_one_sample(
         - center_pos_ratio:         float, b — BOX inner 正类数占比 / 中心 BOX inner 正类数占比  的最低比例
         - cut_length:               int, inner 区域裁掉的边缘宽度
 
-        - sample_box_num:           int, 意欲在每张密度图中裁剪的随机box数目(会探查至多十倍), 这些BOX将放在与"metal_ion"等同级别的 "sample_BOX"下
+        - sample_box_num:           int, 意欲在每张密度图中裁剪的随机box数目(会探查至多十倍), 这些BOX将放在与"metal_ion"等同级别的 "random_BOX"下
         - hardmask_upper_required:  float, 在随机选取BOX时, 只有存在原子的体素比例(hardmask>0) > hardmask_upper_required 的BOX才会被接受
 
         - output_root_folder:       str, 保存的根文件夹路径
@@ -424,12 +423,9 @@ def _process_one_sample(
     """
     # str, 小写 PDB ID
     pdb_id = list(item.values())[0].lower()
-    if pdb_id not in valid_id_set:
-        return (pdb_id, 0, 0, 0, True, 'skipped', [], {})
 
     try:
         map_path = os.path.join(map_npz_folder, f'{pdb_id}.npz')                    # str, 密度图 npz 路径
-        pdb_feature_path = os.path.join(pdb_feature_npz_folder, f'{pdb_id}.npz')    # str, PDB 特征图 npz 路径
         pdb_label_path = os.path.join(pdb_label_npz_folder, f'{pdb_id}.npz')        # str, PDB 标签图 npz 路径
         
         labels_npz_path = os.path.join(sample_root_path, pdb_id, 'labels.npz')      # str, 原始标签文件路径
@@ -443,8 +439,7 @@ def _process_one_sample(
         pocket_centers = labels_data['pocket_centers']
         # numpy, (N_atoms,), int32, 每个原子的结合位点实例 ID (-1=非结合)
         instance_ids = labels_data['instance_ids']
-        # numpy, (N_atoms,), int32, 每个原子对应的原始类别 ID
-        pocket_class_ids_all = labels_data['pocket_class_ids']
+
         # str, 类别名称映射字符串, 暂时为{1: 'metal_ion', 2: 'peptide', 3: 'nucleic_acid', 4: 'small_molecule'}
         raw_map = labels_data['pocket_class_name_map']
         if isinstance(raw_map, np.ndarray):
@@ -468,10 +463,24 @@ def _process_one_sample(
             labels_data.close()
             return (pdb_id, 0, 0, 0, True, 'skipped (no binding site)', [], {})
 
+        # ---- ligand 数量自适应处理：最多保留 50 个配体 ----
+        if len(unique_inst_ids) > 50:
+            print(f"[Warning] {pdb_id}: 检测到 {len(unique_inst_ids)} 个真实配体/口袋, 当前脚本将随机保留其中 50 个进行切块")
+            rng = np.random.default_rng(42)
+            unique_inst_ids = rng.choice(unique_inst_ids, size=50, replace=False)
+
+
+
         # numpy.ndarray, (N_ligands,), int32, 每个选中配体的 candidate_id（按升序）
         ligand_candidate_ids = labels_data['ligand_candidate_ids']
         # dict[int, int], candidate_id → pocket_centers 中对应的索引
         cand_id_to_center_idx = {int(cid): i for i, cid in enumerate(ligand_candidate_ids)}
+        # np.ndarray, (N_ligands,), int32, 每个配体的口袋类别 ID
+        ligand_class_ids_arr = labels_data['ligand_class_ids']
+        # dict[int, int], candidate_id → class_id 直接映射 (由 save_labels_npz 持久化, 无需从逐原子标签反推)
+        cand_to_class = {int(cid): int(cls) for cid, cls in zip(ligand_candidate_ids, ligand_class_ids_arr)}
+
+
 
         # list[numpy], 每个口袋的结合原子世界坐标, 元素形状 (M_i, 3), 长度为有口袋原子的ligand数目 N_pockets_matched
         pocket_atom_coords_list = []
@@ -492,21 +501,25 @@ def _process_one_sample(
         for inst_id in unique_inst_ids:
             # int, 当前循环处理的配体全局实例索引(就是candidate_id; 从0开始; 唯一但不连续; 见instance_labels.py)
             inst_id_int = int(inst_id)
-            # numpy.ndarray, (N_atoms,), bool, 定位当前实例(口袋)所属原子的掩码
-            inst_mask = (instance_ids == inst_id_int)
-            # numpy.ndarray, (M_i, 3), float32, 该实例包含的蛋白质结合原子的坐标
-            coords_i = atom_coords[inst_mask]
+
+            # ---- 获取该配体的完整结合原子 (含口袋重叠区, 不受独占分配约束) ----
+            pocket_indices_key = f'pocket_atom_indices_{inst_id_int}'
+            if pocket_indices_key in labels_data:
+                # numpy.ndarray, (K_i,), int32, 该配体阈值内的所有结合原子全局索引
+                pocket_indices = labels_data[pocket_indices_key]
+                # numpy.ndarray, (K_i, 3), float32, 该实例包含的蛋白质结合原子的坐标
+                coords_i = atom_coords[pocket_indices]
+            else:
+                raise ValueError(f"pocket_atom_indices_{inst_id_int} not found in labels.npz! 请用最新的 process_and_label.py 重新生成数据.")
             if len(coords_i) == 0:
                 continue
             
-            # numpy.ndarray, (M_i,), int32, 这些原子的类别列表
-            cids = pocket_class_ids_all[inst_mask]
-            # int, 口袋原始 ID(使用原子所属类别的众数作为该口袋的原始类别)
-            raw_class_id = int(np.bincount(cids).argmax())
+            # int, 口袋类别 ID (从 ligand_class_ids 直接查表, 由 filter_and_classify 产出)
+            raw_class_id = cand_to_class[inst_id_int]
             # 过滤背景类
             if raw_class_id == 0:
                 continue
-            # str, 类别名称 (优先从 labels.npz 的映射表中取)
+            # str, 类别名称 (从 labels.npz 的映射表中取)
             this_class_name = class_name_dict.get(raw_class_id, f"class_{raw_class_id}")
             
 
@@ -551,10 +564,33 @@ def _process_one_sample(
         voxel_size_arr = m_item['voxel_size']
         m_item.close()
 
-        # numpy.ndarray, (C, D, H, W), float32, 蛋白质特征网格图
-        pdb_feature_grid = np.load(pdb_feature_path)['grid']
         # numpy.ndarray, (1, D, H, W), int32/float32, 包含类别 ID 的掩码图
         pdb_label_grid = np.load(pdb_label_path)['grid']
+
+        sim_grid = None
+        if sim_npz_folder is not None:
+            sim_path = os.path.join(sim_npz_folder, f'{pdb_id}.npz')
+            if os.path.exists(sim_path):
+                s_item = np.load(sim_path)
+                sim_grid = s_item['grid'][None, ...]
+                s_item.close()
+
+        # np.ndarray | None, (num_pocket_classes, D, H, W), float32, ligand 距离图
+        ligand_dist_grid = None
+        if ligand_dist_npz_folder is not None:
+            ld_path = os.path.join(ligand_dist_npz_folder, f'{pdb_id}.npz')
+            if os.path.exists(ld_path):
+                ld_item = np.load(ld_path)
+                ligand_dist_grid = ld_item['grid']  # (num_pocket_classes, D, H, W)
+                ld_item.close()
+
+        # ---- 构建对齐的 grids 列表 ----
+        # 不再包含 pdb_feature_grid: pdb_feature 改为模型在线 scatter 生成
+        grids_to_crop = [pdb_label_grid, map_grid]
+        if sim_grid is not None:
+            grids_to_crop.append(sim_grid)
+        if ligand_dist_grid is not None:
+            grids_to_crop.append(ligand_dist_grid)
 
         # ---- 调用核心裁剪逻辑 ----
         saved, skipped, checked, pocket_stats, class_voxel_stats = Split_Data_into_Box_PocketCentered(
@@ -565,7 +601,7 @@ def _process_one_sample(
             class_ids_per_pocket,
             class_names_per_pocket,
 
-            pdb_label_grid, map_grid, pdb_feature_grid,
+            *grids_to_crop,
             window_size=window_size, stride=stride,
             r_expand=r_expand,
             edge_expand=edge_expand,
@@ -579,19 +615,36 @@ def _process_one_sample(
         )
 
 
+
         # -------------------------------- random_BOX 随机采样 --------------------------------
         if sample_box_num > 0:
-            # int, 体素网格的空间形状
+            # ---- 从 atoms.npz 计算 hardmask (替代原先依赖 pdb_feature_grid 的方案) ----
+            # 将原子世界坐标转为体素索引, 标记有原子的体素
             Z, Y, X = map_grid.shape[-3:]
-            # numpy, (D, H, W), bool, hardmask: 特征图中有原子的体素
-            hardmask_full = np.any(pdb_feature_grid != 0, axis=0)
+            # np.ndarray, (D, H, W), bool, hardmask: 含有原子的体素
+            hardmask_full = np.zeros((Z, Y, X), dtype=bool)
+            # np.ndarray, (N_atom, 3), int, 体素索引 (x, y, z)
+            voxel_ijk = np.floor((atom_coords - origin_arr) / voxel_size_arr).astype(int)
+            # np.ndarray, (N_atom,), bool, 合法索引掩码
+            valid = (
+                (voxel_ijk[:, 0] >= 0) & (voxel_ijk[:, 0] < X) &
+                (voxel_ijk[:, 1] >= 0) & (voxel_ijk[:, 1] < Y) &
+                (voxel_ijk[:, 2] >= 0) & (voxel_ijk[:, 2] < Z)
+            )
+            v = voxel_ijk[valid]
+            hardmask_full[v[:, 2], v[:, 1], v[:, 0]] = True
+
             # int, 已保存的 random_BOX 计数
             rand_saved = 0
             # int, 累计 hardmask 非零体素数 / 总体素数
             rand_pos_voxels = 0
             rand_total_voxels = 0
             # list[numpy], 按 name_list 顺序排列的全图网格
-            all_grids = [pdb_label_grid, map_grid, pdb_feature_grid]
+            all_grids = [pdb_label_grid, map_grid]
+            if sim_grid is not None:
+                all_grids.append(sim_grid)
+            if ligand_dist_grid is not None:
+                all_grids.append(ligand_dist_grid)
 
             # int, 最大尝试次数 = 目标数 * 10
             max_attempts = sample_box_num * 10
@@ -626,7 +679,7 @@ def _process_one_sample(
                     z_range = (origin_arr[2] + rz * voxel_size_arr[2], origin_arr[2] + (rz + window_size) * voxel_size_arr[2])
                     # tuple(float,float,float), 当前 BOX 原点的世界坐标
                     global_origin = (origin_arr[0] + rx * voxel_size_arr[0], origin_arr[1] + ry * voxel_size_arr[1], origin_arr[2] + rz * voxel_size_arr[2])
-                    # str, 保存路径: output_root / name(如"pdb_feature_BOX") / random_BOX / {pdb_id}_-1_{rx}_{ry}_{rz}.npz
+                    # str, 保存路径: output_root / name(如"emdb_exp_BOX") / random_BOX / {pdb_id}_-1_{rx}_{ry}_{rz}.npz
                     path = os.path.join(
                         output_root_folder,
                         name_list[num],
@@ -654,7 +707,11 @@ def _process_one_sample(
                     'total_voxels': rand_total_voxels,
                 }
 
-        del map_grid, pdb_feature_grid, pdb_label_grid, atom_coords, pocket_atom_coords_list
+        del map_grid, pdb_label_grid, atom_coords, pocket_atom_coords_list
+        if sim_grid is not None:
+            del sim_grid
+        if ligand_dist_grid is not None:
+            del ligand_dist_grid
         gc.collect()
 
         return (pdb_id, saved, skipped, checked, True, None, pocket_stats, class_voxel_stats)
@@ -666,21 +723,21 @@ def _process_one_sample(
 
 
 def Split_Datas_into_Box(
-    emdb_pdb_json: str, 
-    pdb_label_npz_folder: str, map_npz_folder: str, pdb_feature_npz_folder: str, 
-    sample_root_path: str,
+    emdb_pdb_json: str=None, 
 
-    window_size: int, stride: int, 
-    r_expand: float,
-    edge_expand: float,
-    all_pos_ratio: float,
-    center_pos_ratio: float,
-    cut_length: int,
+    sample_root_path: str=None,
+    pdb_label_npz_folder: str=None, map_npz_folder: str=None, sim_npz_folder: str=None, ligand_dist_npz_folder: str = None,
 
-    sample_box_num: int,
-    hardmask_upper_required: float,
+    window_size: int=None, stride: int=None, 
+    r_expand: float=None,
+    edge_expand: float=None,
+    all_pos_ratio: float=None,
+    center_pos_ratio: float=None,
+    cut_length: int=None,
 
-    output_root_folder: str, name_list: list,
+    sample_box_num: int=None,
+    hardmask_upper_required: float=None,
+    output_root_folder: str=None, name_list: list=None,
     
     part_id: int = 0, total_parts: int = 1,
     n_jobs: int = 1,
@@ -694,7 +751,6 @@ def Split_Datas_into_Box(
         - emdb_pdb_json:          str, 映射 JSON 路径
         - pdb_label_npz_folder:   str, 标签 NPZ 目录
         - map_npz_folder:         str, 密度图 NPZ 目录
-        - pdb_feature_npz_folder: str, 特征图 NPZ 目录
         - sample_root_path:       str, 原始 labels.npz 所在根目录
         - window_size:            int, 块边长
         - stride:                 int, 步长
@@ -726,19 +782,36 @@ def Split_Datas_into_Box(
 
     # 获取现有文件 ID 交集
     map_id_set = {x.split('.')[0].lower() for x in os.listdir(map_npz_folder)}
-    pdb_feature_id_set = {x.split('.')[0].lower() for x in os.listdir(pdb_feature_npz_folder)}
     pdb_label_id_set = {x.split('.')[0].lower() for x in os.listdir(pdb_label_npz_folder)}
     sample_id_set = {x.lower() for x in os.listdir(sample_root_path) if os.path.isdir(os.path.join(sample_root_path, x))}
-    # set[str], 同时在四个源目录中存在的 PDB ID
-    valid_id_set = map_id_set & pdb_feature_id_set & pdb_label_id_set & sample_id_set
+    # set[str], 同时在三个源目录中存在的 PDB ID (pdb_feature_npz_folder 已不再需要)
+    valid_id_set = map_id_set & pdb_label_id_set & sample_id_set
+    if sim_npz_folder is not None:
+        sim_id_set = {x.split('.')[0].lower() for x in os.listdir(sim_npz_folder)}
+        valid_id_set = valid_id_set & sim_id_set
+    if ligand_dist_npz_folder is not None:
+        ld_id_set = {x.split('.')[0].lower() for x in os.listdir(ligand_dist_npz_folder)}
+        valid_id_set = valid_id_set & ld_id_set
+
+
+    # 提前过滤并统计
+    filtered_data = []
+    num_skipped = 0
+    for item in emdb_pdb_data:
+        pdb_id = list(item.values())[0].lower()
+        if pdb_id in valid_id_set:
+            filtered_data.append(item)
+        else:
+            num_skipped += 1
+            
+    print(f"[Intersection] 检查目录取交集: 共跳过 {num_skipped} 个样本 (因缺失对应文件). 交集内剩余 {len(filtered_data)} 个样本进入正式处理.")
 
     # joblib.Parallel 运行
     results = Parallel(n_jobs=n_jobs, verbose=10)(
         delayed(_process_one_sample)(
             item,
-            pdb_label_npz_folder, map_npz_folder, pdb_feature_npz_folder,
+            pdb_label_npz_folder, map_npz_folder, sim_npz_folder, ligand_dist_npz_folder,
             sample_root_path,
-            valid_id_set,
             window_size, stride,
             r_expand, edge_expand, all_pos_ratio, center_pos_ratio,
             cut_length,
@@ -748,7 +821,7 @@ def Split_Datas_into_Box(
             name_list=name_list,
             overwrite_existing=overwrite_existing,
         )
-        for item in emdb_pdb_data
+        for item in filtered_data
     )
 
     # ---- 汇总统计 ----
@@ -896,7 +969,10 @@ if __name__ == '__main__':
                         help="一个或多个 .json 映射文件路径 (空格分隔)")
     parser.add_argument("--pdb_label_npz_folder",  type=str, default="/storage/penghongen/Pocket_classic/v_0/pdb_label_npz")
     parser.add_argument("--map_npz_folder",        type=str, default="/storage/penghongen/Pocket_classic/v_0/emdb_npz")
-    parser.add_argument("--pdb_feature_npz_folder",type=str, default="/storage/penghongen/Pocket_classic/v_0/pdb_feature_npz")
+    parser.add_argument("--sim_npz_folder",        type=str, default=None,
+                        help="可选, bind.py 额外保存的模拟密度图 .npz 母文件夹路径")
+    parser.add_argument("--ligand_dist_npz_folder", type=str, default=None,
+                        help="可选, ligand 距离图 .npz 母文件夹路径 (bind.py --ligand_dist_output_path 产出)")
     parser.add_argument("--sample_root_path",      type=str, default="/home/penghongen/My_Project/Data/DATA_v0/parsed_pdb/",
                         help="PDB_processor/run_preprocess.py 输出的样本根目录 (含 {pdb_id}/labels.npz)")
 
@@ -913,14 +989,15 @@ if __name__ == '__main__':
                         help="b — BOX inner 正类数 / 中心 BOX inner 正类数 的最低比例")
     parser.add_argument("--cut_length",        type=int,   default=12,
                         help="inner 区域的边缘裁剪宽度 (体素数)")
+    parser.add_argument("--sample_box_num",    type=int, default=0,
+                        help="每张密度图试图选取的 random_BOX 数 (最多探查 N*10 次; <=0 不采样)")
+    parser.add_argument("--hardmask_upper_required", type=float, default=0.001,
+                        help="random_BOX 中 hardmask(含有原子的体素)比例的最低阈值")
+
 
     # ---- 输出 ----
     parser.add_argument("--output_root_folder", type=str, default="/storage/penghongen/Pocket_classic/v_0/")
-    parser.add_argument("--sample_box_num",    type=int, default=0,
-                        help="每张密度图试图选取的 random_BOX 数 (最多探查 N*10 次; <=0 不采样)")
-    parser.add_argument("--hardmask_upper_required", type=float, default=0.1,
-                        help="random_BOX 中 hardmask(含有原子的体素)比例的最低阈值")
-    parser.add_argument("--name_list",    type=str, nargs='+', default=["pdb_label_BOX", "emdb_BOX", "pdb_feature_BOX"],
+    parser.add_argument("--name_list",    type=str, nargs='+', default=["pdb_label_BOX", "emdb_exp_BOX"],
                         help="与 *grids 顺序对应的输出子文件夹名")
 
     # ---- 分片与并行 (SLURM array job) ----
@@ -932,12 +1009,24 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
 
+    # 动态构建 name_list: [label, emdb, sim?, ligand_dist?]
+    # pdb_feature_BOX 已不再离线生成, 改为模型在线 scatter
+    name_list_build = ["pdb_label_BOX", "emdb_exp_BOX"]
+    if args.sim_npz_folder is not None:
+        name_list_build.append("emdb_sim_BOX")
+    if args.ligand_dist_npz_folder is not None:
+        name_list_build.append("ligand_dist_BOX")
+    args.name_list = name_list_build
+
     total_saved, total_checked = 0, 0
     for emdb_pdb_json in args.emdb_pdb_jsons:
         saved_count, all_count = Split_Datas_into_Box(
-            emdb_pdb_json,
-            args.pdb_label_npz_folder, args.map_npz_folder, args.pdb_feature_npz_folder,
-            args.sample_root_path,
+            emdb_pdb_json=emdb_pdb_json,
+            sample_root_path=args.sample_root_path,
+            pdb_label_npz_folder=args.pdb_label_npz_folder,
+            map_npz_folder=args.map_npz_folder,
+            sim_npz_folder=args.sim_npz_folder,
+            ligand_dist_npz_folder=args.ligand_dist_npz_folder,
             window_size=args.window_size, stride=args.stride,
             r_expand=args.r_expand,
             edge_expand=args.edge_expand,

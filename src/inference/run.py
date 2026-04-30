@@ -444,9 +444,12 @@ def run_raw_point_pipeline(
 
     # 从 data_folder_names 自动推断是否需要拼接 pdb_feature_grid
     # bool, True 表示存在非 emdb 且非 label 的特征文件夹(如 pdb_feature_BOX)
-    include_pdb_feature_in_grid = any(
-        "emdb" not in fn and "label" not in fn
-        for fn in data_folder_names
+    # 当模型启用 online_pdb_feature 时, pdb_feature 由模型 forward 在线 scatter 生成,
+    # 不需要在 grid 中离线拼接
+    online_pdb_feature = bool(getattr(model, "online_pdb_feature", False))
+    include_pdb_feature_in_grid = (
+        any("emdb" not in fn and "label" not in fn for fn in data_folder_names)
+        and not online_pdb_feature
     )
 
     try:

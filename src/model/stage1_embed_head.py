@@ -4,13 +4,15 @@
 Stage1EmbedHead
 =============================================================================
 embed head 前置模块：
-    - 接收原子级点云数据 (atom_feat + atom_coord)
-    - 在点上做共享编码 (若干层 Block)
+    - 接收原子级点云数据 (atom_feat + atom_coord), 在点上做共享编码 (若干层 Block)
     - 分叉：
-        1. 体素路径: 将 per-atom hidden 通过 scatter_mean 聚合到体素网格 → voxel_pdb_embed_grid
-        2. 点路径 (可选): 输出 per-atom hidden → embed_point_feat
+        1. 体素路径 (可选):
+            - 如果 embed_voxel_out_channels!=0, 那么 将 per-atom hidden 通过 scatter 聚合到体素网格 → 产出 voxel_pdb_embed_grid, 它将和 src\datasets\density_channel_builder.py 产出的密度通道进行拼接, 送入体素分支。
+            -  如果 embed_voxel_out_channels=0 那么表示输出None或空的张量, 即不通过 embed head 向体素分支注入受体原子信息。但此时 src\model\stage1_model.py 的850行左右仍有逻辑 elif self.online_pdb_feature , 也就是在这个条件下, 还可以通过打开 online_pdb_feature 来调用 scatter_to_voxel_grid 直接把原始受体原子信息注入体素分支。
+        2. 点路径 (可选):
+            - 如果 embed_point_out_channels=!0, 那么 输出 per-atom hidden → 产出 embed_point_feat, 代替原本的点特征送入点云分支; 
+            - 如果 embed_point_out_channels=0 那么表示输出None或空的张量, 此时点云分支以原始batch作为输入。
     - 支持渐进感受野裁剪: 每经过一个 block, 可按配置缩小 buffer 半径
-    - 作为过滤器: 输出裁剪后的原子字段, 下游模块直接使用
 
 坐标约定同 box_point_dataset.py:
     - atom_coord_local_voxel: corner 语义连续体素坐标, 顺序 (x, y, z)
@@ -259,7 +261,7 @@ def soft_scatter_to_voxel_grid(
     point_batch: torch.Tensor,
     box_shape_zyx: torch.Tensor,
     batch_size: int,
-    reduce: str = "mean",
+    reduce: str = None,
     add_occupancy_channels: bool = False,
 ) -> torch.Tensor:
     """
@@ -389,7 +391,7 @@ def compute_voxel_centroids(
         - batch_size: int, batch 大小
 
     输出:
-        - voxel_centroids: torch.Tensor, (total_voxels, 3), 每个体素的质心坐标（连续体素坐标）
+        - voxel_centroids: torch.Tensor, (total_voxels, 3), 每个体素的质心坐标（连续体素坐标）, total_voxels 为BOX的总体素数目(80^3)
     """
     d_val = int(box_shape_zyx[0, 0].item())
     h_val = int(box_shape_zyx[0, 1].item())
@@ -494,7 +496,7 @@ class Stage1EmbedHead(nn.Module):
         初始化参数:
             - atom_feature_dim: int, 原子原始特征维度, 建议值 49
             - embed_hidden_dim: int, 共享 trunk 的隐藏通道数, 建议值 64
-            - embed_voxel_out_channels: int, 聚合到体素网格的输出通道数, 建议值 16
+            - embed_voxel_out_channels: int, 聚合到体素网格的输出通道数, 建议值 16, 0 表示输出None或空的张量, 即不通过 embed head 向体素分支注入受体原子信息
             - embed_point_out_channels: int, 输出给点分支的 per-atom 特征通道数, 0 表示不输出
 
             - num_trunk_blocks: int, 共享 trunk 的 Block 数, 建议值 3
@@ -554,6 +556,7 @@ class Stage1EmbedHead(nn.Module):
         """
         super().__init__()
 
+
         # 参数校验
         if num_trunk_blocks > 0 and len(trunk_buffer_radii) != num_trunk_blocks:
             raise ValueError(f"trunk_buffer_radii 长度({len(trunk_buffer_radii)}) != num_trunk_blocks({num_trunk_blocks})")
@@ -580,12 +583,15 @@ class Stage1EmbedHead(nn.Module):
         self.shuffle_orders = bool(shuffle_orders)
         self.scatter_reduce = str(scatter_reduce)
         self.has_point_output = self.embed_point_out_channels > 0
+        self.has_voxel_output = self.embed_voxel_out_channels > 0
         self.point_grid_size = float(point_grid_size)
         self.cpe_impl = str(cpe_impl)
         self.embed_residual_enabled = bool(embed_residual_enabled)
         self.add_occupancy_channels = bool(add_occupancy_channels)
         self.use_soft_splatting = bool(use_soft_splatting)
         self.use_centroid_encoding = bool(use_centroid_encoding)
+        if self.use_centroid_encoding and not self.has_voxel_output:
+            raise ValueError("use_centroid_encoding=True 要求 embed_voxel_out_channels > 0")
 
         # type, 激活函数类
         act_cls = resolve_act_layer(str(act_layer_name))
@@ -607,13 +613,17 @@ class Stage1EmbedHead(nn.Module):
                 self.register_buffer("embed_point_gate", torch.tensor(1.0))
 
             # voxel 路径: proj(atom_feature_dim → embed_voxel_out_channels) + gate
-            if self.atom_feature_dim == self.embed_voxel_out_channels:
-                self.embed_voxel_add_proj = nn.Identity()  # 维度匹配: identity shortcut
+            if self.has_voxel_output:
+                if self.atom_feature_dim == self.embed_voxel_out_channels:
+                    self.embed_voxel_add_proj = nn.Identity()  # 维度匹配: identity shortcut
+                else:
+                    self.embed_voxel_add_proj = nn.Linear(self.atom_feature_dim, self.embed_voxel_out_channels)
+                if embed_voxel_gate_enabled:
+                    self.embed_voxel_gate = nn.Parameter(torch.tensor(0.1))
+                else:
+                    self.register_buffer("embed_voxel_gate", torch.tensor(1.0))
             else:
-                self.embed_voxel_add_proj = nn.Linear(self.atom_feature_dim, self.embed_voxel_out_channels)
-            if embed_voxel_gate_enabled:
-                self.embed_voxel_gate = nn.Parameter(torch.tensor(0.1))
-            else:
+                self.embed_voxel_add_proj = None
                 self.register_buffer("embed_voxel_gate", torch.tensor(1.0))
         else:
             # 不启用残差: 所有投影层为 None，gate 为 buffer(1.0)
@@ -667,29 +677,33 @@ class Stage1EmbedHead(nn.Module):
             )
 
         # ------------------ 体素专用 blocks ------------------
-        self.voxel_blocks = nn.ModuleList()
-        for block_idx in range(self.num_voxel_blocks):
-            self.voxel_blocks.append(
-                Block(
-                    order_index=int((self.num_trunk_blocks + block_idx) % len(self.serialization_orders)),
-                    **_block_kwargs,
+        if self.has_voxel_output:
+            self.voxel_blocks = nn.ModuleList()
+            for block_idx in range(self.num_voxel_blocks):
+                self.voxel_blocks.append(
+                    Block(
+                        order_index=int((self.num_trunk_blocks + block_idx) % len(self.serialization_orders)),
+                        **_block_kwargs,
+                    )
                 )
-            )
-
-        # 体素输出投影层
-        if self.use_centroid_encoding:
-            # 使用 centroid encoding 时，输入维度为 embed_hidden_dim + 6
-            self.voxel_out_proj_with_offset = nn.Sequential(
-                nn.LayerNorm(self.embed_hidden_dim + 6),
-                nn.Linear(self.embed_hidden_dim + 6, self.embed_voxel_out_channels),
-            )
-            self.voxel_out_proj = None
+            # 体素输出投影层
+            if self.use_centroid_encoding:
+                # 使用 centroid encoding 时，输入维度为 embed_hidden_dim + 6
+                self.voxel_out_proj_with_offset = nn.Sequential(
+                    nn.LayerNorm(self.embed_hidden_dim + 6),
+                    nn.Linear(self.embed_hidden_dim + 6, self.embed_voxel_out_channels),
+                )
+                self.voxel_out_proj = None
+            else:
+                # 标准投影层
+                self.voxel_out_proj = nn.Sequential(
+                    nn.LayerNorm(self.embed_hidden_dim),
+                    nn.Linear(self.embed_hidden_dim, self.embed_voxel_out_channels),
+                )
+                self.voxel_out_proj_with_offset = None
         else:
-            # 标准投影层
-            self.voxel_out_proj = nn.Sequential(
-                nn.LayerNorm(self.embed_hidden_dim),
-                nn.Linear(self.embed_hidden_dim, self.embed_voxel_out_channels),
-            )
+            self.voxel_blocks = nn.ModuleList()
+            self.voxel_out_proj = None
             self.voxel_out_proj_with_offset = None
 
         # ------------------ 点分支专用 blocks (可选) ------------------
@@ -857,13 +871,19 @@ class Stage1EmbedHead(nn.Module):
         batch_size = int(atom_offsets.shape[0])
         total_n = int(atom_feat.shape[0])
         if total_n == 0:
-            d_val = int(box_shape_zyx[0, 0].item())
-            h_val = int(box_shape_zyx[0, 1].item())
-            w_val = int(box_shape_zyx[0, 2].item())
-            voxel_grid = atom_feat.new_zeros((batch_size, self.embed_voxel_out_channels, d_val, h_val, w_val))
+            if self.has_voxel_output:
+                d_val = int(box_shape_zyx[0, 0].item())
+                h_val = int(box_shape_zyx[0, 1].item())
+                w_val = int(box_shape_zyx[0, 2].item())
+                voxel_grid = atom_feat.new_zeros((batch_size, self.embed_voxel_out_channels, d_val, h_val, w_val))
+            else:
+                voxel_grid = None
             point_out = atom_feat.new_zeros((0, self.embed_point_out_channels)) if self.has_point_output else None
             return {
                 "voxel_pdb_embed_grid": voxel_grid,
+                "voxel_embed_per_atom": None,
+                "voxel_batch_index": None,
+                "voxel_coord_local_voxel": None,
                 "embed_point_feat": point_out,
                 "atom_feat": point_out if self.has_point_output else atom_feat,
                 "atom_coord_centered_world": atom_coord_centered_world,
@@ -872,6 +892,7 @@ class Stage1EmbedHead(nn.Module):
                 "atom_coord_local_voxel": atom_coord_local_voxel,
                 "atom_is_in_core_box": atom_is_in_core_box,
                 "global_keep_mask": torch.ones(0, dtype=torch.bool, device=atom_feat.device),
+                "embed_point_add_proj": self.embed_point_add_proj,
             }
 
 
@@ -926,74 +947,81 @@ class Stage1EmbedHead(nn.Module):
 
 
         # ------------------------------------------------------ 体素专用 blocks ------------------------------------------------------
-        voxel_point = point
-        v_batch = cur_batch
-        v_offset = cur_offset
-        v_core = cur_core
-        v_local_voxel = cur_local_voxel
-        v_coord = cur_coord
-        # 体素分支独立的全局掩码副本(不影响点分支)
-        v_global_keep = global_keep_mask.clone()
+        if self.has_voxel_output:
+            voxel_point = point
+            v_batch = cur_batch
+            v_offset = cur_offset
+            v_core = cur_core
+            v_local_voxel = cur_local_voxel
+            v_coord = cur_coord
+            # 体素分支独立的全局掩码副本(不影响点分支)
+            v_global_keep = global_keep_mask.clone()
 
-        voxel_point, v_coord, v_batch, v_offset, v_core, v_local_voxel, v_global_keep = \
-            self._run_blocks_with_trim(
-                point=voxel_point,
-                blocks=self.voxel_blocks,
-                buffer_radii=self.voxel_buffer_radii,
-                cur_coord=v_coord,
-                cur_batch=v_batch,
-                cur_offset=v_offset,
-                cur_core=v_core,
-                cur_local_voxel=v_local_voxel,
-                box_shape_zyx=box_shape_zyx,
-                voxel_size_world=voxel_size_world,
-                global_keep_mask=v_global_keep,
-            )
+            voxel_point, v_coord, v_batch, v_offset, v_core, v_local_voxel, v_global_keep = \
+                self._run_blocks_with_trim(
+                    point=voxel_point,
+                    blocks=self.voxel_blocks,
+                    buffer_radii=self.voxel_buffer_radii,
+                    cur_coord=v_coord,
+                    cur_batch=v_batch,
+                    cur_offset=v_offset,
+                    cur_core=v_core,
+                    cur_local_voxel=v_local_voxel,
+                    box_shape_zyx=box_shape_zyx,
+                    voxel_size_world=voxel_size_world,
+                    global_keep_mask=v_global_keep,
+                )
 
-        # 体素输出投影 + scatter
-        if self.use_centroid_encoding:
-            # 计算体素质心和偏移编码
-            voxel_centroids = compute_voxel_centroids(
-                atom_coord_local_voxel=v_local_voxel,
-                point_batch=v_batch,
-                box_shape_zyx=box_shape_zyx,
-                batch_size=batch_size,
-            )
+            # 体素输出投影 + scatter
+            if self.use_centroid_encoding:
+                # 计算体素质心和偏移编码
+                voxel_centroids = compute_voxel_centroids(
+                    atom_coord_local_voxel=v_local_voxel,
+                    point_batch=v_batch,
+                    box_shape_zyx=box_shape_zyx,
+                    batch_size=batch_size,
+                )
 
-            # 为每个原子查找其所属体素的质心
-            d_val = int(box_shape_zyx[0, 0].item())
-            h_val = int(box_shape_zyx[0, 1].item())
-            w_val = int(box_shape_zyx[0, 2].item())
-            voxel_idx_xyz = v_local_voxel.floor().long()
-            # 边界 clamp: 防止原子恰好在体素网格边缘时 index 越界
-            voxel_idx_xyz[:, 0].clamp_(0, w_val - 1)
-            voxel_idx_xyz[:, 1].clamp_(0, h_val - 1)
-            voxel_idx_xyz[:, 2].clamp_(0, d_val - 1)
-            linear_idx = (
-                v_batch.long() * (d_val * h_val * w_val)
-                + voxel_idx_xyz[:, 2] * (h_val * w_val)
-                + voxel_idx_xyz[:, 1] * w_val
-                + voxel_idx_xyz[:, 0]
-            )
-            atom_voxel_centroids = voxel_centroids[linear_idx]
+                # 为每个原子查找其所属体素的质心
+                d_val = int(box_shape_zyx[0, 0].item())
+                h_val = int(box_shape_zyx[0, 1].item())
+                w_val = int(box_shape_zyx[0, 2].item())
+                voxel_idx_xyz = v_local_voxel.floor().long()
+                # 边界 clamp: 防止原子恰好在体素网格边缘时 index 越界
+                voxel_idx_xyz[:, 0].clamp_(0, w_val - 1)
+                voxel_idx_xyz[:, 1].clamp_(0, h_val - 1)
+                voxel_idx_xyz[:, 2].clamp_(0, d_val - 1)
+                linear_idx = (
+                    v_batch.long() * (d_val * h_val * w_val)
+                    + voxel_idx_xyz[:, 2] * (h_val * w_val)
+                    + voxel_idx_xyz[:, 1] * w_val
+                    + voxel_idx_xyz[:, 0]
+                )
+                atom_voxel_centroids = voxel_centroids[linear_idx]
 
-            # 计算偏移
-            atom_offset_from_centroid = v_local_voxel - atom_voxel_centroids
-            voxel_center = voxel_idx_xyz.float() + 0.5
-            centroid_offset_from_center = atom_voxel_centroids - voxel_center
+                # 计算偏移
+                atom_offset_from_centroid = v_local_voxel - atom_voxel_centroids
+                voxel_center = voxel_idx_xyz.float() + 0.5
+                centroid_offset_from_center = atom_voxel_centroids - voxel_center
 
-            # 拼接偏移到特征
-            voxel_feat_with_offset = torch.cat([
-                voxel_point.feat,
-                atom_offset_from_centroid,
-                centroid_offset_from_center
-            ], dim=1)
+                # 拼接偏移到特征
+                voxel_feat_with_offset = torch.cat([
+                    voxel_point.feat,
+                    atom_offset_from_centroid,
+                    centroid_offset_from_center
+                ], dim=1)
 
-            # 投影到输出维度
-            voxel_feat_per_atom = self.voxel_out_proj_with_offset(voxel_feat_with_offset)
+                # 投影到输出维度
+                voxel_feat_per_atom = self.voxel_out_proj_with_offset(voxel_feat_with_offset)
+            else:
+                # 标准投影
+                voxel_feat_per_atom = self.voxel_out_proj(voxel_point.feat)
         else:
-            # 标准投影
-            voxel_feat_per_atom = self.voxel_out_proj(voxel_point.feat)
+            # has_voxel_output=False: 跳过体素路径
+            voxel_feat_per_atom = None
+            v_batch = None
+            v_local_voxel = None
+            v_global_keep = None
 
 
 
@@ -1042,7 +1070,7 @@ class Stage1EmbedHead(nn.Module):
             final_local_voxel = p_local_voxel
             # 保存裁剪前 atom_feat 对应的原始特征子集 (供残差使用)
             trimmed_atom_feat_for_point = atom_feat[p_global_keep]
-            trimmed_atom_feat_for_voxel = atom_feat[v_global_keep]
+            trimmed_atom_feat_for_voxel = atom_feat[v_global_keep] if self.has_voxel_output else None
         else:
             # 无点分支: 使用 trunk 的裁剪结果
             final_global_keep = global_keep_mask
@@ -1052,7 +1080,7 @@ class Stage1EmbedHead(nn.Module):
             final_core = cur_core
             final_local_voxel = cur_local_voxel
             trimmed_atom_feat_for_point = atom_feat[global_keep_mask]
-            trimmed_atom_feat_for_voxel = atom_feat[v_global_keep]
+            trimmed_atom_feat_for_voxel = atom_feat[v_global_keep] if self.has_voxel_output else None
 
 
 
@@ -1066,33 +1094,36 @@ class Stage1EmbedHead(nn.Module):
 
 
         # ---------- 残差融合: voxel 路径 (per-atom, scatter 前) ----------
-        if self.embed_voxel_add_proj is not None:
+        if self.has_voxel_output and self.embed_voxel_add_proj is not None:
             # torch.Tensor, (N', embed_voxel_out_channels), 原始原子特征投影(或 identity)到 embed voxel 空间
             projected_atom_for_voxel = self.embed_voxel_add_proj(trimmed_atom_feat_for_voxel)
             # torch.Tensor, (N', embed_voxel_out_channels), 投影后的原子特征 + gated embed 特征
             voxel_feat_per_atom = projected_atom_for_voxel + self.embed_voxel_gate * voxel_feat_per_atom
 
         # ---------- Scatter 到体素网格 (残差融合后只执行一次) ----------
-        if self.use_soft_splatting:
-            voxel_pdb_embed_grid = soft_scatter_to_voxel_grid(
-                point_feat=voxel_feat_per_atom,
-                atom_coord_local_voxel=v_local_voxel,
-                point_batch=v_batch,
-                box_shape_zyx=box_shape_zyx,
-                batch_size=batch_size,
-                reduce=self.scatter_reduce,
-                add_occupancy_channels=self.add_occupancy_channels,
-            )
+        if self.has_voxel_output:
+            if self.use_soft_splatting:
+                voxel_pdb_embed_grid = soft_scatter_to_voxel_grid(
+                    point_feat=voxel_feat_per_atom,
+                    atom_coord_local_voxel=v_local_voxel,
+                    point_batch=v_batch,
+                    box_shape_zyx=box_shape_zyx,
+                    batch_size=batch_size,
+                    reduce=self.scatter_reduce,
+                    add_occupancy_channels=self.add_occupancy_channels,
+                )
+            else:
+                voxel_pdb_embed_grid = scatter_to_voxel_grid(
+                    point_feat=voxel_feat_per_atom,
+                    atom_coord_local_voxel=v_local_voxel,
+                    point_batch=v_batch,
+                    box_shape_zyx=box_shape_zyx,
+                    batch_size=batch_size,
+                    reduce=self.scatter_reduce,
+                    add_occupancy_channels=self.add_occupancy_channels,
+                )
         else:
-            voxel_pdb_embed_grid = scatter_to_voxel_grid(
-                point_feat=voxel_feat_per_atom,
-                atom_coord_local_voxel=v_local_voxel,
-                point_batch=v_batch,
-                box_shape_zyx=box_shape_zyx,
-                batch_size=batch_size,
-                reduce=self.scatter_reduce,
-                add_occupancy_channels=self.add_occupancy_channels,
-            )
+            voxel_pdb_embed_grid = None
 
         # -------- 确定最终 atom_feat --------
         # 有点分支输出时, 无论残差是否启用, 都使用 embed_point_feat (embed_point_out_channels 维)

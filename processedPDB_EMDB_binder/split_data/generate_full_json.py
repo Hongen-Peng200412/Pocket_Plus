@@ -25,24 +25,29 @@ from pathlib import Path
 random.seed(42)
 
 # str, Json根目录, 其中包含从Make_Data生成的各式X.json，如train.json, val.json, test.json等, 这些json规定了PDB_ID的归属，本脚本将完全遵照其分配逻辑
-Json_Root_Folder = "/home/penghongen/My_Project/Data/split/3.5_cc_qscore_v1/"
+Json_Root_Folder = "/home/penghongen/My_Project/Data/split/3.5_cc_qscore_v2_raw4"
 # str, 全部原样本的基础信息json(通常是 Json_Root_Folder 目录下的 all.json)
 Instance_Json = os.path.join(Json_Root_Folder, "all.json")
 
-# 各种切好的BOX的存放文件夹, 注意它们都有子文件夹(metal_ion, small_molecule, peptide, nucleic), 将全部遍历处理
-EMDB_BOX_FOLDER = "/storage/penghongen/Pocket_classic/v_1/emdb_BOX"
-PDB_Feaure_BOX_FOLDER = "/storage/penghongen/Pocket_classic/v_1/pdb_feature_BOX"
-PBD_Label_BOX_FOLDER = "/storage/penghongen/Pocket_classic/v_1/pdb_label_BOX"
+# 各种切好的BOX的存放文件夹, 注意它们都有子文件夹(metal_ion, peptide, nucleic, small_molecule), 将全部遍历处理
+# pdb_feature_BOX 已不再离线生成, 改为模型在线 scatter
+EMDB_EXP_BOX_FOLDER = "/storage/penghongen/Pocket_classic/v2_raw4_10A/emdb_exp_BOX"
+EMDB_SIM_BOX_FOLDER = "/storage/penghongen/Pocket_classic/v2_raw4_10A/emdb_sim_BOX"
+PBD_Label_BOX_FOLDER = "/storage/penghongen/Pocket_classic/v2_raw4_10A/pdb_label_BOX"
+LIGAND_DIST_BOX_FOLDER = "/storage/penghongen/Pocket_classic/v2_raw4_10A/ligand_dist_BOX"
 
 # list[int], 三种 split_mode 参数集合 （0为主中心，3为中心外加三非中心BOX, -1为全部)
-Split_Modes = [0, 3, -1]
+Split_Modes = [0, 1, 2, 3, 4, -1]
 # list[str], 指定上方的 split_modes 所对应的生成目标子文件夹名
-Split_Mode_Names = ['split_0', 'split_3', 'split_all']
+Split_Mode_Names = ['split_0', 'split_1', 'split_2', 'split_3', 'split_4', 'split_all']
 # list[str], 指定上方的 split_modes 所对应的生成目标子文件夹名
 Split_output_FOLDER = [
-    "/storage/penghongen/Pocket_classic/v_1/split/split_0", 
-    "/storage/penghongen/Pocket_classic/v_1/split/split_3", 
-    "/storage/penghongen/Pocket_classic/v_1/split/split_all"
+    "/storage/penghongen/Pocket_classic/v2_raw4_10A/split/split_0", 
+    "/storage/penghongen/Pocket_classic/v2_raw4_10A/split/split_1", 
+    "/storage/penghongen/Pocket_classic/v2_raw4_10A/split/split_2", 
+    "/storage/penghongen/Pocket_classic/v2_raw4_10A/split/split_3", 
+    "/storage/penghongen/Pocket_classic/v2_raw4_10A/split/split_4", 
+    "/storage/penghongen/Pocket_classic/v2_raw4_10A/split/split_all"
 ]
 
 
@@ -90,33 +95,36 @@ def collect_box_stems_per_class(folder: str) -> dict:
 
 
 def get_valid_stems_per_class(
-    emdb_folder: str,
-    feature_folder: str,
+    emdb_exp_folder: str,
+    emdb_sim_folder: str,
     label_folder: str,
+    ligand_dist_folder: str,
 ) -> dict:
     """
-    对三个 BOX 文件夹按类别分别取三方交集, 返回每个类别下公共合法的 stem 集合.
+    对四个 BOX 文件夹按类别分别取交集, 返回每个类别下公共合法的 stem 集合.
 
     输入:
-        - emdb_folder:    str, EMDB BOX 根文件夹
-        - feature_folder: str, PDB Feature BOX 根文件夹
-        - label_folder:   str, PDB Label BOX 根文件夹
+        - emdb_exp_folder:    str, 实验密度图 BOX 根文件夹
+        - emdb_sim_folder:    str, 模拟密度图 BOX 根文件夹
+        - label_folder:       str, PDB Label BOX 根文件夹
+        - ligand_dist_folder: str, Ligand 距离图 BOX 根文件夹
     输出:
-        - valid_per_class: dict[str, set[str]], key=类别名(如metal_ion), value=该类别下三方公共 stem 集合
+        - valid_per_class: dict[str, set[str]], key=类别名(如 metal_ion / random_BOX), value=该类别下四方公共 stem 集合
     """
-    # dict[str, set[str]], 三个文件夹各自的分类别 stem 字典
-    emdb_cls    = collect_box_stems_per_class(emdb_folder)
-    feature_cls = collect_box_stems_per_class(feature_folder)
-    label_cls   = collect_box_stems_per_class(label_folder)
-    # set[str], 三个文件夹中同时出现的类别名
-    all_classes = set(emdb_cls.keys()) & set(feature_cls.keys()) & set(label_cls.keys())
+    # dict[str, set[str]], 四个文件夹各自的分类别 stem 字典
+    emdb_exp_cls  = collect_box_stems_per_class(emdb_exp_folder)
+    emdb_sim_cls  = collect_box_stems_per_class(emdb_sim_folder)
+    label_cls     = collect_box_stems_per_class(label_folder)
+    ligand_cls    = collect_box_stems_per_class(ligand_dist_folder)
+    # set[str], 四个文件夹中同时出现的类别名
+    all_classes = set(emdb_exp_cls.keys()) & set(emdb_sim_cls.keys()) & set(label_cls.keys()) & set(ligand_cls.keys())
 
-    # dict[str, set[str]], 对每个类别取三方交集
+    # dict[str, set[str]], 对每个类别取四方交集
     valid_per_class = {}
     for cls in sorted(all_classes):
-        # set[str], 当前类别在三个文件夹中均存在的 stem
-        valid_per_class[cls] = emdb_cls[cls] & feature_cls[cls] & label_cls[cls]
-        print(f"    [{cls}] EMDB:{len(emdb_cls[cls])}  Feature:{len(feature_cls[cls])}  Label:{len(label_cls[cls])}  交集:{len(valid_per_class[cls])}")
+        # set[str], 当前类别在四个文件夹中均存在的 stem
+        valid_per_class[cls] = emdb_exp_cls[cls] & emdb_sim_cls[cls] & label_cls[cls] & ligand_cls[cls]
+        print(f"    [{cls}] EXP:{len(emdb_exp_cls[cls])}  SIM:{len(emdb_sim_cls[cls])}  Label:{len(label_cls[cls])}  LigDist:{len(ligand_cls[cls])}  交集:{len(valid_per_class[cls])}")
     return valid_per_class
 
 
@@ -209,18 +217,18 @@ def select_split_stems(all_stems: list, split_mode: int) -> list:
 def main():
     print(f"开始划分，正在依凭{Json_Root_Folder} 进行文件划分归属对齐...")
 
-    # ========== Step 0: 按类别分别取三个BOX文件夹的公共 stem ==========
-    print("\n[Step 0] 按类别收集三个BOX文件夹的各自合法 stem（分类别取三方交集）...")
-    # dict[str, set[str]], 形状：比如 {"metal_ion": {"9e01_3_0...", ...}, ...}。 字典的值由三方公共stem名组成，作为去缀的独立基底文件名。
+    # ========== Step 0: 按类别分别取四个BOX文件夹的公共 stem ==========
+    print("\n[Step 0] 按类别收集四个BOX文件夹的各自合法 stem（分类别取四方交集）...")
+    # dict[str, set[str]], 形状：比如 {"metal_ion": {"9e01_3_0...", ...}, "random_BOX": {...}, ...}
     valid_per_class = get_valid_stems_per_class(
-        EMDB_BOX_FOLDER, PDB_Feaure_BOX_FOLDER, PBD_Label_BOX_FOLDER
+        EMDB_EXP_BOX_FOLDER, EMDB_SIM_BOX_FOLDER, PBD_Label_BOX_FOLDER, LIGAND_DIST_BOX_FOLDER
     )
-    # list[str], 包含的所有类别名，例如 ['metal_ion', 'nucleic', 'peptide', 'small_molecule']
+    # list[str], 包含的所有类别名，例如 ['metal_ion', 'nucleic', 'peptide', 'random_BOX', 'small_molecule']
     all_class_names = sorted(valid_per_class.keys())
     # int, 全部类别合法 stem 总数
     total_valid = sum(len(v) for v in valid_per_class.values())
     print(f"  发现类别: {all_class_names}")
-    print(f"  各类别三方交集 stem 总数: {total_valid}")
+    print(f"  各类别四方交集 stem 总数: {total_valid}")
 
 
 
@@ -269,7 +277,11 @@ def main():
             cls_output_dir = ds_output_dir / cls
             cls_output_dir.mkdir(parents=True, exist_ok=True)
             # list[str], 对于当前数据集(split_mode)、当前类别(cls) 产生的有效样本的stem(去后缀)
-            all_cls_stems = select_split_stems(list(valid_per_class[cls]), split_mode)
+            # random_BOX 不受 split_mode 约束, 始终取全部 stem (等价于 split_mode=-1)
+            if cls == 'random_BOX':
+                all_cls_stems = select_split_stems(list(valid_per_class[cls]), split_mode=-1)
+            else:
+                all_cls_stems = select_split_stems(list(valid_per_class[cls]), split_mode)
             
             for json_name, pdb_ids_set in json_to_pdb_ids.items():
                 # list[str], 根据 pdb_ids_set 对候选 stem 进行过滤录入
@@ -294,465 +306,10 @@ if __name__ == "__main__":
 
 
 
-# 针对 v0 数据集BOX的划分结果:
-"""
-(base) [penghongen@master ~]$ conda activate vnegnn
-/home/penghongen/anaconda3/envs/vnegnn/bin/python /home/penghongen/My_Project/Pocket/processedPDB_EMDB_binder/split_data/generate_full_json.py
-WARNING: overwriting environment variables set in the machine
-overwriting variable {'LD_LIBRARY_PATH'}
-(vnegnn) [penghongen@master ~]$ /home/penghongen/anaconda3/envs/vnegnn/bin/python /home/penghongen/My_Project/Pocket/processedPDB_EMDB_binder/split_data/generate_full_json.py
-开始划分，正在依凭/home/penghongen/My_Project/Data/split/3.5_cc_qscore_v0/ 进行文件划分归属对齐...
-
-[Step 0] 按类别收集三个BOX文件夹的各自合法 stem（分类别取三方交集）...
-    [metal_ion] EMDB:33929  Feature:33929  Label:33929  交集:33929
-    [nucleic] EMDB:18  Feature:18  Label:18  交集:18
-    [peptide] EMDB:1278  Feature:1278  Label:1278  交集:1278
-    [small_molecule] EMDB:91618  Feature:91618  Label:91618  交集:91618
-  发现类别: ['metal_ion', 'nucleic', 'peptide', 'small_molecule']
-  各类别三方交集 stem 总数: 126843
-
-[Step 1] 扫描 Json_Root_Folder (/home/penghongen/My_Project/Data/split/3.5_cc_qscore_v0/)，构建全局 PDB 归属映射表...
-  已从目标配置读取到外部约束: val_2.json (含 27 个不重复的 PDB_ID 样本)
-  已从目标配置读取到外部约束: all.json (含 2680 个不重复的 PDB_ID 样本)
-  已从目标配置读取到外部约束: train_8.json (含 214 个不重复的 PDB_ID 样本)
-  已从目标配置读取到外部约束: val_6.json (含 27 个不重复的 PDB_ID 样本)
-  已从目标配置读取到外部约束: train_4.json (含 214 个不重复的 PDB_ID 样本)
-  已从目标配置读取到外部约束: train_0.json (含 215 个不重复的 PDB_ID 样本)
-  已从目标配置读取到外部约束: val.json (含 268 个不重复的 PDB_ID 样本)
-  已从目标配置读取到外部约束: train.json (含 2144 个不重复的 PDB_ID 样本)
-  已从目标配置读取到外部约束: train_5.json (含 214 个不重复的 PDB_ID 样本)
-  已从目标配置读取到外部约束: train_1.json (含 215 个不重复的 PDB_ID 样本)
-  已从目标配置读取到外部约束: test.json (含 268 个不重复的 PDB_ID 样本)
-  已从目标配置读取到外部约束: val_3.json (含 27 个不重复的 PDB_ID 样本)
-  已从目标配置读取到外部约束: train_9.json (含 214 个不重复的 PDB_ID 样本)
-  已从目标配置读取到外部约束: val_7.json (含 27 个不重复的 PDB_ID 样本)
-  已从目标配置读取到外部约束: val_9.json (含 26 个不重复的 PDB_ID 样本)
-  已从目标配置读取到外部约束: train_7.json (含 214 个不重复的 PDB_ID 样本)
-  已从目标配置读取到外部约束: train_3.json (含 215 个不重复的 PDB_ID 样本)
-  已从目标配置读取到外部约束: val_1.json (含 27 个不重复的 PDB_ID 样本)
-  已从目标配置读取到外部约束: val_5.json (含 27 个不重复的 PDB_ID 样本)
-  已从目标配置读取到外部约束: val_0.json (含 27 个不重复的 PDB_ID 样本)
-  已从目标配置读取到外部约束: val_4.json (含 27 个不重复的 PDB_ID 样本)
-  已从目标配置读取到外部约束: val_8.json (含 26 个不重复的 PDB_ID 样本)
-  已从目标配置读取到外部约束: train_6.json (含 214 个不重复的 PDB_ID 样本)
-  已从目标配置读取到外部约束: train_2.json (含 215 个不重复的 PDB_ID 样本)
-    [metal_ion] 初始根据 all.json 过滤前:33929  过滤后:33929
-    [nucleic] 初始根据 all.json 过滤前:18  过滤后:18
-    [peptide] 初始根据 all.json 过滤前:1278  过滤后:1278
-    [small_molecule] 初始根据 all.json 过滤前:91618  过滤后:91618
-
-============================================================
-[Dataset 0] split_0  (split_mode=0)
-============================================================
-
-  -- [metal_ion] --
-  已保存: val_2.json (81 样本)
-  已保存: all.json (7633 样本)
-  已保存: train_8.json (505 样本)
-  已保存: val_6.json (184 样本)
-  已保存: train_4.json (742 样本)
-  已保存: train_0.json (789 样本)
-  已保存: val.json (813 样本)
-  已保存: train.json (6084 样本)
-  已保存: train_5.json (733 样本)
-  已保存: train_1.json (536 样本)
-  已保存: test.json (736 样本)
-  已保存: val_3.json (174 样本)
-  已保存: train_9.json (512 样本)
-  已保存: val_7.json (49 样本)
-  已保存: val_9.json (33 样本)
-  已保存: train_7.json (569 样本)
-  已保存: train_3.json (543 样本)
-  已保存: val_1.json (66 样本)
-  已保存: val_5.json (35 样本)
-  已保存: val_0.json (59 样本)
-  已保存: val_4.json (67 样本)
-  已保存: val_8.json (65 样本)
-  已保存: train_6.json (637 样本)
-  已保存: train_2.json (518 样本)
-
-  -- [nucleic] --
-  已保存: val_2.json (0 样本)
-  已保存: all.json (4 样本)
-  已保存: train_8.json (3 样本)
-  已保存: val_6.json (0 样本)
-  已保存: train_4.json (0 样本)
-  已保存: train_0.json (0 样本)
-  已保存: val.json (0 样本)
-  已保存: train.json (4 样本)
-  已保存: train_5.json (0 样本)
-  已保存: train_1.json (0 样本)
-  已保存: test.json (0 样本)
-  已保存: val_3.json (0 样本)
-  已保存: train_9.json (0 样本)
-  已保存: val_7.json (0 样本)
-  已保存: val_9.json (0 样本)
-  已保存: train_7.json (0 样本)
-  已保存: train_3.json (0 样本)
-  已保存: val_1.json (0 样本)
-  已保存: val_5.json (0 样本)
-  已保存: val_0.json (0 样本)
-  已保存: val_4.json (0 样本)
-  已保存: val_8.json (0 样本)
-  已保存: train_6.json (1 样本)
-  已保存: train_2.json (0 样本)
-
-  -- [peptide] --
-  已保存: val_2.json (0 样本)
-  已保存: all.json (222 样本)
-  已保存: train_8.json (17 样本)
-  已保存: val_6.json (0 样本)
-  已保存: train_4.json (17 样本)
-  已保存: train_0.json (28 样本)
-  已保存: val.json (7 样本)
-  已保存: train.json (186 样本)
-  已保存: train_5.json (30 样本)
-  已保存: train_1.json (12 样本)
-  已保存: test.json (29 样本)
-  已保存: val_3.json (0 样本)
-  已保存: train_9.json (17 样本)
-  已保存: val_7.json (0 样本)
-  已保存: val_9.json (0 样本)
-  已保存: train_7.json (20 样本)
-  已保存: train_3.json (18 样本)
-  已保存: val_1.json (0 样本)
-  已保存: val_5.json (1 样本)
-  已保存: val_0.json (2 样本)
-  已保存: val_4.json (4 样本)
-  已保存: val_8.json (0 样本)
-  已保存: train_6.json (5 样本)
-  已保存: train_2.json (22 样本)
-
-  -- [small_molecule] --
-  已保存: val_2.json (212 样本)
-  已保存: all.json (23575 样本)
-  已保存: train_8.json (2228 样本)
-  已保存: val_6.json (298 样本)
-  已保存: train_4.json (1955 样本)
-  已保存: train_0.json (1760 样本)
-  已保存: val.json (2429 样本)
-  已保存: train.json (19009 样本)
-  已保存: train_5.json (2207 样本)
-  已保存: train_1.json (2054 样本)
-  已保存: test.json (2137 样本)
-  已保存: val_3.json (287 样本)
-  已保存: train_9.json (1913 样本)
-  已保存: val_7.json (245 样本)
-  已保存: val_9.json (194 样本)
-  已保存: train_7.json (1842 样本)
-  已保存: train_3.json (1818 样本)
-  已保存: val_1.json (308 样本)
-  已保存: val_5.json (155 样本)
-  已保存: val_0.json (242 样本)
-  已保存: val_4.json (216 样本)
-  已保存: val_8.json (272 样本)
-  已保存: train_6.json (1695 样本)
-  已保存: train_2.json (1537 样本)
-
-  [split_0] 当前模式下各 JSON 文件总输出 stem 数汇总 (总计跨 4 个类别):
-    all.json: 共分配 31434 个 stem
-    test.json: 共分配 2902 个 stem
-    train.json: 共分配 25283 个 stem
-    train_0.json: 共分配 2577 个 stem
-    train_1.json: 共分配 2602 个 stem
-    train_2.json: 共分配 2077 个 stem
-    train_3.json: 共分配 2379 个 stem
-    train_4.json: 共分配 2714 个 stem
-    train_5.json: 共分配 2970 个 stem
-    train_6.json: 共分配 2338 个 stem
-    train_7.json: 共分配 2431 个 stem
-    train_8.json: 共分配 2753 个 stem
-    train_9.json: 共分配 2442 个 stem
-    val.json: 共分配 3249 个 stem
-    val_0.json: 共分配 303 个 stem
-    val_1.json: 共分配 374 个 stem
-    val_2.json: 共分配 293 个 stem
-    val_3.json: 共分配 461 个 stem
-    val_4.json: 共分配 287 个 stem
-    val_5.json: 共分配 191 个 stem
-    val_6.json: 共分配 482 个 stem
-    val_7.json: 共分配 294 个 stem
-    val_8.json: 共分配 337 个 stem
-    val_9.json: 共分配 227 个 stem
-
-============================================================
-[Dataset 1] split_3  (split_mode=3)
-============================================================
-
-  -- [metal_ion] --
-  已保存: val_2.json (286 样本)
-  已保存: all.json (24522 样本)
-  已保存: train_8.json (1686 样本)
-  已保存: val_6.json (556 样本)
-  已保存: train_4.json (2307 样本)
-  已保存: train_0.json (2513 样本)
-  已保存: val.json (2607 样本)
-  已保存: train.json (19639 样本)
-  已保存: train_5.json (2338 样本)
-  已保存: train_1.json (1788 样本)
-  已保存: test.json (2276 样本)
-  已保存: val_3.json (538 样本)
-  已保存: train_9.json (1738 样本)
-  已保存: val_7.json (167 样本)
-  已保存: val_9.json (106 样本)
-  已保存: train_7.json (1828 样本)
-  已保存: train_3.json (1766 样本)
-  已保存: val_1.json (203 样本)
-  已保存: val_5.json (127 样本)
-  已保存: val_0.json (181 样本)
-  已保存: val_4.json (199 样本)
-  已保存: val_8.json (244 样本)
-  已保存: train_6.json (2067 样本)
-  已保存: train_2.json (1608 样本)
-
-  -- [nucleic] --
-  已保存: val_2.json (0 样本)
-  已保存: all.json (14 样本)
-  已保存: train_8.json (10 样本)
-  已保存: val_6.json (0 样本)
-  已保存: train_4.json (0 样本)
-  已保存: train_0.json (0 样本)
-  已保存: val.json (0 样本)
-  已保存: train.json (14 样本)
-  已保存: train_5.json (0 样本)
-  已保存: train_1.json (0 样本)
-  已保存: test.json (0 样本)
-  已保存: val_3.json (0 样本)
-  已保存: train_9.json (0 样本)
-  已保存: val_7.json (0 样本)
-  已保存: val_9.json (0 样本)
-  已保存: train_7.json (0 样本)
-  已保存: train_3.json (0 样本)
-  已保存: val_1.json (0 样本)
-  已保存: val_5.json (0 样本)
-  已保存: val_0.json (0 样本)
-  已保存: val_4.json (0 样本)
-  已保存: val_8.json (0 样本)
-  已保存: train_6.json (4 样本)
-  已保存: train_2.json (0 样本)
-
-  -- [peptide] --
-  已保存: val_2.json (0 样本)
-  已保存: all.json (832 样本)
-  已保存: train_8.json (68 样本)
-  已保存: val_6.json (0 样本)
-  已保存: train_4.json (68 样本)
-  已保存: train_0.json (97 样本)
-  已保存: val.json (26 样本)
-  已保存: train.json (704 样本)
-  已保存: train_5.json (111 样本)
-  已保存: train_1.json (48 样本)
-  已保存: test.json (102 样本)
-  已保存: val_3.json (0 样本)
-  已保存: train_9.json (62 样本)
-  已保存: val_7.json (0 样本)
-  已保存: val_9.json (0 样本)
-  已保存: train_7.json (76 样本)
-  已保存: train_3.json (72 样本)
-  已保存: val_1.json (0 样本)
-  已保存: val_5.json (4 样本)
-  已保存: val_0.json (6 样本)
-  已保存: val_4.json (16 样本)
-  已保存: val_8.json (0 样本)
-  已保存: train_6.json (18 样本)
-  已保存: train_2.json (84 样本)
-
-  -- [small_molecule] --
-  已保存: val_2.json (654 样本)
-  已保存: all.json (70591 样本)
-  已保存: train_8.json (6878 样本)
-  已保存: val_6.json (816 样本)
-  已保存: train_4.json (5822 样本)
-  已保存: train_0.json (5159 样本)
-  已保存: val.json (7262 样本)
-  已保存: train.json (57003 样本)
-  已保存: train_5.json (6572 样本)
-  已保存: train_1.json (6286 样本)
-  已保存: test.json (6326 样本)
-  已保存: val_3.json (866 样本)
-  已保存: train_9.json (5877 样本)
-  已保存: val_7.json (675 样本)
-  已保存: val_9.json (580 样本)
-  已保存: train_7.json (5391 样本)
-  已保存: train_3.json (5399 样本)
-  已保存: val_1.json (1008 样本)
-  已保存: val_5.json (515 样本)
-  已保存: val_0.json (735 样本)
-  已保存: val_4.json (650 样本)
-  已保存: val_8.json (763 样本)
-  已保存: train_6.json (5159 样本)
-  已保存: train_2.json (4460 样本)
-
-  [split_3] 当前模式下各 JSON 文件总输出 stem 数汇总 (总计跨 4 个类别):
-    all.json: 共分配 95959 个 stem
-    test.json: 共分配 8704 个 stem
-    train.json: 共分配 77360 个 stem
-    train_0.json: 共分配 7769 个 stem
-    train_1.json: 共分配 8122 个 stem
-    train_2.json: 共分配 6152 个 stem
-    train_3.json: 共分配 7237 个 stem
-    train_4.json: 共分配 8197 个 stem
-    train_5.json: 共分配 9021 个 stem
-    train_6.json: 共分配 7248 个 stem
-    train_7.json: 共分配 7295 个 stem
-    train_8.json: 共分配 8642 个 stem
-    train_9.json: 共分配 7677 个 stem
-    val.json: 共分配 9895 个 stem
-    val_0.json: 共分配 922 个 stem
-    val_1.json: 共分配 1211 个 stem
-    val_2.json: 共分配 940 个 stem
-    val_3.json: 共分配 1404 个 stem
-    val_4.json: 共分配 865 个 stem
-    val_5.json: 共分配 646 个 stem
-    val_6.json: 共分配 1372 个 stem
-    val_7.json: 共分配 842 个 stem
-    val_8.json: 共分配 1007 个 stem
-    val_9.json: 共分配 686 个 stem
-
-============================================================
-[Dataset 2] split_all  (split_mode=-1)
-============================================================
-
-  -- [metal_ion] --
-  已保存: val_2.json (413 样本)
-  已保存: all.json (33929 样本)
-  已保存: train_8.json (2451 样本)
-  已保存: val_6.json (744 样本)
-  已保存: train_4.json (3073 样本)
-  已保存: train_0.json (3352 样本)
-  已保存: val.json (3670 样本)
-  已保存: train.json (27221 样本)
-  已保存: train_5.json (3132 样本)
-  已保存: train_1.json (2551 样本)
-  已保存: test.json (3038 样本)
-  已保存: val_3.json (706 样本)
-  已保存: train_9.json (2516 样本)
-  已保存: val_7.json (256 样本)
-  已保存: val_9.json (158 样本)
-  已保存: train_7.json (2557 样本)
-  已保存: train_3.json (2461 样本)
-  已保存: val_1.json (291 样本)
-  已保存: val_5.json (195 样本)
-  已保存: val_0.json (267 样本)
-  已保存: val_4.json (269 样本)
-  已保存: val_8.json (371 样本)
-  已保存: train_6.json (2874 样本)
-  已保存: train_2.json (2254 样本)
-
-  -- [nucleic] --
-  已保存: val_2.json (0 样本)
-  已保存: all.json (18 样本)
-  已保存: train_8.json (10 样本)
-  已保存: val_6.json (0 样本)
-  已保存: train_4.json (0 样本)
-  已保存: train_0.json (0 样本)
-  已保存: val.json (0 样本)
-  已保存: train.json (18 样本)
-  已保存: train_5.json (0 样本)
-  已保存: train_1.json (0 样本)
-  已保存: test.json (0 样本)
-  已保存: val_3.json (0 样本)
-  已保存: train_9.json (0 样本)
-  已保存: val_7.json (0 样本)
-  已保存: val_9.json (0 样本)
-  已保存: train_7.json (0 样本)
-  已保存: train_3.json (0 样本)
-  已保存: val_1.json (0 样本)
-  已保存: val_5.json (0 样本)
-  已保存: val_0.json (0 样本)
-  已保存: val_4.json (0 样本)
-  已保存: val_8.json (0 样本)
-  已保存: train_6.json (8 样本)
-  已保存: train_2.json (0 样本)
-
-  -- [peptide] --
-  已保存: val_2.json (0 样本)
-  已保存: all.json (1278 样本)
-  已保存: train_8.json (128 样本)
-  已保存: val_6.json (0 样本)
-  已保存: train_4.json (114 样本)
-  已保存: train_0.json (133 样本)
-  已保存: val.json (42 样本)
-  已保存: train.json (1072 样本)
-  已保存: train_5.json (153 样本)
-  已保存: train_1.json (60 样本)
-  已保存: test.json (164 样本)
-  已保存: val_3.json (0 样本)
-  已保存: train_9.json (92 样本)
-  已保存: val_7.json (0 样本)
-  已保存: val_9.json (0 样本)
-  已保存: train_7.json (124 样本)
-  已保存: train_3.json (118 样本)
-  已保存: val_1.json (0 样本)
-  已保存: val_5.json (8 样本)
-  已保存: val_0.json (10 样本)
-  已保存: val_4.json (24 样本)
-  已保存: val_8.json (0 样本)
-  已保存: train_6.json (30 样本)
-  已保存: train_2.json (120 样本)
-
-  -- [small_molecule] --
-  已保存: val_2.json (836 样本)
-  已保存: all.json (91618 样本)
-  已保存: train_8.json (9101 样本)
-  已保存: val_6.json (1007 样本)
-  已保存: train_4.json (7489 样本)
-  已保存: train_0.json (6630 样本)
-  已保存: val.json (9416 样本)
-  已保存: train.json (74013 样本)
-  已保存: train_5.json (8423 样本)
-  已保存: train_1.json (8427 样本)
-  已保存: test.json (8189 样本)
-  已保存: val_3.json (1170 样本)
-  已保存: train_9.json (7676 样本)
-  已保存: val_7.json (866 样本)
-  已保存: val_9.json (730 样本)
-  已保存: train_7.json (6866 样本)
-  已保存: train_3.json (6938 样本)
-  已保存: val_1.json (1379 样本)
-  已保存: val_5.json (726 样本)
-  已保存: val_0.json (918 样本)
-  已保存: val_4.json (821 样本)
-  已保存: val_8.json (963 样本)
-  已保存: train_6.json (6752 样本)
-  已保存: train_2.json (5711 样本)
-
-  [split_all] 当前模式下各 JSON 文件总输出 stem 数汇总 (总计跨 4 个类别):
-    all.json: 共分配 126843 个 stem
-    test.json: 共分配 11391 个 stem
-    train.json: 共分配 102324 个 stem
-    train_0.json: 共分配 10115 个 stem
-    train_1.json: 共分配 11038 个 stem
-    train_2.json: 共分配 8085 个 stem
-    train_3.json: 共分配 9517 个 stem
-    train_4.json: 共分配 10676 个 stem
-    train_5.json: 共分配 11708 个 stem
-    train_6.json: 共分配 9664 个 stem
-    train_7.json: 共分配 9547 个 stem
-    train_8.json: 共分配 11690 个 stem
-    train_9.json: 共分配 10284 个 stem
-    val.json: 共分配 13128 个 stem
-    val_0.json: 共分配 1195 个 stem
-    val_1.json: 共分配 1670 个 stem
-    val_2.json: 共分配 1249 个 stem
-    val_3.json: 共分配 1876 个 stem
-    val_4.json: 共分配 1114 个 stem
-    val_5.json: 共分配 929 个 stem
-    val_6.json: 共分配 1751 个 stem
-    val_7.json: 共分配 1122 个 stem
-    val_8.json: 共分配 1334 个 stem
-    val_9.json: 共分配 888 个 stem
-
-============================================================
-全部外部依赖同步划分完成! 请前往以下目录查收生成的对齐 JSON 文件群:
-  /storage/penghongen/Pocket_classic/v_0/split/split_0
-  /storage/penghongen/Pocket_classic/v_0/split/split_3
-  /storage/penghongen/Pocket_classic/v_0/split/split_all
-============================================================
-(vnegnn) [penghongen@master ~]$  
-"""
 
 
+
+# v_1 数据集
 """
 (vnegnn) [penghongen@master ~]$ /home/penghongen/anaconda3/envs/vnegnn/bin/python /home/penghongen/My_Project/Pocket/processedPDB_EMDB_binder/split_data/generate_full_json.py
 开始划分，正在依凭/home/penghongen/My_Project/Data/split/3.5_cc_qscore_v1/ 进行文件划分归属对齐...
@@ -1204,4 +761,619 @@ overwriting variable {'LD_LIBRARY_PATH'}
   /storage/penghongen/Pocket_classic/v_1/split/split_all
 ============================================================
 (vnegnn) [penghongen@master ~]$ 
+"""
+
+
+
+# v2_raw4_10A(其余7个平行数据集也都跑了, 就是太长没粘贴)
+"""
+conda activate Pocket_Plus_centos7_cu121_allgpu
+/home/penghongen/anaconda3/envs/Pocket_Plus_centos7_cu121_allgpu/bin/python /home/penghongen/My_Project/Pocket_Plus/processedPDB_EMDB_binder/split_data/generate_full_json.py
+(base) [penghongen@master ~]$ conda activate Pocket_Plus_centos7_cu121_allgpu
+(Pocket_Plus_centos7_cu121_allgpu) [penghongen@master ~]$ /home/penghongen/anaconda3/envs/Pocket_Plus_centos7_cu121_allgpu/bin/python /home/penghongen/My_Project/Pocket_Plus/processedPDB_EMDB_binder/split_data/generate_full_json.py
+开始划分，正在依凭/home/penghongen/My_Project/Data/split/3.5_cc_qscore_v2_raw4 进行文件划分归属对齐...
+
+[Step 0] 按类别收集四个BOX文件夹的各自合法 stem（分类别取四方交集）...
+    [metal_ion] EXP:60236  SIM:60236  Label:60236  LigDist:60236  交集:60236
+    [nucleic] EXP:16  SIM:16  Label:16  LigDist:16  交集:16
+    [peptide] EXP:1560  SIM:1560  Label:1560  LigDist:1560  交集:1560
+    [random_BOX] EXP:103207  SIM:103207  Label:103207  LigDist:103207  交集:103207
+    [small_molecule] EXP:205848  SIM:205848  Label:205848  LigDist:205848  交集:205848
+  发现类别: ['metal_ion', 'nucleic', 'peptide', 'random_BOX', 'small_molecule']
+  各类别四方交集 stem 总数: 370867
+
+[Step 1] 扫描 Json_Root_Folder (/home/penghongen/My_Project/Data/split/3.5_cc_qscore_v2_raw4)，构建全局 PDB 归属映射表...
+  已从目标配置读取到外部约束: test_2.json (含 269 个不重复的 PDB_ID 样本)
+  已从目标配置读取到外部约束: train_010.json (含 415 个不重复的 PDB_ID 样本)
+  已从目标配置读取到外部约束: train_025.json (含 1038 个不重复的 PDB_ID 样本)
+  已从目标配置读取到外部约束: test_3.json (含 54 个不重复的 PDB_ID 样本)
+  已从目标配置读取到外部约束: test_1.json (含 269 个不重复的 PDB_ID 样本)
+  已从目标配置读取到外部约束: test_5.json (含 54 个不重复的 PDB_ID 样本)
+  已从目标配置读取到外部约束: train_050.json (含 2076 个不重复的 PDB_ID 样本)
+  已从目标配置读取到外部约束: test.json (含 969 个不重复的 PDB_ID 样本)
+  已从目标配置读取到外部约束: train.json (含 4152 个不重复的 PDB_ID 样本)
+  已从目标配置读取到外部约束: val.json (含 269 个不重复的 PDB_ID 样本)
+  已从目标配置读取到外部约束: test_0.json (含 269 个不重复的 PDB_ID 样本)
+  已从目标配置读取到外部约束: all.json (含 5390 个不重复的 PDB_ID 样本)
+  已从目标配置读取到外部约束: test_4.json (含 54 个不重复的 PDB_ID 样本)
+    [metal_ion] 初始根据 all.json 过滤前:60236  过滤后:60236
+    [nucleic] 初始根据 all.json 过滤前:16  过滤后:16
+    [peptide] 初始根据 all.json 过滤前:1560  过滤后:1560
+    [random_BOX] 初始根据 all.json 过滤前:103207  过滤后:103207
+    [small_molecule] 初始根据 all.json 过滤前:205848  过滤后:205848
+
+============================================================
+[Dataset 0] split_0  (split_mode=0)
+============================================================
+
+  -- [metal_ion] --
+  已保存: test_2.json (18 样本)
+  已保存: train_010.json (1491 样本)
+  已保存: train_025.json (3287 样本)
+  已保存: test_3.json (290 样本)
+  已保存: test_1.json (394 样本)
+  已保存: test_5.json (0 样本)
+  已保存: train_050.json (6188 样本)
+  已保存: test.json (1442 样本)
+  已保存: train.json (12836 样本)
+  已保存: val.json (800 样本)
+  已保存: test_0.json (577 样本)
+  已保存: all.json (15078 样本)
+  已保存: test_4.json (163 样本)
+
+  -- [nucleic] --
+  已保存: test_2.json (0 样本)
+  已保存: train_010.json (0 样本)
+  已保存: train_025.json (1 样本)
+  已保存: test_3.json (0 样本)
+  已保存: test_1.json (0 样本)
+  已保存: test_5.json (0 样本)
+  已保存: train_050.json (2 样本)
+  已保存: test.json (0 样本)
+  已保存: train.json (2 样本)
+  已保存: val.json (0 样本)
+  已保存: test_0.json (0 样本)
+  已保存: all.json (2 样本)
+  已保存: test_4.json (0 样本)
+
+  -- [peptide] --
+  已保存: test_2.json (24 样本)
+  已保存: train_010.json (20 样本)
+  已保存: train_025.json (91 样本)
+  已保存: test_3.json (2 样本)
+  已保存: test_1.json (9 样本)
+  已保存: test_5.json (1 样本)
+  已保存: train_050.json (133 样本)
+  已保存: test.json (48 样本)
+  已保存: train.json (268 样本)
+  已保存: val.json (7 样本)
+  已保存: test_0.json (12 样本)
+  已保存: all.json (323 样本)
+  已保存: test_4.json (0 样本)
+
+  -- [random_BOX] --
+  已保存: test_2.json (5248 样本)
+  已保存: train_010.json (7739 样本)
+  已保存: train_025.json (19841 样本)
+  已保存: test_3.json (1000 样本)
+  已保存: test_1.json (5251 样本)
+  已保存: test_5.json (973 样本)
+  已保存: train_050.json (39868 样本)
+  已保存: test.json (18609 样本)
+  已保存: train.json (79400 样本)
+  已保存: val.json (5198 样本)
+  已保存: test_0.json (5095 样本)
+  已保存: all.json (103207 样本)
+  已保存: test_4.json (1042 样本)
+
+  -- [small_molecule] --
+  已保存: test_2.json (1281 样本)
+  已保存: train_010.json (5026 样本)
+  已保存: train_025.json (11954 样本)
+  已保存: test_3.json (103 样本)
+  已保存: test_1.json (1155 样本)
+  已保存: test_5.json (157 样本)
+  已保存: train_050.json (24219 样本)
+  已保存: test.json (5768 样本)
+  已保存: train.json (47611 样本)
+  已保存: val.json (2927 样本)
+  已保存: test_0.json (3018 样本)
+  已保存: all.json (56306 样本)
+  已保存: test_4.json (54 样本)
+
+  [split_0] 当前模式下各 JSON 文件总输出 stem 数汇总 (总计跨 5 个类别):
+    all.json: 共分配 174916 个 stem
+    test.json: 共分配 25867 个 stem
+    test_0.json: 共分配 8702 个 stem
+    test_1.json: 共分配 6809 个 stem
+    test_2.json: 共分配 6571 个 stem
+    test_3.json: 共分配 1395 个 stem
+    test_4.json: 共分配 1259 个 stem
+    test_5.json: 共分配 1131 个 stem
+    train.json: 共分配 140117 个 stem
+    train_010.json: 共分配 14276 个 stem
+    train_025.json: 共分配 35174 个 stem
+    train_050.json: 共分配 70410 个 stem
+    val.json: 共分配 8932 个 stem
+
+============================================================
+[Dataset 1] split_1  (split_mode=1)
+============================================================
+
+  -- [metal_ion] --
+  已保存: test_2.json (36 样本)
+  已保存: train_010.json (2781 样本)
+  已保存: train_025.json (6132 样本)
+  已保存: test_3.json (531 样本)
+  已保存: test_1.json (749 样本)
+  已保存: test_5.json (0 样本)
+  已保存: train_050.json (11635 样本)
+  已保存: test.json (2714 样本)
+  已保存: train.json (24046 样本)
+  已保存: val.json (1479 样本)
+  已保存: test_0.json (1089 样本)
+  已保存: all.json (28239 样本)
+  已保存: test_4.json (309 样本)
+
+  -- [nucleic] --
+  已保存: test_2.json (0 样本)
+  已保存: train_010.json (0 样本)
+  已保存: train_025.json (2 样本)
+  已保存: test_3.json (0 样本)
+  已保存: test_1.json (0 样本)
+  已保存: test_5.json (0 样本)
+  已保存: train_050.json (4 样本)
+  已保存: test.json (0 样本)
+  已保存: train.json (4 样本)
+  已保存: val.json (0 样本)
+  已保存: test_0.json (0 样本)
+  已保存: all.json (4 样本)
+  已保存: test_4.json (0 样本)
+
+  -- [peptide] --
+  已保存: test_2.json (44 样本)
+  已保存: train_010.json (40 样本)
+  已保存: train_025.json (176 样本)
+  已保存: test_3.json (4 样本)
+  已保存: test_1.json (18 样本)
+  已保存: test_5.json (2 样本)
+  已保存: train_050.json (262 样本)
+  已保存: test.json (92 样本)
+  已保存: train.json (525 样本)
+  已保存: val.json (14 样本)
+  已保存: test_0.json (24 样本)
+  已保存: all.json (631 样本)
+  已保存: test_4.json (0 样本)
+
+  -- [random_BOX] --
+  已保存: test_2.json (5248 样本)
+  已保存: train_010.json (7739 样本)
+  已保存: train_025.json (19841 样本)
+  已保存: test_3.json (1000 样本)
+  已保存: test_1.json (5251 样本)
+  已保存: test_5.json (973 样本)
+  已保存: train_050.json (39868 样本)
+  已保存: test.json (18609 样本)
+  已保存: train.json (79400 样本)
+  已保存: val.json (5198 样本)
+  已保存: test_0.json (5095 样本)
+  已保存: all.json (103207 样本)
+  已保存: test_4.json (1042 样本)
+
+  -- [small_molecule] --
+  已保存: test_2.json (2464 样本)
+  已保存: train_010.json (9296 样本)
+  已保存: train_025.json (22007 样本)
+  已保存: test_3.json (202 样本)
+  已保存: test_1.json (2215 样本)
+  已保存: test_5.json (297 样本)
+  已保存: train_050.json (44665 样本)
+  已保存: test.json (10852 样本)
+  已保存: train.json (87782 样本)
+  已保存: val.json (5397 样本)
+  已保存: test_0.json (5566 样本)
+  已保存: all.json (104031 样本)
+  已保存: test_4.json (108 样本)
+
+  [split_1] 当前模式下各 JSON 文件总输出 stem 数汇总 (总计跨 5 个类别):
+    all.json: 共分配 236112 个 stem
+    test.json: 共分配 32267 个 stem
+    test_0.json: 共分配 11774 个 stem
+    test_1.json: 共分配 8233 个 stem
+    test_2.json: 共分配 7792 个 stem
+    test_3.json: 共分配 1737 个 stem
+    test_4.json: 共分配 1459 个 stem
+    test_5.json: 共分配 1272 个 stem
+    train.json: 共分配 191757 个 stem
+    train_010.json: 共分配 19856 个 stem
+    train_025.json: 共分配 48158 个 stem
+    train_050.json: 共分配 96434 个 stem
+    val.json: 共分配 12088 个 stem
+
+============================================================
+[Dataset 2] split_2  (split_mode=2)
+============================================================
+
+  -- [metal_ion] --
+  已保存: test_2.json (51 样本)
+  已保存: train_010.json (3686 样本)
+  已保存: train_025.json (8140 样本)
+  已保存: test_3.json (693 样本)
+  已保存: test_1.json (1031 样本)
+  已保存: test_5.json (0 样本)
+  已保存: train_050.json (15542 样本)
+  已保存: test.json (3676 样本)
+  已保存: train.json (32071 样本)
+  已保存: val.json (1949 样本)
+  已保存: test_0.json (1483 样本)
+  已保存: all.json (37696 样本)
+  已保存: test_4.json (418 样本)
+
+  -- [nucleic] --
+  已保存: test_2.json (0 样本)
+  已保存: train_010.json (0 样本)
+  已保存: train_025.json (3 样本)
+  已保存: test_3.json (0 样本)
+  已保存: test_1.json (0 样本)
+  已保存: test_5.json (0 样本)
+  已保存: train_050.json (6 样本)
+  已保存: test.json (0 样本)
+  已保存: train.json (6 样本)
+  已保存: val.json (0 样本)
+  已保存: test_0.json (0 样本)
+  已保存: all.json (6 样本)
+  已保存: test_4.json (0 样本)
+
+  -- [peptide] --
+  已保存: test_2.json (59 样本)
+  已保存: train_010.json (59 样本)
+  已保存: train_025.json (239 样本)
+  已保存: test_3.json (6 样本)
+  已保存: test_1.json (26 样本)
+  已保存: test_5.json (3 样本)
+  已保存: train_050.json (365 样本)
+  已保存: test.json (128 样本)
+  已保存: train.json (731 样本)
+  已保存: val.json (18 样本)
+  已保存: test_0.json (34 样本)
+  已保存: all.json (877 样本)
+  已保存: test_4.json (0 样本)
+
+  -- [random_BOX] --
+  已保存: test_2.json (5248 样本)
+  已保存: train_010.json (7739 样本)
+  已保存: train_025.json (19841 样本)
+  已保存: test_3.json (1000 样本)
+  已保存: test_1.json (5251 样本)
+  已保存: test_5.json (973 样本)
+  已保存: train_050.json (39868 样本)
+  已保存: test.json (18609 样本)
+  已保存: train.json (79400 样本)
+  已保存: val.json (5198 样本)
+  已保存: test_0.json (5095 样本)
+  已保存: all.json (103207 样本)
+  已保存: test_4.json (1042 样本)
+
+  -- [small_molecule] --
+  已保存: test_2.json (3344 样本)
+  已保存: train_010.json (12335 样本)
+  已保存: train_025.json (29076 样本)
+  已保存: test_3.json (282 样本)
+  已保存: test_1.json (3028 样本)
+  已保存: test_5.json (410 样本)
+  已保存: train_050.json (58900 样本)
+  已保存: test.json (14504 样本)
+  已保存: train.json (115927 样本)
+  已保存: val.json (7117 样本)
+  已保存: test_0.json (7287 样本)
+  已保存: all.json (137548 样本)
+  已保存: test_4.json (153 样本)
+
+  [split_2] 当前模式下各 JSON 文件总输出 stem 数汇总 (总计跨 5 个类别):
+    all.json: 共分配 279334 个 stem
+    test.json: 共分配 36917 个 stem
+    test_0.json: 共分配 13899 个 stem
+    test_1.json: 共分配 9336 个 stem
+    test_2.json: 共分配 8702 个 stem
+    test_3.json: 共分配 1981 个 stem
+    test_4.json: 共分配 1613 个 stem
+    test_5.json: 共分配 1386 个 stem
+    train.json: 共分配 228135 个 stem
+    train_010.json: 共分配 23819 个 stem
+    train_025.json: 共分配 57299 个 stem
+    train_050.json: 共分配 114681 个 stem
+    val.json: 共分配 14282 个 stem
+
+============================================================
+[Dataset 3] split_3  (split_mode=3)
+============================================================
+
+  -- [metal_ion] --
+  已保存: test_2.json (66 样本)
+  已保存: train_010.json (4456 样本)
+  已保存: train_025.json (9888 样本)
+  已保存: test_3.json (828 样本)
+  已保存: test_1.json (1281 样本)
+  已保存: test_5.json (0 样本)
+  已保存: train_050.json (18947 样本)
+  已保存: test.json (4526 样本)
+  已保存: train.json (39113 样本)
+  已保存: val.json (2357 样本)
+  已保存: test_0.json (1830 样本)
+  已保存: all.json (45996 样本)
+  已保存: test_4.json (521 样本)
+
+  -- [nucleic] --
+  已保存: test_2.json (0 样本)
+  已保存: train_010.json (0 样本)
+  已保存: train_025.json (4 样本)
+  已保存: test_3.json (0 样本)
+  已保存: test_1.json (0 样本)
+  已保存: test_5.json (0 样本)
+  已保存: train_050.json (8 样本)
+  已保存: test.json (0 样本)
+  已保存: train.json (8 样本)
+  已保存: val.json (0 样本)
+  已保存: test_0.json (0 样本)
+  已保存: all.json (8 样本)
+  已保存: test_4.json (0 样本)
+
+  -- [peptide] --
+  已保存: test_2.json (74 样本)
+  已保存: train_010.json (78 样本)
+  已保存: train_025.json (299 样本)
+  已保存: test_3.json (8 样本)
+  已保存: test_1.json (34 样本)
+  已保存: test_5.json (4 样本)
+  已保存: train_050.json (462 样本)
+  已保存: test.json (164 样本)
+  已保存: train.json (925 样本)
+  已保存: val.json (22 样本)
+  已保存: test_0.json (44 样本)
+  已保存: all.json (1111 样本)
+  已保存: test_4.json (0 样本)
+
+  -- [random_BOX] --
+  已保存: test_2.json (5248 样本)
+  已保存: train_010.json (7739 样本)
+  已保存: train_025.json (19841 样本)
+  已保存: test_3.json (1000 样本)
+  已保存: test_1.json (5251 样本)
+  已保存: test_5.json (973 样本)
+  已保存: train_050.json (39868 样本)
+  已保存: test.json (18609 样本)
+  已保存: train.json (79400 样本)
+  已保存: val.json (5198 样本)
+  已保存: test_0.json (5095 样本)
+  已保存: all.json (103207 样本)
+  已保存: test_4.json (1042 样本)
+
+  -- [small_molecule] --
+  已保存: test_2.json (4153 样本)
+  已保存: train_010.json (14843 样本)
+  已保存: train_025.json (34800 样本)
+  已保存: test_3.json (357 样本)
+  已保存: test_1.json (3780 样本)
+  已保存: test_5.json (509 样本)
+  已保存: train_050.json (70342 样本)
+  已保存: test.json (17652 样本)
+  已保存: train.json (138631 样本)
+  已保存: val.json (8501 样本)
+  已保存: test_0.json (8659 样本)
+  已保存: all.json (164784 样本)
+  已保存: test_4.json (194 样本)
+
+  [split_3] 当前模式下各 JSON 文件总输出 stem 数汇总 (总计跨 5 个类别):
+    all.json: 共分配 315106 个 stem
+    test.json: 共分配 40951 个 stem
+    test_0.json: 共分配 15628 个 stem
+    test_1.json: 共分配 10346 个 stem
+    test_2.json: 共分配 9541 个 stem
+    test_3.json: 共分配 2193 个 stem
+    test_4.json: 共分配 1757 个 stem
+    test_5.json: 共分配 1486 个 stem
+    train.json: 共分配 258077 个 stem
+    train_010.json: 共分配 27116 个 stem
+    train_025.json: 共分配 64832 个 stem
+    train_050.json: 共分配 129627 个 stem
+    val.json: 共分配 16078 个 stem
+
+============================================================
+[Dataset 4] split_4  (split_mode=4)
+============================================================
+
+  -- [metal_ion] --
+  已保存: test_2.json (74 样本)
+  已保存: train_010.json (4875 样本)
+  已保存: train_025.json (10835 样本)
+  已保存: test_3.json (904 样本)
+  已保存: test_1.json (1428 样本)
+  已保存: test_5.json (0 样本)
+  已保存: train_050.json (20819 样本)
+  已保存: test.json (5006 样本)
+  已保存: train.json (42981 样本)
+  已保存: val.json (2582 样本)
+  已保存: test_0.json (2027 样本)
+  已保存: all.json (50569 样本)
+  已保存: test_4.json (573 样本)
+
+  -- [nucleic] --
+  已保存: test_2.json (0 样本)
+  已保存: train_010.json (0 样本)
+  已保存: train_025.json (5 样本)
+  已保存: test_3.json (0 样本)
+  已保存: test_1.json (0 样本)
+  已保存: test_5.json (0 样本)
+  已保存: train_050.json (10 样本)
+  已保存: test.json (0 样本)
+  已保存: train.json (10 样本)
+  已保存: val.json (0 样本)
+  已保存: test_0.json (0 样本)
+  已保存: all.json (10 样本)
+  已保存: test_4.json (0 样本)
+
+  -- [peptide] --
+  已保存: test_2.json (82 样本)
+  已保存: train_010.json (88 样本)
+  已保存: train_025.json (329 样本)
+  已保存: test_3.json (9 样本)
+  已保存: test_1.json (38 样本)
+  已保存: test_5.json (5 样本)
+  已保存: train_050.json (517 样本)
+  已保存: test.json (181 样本)
+  已保存: train.json (1034 样本)
+  已保存: val.json (24 样本)
+  已保存: test_0.json (47 样本)
+  已保存: all.json (1239 样本)
+  已保存: test_4.json (0 样本)
+
+  -- [random_BOX] --
+  已保存: test_2.json (5248 样本)
+  已保存: train_010.json (7739 样本)
+  已保存: train_025.json (19841 样本)
+  已保存: test_3.json (1000 样本)
+  已保存: test_1.json (5251 样本)
+  已保存: test_5.json (973 样本)
+  已保存: train_050.json (39868 样本)
+  已保存: test.json (18609 样本)
+  已保存: train.json (79400 样本)
+  已保存: val.json (5198 样本)
+  已保存: test_0.json (5095 样本)
+  已保存: all.json (103207 样本)
+  已保存: test_4.json (1042 样本)
+
+  -- [small_molecule] --
+  已保存: test_2.json (4636 样本)
+  已保存: train_010.json (16271 样本)
+  已保存: train_025.json (37929 样本)
+  已保存: test_3.json (399 样本)
+  已保存: test_1.json (4232 样本)
+  已保存: test_5.json (570 样本)
+  已保存: train_050.json (76645 样本)
+  已保存: test.json (19470 样本)
+  已保存: train.json (151091 样本)
+  已保存: val.json (9274 样本)
+  已保存: test_0.json (9413 样本)
+  已保存: all.json (179835 样本)
+  已保存: test_4.json (220 样本)
+
+  [split_4] 当前模式下各 JSON 文件总输出 stem 数汇总 (总计跨 5 个类别):
+    all.json: 共分配 334860 个 stem
+    test.json: 共分配 43266 个 stem
+    test_0.json: 共分配 16582 个 stem
+    test_1.json: 共分配 10949 个 stem
+    test_2.json: 共分配 10040 个 stem
+    test_3.json: 共分配 2312 个 stem
+    test_4.json: 共分配 1835 个 stem
+    test_5.json: 共分配 1548 个 stem
+    train.json: 共分配 274516 个 stem
+    train_010.json: 共分配 28973 个 stem
+    train_025.json: 共分配 68939 个 stem
+    train_050.json: 共分配 137859 个 stem
+    val.json: 共分配 17078 个 stem
+
+============================================================
+[Dataset 5] split_all  (split_mode=-1)
+============================================================
+
+  -- [metal_ion] --
+  已保存: test_2.json (98 样本)
+  已保存: train_010.json (5720 样本)
+  已保存: train_025.json (12863 样本)
+  已保存: test_3.json (1073 样本)
+  已保存: test_1.json (1744 样本)
+  已保存: test_5.json (0 样本)
+  已保存: train_050.json (24756 样本)
+  已保存: test.json (6041 样本)
+  已保存: train.json (51097 样本)
+  已保存: val.json (3098 样本)
+  已保存: test_0.json (2435 样本)
+  已保存: all.json (60236 样本)
+  已保存: test_4.json (691 样本)
+
+  -- [nucleic] --
+  已保存: test_2.json (0 样本)
+  已保存: train_010.json (0 样本)
+  已保存: train_025.json (8 样本)
+  已保存: test_3.json (0 样本)
+  已保存: test_1.json (0 样本)
+  已保存: test_5.json (0 样本)
+  已保存: train_050.json (16 样本)
+  已保存: test.json (0 样本)
+  已保存: train.json (16 样本)
+  已保存: val.json (0 样本)
+  已保存: test_0.json (0 样本)
+  已保存: all.json (16 样本)
+  已保存: test_4.json (0 样本)
+
+  -- [peptide] --
+  已保存: test_2.json (102 样本)
+  已保存: train_010.json (114 样本)
+  已保存: train_025.json (403 样本)
+  已保存: test_3.json (12 样本)
+  已保存: test_1.json (48 样本)
+  已保存: test_5.json (8 样本)
+  已保存: train_050.json (652 样本)
+  已保存: test.json (224 样本)
+  已保存: train.json (1306 样本)
+  已保存: val.json (30 样本)
+  已保存: test_0.json (54 样本)
+  已保存: all.json (1560 样本)
+  已保存: test_4.json (0 样本)
+
+  -- [random_BOX] --
+  已保存: test_2.json (5248 样本)
+  已保存: train_010.json (7739 样本)
+  已保存: train_025.json (19841 样本)
+  已保存: test_3.json (1000 样本)
+  已保存: test_1.json (5251 样本)
+  已保存: test_5.json (973 样本)
+  已保存: train_050.json (39868 样本)
+  已保存: test.json (18609 样本)
+  已保存: train.json (79400 样本)
+  已保存: val.json (5198 样本)
+  已保存: test_0.json (5095 样本)
+  已保存: all.json (103207 样本)
+  已保存: test_4.json (1042 样本)
+
+  -- [small_molecule] --
+  已保存: test_2.json (5689 样本)
+  已保存: train_010.json (18733 样本)
+  已保存: train_025.json (43200 样本)
+  已保存: test_3.json (508 样本)
+  已保存: test_1.json (5196 样本)
+  已保存: test_5.json (727 样本)
+  已保存: train_050.json (87215 样本)
+  已保存: test.json (23110 样本)
+  已保存: train.json (172134 样本)
+  已保存: val.json (10604 样本)
+  已保存: test_0.json (10705 样本)
+  已保存: all.json (205848 样本)
+  已保存: test_4.json (285 样本)
+
+  [split_all] 当前模式下各 JSON 文件总输出 stem 数汇总 (总计跨 5 个类别):
+    all.json: 共分配 370867 个 stem
+    test.json: 共分配 47984 个 stem
+    test_0.json: 共分配 18289 个 stem
+    test_1.json: 共分配 12239 个 stem
+    test_2.json: 共分配 11137 个 stem
+    test_3.json: 共分配 2593 个 stem
+    test_4.json: 共分配 2018 个 stem
+    test_5.json: 共分配 1708 个 stem
+    train.json: 共分配 303953 个 stem
+    train_010.json: 共分配 32306 个 stem
+    train_025.json: 共分配 76315 个 stem
+    train_050.json: 共分配 152507 个 stem
+    val.json: 共分配 18930 个 stem
+
+============================================================
+全部外部依赖同步划分完成! 请前往以下目录查收生成的对齐 JSON 文件群:
+  /storage/penghongen/Pocket_classic/v2_raw4_10A/split/split_0
+  /storage/penghongen/Pocket_classic/v2_raw4_10A/split/split_1
+  /storage/penghongen/Pocket_classic/v2_raw4_10A/split/split_2
+  /storage/penghongen/Pocket_classic/v2_raw4_10A/split/split_3
+  /storage/penghongen/Pocket_classic/v2_raw4_10A/split/split_4
+  /storage/penghongen/Pocket_classic/v2_raw4_10A/split/split_all
+============================================================
+(Pocket_Plus_centos7_cu121_allgpu) [penghongen@master ~]$ 
 """

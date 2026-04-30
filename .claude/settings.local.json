@@ -1,13 +1,7 @@
 {
   "permissions": {
     "allow": [
-      "Bash(pip show pytest)",
-      "Bash(python -c \"import pytest; pytest.main\\([''-x'', ''tests/model/test_stage1_model.py'']\\)\")",
-      "Bash(pip list)",
-      "Bash(/c/Users/15919/miniconda/envs/Pocket_Plus_windows/python.exe -m pytest tests/model/test_stage1_model.py -x)",
-      "WebSearch",
-      "WebFetch(domain:openaccess.thecvf.com)",
-      "Bash(/c/Users/15919/miniconda/envs/Pocket_Plus_windows/python.exe test_simple.py)"
+      "Bash(python3 -c \"import sys,json; data=json.load\\(sys.stdin\\); print\\(data[-1]['assistant'] if isinstance\\(data[-1].get\\('assistant'\\), str\\) else json.dumps\\(data[-1]['assistant'], ensure_ascii=False, indent=2\\)[:500]\\)\")"
     ]
   }
 }

@@ -4,6 +4,7 @@ import functools
 from typing import Any, Dict, Optional
 
 import lightning as pl
+from src.modules.losses import UnifiedCompositeLoss
 import torch
 from hydra.utils import instantiate
 from torch import nn
@@ -35,10 +36,12 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
         backbone: nn.Module,
         atom_loss: nn.Module | None = None,
         voxel_aux_loss: nn.Module | None = None,
+        voxel_ligand_loss: nn.Module | None = None,
         optimizer: Optional[Dict[str, Any]] = None,
         scheduler: Optional[Dict[str, Any]] = None,
         atom_loss_weight: float = 1.0,
         voxel_aux_loss_weight: float = 0.0,
+        voxel_ligand_loss_weight: float = 0.0,
         monitor_metric: str = "val/atom_pr_auc",
         interval: str = "epoch",
         frequency: int = 1,
@@ -47,7 +50,7 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
     ) -> None:
         super().__init__()
         # 将除 nn.Module 以外的超参数保存到 self.hparams，方便日志和检查点恢复
-        self.save_hyperparameters(ignore=["backbone", "atom_loss", "voxel_aux_loss"])
+        self.save_hyperparameters(ignore=["backbone", "atom_loss", "voxel_aux_loss", "voxel_ligand_loss"])
 
         # nn.Module, 体素+点融合主干网络（VolumePointStage1Model）
         self.backbone = backbone if isinstance(backbone, nn.Module) else instantiate(backbone)
@@ -63,15 +66,25 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
             if (voxel_aux_loss is None or isinstance(voxel_aux_loss, nn.Module))
             else instantiate(voxel_aux_loss)
         )
+        # nn.Module | None, 体素 ligand 占据损失函数; 为 None 时不参与梯度
+        self.voxel_ligand_loss = (
+            voxel_ligand_loss
+            if (voxel_ligand_loss is None or isinstance(voxel_ligand_loss, nn.Module))
+            else instantiate(voxel_ligand_loss)
+        )
 
         if compile:
             self.backbone = torch.compile(self.backbone)
 
-        # BinaryAveragePrecision, 验证阶段的原子级 PR-AUC 指标（在 CPU 上计算以节省显存）
-        # 仅在 atom_loss 存在时构建（UNet-only 模式无 atom 预测，无需此指标）
+        # BinaryAveragePrecision, 验证阶段的 PR-AUC 指标（在 CPU 上计算以节省显存）
+        # 各指标仅在对应损失启用时构建; 一个 epoch 可能多次验证，每次都会 reset/update/compute
+        from torchmetrics.classification import BinaryAveragePrecision
         if self.atom_loss is not None:
-            from torchmetrics.classification import BinaryAveragePrecision
             self.val_atom_pr_auc = BinaryAveragePrecision(compute_on_cpu=True)
+        if self.voxel_aux_loss is not None:
+            self.val_voxel_aux_pr_auc = BinaryAveragePrecision(compute_on_cpu=True)
+        if self.voxel_ligand_loss is not None:
+            self.val_voxel_ligand_pr_auc = BinaryAveragePrecision(compute_on_cpu=True)
 
     # ------------------------------------------------------------------
     # 工具方法
@@ -143,12 +156,20 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
                 f"atom_valid_mask.shape={tuple(atom_valid_mask.shape)}, "
                 f"atom_target.shape={tuple(atom_target.shape)}"
             )
-        loss_out = self.atom_loss(
-            atom_logits,
-            atom_target,
-            reduction="mean",
-            hardmask=atom_valid_mask,
-        )
+        # 根据损失类型分发: UnifiedCompositeLoss 使用新接口, 旧类使用原有接口
+        if isinstance(self.atom_loss, UnifiedCompositeLoss):
+            loss_out = self.atom_loss(
+                logits=atom_logits,
+                target=atom_target,
+                hardmask=atom_valid_mask,
+            )
+        else:
+            loss_out = self.atom_loss(
+                atom_logits,
+                atom_target,
+                reduction="mean",
+                hardmask=atom_valid_mask,
+            )
         return self._loss_output_to_tensor(loss_out)
 
     def _compute_voxel_aux_loss(
@@ -174,19 +195,72 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
         if voxel_logits_aux is None:
             return None
 
-        # torch.Tensor, (B, 1, D, H, W), 体素级真值标签
+        # torch.Tensor, (B, D, H, W), 体素级真值标签
         voxel_target = batch["voxel_label"]
-        # torch.Tensor | None, (B, 1, D, H, W), 体素级有效掩码
+        # torch.Tensor, (B, 1, D, H, W), 几何 hardmask
         hardmask = batch["hardmask"]
+        # torch.Tensor, (B, 1, D, H, W), 边界有效掩码
         voxel_valid_mask = batch["voxel_valid_mask"]
-        voxel_loss_hardmask = hardmask.bool() & voxel_valid_mask.bool()
-        loss_out = self.voxel_aux_loss(
-            voxel_logits_aux,
-            voxel_target,
-            reduction="mean",
-            hardmask=voxel_loss_hardmask,
-        )
+
+        # 根据损失类型分发
+        if isinstance(self.voxel_aux_loss, UnifiedCompositeLoss):
+            loss_out = self.voxel_aux_loss(
+                logits=voxel_logits_aux,
+                target=voxel_target,
+                hardmask=hardmask,
+                valid_mask=voxel_valid_mask,
+            )
+        else:
+            # 旧类 (FocalTverskyCombinedLoss): 合并 hardmask 和 valid_mask 后传入
+            voxel_loss_hardmask = hardmask.bool() & voxel_valid_mask.bool()
+            loss_out = self.voxel_aux_loss(
+                voxel_logits_aux,
+                voxel_target,
+                reduction="mean",
+                hardmask=voxel_loss_hardmask,
+            )
         return self._loss_output_to_tensor(loss_out)
+
+    def _compute_voxel_ligand_loss(
+        self,
+        outputs: dict[str, Any],
+        batch: dict[str, Any],
+    ) -> torch.Tensor | None:
+        """
+        计算体素 ligand 占据损失。若未配置或数据中无 ligand_dist_map，返回 None。
+
+        输入参数:
+            - outputs: dict[str, Any], backbone 前向输出
+            - batch: dict[str, Any], 当前 batch 字典
+
+        输出:
+            - voxel_ligand_loss: torch.Tensor | None, 标量
+        """
+        if self.voxel_ligand_loss is None:
+            return None
+        # torch.Tensor | None, (B, 1, D, H, W), ligand 预测 logits
+        voxel_logits_ligand = outputs.get("voxel_logits_ligand")
+        if voxel_logits_ligand is None:
+            return None
+        # torch.Tensor | None, (B, D, H, W), ligand 距离图
+        ligand_dist_map = batch.get("ligand_dist_map")
+        if ligand_dist_map is None:
+            return None
+
+        # # torch.Tensor, (B, 1, D, H, W), 几何 hardmask
+        # hardmask = batch["hardmask"]
+        # torch.Tensor, (B, 1, D, H, W), 边界有效掩码
+        voxel_valid_mask = batch["voxel_valid_mask"]
+
+        loss = self.voxel_ligand_loss(
+            logits=voxel_logits_ligand,
+            target=None,
+            hardmask=None,
+            valid_mask=voxel_valid_mask,
+            ligand_dist_map=ligand_dist_map,
+            reduction="mean"
+        )
+        return loss
 
     def _compute_total_loss(
         self,
@@ -194,7 +268,7 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
         batch: dict[str, Any],
     ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
         """
-        汇总原子损失与可选的体素辅助损失，得到加权总损失。
+        汇总原子损失、体素辅助损失和体素 ligand 损失，得到加权总损失。
 
         输入参数:
             - outputs: dict[str, Any], backbone 前向输出
@@ -202,10 +276,7 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
 
         输出:
             - total_loss: torch.Tensor, 标量, 加权总损失
-            - loss_dict: dict[str, torch.Tensor], 各分项损失字典, 键包括:
-                - "atom_loss": 原子级损失
-                - "voxel_aux_loss": 体素辅助损失(仅当启用时)
-                - "total_loss": 最终加权总损失
+            - loss_dict: dict[str, torch.Tensor], 各分项损失字典
         """
         loss_dict: dict[str, torch.Tensor] = {}
         # torch.Tensor, 标量, 累积总损失; 初始化为 0
@@ -222,6 +293,12 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
         if voxel_aux_loss is not None:
             total_loss = total_loss + float(self.hparams.voxel_aux_loss_weight) * voxel_aux_loss
             loss_dict["voxel_aux_loss"] = voxel_aux_loss
+
+        # torch.Tensor | None, 标量, 体素 ligand 占据损失
+        voxel_ligand_loss = self._compute_voxel_ligand_loss(outputs=outputs, batch=batch)
+        if voxel_ligand_loss is not None:
+            total_loss = total_loss + float(self.hparams.voxel_ligand_loss_weight) * voxel_ligand_loss
+            loss_dict["voxel_ligand_loss"] = voxel_ligand_loss
 
         loss_dict["total_loss"] = total_loss
         return total_loss, loss_dict
@@ -273,6 +350,86 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
         targets = atom_target[valid].long().cpu()
         self.val_atom_pr_auc.update(preds, targets)
 
+    def _update_val_voxel_aux_metric(self, outputs: dict[str, Any], batch: dict[str, Any]) -> None:
+        """
+        用当前 batch 的体素辅助预测更新验证指标。
+        掩码逻辑与 voxel_aux_loss 完全一致: hardmask AND valid_mask。
+
+        输入参数:
+            - outputs: dict[str, Any], backbone 前向输出
+            - batch: dict[str, Any], 当前 batch 字典
+        """
+        if self.voxel_aux_loss is None:
+            return
+        # torch.Tensor | None, (B, 1, D, H, W), 体素辅助预测 logits
+        voxel_logits_aux = outputs.get("voxel_logits_aux")
+        if voxel_logits_aux is None:
+            return
+
+        # torch.Tensor, (B*D*H*W,), 展平后的 logits
+        logits_flat = voxel_logits_aux.squeeze(1).reshape(-1)
+        # torch.Tensor, (B*D*H*W,), 展平后的真值标签
+        target_flat = batch["voxel_label"].reshape(-1).long()
+        # torch.Tensor, (B, D, H, W), 合并掩码 (与 voxel_aux_loss 完全一致)
+        effective_mask = batch["hardmask"].squeeze(1).bool() & batch["voxel_valid_mask"].squeeze(1).bool()
+        # torch.Tensor, (B*D*H*W,), 展平后的有效掩码
+        mask_flat = effective_mask.reshape(-1)
+
+        if mask_flat.sum() <= 0:
+            return
+
+        # torch.Tensor, (N_valid,), float, sigmoid 后的概率
+        preds = torch.sigmoid(logits_flat).detach().float()[mask_flat].cpu()
+        # torch.Tensor, (N_valid,), long, 有效体素的标签
+        targets = target_flat[mask_flat].cpu()
+        self.val_voxel_aux_pr_auc.update(preds, targets)
+
+    def _update_val_voxel_ligand_metric(self, outputs: dict[str, Any], batch: dict[str, Any]) -> None:
+        """
+        用当前 batch 的体素 ligand 预测更新验证指标。
+        掩码逻辑与 voxel_ligand_loss 完全一致: 仅 valid_mask, 不使用 hardmask。
+
+        输入参数:
+            - outputs: dict[str, Any], backbone 前向输出
+            - batch: dict[str, Any], 当前 batch 字典
+        """
+        if self.voxel_ligand_loss is None:
+            return
+        # torch.Tensor | None, (B, 1, D, H, W), ligand 预测 logits
+        voxel_logits_ligand = outputs.get("voxel_logits_ligand")
+        if voxel_logits_ligand is None:
+            return
+        # torch.Tensor | None, (B, D, H, W), ligand 距离图
+        ligand_dist_map = batch.get("ligand_dist_map")
+        if ligand_dist_map is None:
+            return
+
+        # torch.Tensor, (B*D*H*W,), 展平后的 logits
+        logits_flat = voxel_logits_ligand.squeeze(1).reshape(-1)
+
+        # 生成二值标签: 与 UnifiedCompositeLoss 中 hard_label 逻辑一致
+        hard_label_threshold = getattr(self.voxel_ligand_loss, "hard_label_threshold", None)
+        if hard_label_threshold is not None:
+            # torch.Tensor, (B, D, H, W), 距离阈值二值化
+            voxel_target = (ligand_dist_map < float(hard_label_threshold)).long()
+        else:
+            # hard_label_threshold 为 None 时退回使用 batch 中的 voxel_label
+            voxel_target = batch["voxel_label"]
+        # torch.Tensor, (B*D*H*W,), 展平后的标签
+        target_flat = voxel_target.reshape(-1)
+
+        # torch.Tensor, (B*D*H*W,), 展平后的有效掩码 (仅 valid_mask, 无 hardmask)
+        mask_flat = batch["voxel_valid_mask"].squeeze(1).bool().reshape(-1)
+
+        if mask_flat.sum() <= 0:
+            return
+
+        # torch.Tensor, (N_valid,), float, sigmoid 后的概率
+        preds = torch.sigmoid(logits_flat).detach().float()[mask_flat].cpu()
+        # torch.Tensor, (N_valid,), long, 有效体素的标签
+        targets = target_flat[mask_flat].cpu()
+        self.val_voxel_ligand_pr_auc.update(preds, targets)
+
     # ------------------------------------------------------------------
     # 训练 / 验证步骤
     # ------------------------------------------------------------------
@@ -314,6 +471,16 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
                 on_epoch=True,
                 sync_dist=True,
             )
+        # 记录体素 ligand 损失（仅当启用时）
+        if "voxel_ligand_loss" in loss_dict:
+            self.log(
+                "train/voxel_ligand_loss",
+                loss_dict["voxel_ligand_loss"],
+                prog_bar=False,
+                on_step=True,
+                on_epoch=True,
+                sync_dist=True,
+            )
         # 记录当前 step 实际使用的 recycle 轮数
         self.log(
             "train/recycle_passes",
@@ -341,6 +508,8 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
         total_loss, loss_dict = self._compute_total_loss(outputs=outputs, batch=batch_dict)
         # 用当前 batch 更新 PR-AUC 指标
         self._update_val_atom_metric(outputs=outputs, batch=batch_dict)
+        self._update_val_voxel_aux_metric(outputs=outputs, batch=batch_dict)
+        self._update_val_voxel_ligand_metric(outputs=outputs, batch=batch_dict)
 
         # 记录总损失
         self.log("val/loss", total_loss, prog_bar=True, on_step=False, on_epoch=True, sync_dist=True)
@@ -364,6 +533,16 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
                 on_epoch=True,
                 sync_dist=True,
             )
+        # 记录体素 ligand 损失（仅当启用时）
+        if "voxel_ligand_loss" in loss_dict:
+            self.log(
+                "val/voxel_ligand_loss",
+                loss_dict["voxel_ligand_loss"],
+                prog_bar=False,
+                on_step=False,
+                on_epoch=True,
+                sync_dist=True,
+            )
         # 记录 recycle 轮数
         self.log(
             "val/recycle_passes",
@@ -375,36 +554,50 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
         )
         return total_loss
 
-    def on_validation_epoch_end(self) -> None:
+    def _compute_log_reset_metric(self, metric_obj, metric_name: str) -> None:
         """
-        验证 epoch 结束时，在本地 GPU 上计算 PR-AUC 并通过 sync_dist 汇聚到所有进程。
-        当 atom_loss 为 None (UNet-only 模式) 时直接跳过。
+        通用的验证指标计算-日志-重置流程。
+        在本地 GPU 上 compute, 通过 sync_dist 跨卡汇聚, 然后 reset。
 
-        流程:
-            1. 临时关闭自动同步，在各 GPU 本地 compute PR-AUC
-            2. 将结果移到当前 GPU，通过 self.log(sync_dist=True) 做跨卡平均
-            3. reset 指标状态，为下一 epoch 做准备
+        输入参数:
+            - metric_obj: BinaryAveragePrecision, torchmetrics 指标对象
+            - metric_name: str, 日志中使用的指标名 (如 "val/atom_pr_auc")
         """
-        if not hasattr(self, "val_atom_pr_auc"):
-            return
-        # 临时禁用 torchmetrics 内置同步，手动在 GPU 上做 sync_dist
-        prev_to_sync = getattr(self.val_atom_pr_auc, "_to_sync", True)
-        self.val_atom_pr_auc._to_sync = False
+        # 临时禁用 torchmetrics 内部同步，手动在 GPU 上做 sync_dist
+        prev_to_sync = getattr(metric_obj, "_to_sync", True)
+        metric_obj._to_sync = False
         # float, 标量, 当前 GPU 本地 PR-AUC 值
-        score_local = self.val_atom_pr_auc.compute()
-        self.val_atom_pr_auc._to_sync = prev_to_sync
+        score_local = metric_obj.compute()
+        metric_obj._to_sync = prev_to_sync
 
         # torch.Tensor, 标量, 移到当前 GPU 以便 sync_dist 正常工作
         score_gpu = score_local.to(self.device)
-        self.val_atom_pr_auc.reset()
+        metric_obj.reset()
         self.log(
-            self.hparams.monitor_metric,
+            metric_name,
             score_gpu,
-            prog_bar=True,
+            prog_bar=(metric_name == self.hparams.monitor_metric),  # 仅主指标显示进度条
             on_step=False,
             on_epoch=True,
             sync_dist=True,
         )
+
+    def on_validation_epoch_end(self) -> None:
+        """
+        验证 epoch 结束时，计算并日志所有已启用的 PR-AUC 指标。
+        当对应损失未启用时，跳过对应指标。
+
+        流程 (对每个已启用指标):
+            1. 临时关闭自动同步，在各 GPU 本地 compute
+            2. 将结果移到当前 GPU，通过 self.log(sync_dist=True) 跨卡汇聚
+            3. reset 指标状态，为下一次验证做准备
+        """
+        if hasattr(self, "val_atom_pr_auc"):
+            self._compute_log_reset_metric(self.val_atom_pr_auc, "val/atom_pr_auc")
+        if hasattr(self, "val_voxel_aux_pr_auc"):
+            self._compute_log_reset_metric(self.val_voxel_aux_pr_auc, "val/voxel_aux_pr_auc")
+        if hasattr(self, "val_voxel_ligand_pr_auc"):
+            self._compute_log_reset_metric(self.val_voxel_ligand_pr_auc, "val/voxel_ligand_pr_auc")
 
     # ------------------------------------------------------------------
     # 优化器 & 调度器

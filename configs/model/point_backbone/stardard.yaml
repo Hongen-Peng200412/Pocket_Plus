@@ -12,8 +12,8 @@ model:
       # --- 输入嵌入 ---
       input_embed_dim: 64            # int, 嵌入层输出维度
       input_embed_hidden_dim: 128    # int, 嵌入层隐藏维度
-      out_channels: 96               # int, 点分支最终输出通道数, 它必须等于 dec_channels[0]!!!!! # NOTE
-      recycle_feature_dim: 96        # int, recycle 特征维度, 它必须等于 dec_channels[0]!!!!! # NOTE
+      out_channels: 48               # int, 点分支最终输出通道数, 它必须等于 dec_channels[0]!!!!! # NOTE
+      recycle_feature_dim: 48        # int, recycle 特征维度, 它必须等于 dec_channels[0]!!!!! # NOTE
       recycle_in_norm_mode: layernorm  # str, 对上一轮 point recycle_out 先做归一化再投影; "layernorm" / "none"
 
       # --- 序列化 ---
@@ -23,11 +23,11 @@ model:
       # --- 编码器/解码器 ---
       stride: [8, 2, 2, 2]          # list[int], 各层下采样步幅
       enc_depths: [2, 2, 2, 2, 2]   # list[int], 编码器每层 Block 数
-      enc_channels: [64, 64, 128, 256, 512]
+      enc_channels: [64, 128, 128, 256, 512]
       enc_num_head: [2, 4, 8, 16, 32]
       enc_patch_size: [1024, 256, 128, 72, 64]
       dec_depths: [2, 2, 2, 2, 6]   # list[int], 解码器; dec4=0 跳过最低分辨率(旧版兼容)
-      dec_channels: [96, 96, 128, 256, 512]
+      dec_channels: [48, 96, 128, 256, 512]
       dec_num_head: [4, 4, 8, 16, 32]
       dec_patch_size: [1024, 256, 128, 72, 64]
 
@@ -49,9 +49,9 @@ model:
       mlp_ratio: 3                   # int, FFN 膨胀倍率
       qkv_bias: true
       qk_scale: null
-      attn_drop: 0.2                 # float, 注意力 dropout
-      proj_drop: 0.2                 # float, 投影 dropout
-      drop_path: 0.4                 # float, 随机深度 drop 概率
+      attn_drop: 0.1                 # float, 注意力 dropout
+      proj_drop: 0.1                 # float, 投影 dropout
+      drop_path: 0.3                 # float, 随机深度 drop 概率
       pre_norm: true
       enable_rpe: false
       enable_flash: true

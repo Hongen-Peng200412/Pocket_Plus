@@ -17,6 +17,9 @@ class Stage1VoxelBackbone(SimpleUnet):
         gradient_checkpoint: bool,
         return_feature_keys: Sequence[str],
         aux_head_hidden_channels: int,
+        num_conv3d_aux: int = 2,
+        ligand_head_hidden_channels: int = 0,
+        num_conv3d_ligand: int = 2,
         prior_prob: float | None = None,  # float|None, RetinaNet 式先验正类概率; 不为 None 时初始化 voxel_aux_head[-1].bias
     ) -> None:
         """
@@ -68,28 +71,42 @@ class Stage1VoxelBackbone(SimpleUnet):
 
         # nn.Sequential | None，`(B, C_final, D, H, W) -> (B, 1, D, H, W)`，体素辅助监督头。
         if int(aux_head_hidden_channels) > 0:
-            self.voxel_aux_head = nn.Sequential(
-                nn.Conv3d(self.feature_channels, int(aux_head_hidden_channels), kernel_size=3, padding=1),
-                nn.ReLU(),
-                nn.Conv3d(int(aux_head_hidden_channels), int(aux_head_hidden_channels), kernel_size=3, padding=1),
-                nn.ReLU(),
-                nn.Conv3d(int(aux_head_hidden_channels), 1, kernel_size=1),
-            )
+            aux_layers: list[nn.Module] = []
+            for _ in range(int(num_conv3d_aux)):
+                aux_layers.append(nn.Conv3d(self.feature_channels if len(aux_layers) == 0 else int(aux_head_hidden_channels), int(aux_head_hidden_channels), kernel_size=3, padding=1))
+                aux_layers.append(nn.ReLU())
+            # 最后一层 Conv3d 的 in_channels: 若有中间隐藏层则用 aux_head_hidden_channels, 否则用 self.feature_channels
+            _last_in = int(aux_head_hidden_channels) if len(aux_layers) > 0 else self.feature_channels
+            aux_layers.append(nn.Conv3d(_last_in, 1, kernel_size=1))
+            self.voxel_aux_head = nn.Sequential(*aux_layers)
         else:   # aux_head_hidden_channels <= 0 时不构建(消融模式: 直接用 voxel_final 作为 logit, 节省显存)
             self.voxel_aux_head = None
 
+        # nn.Sequential | None, `(B, C_final, D, H, W) -> (B, 1, D, H, W)`, 体素 ligand 占据预测头
+        if int(ligand_head_hidden_channels) > 0:
+            ligand_layers: list[nn.Module] = []
+            for _ in range(int(num_conv3d_ligand)):
+                ligand_layers.append(nn.Conv3d(self.feature_channels if len(ligand_layers) == 0 else int(ligand_head_hidden_channels), int(ligand_head_hidden_channels), kernel_size=3, padding=1))
+                ligand_layers.append(nn.ReLU())
+            _last_in_lig = int(ligand_head_hidden_channels) if len(ligand_layers) > 0 else self.feature_channels
+            ligand_layers.append(nn.Conv3d(_last_in_lig, 1, kernel_size=1))
+            self.voxel_ligand_head = nn.Sequential(*ligand_layers)
+        else:
+            self.voxel_ligand_head = None
+
         # RetinaNet 式偏置初始化: -log((1-π)/π)
-        # 有 voxel_aux_head 时: 初始化 voxel_aux_head[4].bias
-        #   结构: [0]Conv3d [1]ReLU [2]Conv3d [3]ReLU [4]Conv3d(out=1) ← 目标
-        # 无 voxel_aux_head 时 (消融模式, aux_head_hidden_channels<=0):
-        #   logit 来自 voxel_final = conv_end 输出 → 初始化 self.conv_end.bias
+        # head 结构: [Conv3d(3x3), ReLU] * num_conv3d + [Conv3d(1x1)]，最后一个 Conv3d 的索引 = 2 * num_conv3d
         if prior_prob is not None:
             import math as _math
             _bias_val = -_math.log((1.0 - float(prior_prob)) / float(prior_prob))
             if self.voxel_aux_head is not None:
-                nn.init.constant_(self.voxel_aux_head[4].bias, _bias_val)
+                _last_idx = 2 * int(num_conv3d_aux)
+                nn.init.constant_(self.voxel_aux_head[_last_idx].bias, _bias_val)
             elif self.conv_end.bias is not None:
                 nn.init.constant_(self.conv_end.bias, _bias_val)
+            if self.voxel_ligand_head is not None:
+                _last_idx = 2 * int(num_conv3d_ligand)
+                nn.init.constant_(self.voxel_ligand_head[_last_idx].bias, _bias_val)
 
         # nn.Conv3d，`(B, C_final, D, H, W) -> (B, C_recycle, D, H, W)`，体素 voxel_final 的简单投影。
         self.voxel_recycle_proj = nn.Conv3d(
@@ -242,11 +259,17 @@ class Stage1VoxelBackbone(SimpleUnet):
             voxel_logits_aux = self.voxel_aux_head(all_feature_dict["voxel_final"])
         else:
             voxel_logits_aux = all_feature_dict["voxel_final"]
+        # torch.Tensor | None, `(B, 1, D, H, W)`, 体素 ligand 占据预测 logits
+        voxel_logits_ligand = None
+        if self.voxel_ligand_head is not None:
+            voxel_logits_ligand = self.voxel_ligand_head(all_feature_dict["voxel_final"])
+
         # torch.Tensor，`(B, C_recycle, D, H, W)`，下一轮体素 recycle 输入。
         voxel_recycle_out = self.voxel_recycle_proj(all_feature_dict["voxel_final"])  # 简单的1x1卷积
 
         return {
             "voxel_features": selected_feature_dict,
             "voxel_logits_aux": voxel_logits_aux,
+            "voxel_logits_ligand": voxel_logits_ligand,
             "voxel_recycle_out": voxel_recycle_out,   # voxel_final 经过简单投影
         }

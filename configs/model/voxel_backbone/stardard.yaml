@@ -5,7 +5,7 @@ model:
     voxel_backbone:
       _target_: src.model.stage1_voxel_backbone.Stage1VoxelBackbone
       in_channels: null              # int|null, 输入通道数; null=运行时自动推断
-      feature_channels: 32           # int, 体素分支最终输出的通道(将会进入 atom head)
+      feature_channels: 48           # int, 体素分支最终输出的通道(将会进入 atom head)
       planes: [64, 128, 128, 256, 256, 256, 128, 64, 64]
                                      # list[int], RAUNet 各层通道数
                                      #   映射: (enc0, enc1, enc2, enc3, bottleneck, dec3, dec2, dec1, dec0)
@@ -14,3 +14,6 @@ model:
       #                                # list[str], 返回的中间特征名称; 被 point_fusion_map 引用
       return_feature_keys: []        # 做好防护了: 取其所需
       aux_head_hidden_channels: 32   # int, 辅助分类头隐藏通道数
+      num_conv3d_aux: 2              # int, aux_head 中 Conv3d(3x3)+ReLU 的对数
+      ligand_head_hidden_channels: 0 # int, ligand 占据头隐藏通道数; <=0 时不构建
+      num_conv3d_ligand: 2           # int, ligand_head 中 Conv3d(3x3)+ReLU 的对数

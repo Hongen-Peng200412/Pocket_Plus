@@ -20,7 +20,6 @@ from .box_geometry import (
     build_atom_valid_mask,
     build_hardmask_from_atom_coordinates,
     build_voxel_valid_mask,
-    resolve_emdb_zscore_mask,
     select_atoms_for_box,
 )
 
@@ -42,30 +41,6 @@ def _apply_class_mapping(label: np.ndarray, mapping: list[int]) -> np.ndarray:
     return mapped
 
 
-def apply_emdb_zscore(emdb_grid: np.ndarray, emdb_z_score) -> np.ndarray:
-    """
-    对 EMDB 体素 grid 做按 emdb_z_score 控制的逐通道 z-score 归一化。
-
-    输入参数:
-        - emdb_grid: np.ndarray, (C, D, H, W), float32, EMDB 通道特征
-        - emdb_z_score: bool | int | list[int], 归一化控制参数
-            - false/0: 全部不归一化
-            - true/1: 全部归一化
-            - list[int]: 逐通道控制(1=归一化, 0=跳过)
-
-    输出:
-        - np.ndarray, (C, D, H, W), float32, 归一化后的结果
-    """
-    # list[bool], 长度 = C, True=归一化该通道
-    channel_mask = resolve_emdb_zscore_mask(emdb_z_score, n_emdb_channels=int(emdb_grid.shape[0]))
-    # np.ndarray, (C, D, H, W), float32, 待处理的副本
-    grid_out = emdb_grid.astype(np.float32, copy=True)
-    for ch_idx, do_norm in enumerate(channel_mask):
-        if do_norm:
-            # np.ndarray, (D, H, W), float32, 单通道数据
-            ch = grid_out[ch_idx]
-            grid_out[ch_idx] = (ch - ch.mean()) / (ch.std() + 1e-8)
-    return grid_out
 
 
 def build_box_point_numpy_sample(
@@ -124,6 +99,9 @@ def build_box_point_numpy_sample(
             - "atom_is_in_core_box":     np.ndarray, (N,), bool, 标记选中原子是否处于 BOX core 区域
             - "atom_valid_mask":         np.ndarray, (N,), bool, 标记选中原子是否参与损失监督
             - "_selected_idx":           np.ndarray, (N,), int64, 选中原子在全局数组中的索引(推断侧用于获取全局索引; 训练侧可忽略)
+
+        注意: "ligand_dist_map" 不在本函数输出范围内, 它由调用侧
+        (BoxPointDataset.__getitem__) 在本函数返回后按需追加。
     """
     # 1. 选择 BOX 内 + buffer 原子
     selected = select_atoms_for_box(
@@ -217,6 +195,8 @@ _TENSOR_DTYPE_MAP: dict[str, torch.dtype] = {
     "atom_label": torch.int64,
     "atom_is_in_core_box": torch.bool,
     "atom_valid_mask": torch.bool,
+    # 可选字段: 由 BoxPointDataset.__getitem__ 追加, 仅在配置了 ligand_dist_BOX 时存在
+    "ligand_dist_map": torch.float32,
 }
 
 

@@ -1,0 +1,55 @@
+# @package _global_
+# ============================================================
+# Embed Head: 仅点路径模式
+# ── has_voxel_output=False, has_point_output=True
+# ── 不向体素分支注入 embed 原子信息, 仅输出 embed_point_feat 给点分支
+# ── 搭配 online_pdb_feature=true 时, voxel_backbone 可看到 EMDB + 在线 raw 49ch
+# ── 搭配 online_pdb_feature=false 时, voxel_backbone 仅看到 EMDB 密度通道
+# ============================================================
+model:
+  backbone:
+    embed_head:
+      _target_: src.model.stage1_embed_head.Stage1EmbedHead
+      atom_feature_dim: 49         # int, 原子原始特征维度
+      embed_hidden_dim: 128        # int, 共享 trunk 隐藏通道数
+      embed_voxel_out_channels: 0  # int, 0=不输出体素嵌入 (has_voxel_output=False)
+      embed_point_out_channels: 64 # int, 输出给点分支的通道数
+      num_trunk_blocks: 0          # int, 共享 trunk block 数
+      num_voxel_blocks: 0          # int, 体素路径关闭, 须为 0
+      num_point_blocks: 2          # int, 点分支 block 数
+      trunk_buffer_radii: []
+      voxel_buffer_radii: []       # list, 须与 num_voxel_blocks=0 对齐
+      point_buffer_radii: [0.0, 0.0]
+      num_heads: 4
+      patch_size: 256
+      serialization_orders: ["z", "z-trans", "hilbert", "hilbert-trans"]
+      shuffle_orders: true
+      qkv_bias: true
+      qk_scale: null
+      attn_drop: 0.2
+      proj_drop: 0.2
+      enable_rpe: false
+      enable_flash: true
+      upcast_attention: false
+      upcast_softmax: false
+      ffn_type: ${model.backbone.ffn_type}
+      mlp_ratio: 3
+      act_layer_name: ${model.backbone.act_layer_name}
+      scatter_reduce: "sum"
+      point_grid_size: 0.25
+      cpe_impl: "pointconv"
+      cpe_kernel_size: 5
+      cpe_receptive_field: 2.0
+      pointconv_block_max_neighbors: 64
+      drop_path: 0.2
+      pre_norm: true
+      embed_residual_enabled: true
+      embed_point_gate_enabled: false
+      embed_voxel_gate_enabled: false
+      add_occupancy_channels: false
+      use_soft_splatting: false
+      use_centroid_encoding: false   # centroid 编码要求 has_voxel_output=True, 此处必须 false
+
+    # embed head 启用时, 点分支 atom_feature_dim = embed_point_out_channels
+    point_backbone:
+      atom_feature_dim: 64

@@ -115,7 +115,6 @@ def build_atom_features(
 ) -> np.ndarray:
     """
     构造 atom_feat。
-    第一版保持 atom 原始特征不变，不把 `core_flag` 或监督 mask 混入底层 `atom_feat`。
 
     输入:
         - atom_features_raw: numpy.ndarray, 形如 (N_atom, F_raw), 所有原子的原始特征。
@@ -136,7 +135,7 @@ def build_atom_valid_mask(
     valid_crop_margin: float,
 ) -> np.ndarray:
     """
-    构造 atom 监督掩码。
+    构造 atom 监督掩码 atom_valid_mask
 
     只有同时满足下面两个条件的 atom 才参与监督:
         1. 位于 core box 内部。
@@ -146,7 +145,7 @@ def build_atom_valid_mask(
         - atom_coord_local_voxel: numpy.ndarray, 形如 (N_selected, 3), atom 的连续局部 voxel 坐标，顺序为 (x, y, z)。
         - atom_is_in_core_box: numpy.ndarray, 形如 (N_selected,), 标记该 atom 是否在 core box 内，True 即在内部。
         - box_shape_zyx: numpy.ndarray, 形如 (3,), BOX 网格大小，顺序为 (Z, Y, X)。
-        - valid_crop_margin: float, 标量, 在六个面各无条件裁掉的 voxel 层数。
+        - valid_crop_margin: float, 标量, 在六个面各无条件裁掉的 voxel 层数, 以体素边长为单位(并非A, 与 buffer 原子的'A'相区分)。
 
     输出:
         - numpy.ndarray, 形如 (N_selected,), 类型 bool，表示这些原子在训练时是否作为监督信号纳入 loss 中。
@@ -288,30 +287,3 @@ def build_hardmask_from_world_coordinates(
     )
 
 
-def resolve_emdb_zscore_mask(emdb_z_score, n_emdb_channels: int) -> list[bool]:
-    """
-    将 emdb_z_score 参数解析为逐通道归一化掩码。
-
-    输入参数:
-        - emdb_z_score: bool | int | list[int], 归一化控制
-            - false/0: 全部不归一化
-            - true/1: 全部归一化
-            - list[int]: 逐通道控制(1=归一化, 0=跳过), 长度须等于 n_emdb_channels
-        - n_emdb_channels: int, 标量, EMDB 通道总数
-
-    输出:
-        - mask: list[bool], 长度 = n_emdb_channels, True=归一化该通道
-    """
-    if isinstance(emdb_z_score, (bool, int, float)):
-        flag = bool(emdb_z_score)
-        return [flag] * n_emdb_channels
-    if isinstance(emdb_z_score, (list, tuple)):
-        if len(emdb_z_score) != n_emdb_channels:
-            raise ValueError(
-                f"emdb_z_score 的长度 ({len(emdb_z_score)}) "
-                f"与 EMDB 通道数 ({n_emdb_channels}) 不一致"
-            )
-        return [bool(v) for v in emdb_z_score]
-    raise TypeError(
-        f"emdb_z_score 必须是 bool/int 标量或 list[int], 当前类型: {type(emdb_z_score)}"
-    )

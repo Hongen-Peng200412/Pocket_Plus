@@ -238,6 +238,15 @@ def _align_global_batch_size(
     return per_device_bs, accumulate_steps
 
 
+def _resolve_val_check_interval(val_per_epoch: int) -> float:
+    """
+    Map the user-facing `val_per_epoch` setting onto Lightning's native
+    validation scheduling.
+    """
+    val_per_epoch = max(1, int(val_per_epoch))
+    return 1.0 / float(val_per_epoch)
+
+
 class SeededEpochRandomSampler(Sampler[int]):
     """Deterministic train sampler whose index order depends only on seed and epoch."""
 
@@ -403,29 +412,35 @@ def main(cfg: DictConfig):
             stage_seed = self._get_stage_seed(stage)
             world_size = int(getattr(self.trainer, "world_size", 1) or 1)
 
-            # nnU-Net 平衡前景采样（仅训练阶段 + 单机 + 配置启用 + 数据集支持）
-            # → BalancedForegroundSampler 保证每 batch 中至少 foreground_ratio 的前景样本
+            # 前景平衡采样（训练阶段 + 配置启用 + 数据集支持, 支持多卡 DDP）
+            # → BalancedForegroundSampler 内置 DistributedSampler 分发逻辑,
+            #   保证每个全局 batch 中至少 foreground_ratio 的前景样本
             use_balanced = bool(self.train_cfg.get("use_balanced_foreground_sampler", False))
             if (
                 use_balanced
                 and stage == "train"
                 and shuffle
-                and world_size == 1
                 and hasattr(ds, "foreground_indices")
                 and hasattr(ds, "background_indices")
                 and len(ds.foreground_indices) > 0
                 and len(ds.background_indices) > 0
             ):
                 from src.datasets.balanced_foreground_sampler import BalancedForegroundSampler
-                # float, 标量, 每 batch 中前景最低占比
-                fg_ratio = float(self.train_cfg.get("balanced_foreground_ratio", 0.33))
+                # float, 标量, 每个全局 batch 中前景最低占比
+                fg_ratio = float(self.train_cfg.get("balanced_foreground_ratio", 0.2))
+                # int, 标量, 全局 batch 大小 = per_device_bs × world_size
+                global_bs = int(self.batch_size) * world_size
+                # int, 标量, 当前进程的全局排名
+                rank = int(getattr(self.trainer, "global_rank", 0))
                 return BalancedForegroundSampler(
                     foreground_indices=ds.foreground_indices,
                     background_indices=ds.background_indices,
                     total_size=len(ds),
                     foreground_ratio=fg_ratio,
-                    batch_size=int(self.batch_size),
+                    global_batch_size=global_bs,
                     seed=stage_seed,
+                    rank=rank,
+                    world_size=world_size,
                 )
 
             if world_size > 1:
@@ -613,6 +628,15 @@ def main(cfg: DictConfig):
     # 将进度条与学习率监控加入 list
     callbacks.extend([lr_monitor, rich_bar])
 
+    # --- 每个 epoch 内多次验证: 使用 Lightning 原生 val_check_interval ---
+    val_per_epoch = cfg.train.get("val_per_epoch", 1)
+    val_check_interval = _resolve_val_check_interval(val_per_epoch)
+    if exp_manager.is_rank_zero and int(val_per_epoch) > 1:
+        print(
+            "[Train] Multi-validation per epoch enabled via native Lightning scheduling: "
+            f"val_per_epoch={int(val_per_epoch)}, val_check_interval={val_check_interval:.6f}"
+        )
+
 
 
 
@@ -712,6 +736,7 @@ def main(cfg: DictConfig):
         gradient_clip_val=cfg.train.gradient_clip_val,    # float, gradient clipping
         accumulate_grad_batches=cfg.train.get("accumulate_grad_batches", 1), # int, 默认 1
         check_val_every_n_epoch=cfg.train.check_val_every_n_epoch, # int
+        val_check_interval=val_check_interval,            # float, validate val_per_epoch times per epoch
         num_sanity_val_steps=2,
         use_distributed_sampler=False,
         log_every_n_steps=cfg.train.get("log_every_n_steps", 10), # int, 控制wandb记录日志的频率

@@ -1,5 +1,0 @@
-# @package _global_
-# Embed Head: 关闭 (基线)
-model:
-  backbone:
-    embed_head: null               # Module|null, null=不启用 embed head

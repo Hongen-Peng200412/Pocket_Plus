@@ -206,6 +206,9 @@ class VolumePointStage1Model(nn.Module):
         embed_head: nn.Module | Any | None = None,  # embed head 模块或 Hydra 配置; None 时不启用
         pseudo_atom_cfg: dict | None = None,  # 伪原子配置; None 时不启用
         prior_prob: float | None = None,       # float|None, RetinaNet 式先验正类概率; 不为 None 时将 logit head 末层 bias 初始化为 -log((1-π)/π)
+        online_pdb_feature: bool = False,      # bool, 是否在线 scatter raw atom_feat 到体素网格; 仅在 embed_head 未启用时生效
+        online_pdb_feature_reduce: str = "sum", # str, scatter 聚合方式, 建议值 "sum"
+        online_pdb_feature_dim: int = 49,      # int, 原子原始特征维度, 建议值 49
     ) -> None:
         """
             Stage1 总装配模型。
@@ -260,6 +263,10 @@ class VolumePointStage1Model(nn.Module):
 
     
                 - pseudo_atom_cfg: dict | None, 无固定形状, 伪原子生成器配置
+
+                - online_pdb_feature: bool, 标量, 是否在线 scatter raw atom_feat 到体素网格; 仅在 embed_head 未启用时生效
+                - online_pdb_feature_reduce: str, 标量, scatter 聚合方式, 建议值 "sum"
+                - online_pdb_feature_dim: int, 标量, 原子原始特征维度, 建议值 49
                 
             输出:
                 - forward() 返回 dict[str, Any]
@@ -283,6 +290,10 @@ class VolumePointStage1Model(nn.Module):
             self.embed_head = embed_head if isinstance(embed_head, nn.Module) else instantiate(embed_head)
         else:
             self.embed_head = None
+
+        self.online_pdb_feature = bool(online_pdb_feature)
+        self.online_pdb_feature_reduce = str(online_pdb_feature_reduce)
+        self.online_pdb_feature_dim = int(online_pdb_feature_dim)
 
         # nn.Module, 体素分支模块；允许直接传模块实例或 Hydra 配置对象。
         self.voxel_backbone = voxel_backbone if isinstance(voxel_backbone, nn.Module) else instantiate(voxel_backbone)
@@ -515,18 +526,22 @@ class VolumePointStage1Model(nn.Module):
     def set_input_channels(self, in_channels: int) -> None:
         """
         将输入通道设置请求透传给体素分支。
-        当 embed head 启用时, 自动加上 embed_voxel_out_channels。
+        当 embed head 的 has_voxel_output=True 时, 自动拼接上 embed_voxel_out_channels。
+        当 has_voxel_output=False 且 online_pdb_feature=True 时, 拼接上 online_pdb_feature_dim。
 
         输入参数:
-            - in_channels: int, 数据集返回的 voxel_grid 通道数(不含 embed head 贡献)
+            - in_channels: int, 数据集返回的 voxel_grid 通道数(不含 embed head / online scatter 贡献)
         """
-        # int, 实际输入通道 = 数据通道 + embed head 体素通道(若启用) + occupancy 通道(若启用)
+        # int, 实际输入通道 = 数据通道 + embed head 体素通道(若 has_voxel_output) 或 + online scatter 通道
         actual_in_channels = int(in_channels)
-        if self.embed_head is not None:
+        if self.embed_head.has_voxel_output:
             extra = int(self.embed_head.embed_voxel_out_channels)
             if self.embed_head.add_occupancy_channels:
                 extra += 2
             actual_in_channels += extra
+        elif self.online_pdb_feature:
+            # has_voxel_output=False 时, 在线 scatter 的 raw atom 特征通道
+            actual_in_channels += self.online_pdb_feature_dim
         if hasattr(self.voxel_backbone, "set_input_channels"):
             self.voxel_backbone.set_input_channels(actual_in_channels)
 
@@ -799,9 +814,10 @@ class VolumePointStage1Model(nn.Module):
 
 
 
-        # ---- 组装体素输入: 数据通道 + embed head 体素通道(若启用) ----
+        # ---- 组装体素输入: 数据通道 + embed head 体素通道(若启用) 或 online raw scatter ----
         # embed_output 和 batch["voxel_grid"] 均为循环不变量, 只 scatter 一次
-        if embed_output is not None and embed_output.get("voxel_embed_per_atom") is not None:
+        if embed_output.get("voxel_embed_per_atom") is not None:
+            # embed head 在线生成 voxel_pdb_embed_grid (已有逻辑)
             _scatter_fn = (
                 soft_scatter_to_voxel_grid
                 if self.embed_head.use_soft_splatting
@@ -817,6 +833,21 @@ class VolumePointStage1Model(nn.Module):
                 add_occupancy_channels=self.embed_head.add_occupancy_channels,
             )
             voxel_input = torch.cat([batch["voxel_grid"], fused_voxel_grid], dim=1)
+        elif self.online_pdb_feature:
+            # 无 embed head 时, 在线 scatter raw atom_feat → 体素网格
+            # detach + no_grad: raw scatter 不参与梯度回传
+            with torch.no_grad():
+                # torch.Tensor, (B, online_pdb_feature_dim, D, H, W), 在线聚合的原子特征体素网格
+                raw_pdb_grid = scatter_to_voxel_grid(
+                    point_feat=batch["atom_feat"].detach(),
+                    atom_coord_local_voxel=batch["atom_coord_local_voxel"],
+                    point_batch=batch["atom_batch_index"],
+                    box_shape_zyx=batch["box_shape_zyx"],
+                    batch_size=int(batch["box_shape_zyx"].shape[0]),
+                    reduce=self.online_pdb_feature_reduce,
+                    add_occupancy_channels=False,
+                )
+            voxel_input = torch.cat([batch["voxel_grid"], raw_pdb_grid], dim=1)
         else:
             voxel_input = batch["voxel_grid"]
 
@@ -974,6 +1005,7 @@ class VolumePointStage1Model(nn.Module):
 
                     "sampled_point_fusion_feat_dict": sampled_point_fusion_feat_dict,   # dict[str, torch.Tensor], 记录每个命名点变量实际采样到的体素特征
                     "voxel_logits_aux": voxel_output_dict["voxel_logits_aux"],
+                    "voxel_logits_ligand": voxel_output_dict.get("voxel_logits_ligand"),
                     "voxel_outputs": voxel_output_dict,
                     "point_outputs": real_point_output,
 

@@ -20,7 +20,7 @@ from joblib import Parallel, delayed
 
 # ======================== 配置区 ========================
 DATA_ROOT = "/storage/penghongen/Pocket_classic/v_0"
-BOX_FOLDERS = ["emdb_BOX", "pdb_feature_BOX", "pdb_label_BOX"]
+BOX_FOLDERS = ["emdb_BOX", "pdb_label_BOX"]  # pdb_feature_BOX 已不再离线生成
 CLASS_FOLDERS = ["small_molecule", "metal_ion", "peptide", "nucleic"]
 EXPECTED_SPATIAL = (72, 72, 72)
 SPLIT_ROOT = os.path.join(DATA_ROOT, "split", "split_3")
@@ -53,18 +53,19 @@ def _check_one_file(idx, total, fpath, folder, cls, fn):
         return (cls, fn[:-4], str(e))
     return None
 
-def _stat_one_sample(idx, total, label_path, feature_path):
-    """用于 Part 2: 统计单个样本的体素分布"""
+def _stat_one_sample(idx, total, label_path):
+    """用于 Part 2: 统计单个样本的体素分布 (基于 label_grid)"""
     # 进度提示: 每 1% 打印一次
     if total >= 100 and idx % max(1, total // 100) == 0:
         print(f"  [进度] Part 2 体素统计: {idx}/{total} ({idx/total*100:.1f}%)", flush=True)
 
     try:
         label_grid = np.load(label_path)["grid"]
-        feature_grid = np.load(feature_path)["grid"]
 
-        # hardmask = (D, H, W)
-        hardmask = np.any(feature_grid != 0, axis=0)
+        # 使用 label_grid 非零体素作为 hardmask (pdb_feature_BOX 已不再离线生成)
+        label_map = np.round(label_grid[0]).astype(np.int32)
+        # hardmask = (D, H, W), 标记有口袋标签的体素
+        hardmask = label_map != 0
         atom_count = int(np.sum(hardmask))
 
         if atom_count == 0:
@@ -73,7 +74,6 @@ def _stat_one_sample(idx, total, label_path, feature_path):
         total_voxels = int(np.prod(label_grid.shape[-3:]))
         atom_ratio = atom_count / total_voxels
 
-        label_map = np.round(label_grid[0]).astype(np.int32)
         unique_ids = set(np.unique(label_map)) - {0}
 
         class_voxels = {}
@@ -193,18 +193,15 @@ def compute_voxel_stats(n_jobs: int = -1):
     print("  Part 2: 统计各原始类别体素占比 (多进程)")
     print("=" * 70)
 
-    # 1. 收集任务
+    # 1. 收集任务 (只需要 pdb_label_BOX, pdb_feature_BOX 已不再离线生成)
     tasks = []
     for cls_folder in CLASS_FOLDERS:
         label_dir = os.path.join(DATA_ROOT, "pdb_label_BOX", cls_folder)
-        feature_dir = os.path.join(DATA_ROOT, "pdb_feature_BOX", cls_folder)
         if not os.path.isdir(label_dir): continue
         
         for fn in sorted(os.listdir(label_dir)):
             if fn.endswith(".npz"):
-                feature_path = os.path.join(feature_dir, fn)
-                if os.path.exists(feature_path):
-                    tasks.append((os.path.join(label_dir, fn), feature_path))
+                tasks.append(os.path.join(label_dir, fn))
 
     total = len(tasks)
     if total == 0:
@@ -214,8 +211,8 @@ def compute_voxel_stats(n_jobs: int = -1):
 
     # 2. 并行执行
     results = Parallel(n_jobs=n_jobs)(
-        delayed(_stat_one_sample)(i + 1, total, label_path, feature_path)
-        for i, (label_path, feature_path) in enumerate(tasks)
+        delayed(_stat_one_sample)(i + 1, total, label_path)
+        for i, label_path in enumerate(tasks)
     )
 
     # 3. 结果汇总

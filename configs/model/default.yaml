@@ -21,7 +21,13 @@ backbone:
   act_layer_name: "gelu"
   ffn_type: "mlp"
   atom_head_ffn_type: "mlp"
-  # prior_prob: 0.01  # see me: 注意需要启用
+  prior_prob: 0.01  # see me: 注意需要启用
+
+  # --- 在线 pdb_feature ---
+  # 仅在 embed_head 未启用时生效; embed_head 启用时 forward() 的 elif 结构自动跳过
+  online_pdb_feature: false           # bool, 是否在线 scatter raw atom_feat 到体素网格
+  online_pdb_feature_reduce: "sum"    # str, scatter 聚合方式
+  online_pdb_feature_dim: 49          # int, 原子原始特征维度
 
 # --- 调度器行为 ---  
 interval: "step"                   # str, 调度器更新间隔

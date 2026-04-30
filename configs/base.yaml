@@ -17,7 +17,7 @@ defaults:
   - model/fusion: default                      # 融合逻辑
   - model/atom_head: default                   # atom head
   - model/pseudo_atom: none                    # 伪原子(默认关闭)
-  - model/embed_head: none                     # embed head(默认关闭)
+  - model/embed_head: passthrough              # embed head(默认透传)
 
   # --- 损失函数 ---
   - loss: focal_default                        # Focal Loss

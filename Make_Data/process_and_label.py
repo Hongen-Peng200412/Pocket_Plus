@@ -61,7 +61,7 @@ from labels.instance_labels import compute_binding_labels, save_labels_npz
 
 
 DEFAULT_PARSE_ATOMS = True
-DEFAULT_PARSE_RESIDUES = False
+DEFAULT_PARSE_RESIDUES = True
 DEFAULT_PARSE_GRAPH = False
 
 
@@ -208,6 +208,7 @@ def label_single_sample(
             binding_labels,
             selected_candidates=selected,
             pocket_class_names=pocket_class_names,
+            pocket_class_map=pocket_class_map,
             output_path=labels_path,
         )
 
@@ -394,6 +395,7 @@ def process_and_label_single_file(
             binding_labels,
             selected_candidates=selected,
             pocket_class_names=pocket_class_names,
+            pocket_class_map=pocket_class_map,
             output_path=str(sample_output_dir / "labels.npz"),
         )
 
@@ -818,18 +820,20 @@ candidate_coords_{i}                                # np.ndarray, (M_i, 3), floa
 5. labels.npz (Labels & Ground Truth / 标签与真值) [Part 2 产生; 经 filter_and_classify 筛选后只保留通过筛选的配体]
 --------------------------------------------------------------------------------
 # ---- 逐原子字段 (N_atoms = 蛋白质/核酸原子总数, 不含配体原子) ----
-instance_ids                                        # np.ndarray, (N_atoms,), int32,  每个原子的结合位点实例 ID (实例ID = candidate_id; 背景为 -1;)
+instance_ids                                        # np.ndarray, (N_atoms,), int32,  每个原子的结合位点实例 ID (实例ID = 最近配体的 candidate_id; 背景为 -1; 独占分配——每个原子只归属距离最近的一个配体)
 ligand_ids                                          # np.ndarray, (N_atoms,), int32,  每个原子最近配体的 candidate_id (无论距离远近; 背景原子也有值)
 distances                                           # np.ndarray, (N_atoms,), float32, 每个原子到最近配体原子的距离 (Å)
-binding_mask                                        # np.ndarray, (N_atoms,), bool,   距最近配体 ≤ binding_threshold (默认 4.5Å) 则为 True
-pocket_class_ids                                    # np.ndarray, (N_atoms,), int32,  口袋类别 ID (0=非口袋/背景, 1=可成药, 2=金属离子, etc.)
+binding_mask                                        # np.ndarray, (N_atoms,), bool,   任一配体阈值内则为 True (各配体独立阈值的并集, 不受独占约束)
+pocket_class_ids                                    # np.ndarray, (N_atoms,), int32,  口袋类别 ID (0=非口袋/背景, 1=可成药, 2=金属离子, etc.; 基于最近配体独占分配)
 
 # ---- 逐配体字段 (N_ligands = 通过筛选的配体数量; 各字段均按 candidate_id 升序排列, 彼此逐行对应) ----
 num_ligands                                         # int,                            通过筛选的配体数量
-pocket_centers                                      # np.ndarray, (N_ligands, 3), float32, 结合口袋的几何中心 (由该配体周围结合蛋白原子计算)
+pocket_centers                                      # np.ndarray, (N_ligands, 3), float32, 结合口袋的几何中心 (基于该配体完整结合原子集合计算, 不受独占约束)
 ligand_resnames                                     # np.ndarray, (N_ligands,), str,  各配体的残基名称 (CCD code)
 ligand_candidate_ids                                # np.ndarray, (N_ligands,), int32, 各配体的原始 candidate_id, 如 pocket_centers[i] 对应的配体 candidate_id 就是 ligand_candidate_ids[i]
+ligand_class_ids                                    # np.ndarray, (N_ligands,), int32, 各配体的口袋类别 ID (与 ligand_candidate_ids 按同序对齐, 由 filter_and_classify() 直接产出并持久化, 下游无需从逐原子标签反推)
 ligand_coords_{id}                                  # np.ndarray, (M_id, 3), float32, candidate_id 为 {id} 的配体的全部重原子坐标 (id = candidate_id)
+pocket_atom_indices_{id}                            # np.ndarray, (K_id,), int32,     candidate_id 为 {id} 的配体阈值内的所有结合原子全局索引 (不受独占约束; 同一原子可出现在多个配体中)
 pocket_class_name_map                               # np.ndarray, str (scalar),       类别 ID→名称映射字符串 (格式: "0:background,1:druggable,...")
 """
 

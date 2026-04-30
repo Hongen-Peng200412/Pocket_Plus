@@ -3,14 +3,20 @@
 =============================================================================
 BoxPointDataset
 =============================================================================
-本文件实现 stage1 使用的“体素 + 点云”联合数据集。
+本文件实现 stage1 使用的“体素 + 点云”联合数据集。这是主脚本
 
-核心职责:
-1. 从一个 BOX 样本中读取 voxel 特征、voxel 标签和几何元信息。
-2. 从对应 pdb 的 `atoms.npz + labels.npz` 中读取 atom 坐标、atom 特征与标签。
-3. 按 BOX 范围把 atom 拆成 core 原子和 buffer 原子，并构造三套坐标表示。
-4. 生成 voxel_valid_mask 与 atom_valid_mask（atom 监督需同时满足 core 内且避开裁边区域）。
-5. 在训练模式下，对 voxel 与 atom 同步施加 90 度旋转增强。
+
+src\datasets 内的调用逻辑:
+1. 前继: 
+    - src\datasets\density_channel_builder.py 负责生成由 emdb_exp_BOX、emdb_sim_BOX 生成密度体素特征; 
+    - src\datasets\box_geometry.py 负责处理坐标与hardmask的解析
+之后, src\datasets\box_sample_builder.py 负责调用 box_geometry.py 做简单的装配. 它们都在 wrapper 前就使用完毕了.
+
+2. 后继: 
+    - src\datasets\box_point_collate.py 负责把单样本结果组装为 batch 
+    - src\datasets\balanced_foreground_sampler.py 负责 batch 内具体样本的采样
+它们将在训练(wrapper)时应用
+
 
 坐标与轴顺序约定:
     - 世界坐标统一使用 `(x, y, z)`。
@@ -31,7 +37,7 @@ BoxPointDataset
     │   │   ├── 9f3f_0_0_0_0_C.npz(具体样本)
     │   │   └── ...
     │   └── metal_ion/ ...
-    ├── pdb_feature_BOX/     ← 原子特征 (CDHW)
+    ├── pdb_feature_BOX/     ← 已不再离线生成, 改为模型在线 scatter (DEPRECATED)
     │   └── ...
     └── pdb_label_BOX/       ← 标签 (CDHW -> DHW)  [可选]
         └── ... 
@@ -47,6 +53,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 import numpy as np
+from omegaconf import DictConfig, OmegaConf
 import torch
 from torch.utils.data import Dataset
 
@@ -55,11 +62,16 @@ from .box_geometry import (
     build_atom_features,
     build_atom_valid_mask,
     build_hardmask_from_atom_coordinates,
+    build_hardmask_from_world_coordinates,
     build_voxel_valid_mask,
     select_atoms_for_box,
 )
 from .box_point_collate import box_point_collate
-from .box_sample_builder import apply_emdb_zscore, build_box_point_numpy_sample, to_torch_sample
+from .box_sample_builder import build_box_point_numpy_sample, to_torch_sample
+from .density_channel_builder import DensityChannelConfig, build_density_channels
+
+# set[str], density_channel_builder 管辖的目录名集合
+_DENSITY_BUILDER_FOLDERS: set[str] = {"emdb_exp_BOX", "emdb_sim_BOX"}
 
 
 _SAMPLE_NAME_PATTERN = re.compile(
@@ -83,22 +95,24 @@ class BoxPointDataset(Dataset):
         cache_size: int = 128,
         valid_crop_margin: int = 2,
         enable_random_rotation: bool = True,
-        emdb_z_score: bool | int | list[int] = 1,  # see me: 注意这里的归一化逻辑
+        density_channel_config: Optional[dict | DensityChannelConfig] = None,
         **kwargs: Any,
     ) -> None:
         """
-            功能概述:
-                - 输入一个 BOX 样本名，读取该 BOX 的体素特征、体素标签和几何元信息。
-                - 再根据样本名解析出的 `pdb_id`，读取整条结构上的 atom 坐标、atom 特征、atom 标签。
-                - 最终把一个 BOX 视角下需要的 voxel 信息和 atom 信息打包为同一个 sample dict。
+            把一个 BOX 视角下需要的 voxel 信息和 atom 信息打包为同一个 sample dict。
 
             输入参数 (Input Parameters):
-                - sample_root_path: str, 原始结构缓存目录。通常要求 `sample_root_path / pdb_id /` 下存在 `atoms.npz` 与 `labels.npz`。
+                - sample_root_path: str, 原始结构缓存目录。要求 `sample_root_path / pdb_id /` 下存在 `atoms.npz` 与 `labels.npz`。
 
 
-                - all_data_path: str, BOX 数据所在根目录。目录结构为 all_data_path / data_folder_names[0] / class_folder_names[0] / 9dic_2_0_17_20(pdbid_instanceid_rxx_ryy_rzz_centerornot)
-                - data_folder_names: list[str], BOX 文件夹名称列表。含 `"label"` 的目录会被视为标签，含 `"emdb"` 的目录会执行 z-score 归一化，其余目录都作为 voxel 特征通道拼接; 当前为 ["emdb_BOX", "pdb_feature_BOX", "pdb_label_BOX", "emdb_npz"]
-                - class_folder_names: list[str], 类别目录名称列表，与 `split_file` 的顺序严格一一对应, 当前为 ["metal_ion", "peptide", "nucleic", "small_molecule"]
+                - all_data_path: str, BOX 数据所在根目录。目录结构形如 all_data_path / data_folder_names[0] / class_folder_names[0] / 9dic_2_0_17_20(pdbid_instanceid_rxx_ryy_rzz_centerornot)
+                - data_folder_names: list[str], BOX 文件夹名称列表, 默认为 ["emdb_exp_BOX", "emdb_sim_BOX","pdb_label_BOX", "ligand_dist_BOX"]。
+                    - 含 `"ligand_dist"` 的目录会作为辅助监督信号单独加载(不拼入 voxel_grid)
+                    - 含 `"label"` 的目录会被视为体素标签
+                    - 其余目录, 也就是 "emdb_exp_BOX", "emdb_sim_BOX" 都默认视为密度特征, 由 src\datasets\box_sample_builder.py 统一运算并装配; 
+                    - pdb_feature_BOX 已不再离线生成
+                - class_folder_names: list[str], 类别目录名称列表，与 `split_file` 的顺序严格一一对应, 典型配置为 ["metal_ion", "peptide", "nucleic", "small_molecule", "random_BOX"]("random_BOX"是随机切分的类不作为类别); 
+                # see me: 为了正负类均匀取样, 要使"random_BOX"放到最后
                 - class_mapping: list[int] 或 None, 可选的标签类别重映射表，同时作用于 voxel 标签和 atom 标签。
 
 
@@ -120,8 +134,7 @@ class BoxPointDataset(Dataset):
             坐标约定:
                 - 世界坐标始终使用 `(x, y, z)`。
                 - voxel grid 的空间轴始终使用 `(Z, Y, X)`。
-                - `atom_coord_local_voxel` 的数值语义是连续 voxel 坐标(角点语义)，但字段顺序仍然保持 `(x, y, z)`。
-                - 若后续要做 `grid_sample(align_corners=True)`，需要先把该坐标减去 `0.5` 再做归一化。
+                - `atom_coord_local_voxel` 的数值语义是连续 voxel 坐标(角点语义)，但字段顺序仍然保持 `(x, y, z)`。若后续要做 `grid_sample(align_corners=True)`，需要先把该坐标减去 `0.5` 再做归一化。
         """
         super().__init__()
         del kwargs
@@ -141,7 +154,7 @@ class BoxPointDataset(Dataset):
         self.cache_size = int(cache_size)                           # 每个 worker 的 cache 容量
         self.valid_crop_margin = int(valid_crop_margin)             # 边界裁边宽度, 单位=voxel
 
-        self.data_folder_names = list(data_folder_names)            # ["emdb_BOX", "pdb_feature_BOX", "pdb_label_BOX"]
+        self.data_folder_names = list(data_folder_names)            # ["emdb_BOX", "pdb_label_BOX"] (pdb_feature_BOX 已不再离线生成)
         self.class_folder_names = list(class_folder_names)          # ["metal_ion", "peptide", "nucleic", "small_molecule"]
         self.collate_fn = box_point_collate                         # 让外部 DataLoader 直接复用项目内 collate
 
@@ -151,7 +164,20 @@ class BoxPointDataset(Dataset):
         self._validate_folder_layout()
         self.is_train = self._parse_mode(mode)
         self.enable_random_rotation = bool(enable_random_rotation and self.is_train)
-        self.emdb_z_score = emdb_z_score
+
+        # ---------- 密度通道 builder ----------
+        if density_channel_config is None:
+            self.density_config = DensityChannelConfig()
+        elif isinstance(density_channel_config, DictConfig):
+            self.density_config = DensityChannelConfig(
+                **OmegaConf.to_container(density_channel_config, resolve=True)
+            )
+        elif isinstance(density_channel_config, dict):
+            self.density_config = DensityChannelConfig(**density_channel_config)
+        elif isinstance(density_channel_config, DensityChannelConfig):
+            self.density_config = density_channel_config
+        else:
+            raise TypeError( f"density_channel_config 类型不支持: {type(density_channel_config)}")
 
         sample_name_lists = self._load_split_lists(split_file)
         self.total_sample = self._build_sample_index(sample_name_lists)
@@ -162,29 +188,19 @@ class BoxPointDataset(Dataset):
         # 首次读取 atoms.npz 时记录原始 atom feature 维度，并对后续样本保持一致性校验。
         self.atom_raw_feature_dim: Optional[int] = None
 
+
     def _validate_folder_layout(self) -> None:
         """
-        see me 校验最关键的目录约束：
-            - 所有 `emdb` 文件夹必须排在最前面。
-            - `label` 文件夹必须且只允许出现一个。
-
-        这样做的原因是:
-            - 当前数据契约默认把密度类通道放在前部，保持与既有训练配置的输入通道顺序一致；
-            - `label` 文件夹仍然要求唯一，避免 voxel 标签来源不明确。
+        校验目录约束：
         """
-        non_emdb_seen = False
-        label_folder_count = 0
-        for folder_name in self.data_folder_names:
-            if "label" in folder_name:
-                label_folder_count += 1
-            if "emdb" in folder_name:
-                if non_emdb_seen:
-                    raise ValueError("含有 'emdb' 的数据文件夹必须排在所有其他特征文件夹之前，" f"当前配置为: {self.data_folder_names}")
-            else:
-                non_emdb_seen = True
-
-        if label_folder_count != 1:
-            raise ValueError("第一版 BoxPointDataset 约定必须且只存在一个 label 文件夹，" f"当前统计到的数量为: {label_folder_count}")
+        expected_data_folder_names = {"emdb_exp_BOX", "emdb_sim_BOX", "pdb_label_BOX", "ligand_dist_BOX"}
+        if set(self.data_folder_names) != expected_data_folder_names:
+            print(f"waring: data_folder_names 预期为 {expected_data_folder_names}, " f"当前配置为: {self.data_folder_names}")
+            # raise ValueError(f"data_folder_names 必须为 {expected_data_folder_names}, " f"当前配置为: {self.data_folder_names}")
+        if "random_BOX" not in self.class_folder_names:
+            raise ValueError("random_BOX is not in data_folder_names")
+        if "random_BOX" in self.class_folder_names and self.class_folder_names[-1] != "random_BOX":
+            raise ValueError("random_BOX must be the last element in class_folder_names")
 
     def _parse_mode(self, mode: str) -> bool:
         """
@@ -222,7 +238,7 @@ class BoxPointDataset(Dataset):
                 - see me split_file: 应是一个可迭代对象，长度必须与 `class_folder_names` 完全一致且意义对齐: split_file[k] 对应 class_folder_names[k] 的划分文件
 
             输出:
-                - sample_name_lists: list[list[str]], 其中外层维度对应类别，内层是该类别下的样本名列表 (比如第一个元素的sample_name_lists[i]是 list[str], 是关于"metal_ion"的BOX文件名)
+                - sample_name_lists: list[list[str]], 其中外层维度对应类别，内层是该类别下的样本名列表 (比如第一个元素的sample_name_lists[0]是 list[str], 是关于"metal_ion"的BOX文件名)
         """
         if isinstance(split_file, (str, bytes)):
             raise TypeError("split_file must be an iterable of json paths, not a single string")
@@ -230,7 +246,6 @@ class BoxPointDataset(Dataset):
             split_paths = list(split_file)
         except TypeError as exc:
             raise TypeError("split_file must be an iterable of json paths") from exc
-
         if len(split_paths) != len(self.class_folder_names):
             raise ValueError("split_file 的长度必须与 class_folder_names 一一对应，" f"当前分别为 {len(split_paths)} 和 {len(self.class_folder_names)}")
 
@@ -247,13 +262,12 @@ class BoxPointDataset(Dataset):
         """
         将 `[class][sample]` 拍平成线性样本索引, sample_name_lists 是前一个函数的返回值。
 
-        返回结果 `self.total_sample` 是 list[dict[str, Any]], 其每一项都显式保存:
-            - `class_name`: 类别目录名(如"metal_ion")。
-            - `sample_name`: 具体样本文件名（不含 `.npz` 后缀）。
-
-        且:
-            - 设置 `self.foreground_indices`: list[int], 保证含正类的样本索引 (class_name != "random_BOX" 的所有样本)
-            - 设置 `self.background_indices`: list[int], 多数为纯背景的样本索引 (class_name == "random_BOX" 的所有样本)
+        返回结果:
+            - `self.total_sample`: list[dict[str, Any]], 其每一项是:
+                - `class_name`: 类别目录名(如"metal_ion")。
+                - `sample_name`: 具体样本文件名（不含 `.npz` 后缀）。
+            - `self.foreground_indices`: list[int], 保证含正类的样本索引 (class_name != "random_BOX" 的所有样本)
+            - `self.background_indices`: list[int], 多数为纯背景的样本索引 (class_name == "random_BOX" 的所有样本)
             - 若数据集中无 "random_BOX" 类别，background_indices 为空列表
         """
         total_sample: list[dict[str, Any]] = []
@@ -263,8 +277,8 @@ class BoxPointDataset(Dataset):
         self.background_indices: list[int] = []
         for class_idx, sample_names in enumerate(sample_name_lists):
             class_name = self.class_folder_names[class_idx]
-            # bool, 当前类别是否来自 random_BOX 目录（多数为纯背景）
-            is_random_box_class = (class_name == "random_BOX")
+            # bool, 当前类别是否为背景类别: 最后一个默认为 "random_BOX""
+            is_background_class = (class_idx == len(self.class_folder_names) - 1)
             for sample_name in sample_names:
                 # int, 当前样本在扁平索引中的位置
                 idx = len(total_sample)
@@ -274,7 +288,7 @@ class BoxPointDataset(Dataset):
                         "sample_name": sample_name,
                     }
                 )
-                if is_random_box_class:
+                if is_background_class:
                     self.background_indices.append(idx)
                 else:
                     self.foreground_indices.append(idx)
@@ -313,7 +327,7 @@ class BoxPointDataset(Dataset):
 
         输入:
             - `origin`: 世界坐标系下 BOX 左下近角点，顺序 `(x, y, z)`。
-            - `voxel_size`: 每个 voxel 在世界坐标中的尺寸，顺序 `(x, y, z)`。
+            - `npz_file`: 切分为BOX的 npz 文件
             - `grid_shape_zyx`: 当前网格数组的空间形状，顺序 `(Z, Y, X)`。
 
         输出:
@@ -322,26 +336,12 @@ class BoxPointDataset(Dataset):
             - `x_range`: (2,), x 轴范围，顺序 `(min, max)`。
             - `y_range`: (2,), y 轴范围，顺序 `(min, max)`。
             - `z_range`: (2,), z 轴范围，顺序 `(min, max)`。
-
-        说明:
-            - 若 npz 已显式提供 `x_range / y_range / z_range`，则直接使用, 否则根据 `origin + shape * voxel_size` 反推出各轴范围。
-            - 注意 `box_shape_zyx` 与 `box_shape_xyz` 只是轴顺序不同.
         """
         box_origin_world = np.asarray(npz_file["origin"], dtype=np.float32).reshape(3)
         voxel_size_world = np.asarray(npz_file["voxel_size"], dtype=np.float32).reshape(3)
-        box_shape_zyx = np.asarray(grid_shape_zyx[-3:], dtype=np.int64)
-
-        if "x_range" in npz_file and "y_range" in npz_file and "z_range" in npz_file:
-            x_range = np.asarray(npz_file["x_range"], dtype=np.float32).reshape(2)
-            y_range = np.asarray(npz_file["y_range"], dtype=np.float32).reshape(2)
-            z_range = np.asarray(npz_file["z_range"], dtype=np.float32).reshape(2)
-        else:
-            # `grid` 的空间轴是 Z/Y/X，而世界坐标下推导边界时要切回 X/Y/Z 顺序。
-            box_shape_xyz = box_shape_zyx[[2, 1, 0]].astype(np.float32)
-            box_max_world = box_origin_world + box_shape_xyz * voxel_size_world
-            x_range = np.asarray([box_origin_world[0], box_max_world[0]], dtype=np.float32)
-            y_range = np.asarray([box_origin_world[1], box_max_world[1]], dtype=np.float32)
-            z_range = np.asarray([box_origin_world[2], box_max_world[2]], dtype=np.float32)
+        x_range = np.asarray(npz_file["x_range"], dtype=np.float32).reshape(2)
+        y_range = np.asarray(npz_file["y_range"], dtype=np.float32).reshape(2)
+        z_range = np.asarray(npz_file["z_range"], dtype=np.float32).reshape(2)
 
         return {
             "box_origin_world": box_origin_world,
@@ -378,24 +378,26 @@ class BoxPointDataset(Dataset):
             mapped_label[label == old_class_id] = int(new_class_id)
         return mapped_label
 
-    def _load_box_npz_triplet(self, class_name: str, sample_name: str) -> dict[str, np.ndarray]:
+    def _load_box_npz_raw(self, class_name: str, sample_name: str) -> dict[str, Any]:
         """
-        读取一个 BOX 的 voxel 数据与几何元信息. class_name 形如"metal_ion", sample_name 形如"9dic_2_0_17_20"(pdbid_instanceid_rxx_ryy_rzz_centerornot)
+        读取一个 BOX 的原始 voxel 数据与几何元信息, 但暂时不调用 density_channel_builder。
+        class_name 形如"metal_ion", sample_name 形如"9dic_2_0_17_20"(pdbid_instanceid_rxx_ryy_rzz_centerornot)
 
         对于 class_name 下的样本名为 sample_name 的这个特定样本，遍历 `self.data_folder_names` 指定的多个目录，并按以下规则组织:
-            - 含 `"label"` 的目录读成 voxel 标签，最终统一为 `(D, H, W)` 的 int64。
-            - 其余目录都视为 voxel 特征，沿 channel 维拼接成 `(C, D, H, W)`。
-            - 含 `"emdb"` 的特征目录会额外执行 z-score 归一化。
+            - 含 `"label"` 的目录读成 voxel 标签(结合原子的硬标签)，最终统一为 `(D, H, W)` 的 int64。
+            - 含 `"emdb"` 的目录暂存到 density_raws, 由调用侧统一处理。
+            - 含 `"ligand_dist"` 的目录作为辅助监督信号单独加载, 并立即做 class_mapping 通道选择 + min 归约。
 
         返回字段:
-            - `voxel_grid`: np.ndarray, `(C, D, H, W)`, float32。
+            - `density_raws`: dict[str, np.ndarray], 键为目录名(如 "emdb_exp_BOX", "emdb_sim_BOX"), 值为 (D, H, W) float32 原始密度
             - `voxel_label`: np.ndarray, `(D, H, W)`, int64。
+            - `ligand_dist_map`: np.ndarray | None, `(D, H, W)`, float32, 归约后的单通道 ligand 距离图。
+
             - `box_origin_world`: np.ndarray, `(3,)`, 世界坐标系下 BOX 左下近角点，顺序 (x, y, z)。
             - `voxel_size_world`: np.ndarray, `(3,)`, 每个 voxel 在世界坐标中的尺寸，顺序 (x, y, z)。
             - `box_shape_zyx`: np.ndarray, `(3,)`, 按 `(Z, Y, X)` 排列的 BOX 尺寸。
             - `x_range / y_range / z_range`: np.ndarray, `(2,)`, 当前 BOX 在世界坐标中的范围。
         """
-        voxel_parts: list[np.ndarray] = []
         voxel_label: Optional[np.ndarray] = None
         box_origin_world: Optional[np.ndarray] = None
         voxel_size_world: Optional[np.ndarray] = None
@@ -403,43 +405,64 @@ class BoxPointDataset(Dataset):
         y_range: Optional[np.ndarray] = None
         z_range: Optional[np.ndarray] = None
 
+        # dict[str, np.ndarray], 暂存由 density_channel_builder 管辖的原始密度 grid
+        density_raws: dict[str, np.ndarray] = {}
+        # np.ndarray | None, (D, H, W), float32, 归约后的单通道 ligand 距离图
+        ligand_dist_map: np.ndarray | None = None
+        # np.ndarray | None, (3,), int64, BOX 空间尺寸
+        box_shape_zyx: np.ndarray | None = None
+
+
         for folder_name in self.data_folder_names:
             npz_path = self.all_data_path / folder_name / class_name / f"{sample_name}.npz"
-            if not npz_path.exists():
-                raise FileNotFoundError(f"BOX npz not found: {npz_path}")
 
             with np.load(npz_path) as npz_file:
                 grid = np.asarray(npz_file["grid"])   # label 时通常为 (1,D,H,W) 或 (D,H,W), feature 时通常为 (C,D,H,W)
                 meta = self._extract_box_meta(npz_file=npz_file, grid_shape_zyx=grid.shape[-3:])
-
             if box_origin_world is None:
                 box_origin_world = meta["box_origin_world"]
                 voxel_size_world = meta["voxel_size_world"]
                 x_range = meta["x_range"]
                 y_range = meta["y_range"]
                 z_range = meta["z_range"]
+                box_shape_zyx = np.asarray(grid.shape[-3:], dtype=np.int64)
 
-            if "label" in folder_name:
+            if "ligand_dist" in folder_name:
+                # ligand_dist 目录: 辅助监督信号, 加载后立即做通道选择 + min 归约
+                # np.ndarray, (K, D, H, W), float32, 原始多通道距离图, 通道 i 对应 class_id = i+1 (见 bind.py bind_LigandMinDist_to_EMDB)
+                ligand_dist_raw = grid.astype(np.float32, copy=False)
+                if self.class_mapping is not None:
+                    # 只选 class_mapping 映射到非零(前景)的通道, class_mapping 索引就是 class_id, 值 >0 表示该类保留为前景
+                    selected_channels = [
+                        cls_id - 1 for cls_id in range(1, len(self.class_mapping))
+                        if self.class_mapping[cls_id] > 0
+                    ]
+                    if len(selected_channels) > 0:
+                        # np.ndarray, (D, H, W), float32, 选中通道取 min
+                        ligand_dist_map = np.min(ligand_dist_raw[selected_channels], axis=0)
+                    else:
+                        # 无可选通道, 用全通道 min
+                        ligand_dist_map = np.min(ligand_dist_raw, axis=0)
+                else:
+                    # 无 class_mapping, 全通道 min
+                    ligand_dist_map = np.min(ligand_dist_raw, axis=0)
+            elif "label" in folder_name:
                 voxel_label = self._parse_voxel_label(grid)
                 if self.class_mapping is not None:
                     voxel_label = self._apply_class_mapping(voxel_label, self.class_mapping)
+            elif folder_name in _DENSITY_BUILDER_FOLDERS:
+                # 暂存到 density_raws，由 builder 统一处理, 确保是 (D, H, W) 而非 (1, D, H, W)
+                grid = grid.astype(np.float32, copy=False)
+                if grid.ndim == 4 and grid.shape[0] == 1:
+                    grid = grid[0]
+                density_raws[folder_name] = grid
             else:
-                grid = grid.astype(np.float32, copy=False)   # feature 一律转 float32, 便于后续直接拼接
-                if "emdb" in folder_name:
-                    grid = apply_emdb_zscore(grid, self.emdb_z_score)
-                voxel_parts.append(grid)
-
-        if voxel_label is None:
-            raise RuntimeError(f"label grid is missing for sample: {sample_name}")
-        if box_origin_world is None or voxel_size_world is None:
-            raise RuntimeError(f"box metadata is missing for sample: {sample_name}")
-
-        voxel_grid = np.concatenate(voxel_parts, axis=0).astype(np.float32, copy=False)
-        box_shape_zyx = np.asarray(voxel_grid.shape[-3:], dtype=np.int64)
+                print(f"Error: Unknown folder_name: {folder_name}, 它既不是 label 或 ligand_dist, 也不在 _DENSITY_BUILDER_FOLDER")
 
         return {
-            "voxel_grid": voxel_grid,
+            "density_raws": density_raws,
             "voxel_label": voxel_label,
+            "ligand_dist_map": ligand_dist_map,
             "box_origin_world": box_origin_world,
             "voxel_size_world": voxel_size_world,
             "box_shape_zyx": box_shape_zyx,
@@ -447,6 +470,7 @@ class BoxPointDataset(Dataset):
             "y_range": y_range,
             "z_range": z_range,
         }
+
 
 
 
@@ -492,16 +516,16 @@ class BoxPointDataset(Dataset):
             - `atoms.npz`: `coords / features`
             - `labels.npz`: `binding_mask / pocket_class_ids / instance_ids`
 
-        输入参数:
-        - pdb_id: str, 字符串类型, 表示需要读取的样本的 pdb 编号或 ID 名称。
+        输入:
+            - pdb_id: str, 字符串类型, 表示需要读取的样本的 pdb 编号或 ID 名称。
 
-        输出结果注释:
-        - 返回一个 dict[str, numpy.ndarray] 字典，包含以下键值对:
-          - "atom_coord_world": numpy.ndarray, 形如 (N_atom, 3), 原子在世界坐标系下的三维坐标 (x, y, z)。
-          - "atom_feature_raw": numpy.ndarray, 形如 (N_atom, F_raw), 原子的原始特征 (通常为 49 维)。
-          - "binding_mask": numpy.ndarray, 形如 (N_atom,), bool 类型, 原子的二分类结合掩码标签 (属于 binding 区域为 True)。
-          - "pocket_class_ids": numpy.ndarray, 形如 (N_atom,), int64 类型, 原子的多分类口袋类别 ID(目前0~4)。
-          - "instance_ids": numpy.ndarray, 形如 (N_atom,), int64 类型, 原子的实例 ID。
+        输出:
+            - 返回一个 dict[str, numpy.ndarray] 字典，包含以下键值对:
+                - `"atom_coord_world"`: numpy.ndarray, 形如 (N_atom, 3), 原子在世界坐标系下的三维坐标 (x, y, z)。
+                - `"atom_feature_raw"`: numpy.ndarray, 形如 (N_atom, F_raw), 原子的原始特征 (通常为 49 维)。
+                - `"binding_mask"`: numpy.ndarray, 形如 (N_atom,), bool 类型, 原子的二分类结合掩码标签 (属于 binding 区域为 True)。
+                - `"pocket_class_ids"`: numpy.ndarray, 形如 (N_atom,), int64 类型, 原子的多分类口袋类别 ID(目前0~4)。
+                - `"instance_ids"`: numpy.ndarray, 形如 (N_atom,), int64 类型, 原子的实例 ID。
         """
         # dict[str, numpy.ndarray] 或是 None, 尝试从缓存结构中获取对应 pdb_id 的全部原子和标注数据
         cached = self._cache_get(self.structure_cache, pdb_id)
@@ -511,10 +535,6 @@ class BoxPointDataset(Dataset):
         sample_dir = self.sample_root_path / pdb_id
         atoms_path = sample_dir / "atoms.npz"
         labels_path = sample_dir / "labels.npz"
-        if not atoms_path.exists():
-            raise FileNotFoundError(f"atoms.npz not found: {atoms_path}")
-        if not labels_path.exists():
-            raise FileNotFoundError(f"labels.npz not found: {labels_path}")
 
         with np.load(atoms_path) as atoms_npz:
             # numpy.ndarray, (N_atom, 3), float32 类型，全部原子的世界坐标
@@ -534,10 +554,7 @@ class BoxPointDataset(Dataset):
         if self.atom_raw_feature_dim is None:
             self.atom_raw_feature_dim = current_raw_dim
         elif self.atom_raw_feature_dim != current_raw_dim:
-            raise ValueError(
-                "atom raw feature dim is inconsistent across samples: "
-                f"{self.atom_raw_feature_dim} vs {current_raw_dim}"
-            )
+            raise ValueError(f"atom raw feature dim is inconsistent across samples: {self.atom_raw_feature_dim} vs {current_raw_dim}")
 
         structure_data = {
             "atom_coord_world": atom_coord_world,
@@ -587,27 +604,6 @@ class BoxPointDataset(Dataset):
         rotated_voxel_valid_mask = np.rot90(voxel_valid_mask, k=k, axes=(axis1, axis2)).copy()
         return rotated_voxel_grid, rotated_voxel_label, rotated_hardmask, rotated_voxel_valid_mask
 
-    def _rotate_shape_zyx(
-        self, box_shape_zyx: np.ndarray, axis1: int, axis2: int, k: int
-    ) -> np.ndarray:
-        """
-        只根据 rot90 的参数更新 box shape(当 `k` 为奇数时，旋转平面对应的两个轴长度会交换；当 `k` 为偶数时，shape 数值保持不变)。
-
-        输入:
-            - box_shape_zyx: numpy.ndarray, 形如 (3,), 表示原始的 BOX 空间大小信息，顺序为 (depth, height, width)。
-            - axis1: int, 第一个旋转所在的轴索引 (0=z, 1=y, 2=x)。
-            - axis2: int, 第二个旋转所在的轴索引 (0=z, 1=y, 2=x)。
-            - k: int, 旋转的次数(每次90度)。
-
-        输出:
-            - numpy.ndarray, 形如 (3,), int64 类型，旋转后的 BOX 空间大小信息，顺序为 (depth, height, width)。
-        """
-        rotated_shape = np.asarray(box_shape_zyx, dtype=np.int64).copy()
-        for _ in range(k % 4):
-            old_shape = rotated_shape.copy()
-            rotated_shape[axis1] = old_shape[axis2]
-            rotated_shape[axis2] = old_shape[axis1]
-        return rotated_shape
 
     def _rotate_zyx_coords(
         self,
@@ -719,45 +715,35 @@ class BoxPointDataset(Dataset):
         self,
         voxel_size_world: np.ndarray,
         box_shape_zyx: np.ndarray,
-        axis1: int,
-        axis2: int,
         k: int,
     ) -> None:
         """
-        验证是否支持该旋转操作。只支持"近似各向同性体素 + 旋转平面两轴边长一致"的 90 度增强。
+        验证是否支持该旋转操作。只支持"各向同性体素 + 立方体 BOX"的 90 度增强。
 
         输入:
-            - voxel_size_world: numpy.ndarray, 形如 (3,), 原子的世界坐标物理分辨率尺寸，顺序为 (x, y, z)。
+            - voxel_size_world: numpy.ndarray, 形如 (3,), 每个体素在世界坐标中的尺寸，顺序为 (x, y, z)。
             - box_shape_zyx: numpy.ndarray, 形如 (3,), BOX 空间体素大小，顺序为 (depth, height, width)。
-            - axis1: int, 第一个旋转所在的轴索引 (0=z, 1=y, 2=x)。
-            - axis2: int, 第二个旋转所在的轴索引 (0=z, 1=y, 2=x)。
             - k: int, 旋转的次数(每次90度)。
         """
         if (k % 4) == 0:
             return
 
+        # 立方体 BOX 检查: 三轴边长必须完全相同
+        sz = box_shape_zyx.astype(np.int64)
+        if not (sz[0] == sz[1] == sz[2]):
+            raise ValueError(
+                f"90 度旋转增强仅支持立方体 BOX, 当前 box_shape_zyx={box_shape_zyx.tolist()}"
+            )
+
+        # 各向同性体素检查
         if not np.allclose(
             voxel_size_world,
             float(voxel_size_world[0]),
             rtol=3e-2,
             atol=3e-4,
         ):
-            # raise ValueError(
-            #     "当前样本的 voxel_size_world 不是近似各向同性，"
-            #     f"第一版不同步 90 度旋转不支持该情况: {voxel_size_world}"
-            # )
             print("当前样本的 voxel_size_world 不是近似各向同性，"
-                f"第一版不同步 90 度旋转不支持该情况: {voxel_size_world}")
-
-        if (k % 2) == 1 and int(box_shape_zyx[axis1]) != int(box_shape_zyx[axis2]):
-            # raise ValueError(
-            #     "当前样本的旋转平面两轴长度不同，"
-            #     "第一版为了避免世界坐标语义混乱，不支持这种 90 度轴交换旋转。"
-            #     f" box_shape_zyx={box_shape_zyx}, axis1={axis1}, axis2={axis2}, k={k}"
-            # )
-            print("当前样本的旋转平面两轴长度不同，"
-                "第一版为了避免世界坐标语义混乱，不支持这种 90 度轴交换旋转。"
-                f" box_shape_zyx={box_shape_zyx}, axis1={axis1}, axis2={axis2}, k={k}")
+                f"90 度旋转不支持该情况: {voxel_size_world}")
 
     def _apply_synced_rotation(self, sample_dict: dict[str, Any]) -> dict[str, Any]:
         """
@@ -773,14 +759,12 @@ class BoxPointDataset(Dataset):
         self._check_rotation_is_supported(
             voxel_size_world=sample_dict["voxel_size_world"],
             box_shape_zyx=sample_dict["box_shape_zyx"],
-            axis1=axis1,
-            axis2=axis2,
             k=k,
         )
         if (k % 4) == 0:
             return sample_dict
 
-        # 先旋转 voxel 侧数组
+        # ---- 1. 旋转 voxel 侧数组 ----
         (
             sample_dict["voxel_grid"],
             sample_dict["voxel_label"],
@@ -795,12 +779,18 @@ class BoxPointDataset(Dataset):
             axis2=axis2,
             k=k,
         )
+        # ligand_dist_map 同步旋转: (D, H, W) → 3D, axes=(axis1, axis2)
+        if "ligand_dist_map" in sample_dict:
+            sample_dict["ligand_dist_map"] = np.rot90(
+                sample_dict["ligand_dist_map"], k=k, axes=(axis1, axis2)
+            ).copy()
 
-        # 再旋转 point 侧坐标
-        original_shape_zyx = sample_dict["box_shape_zyx"]
+        # ---- 2. 旋转 point 侧坐标 ----
+        # 立方体 BOX: box_shape_zyx 旋转后不变, 无需更新
+        box_shape_zyx = sample_dict["box_shape_zyx"]
         sample_dict["atom_coord_local_voxel"] = self._rotate_point_coords_local_voxel(
             atom_coord_local_voxel=sample_dict["atom_coord_local_voxel"],
-            box_shape_zyx=original_shape_zyx,
+            box_shape_zyx=box_shape_zyx,
             axis1=axis1,
             axis2=axis2,
             k=k,
@@ -811,28 +801,22 @@ class BoxPointDataset(Dataset):
             axis2=axis2,
             k=k,
         )
-        # 最后更新 BOX 的 shape
-        sample_dict["box_shape_zyx"] = self._rotate_shape_zyx(
-            box_shape_zyx=original_shape_zyx,
-            axis1=axis1,
-            axis2=axis2,
-            k=k,
-        )
 
-        # 旋转后，根据 `center = origin + 0.5 * shape_xyz * voxel_size_world` 重新计算当前 BOX 的世界坐标中心。
-        box_shape_xyz = sample_dict["box_shape_zyx"][[2, 1, 0]].astype(np.float32)
-        box_center_world = (sample_dict["box_origin_world"] + 0.5 * box_shape_xyz * sample_dict["voxel_size_world"]).astype(
-            np.float32, copy=False
-        )
-
-        # 旋转后，`atom_coord_world = atom_coord_centered_world + 新的 box_center_world`。
+        # ---- 3. 重算 atom_coord_world 与 atom_valid_mask ----
+        # 立方体 + 各向同性体素: box_center_world 旋转前后不变
+        # np.ndarray, (3,), float32, BOX 中心世界坐标
+        box_shape_xyz = box_shape_zyx[[2, 1, 0]].astype(np.float32)
+        box_center_world = (
+            sample_dict["box_origin_world"] + 0.5 * box_shape_xyz * sample_dict["voxel_size_world"]
+        ).astype(np.float32, copy=False)
+        # atom_coord_world = atom_coord_centered_world + box_center_world
         sample_dict["atom_coord_world"] = (
             sample_dict["atom_coord_centered_world"] + box_center_world[None, :]
         ).astype(np.float32, copy=False)
         sample_dict["atom_valid_mask"] = build_atom_valid_mask(
             atom_coord_local_voxel=sample_dict["atom_coord_local_voxel"],
             atom_is_in_core_box=sample_dict["atom_is_in_core_box"],
-            box_shape_zyx=sample_dict["box_shape_zyx"],
+            box_shape_zyx=box_shape_zyx,
             valid_crop_margin=float(self.valid_crop_margin),
         )
 
@@ -882,22 +866,51 @@ class BoxPointDataset(Dataset):
 
             # 第一步: 解析样本名，得到 pdb_id / instance_id / 中心框标记等元信息。
             parsed_name = self._parse_sample_name(sample_name)
-            # 第二步: 读取 BOX 级别的信息: voxel 特征、标签和局部几何信息。
-            box_data = self._load_box_npz_triplet(class_name, sample_name)
+
+            # 第二步: 读取 BOX 级别的原始数据(不调用 density builder)。
+            box_raw = self._load_box_npz_raw(class_name, sample_name)
+
             # 第三步: 读取该 pdb 对应的结构级原子信息。
             structure_data = self._load_structure_npz_cached(parsed_name["pdb_id"])
 
+            # 第四步: 用受体原子坐标构造 receptor_mask, 供 density builder 的 exp-sim 拟合使用。
+            # np.ndarray, (D, H, W), bool, 受体原子对应的体素掩码
+            receptor_mask = build_hardmask_from_world_coordinates(
+                atom_coords_world=structure_data["atom_coord_world"],
+                box_origin_world=box_raw["box_origin_world"],
+                voxel_size_world=box_raw["voxel_size_world"],
+                box_shape_zyx=box_raw["box_shape_zyx"],
+            ).astype(bool)
 
-            # 第四步 + sample dict 组装: 调用共享 builder
+            # 第五步: 调用 density builder, 传入 receptor_mask。
+            # np.ndarray, (C_density, D, H, W), float32, builder 输出的多通道密度特征
+            density_grid = build_density_channels(
+                exp_raw=box_raw["density_raws"].get("emdb_exp_BOX"),
+                sim_raw=box_raw["density_raws"].get("emdb_sim_BOX"),
+                config=self.density_config,
+                receptor_mask=receptor_mask,
+            )
+
+            # 第六步: 拼接 voxel_grid。
+            # np.ndarray, (C, D, H, W), float32, 密度通道即为完整体素特征
+            voxel_grid = density_grid.astype(np.float32, copy=False)
+            # np.ndarray, (3,), int64, BOX 空间尺寸
+            box_shape_zyx = np.asarray(voxel_grid.shape[-3:], dtype=np.int64)
+
+            # 第七步: 取出已归约的 ligand 距离图。
+            # np.ndarray | None, (D, H, W), float32, 归约后的距离图
+            ligand_dist_map = box_raw["ligand_dist_map"]
+
+            # 第八步: 调用共享 builder 组装 sample dict。
             sample_dict = build_box_point_numpy_sample(
-                voxel_grid=box_data["voxel_grid"],
-                voxel_label=box_data["voxel_label"],
+                voxel_grid=voxel_grid,
+                voxel_label=box_raw["voxel_label"],
                 atom_coords_world_full=structure_data["atom_coord_world"],
                 atom_features_raw_full=structure_data["atom_feature_raw"],
                 atom_labels_full=structure_data["pocket_class_ids"],
-                box_origin_world=box_data["box_origin_world"],
-                voxel_size_world=box_data["voxel_size_world"],
-                box_shape_zyx=box_data["box_shape_zyx"],
+                box_origin_world=box_raw["box_origin_world"],
+                voxel_size_world=box_raw["voxel_size_world"],
+                box_shape_zyx=box_shape_zyx,
                 atom_buffer_radius=self.atom_buffer_radius,
                 valid_crop_margin=self.valid_crop_margin,
                 class_mapping=self.class_mapping,
@@ -908,12 +921,15 @@ class BoxPointDataset(Dataset):
             sample_dict["class_name"] = class_name
             sample_dict["instance_id"] = parsed_name["instance_id"]
             sample_dict["is_center_box"] = parsed_name["is_center_box"]
+            # 追加可选的 ligand 距离图
+            if ligand_dist_map is not None:
+                sample_dict["ligand_dist_map"] = ligand_dist_map
 
-            # 第五步: 训练模式下，若开启随机旋转，需对该样本数据做统一的 90 度旋转。
+            # 第九步: 训练模式下，若开启随机旋转，需对该样本数据做统一的 90 度旋转。
             if self.enable_random_rotation:
                 sample_dict = self._apply_synced_rotation(sample_dict)
 
-            # 第六步: 统一把 sample 中的 numpy 数组整理为 torch tensor 返回。
+            # 第十步: 统一把 sample 中的 numpy 数组整理为 torch tensor 返回。
             return self._to_torch_sample(sample_dict)
 
         except Exception as exc:

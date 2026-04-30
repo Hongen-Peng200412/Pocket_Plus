@@ -9,6 +9,9 @@ Pocket\Make_Data\process_and_label.py 是总的处理接口, 可以把下面的1
 (1). 如果要定义一种候选模式, 直接在 Pocket\Make_Data\labels\filter_config.py 里面添加
 (2). Pocket\Make_Data\labels\ligand_filter.py 控制着根据"候选模式"筛选ligand的逻辑
 (3). 最终根据选好的候选ligand, 打标签 + 生成label.npz (逻辑在 Pocket\Make_Data\labels\instance_labels.py, 这个逻辑相对固定, 一般不用动)
+     label.npz 除了包含逐原子的 pocket_class_ids / instance_ids / binding_mask 等字段外, 还持久化了:
+       - ligand_class_ids: 逐配体的口袋类别 ID (candidate_id → class_id 直接映射, 由 filter_and_classify 产出)
+       - pocket_atom_indices_{id}: 每个配体阈值内的所有结合原子全局索引 (不受独占约束, 同一原子可出现在多个配体中)
 如果要细化ligand的选取方式(比如定义一种规则: ligand满足"埋藏深度必须超过5", 那么首先要在 Pocket\Make_Data\PDB_processor\ligand_candidates.py 里面定义出"埋藏深度"这个属性, 然后在 Pocket\Make_Data\labels\ligand_filter.py 里面定义出"埋藏深度的识别逻辑", 最后在 Pocket\Make_Data\labels\filter_config.py 里面添加想要的配置逻辑)
 
 4. 最后, 手动运行 Pocket\Make_Data\split_data\generate_full_json.py 产生训练集、验证集、测试集的.json划分, 即List[dict[str, str]], 每个条目(dict)如  {"emd_48166": "9MD3"}.

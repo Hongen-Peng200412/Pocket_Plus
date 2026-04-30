@@ -1,8 +1,8 @@
 # @package _global_
 # ============================================================
 # Embed Head 残差模式配置
+# ── 搭配 configs\dataset\stardard_full.yaml → voxel_backbone 将会看到 build_density_channels(exp_raw,sim_raw,receptor_mask) + embed 49ch + occupancy 2ch
 # 在 stardard.yaml 基础上启用残差融合，将原始原子特征通过 skip connection
-# 注入 embed 编码后的 point/voxel 特征，增强信息保留。
 #
 # 启用残差的关键参数:
 #   embed_residual_enabled: true       ← 主开关
@@ -37,8 +37,8 @@ model:
       shuffle_orders: true
       qkv_bias: true
       qk_scale: null
-      attn_drop: 0.2
-      proj_drop: 0.2
+      attn_drop: 0.1
+      proj_drop: 0.1
       enable_rpe: false
       enable_flash: true
       upcast_attention: false

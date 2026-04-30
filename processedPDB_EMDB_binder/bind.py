@@ -6,6 +6,7 @@ import argparse
 import traceback
 from joblib import Parallel, delayed
 from pathlib import Path
+from scipy.spatial import cKDTree
 
 # 将 Make_Data/ 加入 sys.path, 使得 PDB_processor 和本目录下的 utils 可被导入
 _BINDER_DIR = Path(__file__).resolve().parent
@@ -17,15 +18,14 @@ for _p in (str(_PROJECT_ROOT), str(_POCKET_ROOT), str(_BINDER_DIR)):
         sys.path.insert(0, _p)
 
 from Make_Data.process_and_label import get_features_when_infer
-from Pocket.utils.mrc_tools import load_map, make_model_grid, atom2map
-from Pocket.utils.network_tools import clean_temp_file, atomic_np_savez
+from Pocket_Plus.utils.mrc_tools import load_map, make_model_grid
+from Pocket_Plus.utils.network_tools import atomic_np_savez
 
 
 def bind_AtomsLabel_to_EMDB(
     sample_folder_path: str = None,
     emdb_path: str = None, 
     target_voxel_size: float = 1.0,
-    num_classes: int = None, 
 
     output_path: str = None,
     overwrite_existing: bool = False,
@@ -34,13 +34,12 @@ def bind_AtomsLabel_to_EMDB(
     将 PDB 文件中的原子标签 (atoms.npz 里面的 'features') 映射到对应的 EMDB 文件, 产生多通道特征张量.
     
     输入参数 / Args:
-        - sample_folder_path: str, 由 Pocket/Make_Data/PDB_processor/run_preprocess.py 产生的对应样本文件夹路径 (里面有四个 .npz). 
+        - sample_folder_path: str, 由 Pocket_Plus/Make_Data/PDB_processor/run_preprocess.py 产生的对应样本文件夹路径 (里面有四个 .npz). 
                               注意将会读取 sample_folder_path/labels.npz 这个文件.
         - emdb_path: str, EMDB 文件路径.
         - target_voxel_size: float, 重采样后的体素大小 (Å). 若为 None 则保持原有分辨率.
         - output_path: str, 保存路径 (.npz).
         - overwrite_existing: bool, 是否覆盖已有文件.
-        - num_classes: int, 可选. 总类别数(包括背景类0). 如果为 None, 则自动根据数据中的最大 class_id 决定.
     
     输出 / Return:
         - label_np: np.ndarray, (1, D, H, W), float32. 
@@ -56,13 +55,6 @@ def bind_AtomsLabel_to_EMDB(
     pocket_class_ids = labels_data['pocket_class_ids']
     # np.ndarray, (N_atom, 3), float32, 原子坐标 (X, Y, Z)
     atom_pos_array = np.load(atoms_npz)['coords'] 
-
-    # int,最大的类别 ID
-    max_class_id = int(np.max(pocket_class_ids))
-    # 验证 max_class_id
-    if num_classes is not None:
-        if max_class_id >= num_classes:
-             raise ValueError(f"数据中存在类别 ID {max_class_id}, 超过了指定的 num_classes-1 = {num_classes-1}!")
 
     # ---- 加载并可选重采样 EMDB 密度图 / Load and optionally resample EMDB map ----
     map_data, voxel_size, origin = load_map(emdb_path)
@@ -97,9 +89,95 @@ def bind_AtomsLabel_to_EMDB(
     return label_np
 
 
+def bind_LigandMinDist_to_EMDB(
+    sample_folder_path: str,
+    emdb_path: str,
+    target_voxel_size: float,
+    output_path: str,
+    overwrite_existing: bool,
+    num_pocket_classes: int,
+):
+    """
+    为每类 ligand 分别计算体素中心到最近同类 ligand 原子的欧氏距离。
+
+    输入参数:
+        - sample_folder_path: str, 含 labels.npz 的样本目录
+        - emdb_path: str, EMDB .map 文件路径
+        - target_voxel_size: float, 标量, 重采样体素大小 (Å)
+        - output_path: str, 保存路径 (.npz)
+        - overwrite_existing: bool, 是否覆盖已有文件
+        - num_pocket_classes: int, 标量, 口袋类别数 (不含背景)
+
+    输出 (保存到 .npz):
+        - grid: np.ndarray, (num_pocket_classes, D, H, W), float32
+          通道 i = 第 (i+1) 类 ligand 的距离图; 若某类无 ligand 原子则填 np.inf
+    """
+    if output_path is not None and os.path.exists(output_path) and not overwrite_existing:
+        return
+
+    # ---- 读取 labels.npz ----
+    labels_npz = os.path.join(sample_folder_path, 'labels.npz')
+    labels_data = np.load(labels_npz, allow_pickle=True)
+    # np.ndarray, (N_ligands,), int32, 每个配体的 candidate_id
+    ligand_candidate_ids = labels_data['ligand_candidate_ids']
+    # np.ndarray, (N_ligands,), int32, 每个配体的口袋类别 ID (与 ligand_candidate_ids 对齐)
+    ligand_class_ids = labels_data['ligand_class_ids']
+
+
+    # ---- 按 class_id 分组 ligand 坐标 ----
+    # dict[int, list[np.ndarray]], class_id -> [各配体坐标数组]
+    class_ligand_coords: dict[int, list[np.ndarray]] = {}
+    for cand_id, cls_id in zip(ligand_candidate_ids, ligand_class_ids):
+        cls_id_int = int(cls_id)
+        if cls_id_int == 0:
+            continue
+        key = f'ligand_coords_{int(cand_id)}'
+        if key in labels_data:
+            class_ligand_coords.setdefault(cls_id_int, []).append(labels_data[key])
+    labels_data.close()
+
+
+    # ---- 加载 EMDB 并重采样 ----
+    map_data, voxel_size, origin = load_map(emdb_path)
+    if target_voxel_size is not None:
+        map_data, voxel_size, origin = make_model_grid(map_data, voxel_size, origin, target_voxel_size)
+    # int, 空间维度
+    D, H, W = map_data.shape
+
+
+    # ---- 构造体素中心坐标网格 ----
+    # np.ndarray, (D*H*W, 3), float32, 每个体素的世界坐标中心
+    z_idx, y_idx, x_idx = np.mgrid[0:D, 0:H, 0:W]
+    voxel_centers = np.stack([
+        x_idx.ravel() * voxel_size[0] + origin[0] + voxel_size[0] * 0.5,
+        y_idx.ravel() * voxel_size[1] + origin[1] + voxel_size[1] * 0.5,
+        z_idx.ravel() * voxel_size[2] + origin[2] + voxel_size[2] * 0.5,
+    ], axis=1).astype(np.float32)
+    # np.ndarray, (num_pocket_classes, D, H, W), float32, 距离图
+    dist_grid = np.full((num_pocket_classes, D, H, W), np.inf, dtype=np.float32)
+
+    for cls_id in range(1, num_pocket_classes + 1):
+        # int, 通道索引 = class_id - 1
+        ch = cls_id - 1
+        if cls_id not in class_ligand_coords:
+            continue
+        # np.ndarray, (N_lig_class, 3), float32, 该类所有 ligand 原子坐标
+        all_coords = np.vstack(class_ligand_coords[cls_id]).astype(np.float32)
+        if len(all_coords) == 0:
+            continue
+        # cKDTree, 构建空间索引
+        tree = cKDTree(all_coords)
+        # np.ndarray, (D*H*W,), float32, 每个体素到最近该类 ligand 原子的距离
+        distances, _ = tree.query(voxel_centers, k=1)
+        dist_grid[ch] = distances.reshape(D, H, W).astype(np.float32)
+
+    if output_path is not None:
+        atomic_np_savez(output_path, do_not_replace=(not overwrite_existing), grid=dist_grid, voxel_size=voxel_size, origin=origin)
+
+
 def bind_AtomsFeature_to_EMDB(
     sample_folder_path: str=None,                                                                                # 与下面二选一
-    pdb_path: str=None, error_dir: str=None, compute_density: bool=True, select_first_model: bool=False,      # 与上面二选一
+    pdb_path: str=None, error_dir: str=None, compute_density: bool=True, select_first_model: bool=False,         # 与上面二选一
     pre_parsed_atom_info: dict=None,  # 可选: 直接传入已解析的原子信息 dict (含 'features' 和 'coords'), 跳过重复解析
 
     emdb_path: str=None, 
@@ -111,11 +189,11 @@ def bind_AtomsFeature_to_EMDB(
     return_atom_pos_array: bool=False
 ):
     """
-    将PDB文件中的原子特征(atoms.npz里面的'features')映射到对应的EMDB文件, 产生特征张量.这个函数强烈依赖于Pocket\Make_Data\PDB_processor\run_preprocess.py 的返回结果.
+    将PDB文件中的原子特征(atoms.npz里面的'features')映射到对应的EMDB文件, 产生特征张量.这个函数强烈依赖于 Pocket_Plus\Make_Data\PDB_processor\run_preprocess.py 的返回结果.
     
     Args:
-        - sample_folder_path: 由 Pocket\Make_Data\PDB_processor\run_preprocess.py 产生的对应样本文件夹路径(里面有四个.npz)。注意将会读取 sample_folder_path/atoms.npz这个文件
-        - pdb_path: PDB文件路径. 训练时读取atoms.npz, 推断时输入pdb, 通过 Pocket\Make_Data\PDB_processor\run_preprocess.py 里面的 def get_features_when_infer 读取与atoms.npz等价的特征.
+        - sample_folder_path: 由 Pocket_Plus\Make_Data\PDB_processor\run_preprocess.py 产生的对应样本文件夹路径(里面有四个.npz)。注意将会读取 sample_folder_path/atoms.npz这个文件
+        - pdb_path: PDB文件路径. 训练时读取atoms.npz, 推断时输入pdb, 通过 _Plus\Make_Data\PDB_processor\run_preprocess.py 里面的 def get_features_when_infer 读取与atoms.npz等价的特征.
         - pre_parsed_atom_info: dict | None, 可选. 若提供, 直接使用其中的 'features' 和 'coords', 跳过 get_features_when_infer 调用, 避免重复解析 CIF.
 
         - emdb_path: EMDB文件路径
@@ -152,7 +230,7 @@ def bind_AtomsFeature_to_EMDB(
     feature_np = np.zeros((feature_channel, map_data.shape[0], map_data.shape[1], map_data.shape[2]), dtype=np.float32)   # (C, D, H, W)
 
     # ------------------------------------------------------------------
-    # 将世界坐标转为体素索引 (批量计算，不使用 atom2map)
+    # 将世界坐标转为体素索引
     # atom_pos_array: (N_atom, 3), 列顺序 (x, y, z); origin / voxel_size: (3,), 同为 (x, y, z) 顺序
     # feature_np 空间轴顺序是 (Z, Y, X)，因此索引需要反转
     # ------------------------------------------------------------------
@@ -202,26 +280,25 @@ def apply_sharding(item_list, part_id, total_parts):
 #  单样本处理 / Process a single (emdb, pdb) pair
 # ------------------------------------------------------------------ #
 def process_single_item(
-    item,                         # dict, JSON 中的一个条目, 形如 {"emd_50120": "9E01"}
-    emdb_folder_path: str,        # EMDB文件夹路径, 目前按照 emd_50120.map 的命名格式
-    sample_root_path: str,        # 根据 Pocket_classic\Make_Data\PDB_processor\run_preprocess.py 解析后的结果, 一个样本一个文件夹, 含有四个.npz
+    item,                                # dict, JSON 中的一个条目, 形如 {"emd_50120": "9E01"}
+    emdb_folder_path: str = None,        # EMDB文件夹路径, 目前按照 emd_50120.map 的命名格式
+    sim_folder_path: str = None,         # 可选, 模拟密度图文件夹路径, 含 .mrc 文件
+    sample_root_path: str = None,        # 根据 Pocket_Plus\Make_Data\PDB_processor\run_preprocess.py 解析后的结果, 一个样本一个文件夹, 含有四个.npz
     
-    feature_output_path: str,     # def bind_AtomsFeature_to_EMDB 返回结果保存的文件夹, 用.npz:(grid, origin, voxel_size)
-    label_output_path: str,       # def bind_AtomsLabel_to_EMDB 返回结果保存的文件夹, 用.npz:(grid, origin, voxel_size)
-    emdb_output_path: str,        # 返回重采样后的密度图做成的.npz(含有grid, origin, voxel_size)
+    label_output_path: str = None,       # def bind_AtomsLabel_to_EMDB 返回结果保存的文件夹, 用.npz:(grid, origin, voxel_size)
+    emdb_output_path: str = None,        # 返回重采样后的密度图做成的.npz(含有grid, origin, voxel_size)
+    sim_output_path: str = None,         # 可选, 返回重采样后的模拟密度图做成的.npz(含有grid, origin, voxel_size)
+    ligand_dist_output_path: str = None,  # 可选, ligand 距离图输出目录
 
-    target_voxel_size,
-    add_when_conflict,
-
+    num_pocket_classes: int = 0,           # int, 口袋类别数 (不含背景); 0 时不生成距离图
+    target_voxel_size=None,
+    add_when_conflict=True,
     overwrite_existing: bool = False,
-    num_classes: int = None
 ):
     """
-    处理一个 (EMDB, PDB) 配对, 返回 (pdb_id, success, error_msg).
-    
-    输入参数 / Args:
-        - ... (同上)
-        - num_classes: int, 所有类别数(包括背景类0)
+    处理一个 (EMDB, PDB) 配对, 返回 (pdb_id, success, error_msg, (sample_voxel_counts, total_voxels)), 
+        - sample_voxel_counts 为 dict, 键为口袋类别ID(转换为int), 值为该类别所占体素数量
+        - total_voxels 为 int, 所有类别体素总数(包括背景类0)
     """
     emdb_id = list(item.keys())[0]              # str, 形如 'emd_50120'
     pdb_id  = list(item.values())[0].lower()    # str, 形如 '9e01'
@@ -233,19 +310,17 @@ def process_single_item(
 
         # str, 标签输出路径
         label_output_path_i = os.path.join(label_output_path, pdb_id + '.npz')
-        # str, 特征输出路径
-        feature_output_path_i = os.path.join(feature_output_path, pdb_id + '.npz')
         # str, EMDB 输出路径
         emdb_output_path_i = os.path.join(emdb_output_path, pdb_id + '.npz')
 
+        # -------------------- 标签图 --------------------
         # np.ndarray, (1, D, H, W), float32. 获取绑定后的标签数组
         label_np = bind_AtomsLabel_to_EMDB(
             sample_folder_path=pdb_sample_folder_path,
             emdb_path=emdb_path,
             target_voxel_size=target_voxel_size,
             output_path=label_output_path_i,
-            overwrite_existing=overwrite_existing,
-            num_classes=num_classes  
+            overwrite_existing=overwrite_existing
         )
         # 统计本样本的各个类别的体素数量
         # np.ndarray, (num_unique_classes,), float32, 本样本中包含的各个不同口袋类别ID(含背景0)
@@ -256,19 +331,34 @@ def process_single_item(
         # int, 标量, 本样本的总体素数量 (D * H * W)
         total_voxels = label_np.size
 
-        bind_AtomsFeature_to_EMDB(
-            sample_folder_path=pdb_sample_folder_path,
-            emdb_path=emdb_path,
-            target_voxel_size=target_voxel_size,
-            output_path=feature_output_path_i,
-            add_when_conflict=add_when_conflict,
-            overwrite_existing=overwrite_existing,
-        )  # 返回 (feature_np, atom_pos_array)，此处仅需保存副作用（写 npz），无需接收返回值
 
+        # -------------------- 原始密度图 --------------------
         grid, voxel_size, origin = load_map(emdb_path)
         if target_voxel_size is not None:
             grid, voxel_size, origin = make_model_grid(grid, voxel_size, origin, target_voxel_size)
         atomic_np_savez(emdb_output_path_i, do_not_replace=(not overwrite_existing), grid=grid, voxel_size=voxel_size, origin=origin)
+
+
+        # -------------------- 模拟密度图 --------------------
+        if sim_folder_path is not None and sim_output_path is not None:
+            sim_path = os.path.join(sim_folder_path, f"{emdb_id}.mrc")
+            sim_output_path_i = os.path.join(sim_output_path, f"{pdb_id}.npz")
+            sim_grid, sim_vs, sim_origin = load_map(sim_path)
+            if target_voxel_size is not None:
+                sim_grid, sim_vs, sim_origin = make_model_grid(sim_grid, sim_vs, sim_origin, target_voxel_size)
+            atomic_np_savez(sim_output_path_i, do_not_replace=(not overwrite_existing), grid=sim_grid, voxel_size=sim_vs, origin=sim_origin)
+
+        # -------------------- ligand 距离图 --------------------
+        if ligand_dist_output_path is not None and num_pocket_classes > 0:
+            ligand_dist_output_path_i = os.path.join(ligand_dist_output_path, pdb_id + '.npz')
+            bind_LigandMinDist_to_EMDB(
+                sample_folder_path=pdb_sample_folder_path,
+                emdb_path=emdb_path,
+                target_voxel_size=target_voxel_size,
+                output_path=ligand_dist_output_path_i,
+                overwrite_existing=overwrite_existing,
+                num_pocket_classes=num_pocket_classes,
+            )
 
         return (pdb_id, True, None, (sample_voxel_counts, total_voxels))
     except Exception as e:
@@ -284,35 +374,39 @@ def save(
     add_when_conflict: bool,
     target_voxel_size: float, 
 
-    emdb_folder_path: str,        # EMDB文件夹路径, 目前按照 emd_50120.map 的命名格式
-    sample_root_path: str,        # 根据 Pocket_classic\Make_Data\PDB_processor\run_preprocess.py 解析后的结果, 一个样本一个文件夹, 含有四个.npz
+    emdb_folder_path: str = None,        # EMDB文件夹路径, 目前按照 emd_50120.map 的命名格式
+    sample_root_path: str = None,        # 根据 Pocket_classic\Make_Data\PDB_processor\run_preprocess.py 解析后的结果, 一个样本一个文件夹, 含有四个.npz
+    sim_folder_path: str = None,
 
-    feature_output_path: str,     # def bind_AtomsFeature_to_EMDB 返回结果保存的文件夹, 用.npz:(grid, origin, voxel_size)
-    label_output_path: str,       # def bind_AtomsLabel_to_EMDB 返回结果保存的文件夹, 用.npz:(grid, origin, voxel_size)
-    emdb_output_path: str,        # 返回重采样后的密度图做成的.npz(含有grid, origin, voxel_size)
 
+    label_output_path: str = None,       # def bind_AtomsLabel_to_EMDB 返回结果保存的文件夹, 用.npz:(grid, origin, voxel_size)
+    emdb_output_path: str = None,        # 返回重采样后的密度图做成的.npz(含有grid, origin, voxel_size)
+    sim_output_path: str = None,
+    ligand_dist_output_path: str = None,
+
+
+    num_pocket_classes: int = 0,
     part_id: int = 0,             # 当前分片 ID (0-indexed)
     total_parts: int = 1,         # 总分片数
     n_jobs: int = 1,              # joblib 并行进程数
     overwrite_existing: bool = False,  # 是否覆盖已有 .npz 文件
-
-    num_classes: int = None
 ):
     # ---- 创建输出目录 / Create output directories ----
-    os.makedirs(feature_output_path, exist_ok=True)
     os.makedirs(label_output_path,   exist_ok=True)
     os.makedirs(emdb_output_path,    exist_ok=True)
+    if sim_output_path is not None:
+        os.makedirs(sim_output_path, exist_ok=True)
+    if ligand_dist_output_path is not None:
+        os.makedirs(ligand_dist_output_path, exist_ok=True)
 
     # ---- 读取 JSON 并分片 / Load JSON & shard ----
     # dict, 加载 EMDB-PDB 映射文件 / Load EMDB-PDB mapping file
     with open(emdb_pdb_json, 'r') as f:
         emdb_pdb_dict = json.load(f)
     print(f"[Info] JSON 总条目 / Total items: {len(emdb_pdb_dict)}")
-    
     # list[dict], 当前分片的任务列表 / Task list for current shard
     shard = apply_sharding(emdb_pdb_dict, part_id, total_parts)
     print(f"[Info] 当前分片 / Shard {part_id}/{total_parts}: {len(shard)} items")
-
     if len(shard) == 0:
         print("[Info] 当前分片无任务 / No items in this shard.")
         return
@@ -322,14 +416,16 @@ def save(
         delayed(process_single_item)(
             item,
             emdb_folder_path,
-            sample_root_path,
-            feature_output_path,
-            label_output_path,
-            emdb_output_path,
-            target_voxel_size,
-            add_when_conflict,
-            overwrite_existing,
-            num_classes=num_classes
+            sample_root_path=sample_root_path,
+            label_output_path=label_output_path,
+            emdb_output_path=emdb_output_path,
+            sim_folder_path=sim_folder_path,
+            sim_output_path=sim_output_path,
+            ligand_dist_output_path=ligand_dist_output_path,
+            num_pocket_classes=num_pocket_classes,
+            target_voxel_size=target_voxel_size,
+            add_when_conflict=add_when_conflict,
+            overwrite_existing=overwrite_existing
         )
         for item in shard
     )
@@ -368,14 +464,9 @@ def save(
                     if count > 0:
                         samples_with_class[c_id] = samples_with_class.get(c_id, 0) + 1
                         total_voxels_per_class[c_id] = total_voxels_per_class.get(c_id, 0) + count
-        
-        if num_classes is not None:
-            # list[int], 包含[1, 2, ..., num_classes]
-            all_classes = list(range(1, num_classes))
-        else:
-            # list[int], 数据中实际出现的所有非零类别ID
-            all_classes = sorted(total_voxels_per_class.keys())
 
+        # list[int], 数据中实际出现的所有非零类别ID
+        all_classes = sorted(total_voxels_per_class.keys())
         # set[int], 集合, 合并所有可能的非零类别ID，为输出打印做准备
         all_classes_set = set(all_classes).union(set(total_voxels_per_class.keys()))
         
@@ -399,18 +490,25 @@ def save(
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Bind PDB atom labels/features to EMDB maps")
     parser.add_argument("--emdb_pdb_json",      type=str, default="/home/penghongen/My_Project/Data/split/3.5_cc_qscore/all.json")
+
     parser.add_argument("--emdb_folder_path",   type=str, default="/storage/chenzhaoyang/cryo_em/EMDB_3.5_cc")
     parser.add_argument("--sample_root_path",   type=str, default="/home/penghongen/My_Project/Data/parsed_pdb/")
-    parser.add_argument("--feature_output_path",type=str, default="/storage/penghongen/Pocket_classic/pdb_feature_npz/")
+    parser.add_argument("--sim_folder_path",    type=str, default=None, help="可选, 模拟密度图 .mrc 所在目录")
+
+
     parser.add_argument("--label_output_path",  type=str, default="/storage/penghongen/Pocket_classic/pdb_label_npz/")
     parser.add_argument("--emdb_output_path",   type=str, default="/storage/penghongen/Pocket_classic/emdb_npz/")
+    parser.add_argument("--sim_output_path",    type=str, default=None, help="可选, 重采样后的模拟密度图 .npz 存放目录")
+    parser.add_argument("--ligand_dist_output_path", type=str, default=None, help="可选, ligand 距离图输出目录")
+
+
     parser.add_argument("--target_voxel_size",  type=float, default=0.7)
     parser.add_argument("--add_when_conflict",  action=argparse.BooleanOptionalAction, default=True,
                         help="一个体素含多个原子时累加特征 (默认开启); 用 --no-add_when_conflict 关闭")
     parser.add_argument("--overwrite_existing",  action="store_true", default=False,
                         help="覆盖输出目录中已有的 .npz 文件 (默认跳过已有文件)")
-    parser.add_argument("--num_classes", type=int, default=None,
-                        help="类别总数目(包括背景类0)")
+    parser.add_argument("--num_pocket_classes", type=int, default=4,
+                        help="口袋类别数(不含背景), 对应 filter_config 中 rules 的数量")
 
 
     parser.add_argument("--part_id",            type=int, default=0,  help="当前分片 ID (0-indexed)")
@@ -424,19 +522,16 @@ if __name__ == '__main__':
         target_voxel_size=args.target_voxel_size,
         emdb_folder_path=args.emdb_folder_path,
         sample_root_path=args.sample_root_path,
-        feature_output_path=args.feature_output_path,
         label_output_path=args.label_output_path,
         emdb_output_path=args.emdb_output_path,
+        sim_folder_path=args.sim_folder_path,
+        sim_output_path=args.sim_output_path,
+        ligand_dist_output_path=args.ligand_dist_output_path,
+        num_pocket_classes=args.num_pocket_classes,
         part_id=args.part_id,
         total_parts=args.total_parts,
         n_jobs=args.n_jobs,
-        overwrite_existing=args.overwrite_existing,
-        num_classes=args.num_classes 
+        overwrite_existing=args.overwrite_existing
     )
 
 
-    # 警告：由于当前是 SLURM array 并行运行多个分片，不同的进程在向同一个目录写入 tmp 文件！
-    # 如果其中某个分片先运行完毕，而执行了 clean_temp_file，就会把其他正在写入的分片的 tmp 文件删掉，
-    # 导致其他分片在执行 os.replace 时抛出 FileNotFoundError！
-    # 因此在多节点/多进程写同一文件夹时，绝不能在此处盲目清理 tmp 文件。
-    # clean_temp_file([args.feature_output_path, args.label_output_path, args.emdb_output_path])

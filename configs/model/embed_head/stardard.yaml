@@ -1,5 +1,6 @@
 # @package _global_
 # 减小层数、mlp_ratio，增大 patch_size
+# ── 搭配 unfused_embed.yaml → voxel_backbone 看到 EMDB + embed 36ch
 model:
   backbone:
     embed_head:

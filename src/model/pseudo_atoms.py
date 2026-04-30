@@ -16,6 +16,8 @@ import torch
 import torch.nn.functional as F
 from scipy.spatial import cKDTree
 
+from ..datasets.density_channel_builder import detect_diff_posdiff_indices
+
 
 def _tensor_to_numpy(
     tensor: torch.Tensor,
@@ -155,8 +157,8 @@ class PseudoAtomGenerator:
         init_feat_noise_std: float,
         neighbor_radius: float,
         enable_density_weighting: bool,
-        density_channel_index: int,
-        density_prob_base: float,
+        enabled_channels: list[str],
+        density_prob_temperature: float,
         delete_too_close_radius: float,
         delete_too_far_radius: float,
 
@@ -173,8 +175,8 @@ class PseudoAtomGenerator:
             - init_feat_noise_std: float, 伪原子特征初始化时叠加的高斯噪声标准差
             - neighbor_radius: float, "neighbor_mean" 模式的邻域半径, 单位 Å
             - enable_density_weighting: bool, 是否按 `voxel_grid` 密度图做加权采样
-            - density_channel_index: int, 密度采样使用的 `voxel_grid` 通道索引
-            - density_prob_base: float, 密度采样的概率基底项
+            - enabled_channels: list[str], 与 dataset 侧相同的通道名列表, 用于自动检测 diff/posdiff 通道
+            - density_prob_temperature: float, 密度采样的温度系数; T>1 则分布更均匀, T<1 则分布更尖锐
             - delete_too_close_radius: float, 聚类稀疏化半径 r0, 0.0 表示关闭
             - delete_too_far_radius: float, 远距离删除半径 r1, 0.0 表示关闭
 
@@ -193,8 +195,11 @@ class PseudoAtomGenerator:
         self.init_feat_noise_std = float(init_feat_noise_std)
         self.neighbor_radius = float(neighbor_radius)
         self.enable_density_weighting = bool(enable_density_weighting)
-        self.density_channel_index = int(density_channel_index)
-        self.density_prob_base = float(density_prob_base)
+        self.density_channel_indices = detect_diff_posdiff_indices(list(enabled_channels))
+        if self.enable_density_weighting and not self.density_channel_indices:
+            raise ValueError(f"enable_density_weighting=True, 但 enabled_channels 中无 diff/posdiff: {enabled_channels}")
+        self._cached_density_indices = self.density_channel_indices
+        self.density_prob_temperature = float(density_prob_temperature)
         self.delete_too_close_radius = float(delete_too_close_radius)
         self.delete_too_far_radius = float(delete_too_far_radius)
         if len(lifecycle) != 3:
@@ -275,88 +280,57 @@ class PseudoAtomGenerator:
     # =================================================================================================================
     # 生成与初始化逻辑
     # =================================================================================================================
-    # 根据密度信息算采样密度  
-    def _compute_density_probs(  # TODO: 之后考虑支持多个密度信息
+
+
+    def _compute_density_probs(
         self,
         batch: dict[str, Any],
         box_idx: int,
-        half_extent: np.ndarray,
         voxel_size: np.ndarray,
         box_shape_zyx: np.ndarray,
     ) -> np.ndarray:
         """
-        从 voxel_grid 的差图通道计算展平的归一化密度概率。
+        从 voxel_grid 的密度通道计算展平的归一化采样概率。
 
         输入参数:
             - batch: dict, collate 后 batch
             - box_idx: int, 当前 BOX 索引
-            - half_extent: np.ndarray, (3,), 半跨度
             - voxel_size: np.ndarray, (3,), voxel 尺寸
             - box_shape_zyx: np.ndarray, (3,), BOX 网格大小 (Z,Y,X)
 
         输出:
             - probs: np.ndarray, (D*H*W,), 归一化概率
         """
-        # torch.Tensor, (D, H, W), 差图通道
-        density_grid = batch["voxel_grid"][box_idx, self.density_channel_index]
-        # np.ndarray, (D*H*W,), 展平密度值
-        density_flat = _tensor_to_numpy(density_grid).ravel().astype(np.float64)
-        # np.ndarray, (D*H*W,), 未归一化概率 = base + 密度值
-        unnorm = np.maximum(self.density_prob_base + density_flat, 0.0)
-        total = unnorm.sum()
-        if total <= 0:
-            # 退化为均匀
-            return np.ones_like(unnorm) / float(unnorm.shape[0])
-        return (unnorm / total).astype(np.float64)
-
-    # 有密度信息时的采样
-    def _density_weighted_sample(
-        self,
-        n: int,
-        density_probs: np.ndarray,
-        voxel_size: np.ndarray,
-        box_shape_zyx: np.ndarray,
-    ) -> np.ndarray:
-        """
-        按密度概率选体素，然后在体素内部均匀随机偏移。
-
-        输入参数:
-            - n: int, 需要采样的点数
-            - density_probs: np.ndarray, (D*H*W,), 展平的归一化密度概率
-            - voxel_size: np.ndarray, (3,), voxel 世界尺寸 (x,y,z)
-            - box_shape_zyx: np.ndarray, (3,), BOX 体素网格大小 (Z,Y,X)
-
-        输出:
-            - coords: np.ndarray, (n, 3), centered_world 坐标
-        """
-        # int, D/H/W
+        # list[int], 缓存的通道索引
+        indices = self._cached_density_indices
         D, H, W = int(box_shape_zyx[0]), int(box_shape_zyx[1]), int(box_shape_zyx[2])
-        total_voxels = D * H * W
-        if total_voxels == 0:
-            return np.empty((0, 3), dtype=np.float32)
+        n_total = D * H * W
 
-        # np.ndarray, (n,), 按概率选中的展平体素索引
-        chosen_flat = np.random.choice(total_voxels, size=n, replace=True, p=density_probs)
+        if not indices:
+            return np.ones(n_total, dtype=np.float64) / n_total
 
-        # np.ndarray, (n,), 各轴的体素离散索引 (Z/Y/X)
-        iz = chosen_flat // (H * W)
-        iy = (chosen_flat % (H * W)) // W
-        ix = chosen_flat % W
+        # list[np.ndarray], 各通道展平密度 (D*H*W,)
+        flat_list: list[np.ndarray] = []
+        for idx in indices:
+            g = batch["voxel_grid"][box_idx, idx]
+            flat_list.append(_tensor_to_numpy(g).ravel().astype(np.float64))
 
-        # np.ndarray, (n, 3), corner 语义下的体素坐标 = idx + 0.5
-        voxel_center_lv = np.stack([ix + 0.5, iy + 0.5, iz + 0.5], axis=1).astype(np.float32)
-        # np.ndarray, (n, 3), 体素内均匀随机偏移 [-0.5, 0.5)
-        jitter = np.random.uniform(-0.5, 0.5, size=(n, 3)).astype(np.float32)
-        # np.ndarray, (n, 3), 最终 local_voxel 坐标
-        local_voxel = voxel_center_lv + jitter
+        # 随机选一个通道的密度
+        chosen_idx = int(np.random.randint(len(flat_list)))
+        density_flat = flat_list[chosen_idx]
 
-        # np.ndarray, (3,), BOX 尺寸 (x,y,z)
-        box_shape_xyz = box_shape_zyx[[2, 1, 0]].astype(np.float32)
-        # np.ndarray, (n, 3), 转为 centered_world
-        centered_world = (local_voxel - 0.5 * box_shape_xyz) * voxel_size
-        return centered_world
+        # 温度 softmax: probs = exp(density / T) / sum(exp(density / T))
+        T = self.density_prob_temperature
+        if T <= 0:
+            return np.ones(n_total, dtype=np.float64) / n_total
+        x = density_flat.astype(np.float64)
+        x_shifted = x - float(np.max(x)) / (np.max(x) + 1e-8)
+        exp_x = np.exp(x_shifted / T)
+        total = float(exp_x.sum())
+        if total <= 0:
+            return np.ones(n_total, dtype=np.float64) / n_total
+        return (exp_x / total).astype(np.float64)
 
-    # (包括无密度信息时的)采样位置
     def _sample_positions(
         self,
         n: int,
@@ -370,7 +344,7 @@ class PseudoAtomGenerator:
 
         输入参数:
             - n: int, 需要采样的点数
-            - half_extent: np.ndarray, (3,), BOX 在 centered_world 坐标系中的半跨度 (x,y,z):= 0.5 * box_shape_xyz * voxel_size
+            - half_extent: np.ndarray, (3,), BOX 在 centered_world 坐标系中的半跨度 (x,y,z)
             - density_probs: np.ndarray | None, (D*H*W,), 展平的密度概率(仅密度加权时非空)
             - voxel_size: np.ndarray, (3,), voxel 世界尺寸 (x,y,z)
             - box_shape_zyx: np.ndarray, (3,), BOX 体素网格大小 (Z,Y,X)
@@ -378,9 +352,30 @@ class PseudoAtomGenerator:
         输出:
             - coords: np.ndarray, (n, 3), centered_world 坐标
         """
+        D, H, W = int(box_shape_zyx[0]), int(box_shape_zyx[1]), int(box_shape_zyx[2])
+        total_voxels = D * H * W
+        if total_voxels == 0:
+            return np.empty((0, 3), dtype=np.float32)
+
         if density_probs is not None:
-            return self._density_weighted_sample(n, density_probs, voxel_size, box_shape_zyx)
-        # np.ndarray, (n, 3), 在 [-half_extent, +half_extent] 内均匀采样
+            # np.ndarray, (n,), 按概率选中的展平体素索引
+            chosen_flat = np.random.choice(total_voxels, size=n, replace=True, p=density_probs)
+            # np.ndarray, (n,), 各轴的体素离散索引 (Z/Y/X)
+            iz = chosen_flat // (H * W)
+            iy = (chosen_flat % (H * W)) // W
+            ix = chosen_flat % W
+            # np.ndarray, (n, 3), corner 语义下的体素坐标 = idx + 0.5
+            voxel_center_lv = np.stack([ix + 0.5, iy + 0.5, iz + 0.5], axis=1).astype(np.float32)
+            # np.ndarray, (n, 3), 体素内均匀随机偏移 [-0.5, 0.5)
+            jitter = np.random.uniform(-0.5, 0.5, size=(n, 3)).astype(np.float32)
+            # np.ndarray, (n, 3), 最终 local_voxel 坐标
+            local_voxel = voxel_center_lv + jitter
+            # np.ndarray, (3,), BOX 尺寸 (x,y,z)
+            box_shape_xyz = box_shape_zyx[[2, 1, 0]].astype(np.float32)
+            # np.ndarray, (n, 3), 转为 centered_world
+            return ((local_voxel - 0.5 * box_shape_xyz) * voxel_size).astype(np.float32)
+
+        # 无密度信息: 均匀采样
         return np.random.uniform(-half_extent, half_extent, size=(n, 3)).astype(np.float32)
 
     # 删除碰撞/孤立的伪原子
@@ -567,7 +562,7 @@ class PseudoAtomGenerator:
             # np.ndarray | None, 密度加权概率图(仅 enable_density_weighting 时有值)
             density_probs = None
             if self.enable_density_weighting:
-                density_probs = self._compute_density_probs(batch, box_idx, half_extent, voxel_size, box_shape_zyx)
+                density_probs = self._compute_density_probs(batch, box_idx, voxel_size, box_shape_zyx)
 
             # --- 多轮采样-删除循环 ---
             # list[np.ndarray], 已采集的伪原子 centered_world 坐标
@@ -613,7 +608,7 @@ class PseudoAtomGenerator:
 
             all_pseudo_cw.append(pseudo_cw_i)
             all_pseudo_lv.append(pseudo_lv_i)
-            all_pseudo_w.append(pseudo_w_i)
+            all_pseudo_w.append(pseudo_w_i) 
             all_pseudo_feat.append(pseudo_feat_i)
             all_pseudo_core.append(pseudo_core_i)
             pseudo_counts.append(n_pseudo_i)
@@ -1034,10 +1029,7 @@ class PseudoAtomGenerator:
             raise RuntimeError(
                 f"Expected a pseudo tensor of length {total_pseudo}, but got {pseudo_tensor.shape[0]}."
             )
-
-        # 张量具体维度
         suffix_shape = tuple(real_tensor.shape[1:])
-        # 存储每个 BOX 的 real 和 pseudo 张量
         chunks: list[torch.Tensor] = []
         real_offset = 0
         pseudo_offset = 0
@@ -1066,7 +1058,7 @@ class PseudoAtomGenerator:
         split_info: list[tuple[int, int]],
     ) -> torch.Tensor | None:
         """
-        从 mixed 张量中抽取伪原子张量。
+        从 mixed 张量中抽取伪原子子张量。
 
         输入参数:
             - mixed_tensor: torch.Tensor | None, `(sumN_real+sumM, ...)`, 按 `[real_i, pseudo_i]` 交错布局的 mixed 张量
@@ -1082,7 +1074,6 @@ class PseudoAtomGenerator:
             raise RuntimeError(
                 f"Expected a mixed tensor of length {total_mixed}, but got {mixed_tensor.shape[0]}."
             )
-        # 存储每个 BOX 的 pseudo 张量
         chunks: list[torch.Tensor] = []
         offset = 0
         for nr, np_ in split_info:

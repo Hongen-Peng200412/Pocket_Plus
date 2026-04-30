@@ -1,0 +1,138 @@
+#!/bin/bash
+#SBATCH -o /home/penghongen/My_Project/Pocket_Plus/processedPDB_EMDB_binder/split_cpu_out_%A_%a.txt    # %A=主JOBID, %a=数组任务ID
+#SBATCH -e /home/penghongen/My_Project/Pocket_Plus/processedPDB_EMDB_binder/split_cpu_err_%A_%a.txt
+#SBATCH -p cpu
+#SBATCH --qos=Cpu96
+#SBATCH -J split_cpu
+
+# ========================= 数组任务配置 / Array Job Configuration =========================
+# 使用 --array 申请 n 个独立任务，每个任务分配 16 核 CPU (纯CPU分区, 无GPU)
+# 修改 0-4 为 0-(n-1) 来调整任务数量
+#SBATCH --array=0-4                                           # 5 个数组任务 (0-4)
+#SBATCH -N 1                                                  # 每个任务 1 个节点
+#SBATCH --ntasks=1                                            # 每个任务 1 个 task
+#SBATCH --cpus-per-task=8                                    # 每个 task 16 核 CPU (用于 joblib 并行)
+
+
+
+# ========================= 用户配置区 / User Configuration =========================
+# Python 脚本路径
+SCRIPT_PATH="/home/penghongen/My_Project/Pocket_Plus/processedPDB_EMDB_binder/split_and_select_box.py"
+# Conda 环境激活命令
+CONDA_ENV="source /home/penghongen/anaconda3/bin/activate vnegnn"
+# 每个任务使用的 joblib 并行进程数
+N_JOBS=7
+# 是否覆盖已有的 BOX npz 文件 (留空则跳过已有文件)
+OVERWRITE_EXISTING=""                      # 若要覆盖已有文件改为 "--overwrite_existing"
+# ====================================================================================
+
+
+
+
+# ========================= 1. 环境准备区 / Environment Setup =========================
+echo "========================================================"
+echo "Split BOX Array Job Started (CPU Partition)"
+echo "========================================================"
+echo "Main Job ID: $SLURM_ARRAY_JOB_ID"
+echo "Array Task ID: $SLURM_ARRAY_TASK_ID"
+echo "Total Array Tasks: $SLURM_ARRAY_TASK_COUNT"
+echo "Host: $(hostname)"
+echo "========================================================"
+
+# 激活 Conda 环境
+$CONDA_ENV
+
+# 设置线程数，避免 OpenMP 和 joblib 冲突
+export OMP_NUM_THREADS=1
+export MKL_NUM_THREADS=1
+export OPENBLAS_NUM_THREADS=1
+export VECLIB_MAXIMUM_THREADS=1
+export NUMEXPR_NUM_THREADS=1
+# ====================================================================================
+
+
+
+
+# ========================= 2. 锁机制 (可选) / Lock Mechanism (Optional) =========================
+# 创建前向锁 (每个任务独立创建，用于精准控制各任务启动)
+LOCK_PRE="split_cpu_pre_lock_${SLURM_ARRAY_JOB_ID}_${SLURM_ARRAY_TASK_ID}"
+# touch $LOCK_PRE
+echo "[Lock] Pre-lock created: $LOCK_PRE"
+echo "[Wait] Waiting for user to delete $LOCK_PRE to start task $SLURM_ARRAY_TASK_ID..."
+
+# 每个任务独立等待属于自己的锁被删除
+while [ -f "$LOCK_PRE" ]; do
+    sleep 30
+done
+
+echo "[Start] Lock released for task $SLURM_ARRAY_TASK_ID! Starting split..."
+
+# 错峰启动，避免多个任务在锁释放瞬间同时读取大量文件列表造成 IO 压力
+sleep $((SLURM_ARRAY_TASK_ID * 5))
+
+
+# 创建后向锁 (用于标记任务是否正在运行)
+LOCK_AFTER="split_cpu_after_lock_${SLURM_ARRAY_JOB_ID}_${SLURM_ARRAY_TASK_ID}"
+touch $LOCK_AFTER
+echo "[Lock] After-lock created: $LOCK_AFTER"
+
+# 定义重试锁 (文件会在出错时动态创建)
+LOCK_TRY="split_cpu_try_lock_${SLURM_ARRAY_JOB_ID}_${SLURM_ARRAY_TASK_ID}"
+# ====================================================================================
+
+
+
+
+# ========================= 3. 容错运行区 (循环重试机制) / Run Split =========================
+while true; do
+
+    echo "[Run] Starting split task $SLURM_ARRAY_TASK_ID / $SLURM_ARRAY_TASK_COUNT"
+    echo "[Run] N_JOBS: $N_JOBS"
+
+    if python "$SCRIPT_PATH" \
+        --part_id "$SLURM_ARRAY_TASK_ID" \
+        --total_parts "$SLURM_ARRAY_TASK_COUNT" \
+        --n_jobs "$N_JOBS" \
+        $OVERWRITE_EXISTING; then
+
+        echo "[Success] Task $SLURM_ARRAY_TASK_ID finished successfully."
+        rm -f "$LOCK_AFTER"
+        rm -f "$LOCK_TRY"
+        break
+    else
+        echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+        echo "[Error] Task $SLURM_ARRAY_TASK_ID FAILED!"
+        echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+
+        touch "$LOCK_TRY"
+        echo "[Action Required] Job is PAUSED."
+        echo "   -> To RETRY: Delete file '$LOCK_TRY'"
+        echo "   -> To CANCEL: Delete file '$LOCK_AFTER'"
+
+        while [ -f "$LOCK_TRY" ] && [ -f "$LOCK_AFTER" ]; do
+            sleep 20
+        done
+
+        if [ ! -f "$LOCK_AFTER" ]; then
+            echo "[Stop] '$LOCK_AFTER' was deleted by user. Exiting loop."
+            break
+        else
+            echo "[Retry] '$LOCK_TRY' was deleted by user. Restarting task immediately..."
+            continue
+        fi
+    fi
+
+done
+# ====================================================================================
+
+
+
+
+# ========================= 4. 不死鸟兜底机制 / Phoenix Fallback =========================
+# 如果任务失败，after_lock 还存在，脚本会在这里等待
+while [ -f "$LOCK_AFTER" ]; do
+    sleep 60
+done
+# ====================================================================================
+
+echo "[Exit] Task $SLURM_ARRAY_TASK_ID finished."
