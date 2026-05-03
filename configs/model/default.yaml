@@ -34,4 +34,5 @@ interval: "step"                   # str, 调度器更新间隔
 frequency: 1                       # int, 更新频率
 monitor_metric: val/atom_pr_auc    # str, 监控指标
 monitor_mode: max                  # str, "max" / "min"
+voxel_ligand_pr_auc_thresholds: 4096  # int | null, higher-resolution binned ligand PR-AUC
 compile: false                     # bool, torch.compile

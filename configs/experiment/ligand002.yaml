@@ -20,16 +20,16 @@ defaults:
   - override /model/atom_head: stardard            # Atom Head: 4 层
   - override /model/pseudo_atom: 64_2_non            # 伪原子
   - override /model/embed_head: plus               # Embed Head: plus (残差 + soft splatting + centroid)
-  - override /loss: receptor                  # 损失
-  - override /dataset: stardard_medium               # 数据集: 无离线 pdb_feature, embed head 在线生成
+  - override /loss: ligand_medLoss                  # 损失: Focal Loss
+  - override /dataset: L_small_medium               # 数据集: 无离线 pdb_feature, embed head 在线生成
   - override /train: B40_L3                        # 训练: H200 参数
 
 
 # --- 实验标识 ---
-name: exp000_ligand0
-tag: "exp000"
-experiment_group: "atom_plus"              # str, run_dir 父文件夹名称
-project_name: PV_plus                 # wandb 的项目名称
+name: medLoss
+tag: "medLoss"                                # {feedback_root}/logs/{experiment_group}/{tag}____{timestamp}
+experiment_group: "ligand_smallDataset"              # str, run_dir 父文件夹名称
+project_name: PV_ligand_smallDataset                 # wandb 的项目名称
 
 # --- 模型总体参数 ---
 model:
@@ -47,3 +47,14 @@ model:
     act_layer_name: "gelu"           # str, "gelu"/"silu"/"relu"/"leakyrelu"
     ffn_type: "gated"                # str, PTV3 Block FFN: "mlp" / "gated"
     atom_head_ffn_type: "gated"      # str, atom head 可选 FFN: "mlp" / "gated" / "none"
+
+    voxel_backbone:
+      ligand_head_hidden_channels: 32
+      aux_head_hidden_channels: 0
+
+  monitor_metric: val/voxel_ligand_pr_auc
+  monitor_mode: max
+
+train:
+  strict_global_batch_size: false
+  val_per_epoch: 1

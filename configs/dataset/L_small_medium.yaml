@@ -1,0 +1,26 @@
+defaults:
+  - L_small_full
+  - _self_
+
+name: L_small_medium
+
+density_channel_config:
+  clip_percentile: [0.001, 0.999]
+  fit_mask_percentile: 0.003
+  enabled_channels:
+    # ----- exp 系列 (3 通道) -----
+    - "exp_clipnorm_nopost"
+    - "exp_clipnorm_gauss1"
+    - "exp_clipnorm_DoG2"
+    # ----- sim 系列 (3 通道) -----
+    - "sim_clipnorm_nopost"
+    - "sim_clipnorm_gauss1"
+    - "sim_clipnorm_DoG2"
+    # ----- diff 系列 (3 通道) -----
+    - "diff_clipnorm_nopost"
+    - "diff_clipnorm_gauss1"
+    - "diff_clipnorm_DoG2"
+    # ----- posdiff 系列 (3 通道) -----
+    - "posdiff_nonorm_nopost"
+    - "posdiff_nonorm_gauss1"
+    - "posdiff_nonorm_DoG2"

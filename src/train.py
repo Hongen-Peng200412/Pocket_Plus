@@ -545,10 +545,17 @@ def main(cfg: DictConfig):
     prefer_online = not cfg.offline
     wandb_mode = _setup_wandb_mode(prefer_online=prefer_online, verbose=exp_manager.is_rank_zero)
     is_offline = (wandb_mode == "offline")
-    
+
+    # bool, wandb 日志名称格式: True = "{model}-{dataset}-{tag}", False = "{tag}"
+    _wandb_long_name = bool(cfg.get("wandb_log_LongName", False))
+    if _wandb_long_name:
+        _wandb_run_name = f"{cfg.model.name}-{cfg.dataset.name}-{cfg.tag}"
+    else:
+        _wandb_run_name = f"{cfg.tag}"
+
     logger = WandbLogger(
         project=cfg.project_name,
-        name=f"{cfg.model.name}-{cfg.dataset.name}-{cfg.tag}", 
+        name=_wandb_run_name,
         save_dir=run_dir,
         offline=is_offline,
         log_model=False
@@ -579,7 +586,7 @@ def main(cfg: DictConfig):
     if is_offline and exp_manager.is_rank_zero:
         logger = WandbLogger(
             project=cfg.project_name,
-            name=f"{cfg.model.name}-{cfg.dataset.name}-{cfg.tag}",
+            name=_wandb_run_name,
             save_dir=run_dir,
             offline=True,
             log_model=False

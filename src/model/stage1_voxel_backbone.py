@@ -17,9 +17,9 @@ class Stage1VoxelBackbone(SimpleUnet):
         gradient_checkpoint: bool,
         return_feature_keys: Sequence[str],
         aux_head_hidden_channels: int,
-        num_conv3d_aux: int = 2,
-        ligand_head_hidden_channels: int = 0,
-        num_conv3d_ligand: int = 2,
+        num_conv3d_aux: int,
+        ligand_head_hidden_channels: int,
+        num_conv3d_ligand: int,
         prior_prob: float | None = None,  # float|None, RetinaNet 式先验正类概率; 不为 None 时初始化 voxel_aux_head[-1].bias
     ) -> None:
         """
@@ -180,24 +180,24 @@ class Stage1VoxelBackbone(SimpleUnet):
         # torch.Tensor，`(B, C_final, D, H, W)`，最终高分辨率体素特征。
         final = self.conv_end(fused_multiscale)
 
-        excluded_feature_name_set = {
-            "self",
-            "voxel_grid",
-            "recycle_in",
-            "batch_size",
-            "depth",
-            "height",
-            "width",
-            "voxel_recycle",
-        }
-        local_variable_dict = dict(locals())
-        # dict[str, torch.Tensor]，按局部变量名自动收集的命名体素特征字典, 前面加了前缀"voxel_"
+        # dict[str, torch.Tensor]，命名体素特征字典；显式列出以避免 torch.compile 下 locals() 丢失中间变量
         all_feature_dict = {
-            f"voxel_{variable_name}": variable_value
-            for variable_name, variable_value in local_variable_dict.items()
-            if variable_name not in excluded_feature_name_set
-            and isinstance(variable_value, torch.Tensor)
-            and variable_value.ndim == 5
+            "voxel_fused_input": fused_input,
+            "voxel_ds_0": ds_0,
+            "voxel_ds_1": ds_1,
+            "voxel_ds_2": ds_2,
+            "voxel_ds_3": ds_3,
+            "voxel_ds_4": ds_4,
+            "voxel_c4": c4,
+            "voxel_c3": c3,
+            "voxel_c2": c2,
+            "voxel_c1": c1,
+            "voxel_c0": c0,
+            "voxel_f3": f3,
+            "voxel_f5": f5,
+            "voxel_f7": f7,
+            "voxel_fused_multiscale": fused_multiscale,
+            "voxel_final": final,
         }
         return all_feature_dict
 

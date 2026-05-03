@@ -28,11 +28,29 @@ model:
   atom_loss_weight: 1.0            # float, atom 损失总权重
 
 
-  # # --- 体素辅助损失 (口袋预测) ---
-  voxel_aux_loss:
+  # # # --- 体素辅助损失 (口袋预测) ---
+  # voxel_aux_loss:
+  #   _target_: src.modules.losses.UnifiedCompositeLoss
+  #   sigma: 2.0
+  #   hard_label_threshold: null     # null=从 voxel_label 读取硬标签
+  #   focal_gamma: 2.0
+  #   focal_alpha_neg: 0.5
+  #   focal_alpha_pos: 0.5
+  #   focal_eps: 1.0e-6
+  #   tversky_alpha: 0.5
+  #   tversky_beta: 0.5
+  #   tversky_smooth: 1.0
+  #   w_focal: 0.8
+  #   w_tversky: 0.2
+  #   w_mse: 0.0                     # float, 口袋分支关闭 MSE
+  # voxel_aux_loss_weight: 0.1       # float, 体素辅助损失权重
+
+
+  # --- 体素 ligand 占据损失 (新增) ---
+  voxel_ligand_loss:
     _target_: src.modules.losses.UnifiedCompositeLoss
-    sigma: 2.0
-    hard_label_threshold: null     # null=从 voxel_label 读取硬标签
+    sigma: 2.0                     # float, 软标签高斯 σ (Å)
+    hard_label_threshold: 1.7      # float, 距离 < 1.0Å 的体素为正类
     focal_gamma: 2.0
     focal_alpha_neg: 0.5
     focal_alpha_pos: 0.5
@@ -42,23 +60,5 @@ model:
     tversky_smooth: 1.0
     w_focal: 0.8
     w_tversky: 0.2
-    w_mse: 0.0                     # float, 口袋分支关闭 MSE
-  voxel_aux_loss_weight: 0.1       # float, 体素辅助损失权重
-
-
-  # --- 体素 ligand 占据损失 (新增) ---
-  # voxel_ligand_loss:
-  #   _target_: src.modules.losses.UnifiedCompositeLoss
-  #   sigma: 2.0                     # float, 软标签高斯 σ (Å)
-  #   hard_label_threshold: 2.5      # float, 距离 < 1.0Å 的体素为正类
-  #   focal_gamma: 2.0
-  #   focal_alpha_neg: 0.75
-  #   focal_alpha_pos: 0.25
-  #   focal_eps: 1.0e-6
-  #   tversky_alpha: 0.5
-  #   tversky_beta: 0.5
-  #   tversky_smooth: 1.0
-  #   w_focal: 1.0
-  #   w_tversky: 1.0
-  #   w_mse: 1.0                     # float, ligand 分支启用 MSE
-  # voxel_ligand_loss_weight: 1.0    # float, 体素 ligand 损失权重
+    w_mse: 0.0                     # float, ligand 分支启用 MSE
+  voxel_ligand_loss_weight: 1.0    # float, 体素 ligand 损失权重

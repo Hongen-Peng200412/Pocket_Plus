@@ -884,12 +884,18 @@ class BoxPointDataset(Dataset):
 
             # 第五步: 调用 density builder, 传入 receptor_mask。
             # np.ndarray, (C_density, D, H, W), float32, builder 输出的多通道密度特征
-            density_grid = build_density_channels(
-                exp_raw=box_raw["density_raws"].get("emdb_exp_BOX"),
-                sim_raw=box_raw["density_raws"].get("emdb_sim_BOX"),
-                config=self.density_config,
-                receptor_mask=receptor_mask,
-            )
+            if len(box_raw["density_raws"]) == 0:
+                density_grid = np.empty(
+                    (0, *tuple(int(v) for v in box_raw["box_shape_zyx"])),
+                    dtype=np.float32,
+                )
+            else:
+                density_grid = build_density_channels(
+                    exp_raw=box_raw["density_raws"].get("emdb_exp_BOX"),
+                    sim_raw=box_raw["density_raws"].get("emdb_sim_BOX"),
+                    config=self.density_config,
+                    receptor_mask=receptor_mask,
+                )
 
             # 第六步: 拼接 voxel_grid。
             # np.ndarray, (C, D, H, W), float32, 密度通道即为完整体素特征

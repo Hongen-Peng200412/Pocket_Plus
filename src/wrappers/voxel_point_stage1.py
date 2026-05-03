@@ -43,6 +43,7 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
         voxel_aux_loss_weight: float = 0.0,
         voxel_ligand_loss_weight: float = 0.0,
         monitor_metric: str = "val/atom_pr_auc",
+        voxel_ligand_pr_auc_thresholds: Optional[int] = 4096,
         interval: str = "epoch",
         frequency: int = 1,
         compile: bool = False,
@@ -79,12 +80,20 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
         # BinaryAveragePrecision, 验证阶段的 PR-AUC 指标（在 CPU 上计算以节省显存）
         # 各指标仅在对应损失启用时构建; 一个 epoch 可能多次验证，每次都会 reset/update/compute
         from torchmetrics.classification import BinaryAveragePrecision
+        self._val_metric_update_counts: dict[str, int] = {}
+        self._voxel_ligand_pr_auc_is_binned = voxel_ligand_pr_auc_thresholds is not None
         if self.atom_loss is not None:
             self.val_atom_pr_auc = BinaryAveragePrecision(compute_on_cpu=True)
+            self._val_metric_update_counts["val/atom_pr_auc"] = 0
         if self.voxel_aux_loss is not None:
             self.val_voxel_aux_pr_auc = BinaryAveragePrecision(compute_on_cpu=True)
+            self._val_metric_update_counts["val/voxel_aux_pr_auc"] = 0
         if self.voxel_ligand_loss is not None:
-            self.val_voxel_ligand_pr_auc = BinaryAveragePrecision(compute_on_cpu=True)
+            self.val_voxel_ligand_pr_auc = BinaryAveragePrecision(
+                compute_on_cpu=True,
+                thresholds=voxel_ligand_pr_auc_thresholds,
+            )
+            self._val_metric_update_counts["val/voxel_ligand_pr_auc"] = 0
 
     # ------------------------------------------------------------------
     # 工具方法
@@ -105,6 +114,12 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
         统一损失函数返回格式：若返回 tuple，取第 0 项作为标量损失
         """
         return loss_out[0] if isinstance(loss_out, tuple) else loss_out
+
+    def _mark_val_metric_updated(self, metric_name: str) -> None:
+        """
+        记录当前验证轮次内某个 metric 收到过至少一次有效 update。
+        """
+        self._val_metric_update_counts[metric_name] = self._val_metric_update_counts.get(metric_name, 0) + 1
 
     # ------------------------------------------------------------------
     # 前向 & 损失计算
@@ -252,14 +267,23 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
         # torch.Tensor, (B, 1, D, H, W), 边界有效掩码
         voxel_valid_mask = batch["voxel_valid_mask"]
 
-        loss = self.voxel_ligand_loss(
-            logits=voxel_logits_ligand,
-            target=None,
-            hardmask=None,
-            valid_mask=voxel_valid_mask,
-            ligand_dist_map=ligand_dist_map,
-            reduction="mean"
-        )
+        if isinstance(self.voxel_ligand_loss, UnifiedCompositeLoss):
+            loss = self.voxel_ligand_loss(
+                logits=voxel_logits_ligand,
+                target=None,
+                hardmask=None,
+                valid_mask=voxel_valid_mask,
+                ligand_dist_map=ligand_dist_map,
+            )
+        else:
+            loss = self.voxel_ligand_loss(
+                logits=voxel_logits_ligand,
+                target=None,
+                hardmask=None,
+                valid_mask=voxel_valid_mask,
+                ligand_dist_map=ligand_dist_map,
+                reduction="mean",
+            )
         return loss
 
     def _compute_total_loss(
@@ -349,6 +373,7 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
         # torch.Tensor, (N_valid,), long, 有效原子的真值标签（在 CPU 上）
         targets = atom_target[valid].long().cpu()
         self.val_atom_pr_auc.update(preds, targets)
+        self._mark_val_metric_updated("val/atom_pr_auc")
 
     def _update_val_voxel_aux_metric(self, outputs: dict[str, Any], batch: dict[str, Any]) -> None:
         """
@@ -383,6 +408,7 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
         # torch.Tensor, (N_valid,), long, 有效体素的标签
         targets = target_flat[mask_flat].cpu()
         self.val_voxel_aux_pr_auc.update(preds, targets)
+        self._mark_val_metric_updated("val/voxel_aux_pr_auc")
 
     def _update_val_voxel_ligand_metric(self, outputs: dict[str, Any], batch: dict[str, Any]) -> None:
         """
@@ -424,11 +450,13 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
         if mask_flat.sum() <= 0:
             return
 
+        metric_device = self.device if self._voxel_ligand_pr_auc_is_binned else torch.device("cpu")
         # torch.Tensor, (N_valid,), float, sigmoid 后的概率
-        preds = torch.sigmoid(logits_flat).detach().float()[mask_flat].cpu()
+        preds = torch.sigmoid(logits_flat).detach().float()[mask_flat].to(metric_device)
         # torch.Tensor, (N_valid,), long, 有效体素的标签
-        targets = target_flat[mask_flat].cpu()
+        targets = target_flat[mask_flat].to(metric_device)
         self.val_voxel_ligand_pr_auc.update(preds, targets)
+        self._mark_val_metric_updated("val/voxel_ligand_pr_auc")
 
     # ------------------------------------------------------------------
     # 训练 / 验证步骤
@@ -563,11 +591,25 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
             - metric_obj: BinaryAveragePrecision, torchmetrics 指标对象
             - metric_name: str, 日志中使用的指标名 (如 "val/atom_pr_auc")
         """
+        preds_state = getattr(metric_obj, "preds", None)
+        target_state = getattr(metric_obj, "target", None)
+        if isinstance(preds_state, list) and isinstance(target_state, list):
+            if len(preds_state) == 0 or len(target_state) == 0:
+                metric_obj.reset()
+                return
+
         # 临时禁用 torchmetrics 内部同步，手动在 GPU 上做 sync_dist
         prev_to_sync = getattr(metric_obj, "_to_sync", True)
         metric_obj._to_sync = False
         # float, 标量, 当前 GPU 本地 PR-AUC 值
-        score_local = metric_obj.compute()
+        try:
+            score_local = metric_obj.compute()
+        except ValueError as exc:
+            metric_obj._to_sync = prev_to_sync
+            if "No samples to concatenate" in str(exc):
+                metric_obj.reset()
+                return
+            raise
         metric_obj._to_sync = prev_to_sync
 
         # torch.Tensor, 标量, 移到当前 GPU 以便 sync_dist 正常工作
@@ -577,6 +619,33 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
             metric_name,
             score_gpu,
             prog_bar=(metric_name == self.hparams.monitor_metric),  # 仅主指标显示进度条
+            on_step=False,
+            on_epoch=True,
+            sync_dist=True,
+        )
+
+    def _compute_log_reset_metric_safe(self, metric_obj, metric_name: str) -> None:
+        """
+        对空样本验证轮次安全的 metric compute/log/reset 流程。
+        """
+        local_updates = int(self._val_metric_update_counts.get(metric_name, 0))
+        if local_updates <= 0:
+            score_gpu = torch.tensor(0.0, device=self.device, dtype=torch.float32)
+        else:
+            prev_to_sync = getattr(metric_obj, "_to_sync", True)
+            metric_obj._to_sync = False
+            try:
+                score_local = metric_obj.compute()
+            finally:
+                metric_obj._to_sync = prev_to_sync
+            score_gpu = score_local.to(self.device)
+
+        metric_obj.reset()
+        self._val_metric_update_counts[metric_name] = 0
+        self.log(
+            metric_name,
+            score_gpu,
+            prog_bar=(metric_name == self.hparams.monitor_metric),
             on_step=False,
             on_epoch=True,
             sync_dist=True,
@@ -593,11 +662,11 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
             3. reset 指标状态，为下一次验证做准备
         """
         if hasattr(self, "val_atom_pr_auc"):
-            self._compute_log_reset_metric(self.val_atom_pr_auc, "val/atom_pr_auc")
+            self._compute_log_reset_metric_safe(self.val_atom_pr_auc, "val/atom_pr_auc")
         if hasattr(self, "val_voxel_aux_pr_auc"):
-            self._compute_log_reset_metric(self.val_voxel_aux_pr_auc, "val/voxel_aux_pr_auc")
+            self._compute_log_reset_metric_safe(self.val_voxel_aux_pr_auc, "val/voxel_aux_pr_auc")
         if hasattr(self, "val_voxel_ligand_pr_auc"):
-            self._compute_log_reset_metric(self.val_voxel_ligand_pr_auc, "val/voxel_ligand_pr_auc")
+            self._compute_log_reset_metric_safe(self.val_voxel_ligand_pr_auc, "val/voxel_ligand_pr_auc")
 
     # ------------------------------------------------------------------
     # 优化器 & 调度器

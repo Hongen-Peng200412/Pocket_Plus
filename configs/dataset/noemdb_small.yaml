@@ -15,20 +15,16 @@
 # ============================================================
 _target_: src.datasets.box_point_dataset.BoxPointDataset
 
-name: stardard_full
+name: noemdb_small
 
 # --- 数据根目录路径 (允许 train/val 分别指定) ---
 all_data_path: "/storage/penghongen/Pocket_classic/v2_raw4_10A"
 sample_root_path: "/home/penghongen/My_Project/Data/DATA_v2_raw4/parsed_pdb"
 
-data_folder_names: ["emdb_exp_BOX", "emdb_sim_BOX", "pdb_label_BOX", "ligand_dist_BOX"]
+data_folder_names: ["pdb_label_BOX", "ligand_dist_BOX"]
 class_folder_names: ["metal_ion", "peptide", "nucleic", "small_molecule", "random_BOX"]
 
-density_channel_config:
-  clip_percentile: [0.001, 0.999]
-  fit_mask_percentile: 0.003
-  enabled_channels:
-    - "all"
+# density_channel_config 默认为None, 所以不写就好
 
 
 
@@ -43,11 +39,11 @@ class_mapping: [0, 1, 1, 1, 1]
 # --- 数据划分文件路径 ---
 # split_train / split_val 在 train.py 的 UnifiedDataModule.setup() 中被显式读取
 split_train: [
-  "/storage/penghongen/Pocket_classic/v2_raw4_10A/split/split_3/metal_ion/train_050.json",
-  "/storage/penghongen/Pocket_classic/v2_raw4_10A/split/split_3/peptide/train_050.json",
-  "/storage/penghongen/Pocket_classic/v2_raw4_10A/split/split_3/nucleic/train_050.json",
-  "/storage/penghongen/Pocket_classic/v2_raw4_10A/split/split_3/small_molecule/train_050.json",
-  "/storage/penghongen/Pocket_classic/v2_raw4_10A/split/split_3/random_BOX/train_050.json"   # 需先用 generate_full_json.py 生成
+  "/storage/penghongen/Pocket_classic/v2_raw4_10A/split/split_3/metal_ion/train_010.json",
+  "/storage/penghongen/Pocket_classic/v2_raw4_10A/split/split_3/peptide/train_010.json",
+  "/storage/penghongen/Pocket_classic/v2_raw4_10A/split/split_3/nucleic/train_010.json",
+  "/storage/penghongen/Pocket_classic/v2_raw4_10A/split/split_3/small_molecule/train_010.json",
+  "/storage/penghongen/Pocket_classic/v2_raw4_10A/split/split_3/random_BOX/train_010.json"   # 需先用 generate_full_json.py 生成
 ]
 
 split_val: [

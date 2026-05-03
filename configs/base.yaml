@@ -38,6 +38,7 @@ name: base
 tag: "默认"
 project_name: PV_default
 experiment_group: "default"          # str, run_dir 父文件夹名, 建议由 experiment 覆盖
+wandb_log_LongName: false
 
 # --- 运行控制 ---
 min_duration: 0
