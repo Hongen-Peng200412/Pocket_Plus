@@ -141,6 +141,9 @@ cleanup() {
     rm -f "/home/penghongen/after_lock_${SLURM_JOB_ID}"
     rm -f "/home/penghongen/try_lock_${SLURM_JOB_ID}"
     rm -f "${KILL_LOCK}"
+    if type pocket_plus_cleanup_local_cache >/dev/null 2>&1; then
+        pocket_plus_cleanup_local_cache
+    fi
     echo "[Cleanup] Removed lock/cmd/kill files for job ${SLURM_JOB_ID}."
 }
 trap cleanup EXIT SIGTERM SIGINT

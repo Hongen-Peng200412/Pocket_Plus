@@ -6,9 +6,14 @@ import openpyxl
 from openpyxl.styles import PatternFill, Font
 import rootutils
 
-ROOT = rootutils.setup_root(__file__, indicator=".project-root", pythonpath=True)
 from pathlib import Path
 POCKET_ROOT = Path(__file__).resolve().parent.parent.parent  # Pocket/
+try:
+    ROOT = rootutils.setup_root(__file__, indicator=".project-root", pythonpath=True)
+except Exception:
+    ROOT = POCKET_ROOT
+    if str(POCKET_ROOT) not in sys.path:
+        sys.path.insert(0, str(POCKET_ROOT))
 if str(POCKET_ROOT) in sys.path:
     sys.path.remove(str(POCKET_ROOT))
 sys.path.insert(0, str(POCKET_ROOT))
@@ -308,7 +313,7 @@ def _safe_mkdir(dir_path: str) -> None:
     """
     创建目标文件夹，不存在时自动创建。
     """
-    if dir_path is None:
+    if not dir_path:
         return
     os.makedirs(dir_path, exist_ok=True)
 
@@ -814,6 +819,102 @@ def write_grid_as_map(
         return None
 
 
+def write_pymol_vis_script(
+    vis_paths: dict,
+    instance_label: np.ndarray,
+    out_path: str,
+) -> str:
+    """
+    生成 PyMOL 启动脚本, 打开后自动加载当前样本可视化文件并按预测 instance 建组。
+
+    输入参数:
+        - vis_paths: dict, build_infer_vis_bundle() 已写出的路径字典, 包含 root_dir/gt_structure/pred_instances 等路径
+        - instance_label: np.ndarray | None, (D, H, W), 预测 instance 标签, 0 为背景, 正整数为 instance_id
+        - out_path: str, .pml 脚本输出路径
+
+    使用说明:
+        - 在 PyMOL 中打开 out_path, 不要单独打开 pred/instances_pred.cif。
+        - 脚本会把每个 instance_id 创建为 pred_instance_### 对象, 并加入 pred_instances group。
+        - 若同时存在 gt/pred 结构、配体、口袋原子和密度图, 脚本会一并加载并放入 gt/pred/pred_density group。
+
+    输出:
+        - saved_path: str, 写出的 PyMOL 脚本路径
+    """
+    script_dir = os.path.dirname(out_path)
+    _safe_mkdir(script_dir)
+
+    def _rel_pml_path(file_path: str) -> str:
+        rel_path = os.path.relpath(file_path, script_dir)
+        return rel_path.replace("\\", "/").replace('"', '\\"')
+
+    def _append_load(
+        lines: list[str],
+        path_key: str,
+        object_name: str,
+        group_name: str,
+        show_commands: list[str],
+    ) -> None:
+        file_path = vis_paths.get(path_key)
+        if file_path is None or not os.path.exists(file_path):
+            return
+        lines.append(f'load "{_rel_pml_path(file_path)}", {object_name}')
+        lines.extend(show_commands)
+        lines.append(f"group {group_name}, {object_name}")
+
+    # list[str], PyMOL 脚本逐行命令
+    lines = [
+        "reinitialize",
+        "set auto_zoom, off",
+        "bg_color white",
+        "set retain_order, 1",
+    ]
+    _append_load(lines, "gt_structure", "gt_structure", "gt", ["hide everything, gt_structure", "show cartoon, gt_structure", "color gray70, gt_structure"])
+    _append_load(lines, "gt_ligand", "gt_ligand", "gt", ["show sticks, gt_ligand", "color yellow, gt_ligand"])
+    _append_load(lines, "gt_pocket_atoms", "gt_pocket_atoms", "gt", ["show spheres, gt_pocket_atoms", "set sphere_scale, 0.35, gt_pocket_atoms", "color cyan, gt_pocket_atoms"])
+    _append_load(lines, "gt_density", "gt_density_raw", "gt_density", [])
+    _append_load(lines, "gt_density_resampled", "gt_density_resampled_map", "gt_density", [])
+    _append_load(lines, "pred_structure", "pred_structure", "pred", ["hide everything, pred_structure", "show cartoon, pred_structure", "color gray60, pred_structure"])
+    _append_load(lines, "pred_pocket_atoms", "pred_pocket_atoms", "pred", ["show spheres, pred_pocket_atoms", "set sphere_scale, 0.35, pred_pocket_atoms", "color orange, pred_pocket_atoms"])
+    _append_load(lines, "pred_density_binary", "pred_density_binary_map", "pred_density", [])
+    _append_load(lines, "pred_density", "pred_density_masked_map", "pred_density", [])
+    _append_load(lines, "pred_density_prob", "pred_density_prob_map", "pred_density", [])
+
+    # list[int], 预测 instance_id 列表, 仅保留正整数标签
+    instance_ids = []
+    if instance_label is not None:
+        label = np.asarray(instance_label, dtype=np.int32)
+        instance_ids = [int(v) for v in np.unique(label) if int(v) > 0]
+
+    instances_path = vis_paths.get("pred_instances")
+    if instances_path is not None and os.path.exists(instances_path):
+        if instance_ids:
+            colors = ["tv_red", "tv_green", "tv_blue", "yellow", "cyan", "magenta", "orange", "lime", "marine", "salmon", "purple", "wheat"]
+            lines.append(f'load "{_rel_pml_path(instances_path)}", pred_instances_raw')
+            lines.append("hide everything, pred_instances_raw")
+            for i, instance_id in enumerate(instance_ids):
+                instance_obj = f"pred_instance_{instance_id:03d}"
+                instance_color = colors[i % len(colors)]
+                lines.append(f"create {instance_obj}, pred_instances_raw and resi {instance_id}")
+                lines.append(f"show spheres, {instance_obj}")
+                lines.append(f"set sphere_scale, 0.35, {instance_obj}")
+                lines.append(f"color {instance_color}, {instance_obj}")
+                lines.append(f"group pred_instances, {instance_obj}")
+            lines.append("delete pred_instances_raw")
+            lines.append("group pred, pred_instances")
+            lines.append("zoom pred_instances")
+        else:
+            lines.append(f'load "{_rel_pml_path(instances_path)}", pred_instances')
+            lines.append("show spheres, pred_instances")
+            lines.append("set sphere_scale, 0.35, pred_instances")
+            lines.append("color orange, pred_instances")
+            lines.append("group pred, pred_instances")
+
+    lines.append("orient")
+    with open(out_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
+    return out_path
+
+
 def build_infer_vis_bundle(
     output_root: str,
     cif_path: str,
@@ -829,11 +930,15 @@ def build_infer_vis_bundle(
     resampled_emdb: np.ndarray = None,
     origin: np.ndarray = None,
     voxel_size: np.ndarray = None,
+    pred_voxel_prob: np.ndarray = None,
+    pred_instance_label: np.ndarray = None,
+    write_pred_atom_coords: bool = True,
 ) -> dict:
     """
     根据推断输入/输出打包可视化文件夹，结构为 output_root/<pdb_id>/{gt,pred}
 
     gt/ 文件名加 _gt 后缀, pred/ 文件名加 _pred 后缀, 避免 PyMOL 同名冲突。
+    若需要在 PyMOL 中直接看到预测 instance 分组, 打开 output_root/<pdb_id>/open_in_pymol.pml。
 
     输入参数:
         - output_root: str, 输出根目录
@@ -850,9 +955,34 @@ def build_infer_vis_bundle(
         - resampled_emdb: np.ndarray | None, (D, H, W), float32, 重采样后 EMDB 密度 (第一通道)
         - origin: np.ndarray | None, (3,), 重采样后密度图原点 (x, y, z)
         - voxel_size: np.ndarray | None, (3,), 重采样后体素大小 (x, y, z)
-    
+        - pred_voxel_prob: np.ndarray | None, (D, H, W), float32, ligand 概率图
+        - pred_instance_label: np.ndarray | None, (D, H, W), int32, 预测 instance 标签
+        - write_pred_atom_coords: bool, 是否写出 pred_atom_coords 对应的预测原子点云
+
     返回:
         - result: dict, 各个输出文件路径的汇总字典
+    
+    调用模式:
+        - voxel_single: run_voxel_single() 在 vis_enable=True 且 vis_output_root 非空时调用本函数。
+        - voxel_batch: run_voxel_batch() 会逐样本转成 voxel_batch_item, 每个样本沿用 voxel_single 的可视化输出。
+        - voxel_param_search: 构建缓存和逐组调参不调用本函数; 仅在 best_outputs 阶段按最优后处理参数可选调用。
+
+    保存内容:
+        - GT 类:
+            - gt/structure_gt.cif: 由 cif_gt_path 写出; 若未提供 cif_gt_path, 则由 cif_path 写出。
+            - gt/density_gt.map: 复制原始 map_path 对应密度图; map_path 为空时不写出。
+            - gt/density_resampled_gt.map: 写出重采样后的 EMDB 密度; 需要 resampled_emdb、origin、voxel_size 同时存在。
+            - gt/ligand_gt.cif: 从 GT 结构中按 filter_preset 筛选配体后写出; 无配体或无结构时不写出。
+            - gt/pocket_atoms_gt.cif: 从 GT 结构中写出真实口袋原子; 无 GT 口袋标签时不写出。
+
+        - PRED 类:
+            - pred/structure_pred.cif: 同时提供 cif_path 和 cif_gt_path 时, 将 cif_path 作为预测结构写出。
+            - pred/pocket_atoms_th*_pred.cif: write_pred_atom_coords=True 时写出 pred_atom_coords 伪原子点云。
+            - pred/density_pred_binary.map: 写出后处理后的预测正类体素二值 mask; voxel_pipeline 的 single/batch/cache 可视化会写出。
+            - pred/density_pred.map: 写出预测正类区域的连续密度(mask × resampled_emdb); 需要 resampled_emdb 同时存在。
+            - pred/density_pred_prob.map: 写出模型 ligand 概率图; voxel_pipeline 的 single/batch/cache 可视化会写出。
+            - pred/instances_pred.cif: 将预测 instance_label 的体素中心写成伪原子 CIF; voxel_pipeline 的 single/batch/cache 可视化会写出。
+            - open_in_pymol.pml: PyMOL 启动脚本, 自动加载可视化文件并把预测 instance 拆成 pred_instance_### 分组对象。
     """
     result = {}
 
@@ -918,14 +1048,16 @@ def build_infer_vis_bundle(
     else:
         result["pred_structure"] = None
 
-    # -------- 4. Pred: 口袋原子 --------
-    th_tag = f"{prob_threshold:.3f}" if prob_threshold is not None else "na"
-    # 沿用 pocket_atoms_th*.cif 的命名，但内容为"点云伪原子"
-    pred_pocket_out = os.path.join(pred_dir, f"pocket_atoms_th{th_tag}_pred.cif")
-    result["pred_pocket_atoms"] = write_point_cloud_cif(
-        pred_atom_coords,
-        pred_pocket_out,
-    )
+    # -------- 4. Pred: 预测原子点云 --------
+    if write_pred_atom_coords:
+        th_tag = f"{prob_threshold:.3f}" if prob_threshold is not None else "na"
+        pred_pocket_out = os.path.join(pred_dir, f"pocket_atoms_th{th_tag}_pred.cif")
+        result["pred_pocket_atoms"] = write_point_cloud_cif(
+            pred_atom_coords,
+            pred_pocket_out,
+        )
+    else:
+        result["pred_pocket_atoms"] = None
 
     # -------- 5. Pred: 预测正类体素密度图 --------
     if pred_voxel_mask is not None and origin is not None and voxel_size is not None:
@@ -955,4 +1087,172 @@ def build_infer_vis_bundle(
         result["pred_density_binary"] = None
         result["pred_density"] = None
 
+    # -------- 6. Pred: voxel-only 概率图与 instance 点云 --------
+    if pred_voxel_prob is not None and origin is not None and voxel_size is not None:
+        pred_prob_out = os.path.join(pred_dir, "density_pred_prob.map")
+        result["pred_density_prob"] = write_grid_as_map(
+            np.asarray(pred_voxel_prob, dtype=np.float32),
+            pred_prob_out,
+            origin,
+            voxel_size,
+        )
+    else:
+        result["pred_density_prob"] = None
+
+    if pred_instance_label is not None and origin is not None and voxel_size is not None:
+        instances_out = os.path.join(pred_dir, "instances_pred.cif")
+        # np.ndarray, (D, H, W), 预测 instance 标签, 0 为背景
+        pred_instance_label_array = np.asarray(pred_instance_label, dtype=np.int32)
+        result["pred_instances"] = write_instance_voxel_centers_cif(
+            instance_label=pred_instance_label_array,
+            origin=origin,
+            voxel_size=voxel_size,
+            out_path=instances_out,
+        )
+        result["pymol_script"] = write_pymol_vis_script(
+            vis_paths=result,
+            instance_label=pred_instance_label_array,
+            out_path=os.path.join(root_dir, "open_in_pymol.pml"),
+        )
+    else:
+        result["pred_instances"] = None
+        result["pymol_script"] = write_pymol_vis_script(
+            vis_paths=result,
+            instance_label=None,
+            out_path=os.path.join(root_dir, "open_in_pymol.pml"),
+        )
+
     return result
+
+
+def write_instance_voxel_centers_cif(
+    instance_label: np.ndarray,
+    origin: np.ndarray,
+    voxel_size: np.ndarray,
+    out_path: str,
+) -> str:
+    """
+    将预测 instance 的体素中心写成 pseudo atom CIF。
+
+    输入参数:
+        - instance_label: np.ndarray, (D,H,W), int32, 预测 instance 标签, 0为背景
+        - origin: np.ndarray, (3,), 世界坐标原点(x,y,z)
+        - voxel_size: np.ndarray, (3,), 体素大小(x,y,z)
+        - out_path: str, CIF 输出路径
+
+    输出:
+        - out_path: str, 写出的 CIF 文件路径
+    """
+    _safe_mkdir(os.path.dirname(out_path))
+    label = np.asarray(instance_label, dtype=np.int32)
+    origin = np.asarray(origin, dtype=np.float32).reshape(3)
+    voxel_size = np.asarray(voxel_size, dtype=np.float32).reshape(3)
+
+    lines = [
+        "data_pred_instances",
+        "#",
+        "loop_",
+        "_atom_site.group_PDB",
+        "_atom_site.id",
+        "_atom_site.type_symbol",
+        "_atom_site.label_atom_id",
+        "_atom_site.label_comp_id",
+        "_atom_site.label_asym_id",
+        "_atom_site.label_seq_id",
+        "_atom_site.Cartn_x",
+        "_atom_site.Cartn_y",
+        "_atom_site.Cartn_z",
+        "_atom_site.occupancy",
+        "_atom_site.B_iso_or_equiv",
+    ]
+    atom_id = 1
+    for instance_id in [int(v) for v in np.unique(label) if int(v) > 0]:
+        coords_zyx = np.argwhere(label == instance_id)
+        for coord_zyx in coords_zyx:
+            z, y, x = [int(v) for v in coord_zyx.tolist()]
+            world_x = float(origin[0] + (x + 0.5) * voxel_size[0])
+            world_y = float(origin[1] + (y + 0.5) * voxel_size[1])
+            world_z = float(origin[2] + (z + 0.5) * voxel_size[2])
+            lines.append(
+                f"HETATM {atom_id} C C LIG A {instance_id} "
+                f"{world_x:.3f} {world_y:.3f} {world_z:.3f} 1.00 0.00"
+            )
+            atom_id += 1
+    lines.append("#")
+    with open(out_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines))
+    return out_path
+
+
+def write_voxel_batch_excel(results: list[dict], output_root: str) -> str:
+    """
+    将 voxel-only batch 推理结果写入 Excel。
+
+    输入参数:
+        - results: list[dict], 可变长度, 每个样本的推理/评估结果
+        - output_root: str, 输出目录
+
+    输出:
+        - excel_path: str, 写出的 Excel 文件路径
+    """
+    os.makedirs(output_root, exist_ok=True)
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "VoxelResults"
+    headers = [
+        "sample_name",
+        "num_candidates",
+        "voxel_precision",
+        "voxel_recall",
+        "voxel_f1",
+        "voxel_iou",
+        "voxel_dice",
+        "instance_precision",
+        "instance_recall",
+        "instance_f1",
+        "num_pred_instances",
+        "num_gt_instances",
+        "error",
+    ]
+    ws.append(headers)
+    for cell in ws[1]:
+        cell.font = Font(bold=True)
+
+    metric_rows: list[dict] = []
+    for row in results:
+        if row.get("error"):
+            ws.append([row.get("sample_name", ""), "", "", "", "", "", "", "", "", "", "", "", row["error"]])
+            continue
+        metrics = row.get("metrics", {}) or {}
+        ws.append(
+            [
+                row.get("sample_name", ""),
+                row.get("num_candidates", ""),
+                metrics.get("voxel_precision", ""),
+                metrics.get("voxel_recall", ""),
+                metrics.get("voxel_f1", ""),
+                metrics.get("voxel_iou", ""),
+                metrics.get("voxel_dice", ""),
+                metrics.get("instance_precision", ""),
+                metrics.get("instance_recall", ""),
+                metrics.get("instance_f1", ""),
+                metrics.get("num_pred_instances", ""),
+                metrics.get("num_gt_instances", ""),
+                "",
+            ]
+        )
+        if metrics:
+            metric_rows.append(metrics)
+
+    if metric_rows:
+        ws.append([])
+        summary = ["MEAN", ""]
+        for metric_name in headers[2:12]:
+            values = [float(item[metric_name]) for item in metric_rows if metric_name in item]
+            summary.append(float(np.mean(values)) if values else "")
+        summary.append("")
+        ws.append(summary)
+
+    excel_path = os.path.join(output_root, "voxel_batch_results.xlsx")
+    wb.save(excel_path)
+    return excel_path

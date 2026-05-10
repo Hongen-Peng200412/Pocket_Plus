@@ -28,6 +28,8 @@ density_channel_builder — 密度通道在线计算模块
     gauss2   : Gaussian σ=2
     DoG1     : DoG σ=1, m=1.6
     DoG2     : DoG σ=2, m=1.6
+    smooth1  : receptor_mask 附近 Gaussian 扣除, σ=1, radius=2
+    smooth2  : receptor_mask 附近 Gaussian 扣除, σ=2, radius=2
 """
 from __future__ import annotations
 
@@ -46,7 +48,7 @@ class DensityChannelConfig:
     输入参数:
         - clip_percentile: tuple[float, float], clip 范围百分位, 建议值 (0.001, 0.999)
         - fit_mask_percentile: float, 尺度匹配 mask 阈值百分位(同时控制最低体素比例阈值), 密度筛选使用 5×percentile, 建议值 0.003
-        - enabled_channels: list[str], 启用的通道列表; ["all"] 代表全部 40 通道
+        - enabled_channels: list[str], 启用的通道列表; ["all"] 代表全部 56 通道
     """
     clip_percentile: tuple[float, float] = (0.001, 0.999)
     fit_mask_percentile: float = 0.003
@@ -251,6 +253,33 @@ def _dog_3d(x: np.ndarray, sigma: float) -> np.ndarray:
     return ndimage.gaussian_filter(x, sigma=sigma * m, mode="reflect") \
            - ndimage.gaussian_filter(x, sigma=sigma, mode="reflect")
 
+
+def _build_smooth_strength(
+    receptor_mask: np.ndarray,
+    sigma: float,
+    radius: float,
+) -> np.ndarray:
+    """
+    根据 receptor_mask 构建局部 Gaussian 扣除强度图。
+
+    输入参数:
+        - receptor_mask: np.ndarray, (D, H, W), bool, receptor 体素掩码
+        - sigma: float, 标量, Gaussian 标准差(单位: voxel)
+        - radius: float, 标量, 截断半径(单位: voxel)
+
+    输出:
+        - smooth_strength: np.ndarray, (D, H, W), float32, 局部扣除强度图, receptor 体素为 1
+    """
+    # np.ndarray[bool], (D, H, W), receptor 体素掩码
+    mask = np.asarray(receptor_mask, dtype=bool)
+    # np.ndarray, (D, H, W), 每个体素到最近 receptor 体素的欧氏距离
+    distance = ndimage.distance_transform_edt(~mask)
+    # np.ndarray, (D, H, W), 半径截断前的 Gaussian 扣除强度
+    smooth_strength = np.exp(-(distance ** 2) / (2.0 * sigma * sigma))
+    smooth_strength[distance > radius] = 0.0
+    return smooth_strength.astype(np.float32)
+
+
 # dict[str, Optional[float]], post 名称 → sigma 映射
 _POST_SIGMA_MAP: dict[str, Optional[float]] = {
     "nopost": None,
@@ -258,6 +287,8 @@ _POST_SIGMA_MAP: dict[str, Optional[float]] = {
     "gauss2": 2.0,
     "DoG1": 1.0,
     "DoG2": 2.0,
+    "smooth1": 1.0,
+    "smooth2": 2.0,
 }
 
 def _apply_post(x: np.ndarray, post: str) -> np.ndarray:
@@ -266,7 +297,7 @@ def _apply_post(x: np.ndarray, post: str) -> np.ndarray:
 
     输入参数:
         - x: np.ndarray, (D, H, W), float32, 输入体素
-        - post: str, 标量, "nopost" / "gauss1" / "gauss2" / "DoG1" / "DoG2"
+        - post: str, 标量, "nopost" / "gauss1" / "gauss2" / "DoG1" / "DoG2" / "smooth1" / "smooth2"
 
     输出:
         - np.ndarray, (D, H, W), float32, 后处理结果
@@ -282,6 +313,8 @@ def _apply_post(x: np.ndarray, post: str) -> np.ndarray:
         return _gaussian_filter_3d(x, sigma)
     elif post.startswith("DoG"):
         return _dog_3d(x, sigma)
+    elif post.startswith("smooth"):
+        raise ValueError("smooth post 需要在 build_density_channels 中结合 receptor_mask 计算")
     else:
         raise ValueError(f"Unknown post: {post}")
 
@@ -308,10 +341,10 @@ def _apply_post(x: np.ndarray, post: str) -> np.ndarray:
 OPS: list[str] = ["exp", "sim", "diff", "posdiff"]
 # list[str], 2 种归一化方式
 NORMS: list[str] = ["nonorm", "clipnorm"]
-# list[str], 5 种后处理方式
-POSTS: list[str] = ["nopost", "gauss1", "gauss2", "DoG1", "DoG2"]
+# list[str], 7 种后处理方式
+POSTS: list[str] = ["nopost", "gauss1", "gauss2", "DoG1", "DoG2", "smooth1", "smooth2"]
 
-# list[str], 全部 4×2×5 = 40 个常规通道名
+# list[str], 全部 4×2×7 = 56 个常规通道名
 ALL_CHANNEL_NAMES: list[str] = [
     f"{op}_{norm}_{post}"
     for op in OPS
@@ -429,16 +462,50 @@ def build_density_channels(
 
 
     # ---------- 逐通道生成 ----------
+    # dict, 复用同一 (op, norm) 的归一化结果, 避免 5 个 post 重复 percentile/clip/std
+    norm_cache: dict[tuple[str, str], np.ndarray] = {}
+    # dict, 复用同一 (op, norm, sigma) 的 Gaussian 结果, 避免 gauss/DoG 重复滤波
+    gaussian_cache: dict[tuple[str, str, float], np.ndarray] = {}
+    # dict, 复用同一 sigma 的 smooth 强度图, 避免不同 op/norm 重复计算距离变换
+    smooth_cache: dict[float, np.ndarray] = {}
+
+    def get_normed(op_name: str, norm_name: str) -> np.ndarray:
+        cache_key = (op_name, norm_name)
+        if cache_key not in norm_cache:
+            norm_cache[cache_key] = _apply_norm(all_ops[op_name], norm_name, config.clip_percentile)
+        return norm_cache[cache_key]
+
+    def get_gaussian(op_name: str, norm_name: str, sigma: float) -> np.ndarray:
+        cache_key = (op_name, norm_name, float(sigma))
+        if cache_key not in gaussian_cache:
+            gaussian_cache[cache_key] = _gaussian_filter_3d(get_normed(op_name, norm_name), sigma)
+        return gaussian_cache[cache_key]
+
+    def get_smooth_strength(sigma: float) -> np.ndarray:
+        cache_key = float(sigma)
+        if cache_key not in smooth_cache:
+            if receptor_mask is None:
+                raise ValueError("启用了 smooth post 但未提供 receptor_mask")
+            smooth_cache[cache_key] = _build_smooth_strength(receptor_mask, cache_key, radius=2.0)
+        return smooth_cache[cache_key]
+
     # list[np.ndarray], 各启用通道的 (D, H, W) 结果
     channels: list[np.ndarray] = []
     for name in enabled:
         op_name, norm_name, post_name = _parse_channel_name(name)
-        # np.ndarray, (D, H, W), float32, 当前 op 的原始结果
-        op_result = all_ops[op_name]
-        # np.ndarray, (D, H, W), float32, 归一化后结果(clip 按自身数据分布计算)
-        normed = _apply_norm(op_result, norm_name, config.clip_percentile)
-        # np.ndarray, (D, H, W), float32, 后处理结果
-        final = _apply_post(normed, post_name)
+        if post_name == "nopost":
+            final = get_normed(op_name, norm_name)
+        elif post_name.startswith("gauss"):
+            sigma = float(_POST_SIGMA_MAP[post_name])
+            final = get_gaussian(op_name, norm_name, sigma)
+        elif post_name.startswith("DoG"):
+            sigma = float(_POST_SIGMA_MAP[post_name])
+            final = get_gaussian(op_name, norm_name, sigma * 1.6) - get_gaussian(op_name, norm_name, sigma)
+        elif post_name.startswith("smooth"):
+            sigma = float(_POST_SIGMA_MAP[post_name])
+            final = get_normed(op_name, norm_name) * (1.0 - get_smooth_strength(sigma))
+        else:
+            final = _apply_post(get_normed(op_name, norm_name), post_name)
         channels.append(final)
 
     if not channels:
@@ -460,7 +527,7 @@ def detect_diff_posdiff_indices(enabled_channels: list[str]) -> list[int]:
     从 enabled_channels 列表中检测基本运算为 diff 或 posdiff 的通道索引。
 
     输入参数:
-        - enabled_channels: list[str], 可变长度, 启用的通道名列表; ["all"] 代表全部 40 通道
+        - enabled_channels: list[str], 可变长度, 启用的通道名列表; ["all"] 代表全部 56 通道
 
     输出:
         - indices: list[int], 可变长度, 基本运算为 diff 或 posdiff 的通道在 enabled_channels 中的索引

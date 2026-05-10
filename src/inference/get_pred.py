@@ -201,14 +201,11 @@ def load_model(
     print(f"[get_pred] 模型加载成功, device={device}")
     return model
 
-
-
-
 """
 =============================================================================
 1.5 训练配置加载
 =============================================================================
-推理管线的参数按来源分为三类:
+默认从训练.yaml加载的参数(可覆盖):
 
 A. 训练契约类 —— 应自动从训练 config 的 dataset.* 继承
    ┌────────────────────┬──────────────────────────┐
@@ -218,20 +215,11 @@ A. 训练契约类 —— 应自动从训练 config 的 dataset.* 继承
    │ class_mapping      │ dataset.class_mapping     │
    │ atom_buffer_radius │ dataset.atom_buffer_radius│
    │ valid_crop_margin  │ dataset.valid_crop_margin │
-   │ emdb_z_score       │ dataset.emdb_z_score      │
+   │ density_channel_config │ dataset.density_channel_config │
    │ (未来新增参数)      │ dataset.*                 │
    └────────────────────┴──────────────────────────┘
    → 由 load_training_config() 自动提取, 推理管线直接使用。
    → 如需覆盖, 可在推理 YAML 中显式设置同名字段 (_get_cfg 优先级最高)。
-
-B. 推理专属类 —— 只存在于推理 YAML
-   threshold, dist_threshold, core_decay_mode, core_offset,
-   merge_mode, semantic_segment_method, dbscan_eps, dbscan_min_samples,
-   box_spatial_weight_sigma_ratio, stride, windows_size, batch_size,
-   output_dir, show_progress, error_dir
-
-C. 数据处理类 —— 推理 YAML 中有, 训练 config 中不一定有
-   target_voxel_size, compute_density, select_first_model
 """
 
 def load_training_config(ckpt_path: str) -> dict[str, Any]:
@@ -272,39 +260,11 @@ def load_training_config(ckpt_path: str) -> dict[str, Any]:
 
 
 # =============================================================================
-# 2. 点云级推断
+# 正文： 推断整体(全图/全蛋白)结果
 # =============================================================================
-def run_point_inference(
-    model: torch.nn.Module,
-    device: str | torch.device,
-    batch_dict: dict[str, Any],
-) -> dict[str, Any]:
-    """
-    对一个已组装好的 batch dict 执行模型前向, 返回原始 atom logits。
-
-    输入参数:
-        - model: nn.Module, eval 模式的 VolumePointStage1Model
-        - device: str | torch.device, 推断设备
-        - batch_dict: dict[str, Any], 由 box_point_collate() 产出的 batch dict, 所有 tensor 已在 device 上
-
-    输出:
-        - outputs: dict[str, Any], 模型前向输出, 至少包含:
-            - "atom_logits": torch.Tensor, (sumN_final, C_logit), 原始 atom 分类 logits, 未经 sigmoid
-            - 以及与最终原子视图对齐的辅助字段(global_atom_indices / atom_counts / atom_coord_local_voxel / atom_is_in_core_box 等)
-    """
-    with torch.no_grad():
-        # dict[str, Any], 模型前向输出
-        outputs = model(batch_dict)
-
-    return outputs
 
 
-
-
-
-# =============================================================================
-# 工具函数
-# =============================================================================
+# ---------------------------------------- 工具函数 ----------------------------------------
 def move_batch_to_device(
     batch_dict: dict[str, Any],
     device: str | torch.device,
@@ -323,3 +283,317 @@ def move_batch_to_device(
         if isinstance(val, torch.Tensor):
             batch_dict[key] = val.to(device)
     return batch_dict
+
+_VOXEL_HEAD_TO_OUTPUT_KEY: dict[str, str] = {
+    "ligand": "voxel_logits_ligand",
+    "receptor": "voxel_logits_aux",
+}
+
+def extract_voxel_head_logits(
+    outputs: dict[str, Any],
+    output_heads: tuple[str, ...],
+) -> dict[str, torch.Tensor]:
+    """
+    从 stage1 模型输出中提取请求的 voxel logits。
+
+    输入参数:
+        - outputs: dict[str, Any], run_inference() 返回的模型输出
+        - output_heads: tuple[str, ...], 需要提取的 head 名称, 允许 ligand/receptor
+
+    输出:
+        - head_logits: dict[str, torch.Tensor], 按请求 head 名称组织的 logits 字典, 包含:
+            - "ligand": torch.Tensor, (B, 1, D, H, W), float32, ligand voxel head 的原始 logits; 仅当请求 ligand 时存在
+            - "receptor": torch.Tensor, (B, 1, D, H, W), float32, receptor voxel head 的原始 logits; 仅当请求 receptor 时存在
+    """
+    if len(output_heads) == 0:
+        raise ValueError("output_heads 不能为空")
+
+    head_logits: dict[str, torch.Tensor] = {}
+    for head_name in output_heads:
+        if head_name not in _VOXEL_HEAD_TO_OUTPUT_KEY:
+            raise ValueError(f"未知 voxel output head: {head_name}")
+        output_key = _VOXEL_HEAD_TO_OUTPUT_KEY[head_name]
+        logits = outputs[output_key]
+        if logits is None:
+            raise ValueError(f"模型输出 {output_key} 为 None, 但 output_heads 请求了 {head_name}")
+        if not isinstance(logits, torch.Tensor):
+            raise TypeError(f"模型输出 {output_key} 必须是 torch.Tensor, 实际为 {type(logits)}")
+        if logits.ndim != 5 or int(logits.shape[1]) != 1:
+            raise ValueError(f"模型输出 {output_key} 形状必须为 (B, 1, D, H, W), 实际为 {tuple(logits.shape)}")
+        head_logits[head_name] = logits
+    return head_logits
+
+def run_inference(
+    model: torch.nn.Module,
+    device: str | torch.device,
+    batch_dict: dict[str, Any],
+) -> dict[str, Any]:
+    """
+    对一个已组装好的 batch dict 执行模型前向, 返回原始 atom logits。
+
+    输入参数:
+        - model: nn.Module, eval 模式的 VolumePointStage1Model
+        - device: str | torch.device, 推断设备
+        - batch_dict: dict[str, Any], 由 box_point_collate() 产出的 batch dict, 所有 tensor 已在 device 上
+
+    输出:
+        - outputs: dict[str, Any], 模型前向输出字典, 至少包含:
+            - "atom_logits": torch.Tensor, (sumN_final, C_logit), 原始 atom 分类 logits, 未经 sigmoid
+            - "voxel_logits_ligand": torch.Tensor | None, (B, 1, D, H, W), ligand voxel head 的原始 logits; 未启用时可为 None
+            - "voxel_logits_aux": torch.Tensor | None, (B, 1, D, H, W), receptor voxel head 的原始 logits; 未启用时可为 None
+            - 以及与展平原子序列对齐的辅助字段, 如 "atom_counts"、"atom_coord_local_voxel"、"atom_is_in_core_box" 等
+    """
+    with torch.no_grad():
+        # dict[str, Any], 模型前向输出
+        outputs = model(batch_dict)
+
+    return outputs
+
+
+
+
+
+
+# ---------------------------------------- 合并BOX ---------------------------------------- 
+def _compute_box_slices_for_merge(
+    box_position_zyx: tuple[int, int, int],
+    box_shape_zyx: tuple[int, int, int],
+    full_shape_zyx: tuple[int, int, int],
+    core_offset: int,
+) -> tuple[tuple[slice, slice, slice], tuple[slice, slice, slice]]:
+    """
+    计算通过 core_offset 裁剪后的 BOX 切片。
+
+    输入参数:
+        - box_position_zyx: tuple[int, int, int], BOX 在整图中的起点(z,y,x)
+        - box_shape_zyx: tuple[int, int, int], BOX 概率图形状(D_box,H_box,W_box)
+        - full_shape_zyx: tuple[int, int, int], 整图形状(D,H,W)
+        - core_offset: int, 非边界侧裁掉的体素厚度; 0 表示不裁剪
+
+    输出:
+        - box_slices: tuple[slice, slice, slice], BOX 内有效局部切片
+        - full_slices: tuple[slice, slice, slice], 整图目标切片
+    """
+    box_slices: list[slice] = []
+    full_slices: list[slice] = []
+    for axis, (start, box_size, full_size) in enumerate(zip(box_position_zyx, box_shape_zyx, full_shape_zyx)):
+        if start < 0:
+            raise ValueError(f"BOX 起点不能为负数: axis={axis}, start={start}")
+        if box_size <= 0 or full_size <= 0:
+            raise ValueError(f"BOX/full shape 必须为正数: box_size={box_size}, full_size={full_size}")
+
+        # int, 当前轴 BOX 与整图重叠的局部终点
+        local_end = min(int(box_size), int(full_size) - int(start))
+        # int, 当前轴 BOX 内参与合并的局部起点
+        local_start = int(core_offset) if start > 0 else 0
+        if start + box_size < full_size:
+            local_end = min(local_end, int(box_size) - int(core_offset))
+        if local_start >= local_end:
+            raise ValueError(
+                "core_offset 导致 BOX 无有效合并区域: "
+                f"axis={axis}, position={box_position_zyx}, box_shape={box_shape_zyx}, "
+                f"full_shape={full_shape_zyx}, core_offset={core_offset}"
+            )
+
+        full_start = int(start) + local_start
+        full_end = int(start) + local_end
+        box_slices.append(slice(local_start, local_end))
+        full_slices.append(slice(full_start, full_end))
+
+    return tuple(box_slices), tuple(full_slices)
+
+def _build_gaussian_weight(
+    box_shape_zyx: tuple[int, int, int],
+    gaussian_sigma_ratio: float,
+) -> np.ndarray:
+    """
+    构造 BOX 内中心高、边缘低的 3D Gaussian 权重。
+
+    输入参数:
+        - box_shape_zyx: tuple[int, int, int], BOX 概率图形状(D,H,W)
+        - gaussian_sigma_ratio: float, sigma 与最大边长的比例
+
+    输出:
+        - weight: np.ndarray, (D,H,W), float32, Gaussian 合并权重
+    """
+    if gaussian_sigma_ratio <= 0:
+        raise ValueError(f"gaussian_sigma_ratio 必须大于 0, 实际为 {gaussian_sigma_ratio}")
+    depth, height, width = [int(v) for v in box_shape_zyx]
+    # np.ndarray, (D,H,W), float32, 三轴体素坐标网格
+    zz, yy, xx = np.meshgrid(
+        np.arange(depth, dtype=np.float32),
+        np.arange(height, dtype=np.float32),
+        np.arange(width, dtype=np.float32),
+        indexing="ij",
+    )
+    center_z = 0.5 * float(depth - 1)
+    center_y = 0.5 * float(height - 1)
+    center_x = 0.5 * float(width - 1)
+    sigma = float(gaussian_sigma_ratio) * float(max(depth, height, width))
+    # np.ndarray, (D,H,W), float32, 到 BOX 中心的平方距离
+    dist2 = (zz - center_z) ** 2 + (yy - center_y) ** 2 + (xx - center_x) ** 2
+    return np.exp(-0.5 * dist2 / (sigma * sigma)).astype(np.float32)
+
+def _merge_box_probability_into_full(
+    value_sum: np.ndarray,
+    weight_sum: np.ndarray,
+    box_prob: np.ndarray,
+    box_position_zyx: tuple[int, int, int],
+    full_shape_zyx: tuple[int, int, int],
+    merge_mode: str,
+    core_offset: int,
+    gaussian_sigma_ratio: float | None,
+) -> None:
+    """
+    将单个 BOX 概率图按 mean/max 语义原地合并到整图累加数组。
+
+    输入参数:
+        - value_sum: np.ndarray, (D,H,W), float32, mean 时为概率加权和, max 时为当前最大概率
+        - weight_sum: np.ndarray, (D,H,W), float32, mean 时为权重累计图, max 时为覆盖权重图
+        - box_prob: np.ndarray, (D_box,H_box,W_box), float32, 单 BOX 概率图
+        - box_position_zyx: tuple[int,int,int], BOX 在整图中的起点(z,y,x)
+        - full_shape_zyx: tuple[int,int,int], 整图形状(D,H,W)
+        - merge_mode: str, 整图聚合方式, 可选 mean/max
+        - core_offset: int, 非边界侧裁剪厚度; 0 表示不裁剪
+        - gaussian_sigma_ratio: float | None, Gaussian 衰减 sigma 比例; None 表示不启用衰减
+
+    输出:
+        - None, 原地更新 value_sum 和 weight_sum
+    """
+    # tuple[int,int,int], 当前 BOX 概率图形状(D_box,H_box,W_box)
+    box_shape_zyx = tuple(int(v) for v in box_prob.shape)
+    box_slices, full_slices = _compute_box_slices_for_merge(
+        box_position_zyx=box_position_zyx,
+        box_shape_zyx=box_shape_zyx,
+        full_shape_zyx=full_shape_zyx,
+        core_offset=core_offset,
+    )
+    if gaussian_sigma_ratio is None:
+        # np.ndarray, 与 box_prob[box_slices] 相同形状, 不启用 Gaussian 时等权
+        weight = np.ones_like(box_prob[box_slices], dtype=np.float32)
+    else:
+        # np.ndarray, 与 box_prob[box_slices] 相同形状, BOX 中心高、边缘低的空间权重
+        weight = _build_gaussian_weight(box_shape_zyx, gaussian_sigma_ratio)[box_slices]
+
+    # np.ndarray, 当前 BOX 参与合并的概率子块
+    prob_patch = box_prob[box_slices].astype(np.float32, copy=False)
+    if merge_mode == "max":
+        # np.ndarray, 与 prob_patch 相同形状, Gaussian 衰减后的候选最大概率
+        weighted_prob_patch = prob_patch * weight
+        value_sum[full_slices] = np.maximum(value_sum[full_slices], weighted_prob_patch)
+        weight_sum[full_slices] = np.maximum(weight_sum[full_slices], weight)
+        return
+
+    if merge_mode != "mean":
+        raise ValueError(f"未知 voxel merge_mode: {merge_mode}")
+
+    value_sum[full_slices] += prob_patch * weight
+    weight_sum[full_slices] += weight
+
+def get_voxel_pred(
+    model: torch.nn.Module,
+    device: str | torch.device,
+    box_dicts: list[dict[str, Any]],
+    full_shape_zyx: tuple[int, int, int],
+    hardmask: np.ndarray,
+    batch_size: int,
+    output_heads: tuple[str, ...],
+    merge_mode: str,
+    core_offset: int,
+    gaussian_sigma_ratio: float | None,
+    show_progress: bool,
+) -> dict[str, Any]:
+    """
+    对全部 BOX 执行 voxel head 推理并合并为整图概率图。
+
+    输入参数:
+        - model: torch.nn.Module, eval 模式的 stage1 模型
+        - device: str | torch.device, 推理设备
+        - box_dicts: list[dict[str, Any]], split_volume_to_boxes() 返回的 BOX 样本列表
+        - full_shape_zyx: tuple[int,int,int], 整图形状(D,H,W)
+        - hardmask: np.ndarray, (D,H,W), 受体原子落点掩码
+        - batch_size: int, 每批 BOX 数
+        - output_heads: tuple[str, ...], 需要输出的 head, 允许 ligand/receptor
+        - merge_mode: str, 整图聚合方式, 可选 mean/max
+        - core_offset: int, 非边界侧裁剪厚度; 0 表示不裁剪
+        - gaussian_sigma_ratio: float | None, Gaussian 衰减 sigma 比例; None 表示不启用衰减
+        - show_progress: bool, 是否显示 tqdm 进度条
+
+    输出:
+        - result: dict[str, Any], 整图概率输出, 包含:
+            - "ligand_pred": np.ndarray, (D,H,W), float32, ligand head 合并后的整图概率; 仅当请求 ligand 时存在
+            - "receptor_pred": np.ndarray, (D,H,W), float32, receptor head 合并后的整图概率; 仅当请求 receptor 时存在
+            - "head_weight_maps": dict[str, np.ndarray], 各 head 的整图权重图, 包含:
+                - "ligand": np.ndarray, (D,H,W), float32, ligand head 的累计权重图; 仅当请求 ligand 时存在
+                - "receptor": np.ndarray, (D,H,W), float32, receptor head 的累计权重图; 仅当请求 receptor 时存在
+    """
+    from src.inference.parse_input import prepare_batched_boxes
+
+    if len(box_dicts) == 0:
+        raise ValueError("box_dicts 不能为空")
+    if batch_size <= 0:
+        raise ValueError(f"batch_size 必须大于 0, 实际为 {batch_size}")
+    if int(core_offset) < 0:
+        raise ValueError(f"core_offset 不能为负数, 实际为 {core_offset}")
+    if merge_mode not in {"mean", "max"}:
+        raise ValueError(f"未知 voxel merge_mode: {merge_mode}")
+
+    full_shape_zyx = tuple(int(v) for v in full_shape_zyx)
+    # np.ndarray, (D,H,W), float32, 用于概率约束的 hardmask
+    hardmask_float = np.asarray(hardmask, dtype=np.float32)
+    if tuple(hardmask_float.shape) != full_shape_zyx:
+        raise ValueError(f"hardmask.shape={hardmask_float.shape} 与 full_shape_zyx={full_shape_zyx} 不一致")
+
+    # dict[str, np.ndarray], head 名称 → 整图概率加权和
+    value_sums = {head_name: np.zeros(full_shape_zyx, dtype=np.float32) for head_name in output_heads}
+    # dict[str, np.ndarray], head 名称 → 整图权重累计
+    weight_sums = {head_name: np.zeros(full_shape_zyx, dtype=np.float32) for head_name in output_heads}
+
+    batched_iter = prepare_batched_boxes(box_dicts=box_dicts, batch_size=batch_size, device=device)
+    if show_progress:
+        try:
+            from tqdm import tqdm
+            total_batches = (len(box_dicts) + batch_size - 1) // batch_size
+            batched_iter = tqdm(batched_iter, total=total_batches, desc="voxel boxes")
+        except Exception:
+            pass
+
+    for batch_dict in batched_iter:
+        outputs = run_inference(model=model, device=device, batch_dict=batch_dict)
+        head_logits = extract_voxel_head_logits(outputs=outputs, output_heads=output_heads)
+        # list[dict], 长度 B, 每个 BOX 的起点元信息
+        box_meta_list = batch_dict["_box_meta"]
+        for head_name, logits in head_logits.items():
+            # np.ndarray, (B,D_box,H_box,W_box), float32, 当前 head 的 BOX 概率
+            box_probs = torch.sigmoid(logits[:, 0]).detach().cpu().numpy().astype(np.float32)
+            for box_index, box_prob in enumerate(box_probs):
+                _merge_box_probability_into_full(
+                    value_sum=value_sums[head_name],
+                    weight_sum=weight_sums[head_name],
+                    box_prob=box_prob,
+                    box_position_zyx=tuple(int(v) for v in box_meta_list[box_index]["box_position_zyx"]),
+                    full_shape_zyx=full_shape_zyx,
+                    merge_mode=merge_mode,
+                    core_offset=core_offset,
+                    gaussian_sigma_ratio=gaussian_sigma_ratio,
+                )
+
+    result: dict[str, Any] = {"head_weight_maps": weight_sums}
+    for head_name in output_heads:
+        if merge_mode == "max":
+            # np.ndarray, (D,H,W), float32, max 合并后的概率图
+            pred = value_sums[head_name]
+        else:
+            # np.ndarray, (D,H,W), float32, 加权平均后的概率图
+            pred = np.divide(
+                value_sums[head_name],
+                weight_sums[head_name],
+                out=np.zeros_like(value_sums[head_name], dtype=np.float32),
+                where=weight_sums[head_name] > 0,
+            )
+        if head_name == "ligand":
+            result["ligand_pred"] = (pred * (1.0 - hardmask_float)).astype(np.float32)
+        elif head_name == "receptor":
+            result["receptor_pred"] = (pred * hardmask_float).astype(np.float32)
+
+    return result

@@ -1,0 +1,26 @@
+# @package _global_
+# 不进行任何运算, 搭配 point backbone 为none时使用，对应不对点云做任何建模
+model:
+  backbone:
+    atom_head_hidden_dim: 128      # int, 隐藏维度
+    atom_head_num_heads: 4         # int, 注意力头数
+    atom_head_patch_size: 128      # int, patch 大小
+    atom_head_num_layers: 0        # int, Block 层数
+    atom_head_serialization_orders: ["z", "z-trans", "hilbert", "hilbert-trans"]
+    atom_head_shuffle_orders: true # bool, 训练时随机打乱顺序
+    atom_head_qkv_bias: true
+    atom_head_qk_scale: null
+    atom_head_attn_drop: 0.2
+    atom_head_proj_drop: 0.2
+    atom_head_enable_rpe: false
+    atom_head_enable_flash: false
+    atom_head_upcast_attention: false
+    atom_head_upcast_softmax: false
+    atom_head_mlp_ratio: 4
+    atom_head_cpe_impl: "none"     # str, "none"/"sparseconv"/"pointconv"
+    atom_head_cpe_kernel_size: 5
+    atom_head_cpe_receptive_field: 2.0
+    atom_head_pointconv_max_neighbors: 16
+    atom_head_drop_path: 0.0
+    atom_head_pre_norm: true
+    atom_head_append_coord_mask: false  # bool, 是否将 3D 相对坐标(3) + 监督掩码(1) 拼入 atom token

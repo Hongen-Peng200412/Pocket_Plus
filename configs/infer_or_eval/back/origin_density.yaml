@@ -1,0 +1,54 @@
+# @package density_channel_config
+# ============================================================
+# 旧版密度通道配置: 显式保留 smooth 加入前的 40 通道语义
+# ============================================================
+# 用途:
+#   - 旧 checkpoint 的训练配置若保存 enabled_channels: ["all"],
+#     在新版 density_channel_builder 中会被展开为 56 通道。
+#   - 推理旧 checkpoint 时, 应显式覆盖 density_channel_config 为本文件内容,
+#     避免模型输入通道数与旧权重不一致。
+# ============================================================
+
+clip_percentile: [0.001, 0.999]
+fit_mask_percentile: 0.003
+enabled_channels:
+  - "exp_nonorm_nopost"
+  - "exp_nonorm_gauss1"
+  - "exp_nonorm_gauss2"
+  - "exp_nonorm_DoG1"
+  - "exp_nonorm_DoG2"
+  - "exp_clipnorm_nopost"
+  - "exp_clipnorm_gauss1"
+  - "exp_clipnorm_gauss2"
+  - "exp_clipnorm_DoG1"
+  - "exp_clipnorm_DoG2"
+  - "sim_nonorm_nopost"
+  - "sim_nonorm_gauss1"
+  - "sim_nonorm_gauss2"
+  - "sim_nonorm_DoG1"
+  - "sim_nonorm_DoG2"
+  - "sim_clipnorm_nopost"
+  - "sim_clipnorm_gauss1"
+  - "sim_clipnorm_gauss2"
+  - "sim_clipnorm_DoG1"
+  - "sim_clipnorm_DoG2"
+  - "diff_nonorm_nopost"
+  - "diff_nonorm_gauss1"
+  - "diff_nonorm_gauss2"
+  - "diff_nonorm_DoG1"
+  - "diff_nonorm_DoG2"
+  - "diff_clipnorm_nopost"
+  - "diff_clipnorm_gauss1"
+  - "diff_clipnorm_gauss2"
+  - "diff_clipnorm_DoG1"
+  - "diff_clipnorm_DoG2"
+  - "posdiff_nonorm_nopost"
+  - "posdiff_nonorm_gauss1"
+  - "posdiff_nonorm_gauss2"
+  - "posdiff_nonorm_DoG1"
+  - "posdiff_nonorm_DoG2"
+  - "posdiff_clipnorm_nopost"
+  - "posdiff_clipnorm_gauss1"
+  - "posdiff_clipnorm_gauss2"
+  - "posdiff_clipnorm_DoG1"
+  - "posdiff_clipnorm_DoG2"

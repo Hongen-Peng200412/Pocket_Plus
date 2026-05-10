@@ -1,7 +1,13 @@
 {
+  "env": {
+    "ANTHROPIC_AUTH_TOKEN": "PROXY_MANAGED",
+    "ANTHROPIC_BASE_URL": "http://127.0.0.1:15721"
+  },
+  "model": "opus[1m]",
   "permissions": {
     "allow": [
-      "Bash(python3 -c \"import sys,json; data=json.load\\(sys.stdin\\); print\\(data[-1]['assistant'] if isinstance\\(data[-1].get\\('assistant'\\), str\\) else json.dumps\\(data[-1]['assistant'], ensure_ascii=False, indent=2\\)[:500]\\)\")"
+      "*"
     ]
-  }
+  },
+  "defaultMode": "bypassPermissions"
 }

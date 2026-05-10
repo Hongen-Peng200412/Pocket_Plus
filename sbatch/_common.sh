@@ -123,6 +123,54 @@ _setup_pocket_plus_local_cache() {
     export PYTHONPYCACHEPREFIX="${local_base}/pycache"
 }
 
+pocket_plus_cleanup_local_cache() {
+    if ! _pocket_plus_is_enabled "${POCKET_PLUS_LOCAL_CACHE_ACTIVE:-0}"; then
+        return 0
+    fi
+    if ! _pocket_plus_is_enabled "${POCKET_PLUS_LOCAL_CACHE_CLEANUP_ON_EXIT:-1}"; then
+        echo "[LocalCache] Cleanup disabled by POCKET_PLUS_LOCAL_CACHE_CLEANUP_ON_EXIT."
+        return 0
+    fi
+
+    local local_base="${POCKET_PLUS_LOCAL_CACHE_BASE:-}"
+    local resolved_base=""
+    local resolved_slurm_tmp=""
+    local safe_to_remove=0
+
+    if [ -z "${local_base}" ] || [ "${local_base}" = "/" ]; then
+        echo "[LocalCache][WARN] Skip cleanup because local cache base is unsafe: '${local_base}'"
+        return 0
+    fi
+
+    resolved_base="$(readlink -f "${local_base}" 2>/dev/null || true)"
+    if [ -z "${resolved_base}" ] || [ "${resolved_base}" = "/" ]; then
+        echo "[LocalCache][WARN] Skip cleanup because resolved cache base is unsafe: '${resolved_base}'"
+        return 0
+    fi
+
+    case "${resolved_base}" in
+        "/tmp/${USER}/slurm_${SLURM_JOB_ID}")
+            safe_to_remove=1
+            ;;
+    esac
+
+    if [ -n "${SLURM_TMPDIR:-}" ]; then
+        resolved_slurm_tmp="$(readlink -f "${SLURM_TMPDIR}" 2>/dev/null || true)"
+        if [ -n "${resolved_slurm_tmp}" ] && [ "${resolved_base}" = "${resolved_slurm_tmp}" ]; then
+            safe_to_remove=1
+        fi
+    fi
+
+    if [ "${safe_to_remove}" -ne 1 ]; then
+        echo "[LocalCache][WARN] Skip cleanup for non-standard cache base: ${resolved_base}"
+        echo "[LocalCache][WARN] Remove it manually if it is safe."
+        return 0
+    fi
+
+    echo "[LocalCache] Cleaning local cache: ${resolved_base}"
+    rm -rf "${resolved_base}"
+}
+
 _setup_pocket_plus_local_cache
 
 export PROJECT_ROOT

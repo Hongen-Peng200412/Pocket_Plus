@@ -1,16 +1,24 @@
 # 忽略 Python 缓存
 __pycache__/
+*.pyc
 *.py[cod]
 *$py.class
+
+# 忽略所有 test 开头的文件/文件夹
+test*
+**/test*
+tests/
+**/tests/
 
 # 忽略本地配置文件
 .claude/
 .vscode/
 
-# 忽略实验数据和日志（如果你不希望它们占满 GitHub 空间）
+# 忽略实验数据和日志
 log/
+logs/
 results/
 output/
 *.txt
-*.md
-tests/
+CLAUDE_PLANS
+docs
