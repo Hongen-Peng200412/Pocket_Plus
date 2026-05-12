@@ -1,0 +1,99 @@
+# ============================================================
+# voxel-only ligand 批量推理配置
+# 此文件由 src/inference/main/run.py 通过 Hydra 加载:
+#   python src/inference/main/run.py --config=voxel_batch ...
+# run.py 会把配置分发到 voxel_pipeline.run_voxel_batch(), 再对
+# raw_pairs_json 中的每个样本逐个复用 run_voxel_single()。
+# 因此 batch 模式本质上是“批量样本列表 + 单样本推理配置模板”。
+# ============================================================
+
+# --- 运行模式 ---
+mode: "voxel_batch"  # str, 固定为 voxel_batch; → run.py: main() 分发到 run_voxel_batch()
+
+# --- 批量样本列表 ---
+raw_pairs_json: null     # str|null, 样本列表 JSON 路径; → run_voxel_batch(): load_raw_pairs()
+                         # 每个 pair 至少提供 cif_path/map_path; 其余字段若非 null, 会通过 _merge_sample_pair_cfg() 覆盖同名全局配置
+continue_on_error: true  # bool, 单样本失败后是否继续跑后续样本; false 时遇到首个异常直接抛出
+
+# --- 模型与输出目录 ---
+ckpt_path: null                            # str|null, Lightning checkpoint 路径; → run.py: load_model()/load_training_config(); 运行时必须显式覆盖
+backbone_override: null                    # dict|null, 可选 backbone 覆盖配置; 若提供则覆盖 checkpoint 中恢复的 backbone
+device: "cuda:0"                           # str, 推理设备; → run.py: torch.device(device)
+output_root: "inference_output/voxel_batch"   # str, 批量输出根目录; 每个样本实际写入 output_root/sample_name
+cache_root: "inference_output/voxel_cache"    # str, GPU forward 缓存根目录; 每个样本固定写为 cache_root/sample_name.npz
+use_cache: true                            # bool, 若对应样本缓存已存在则直接读取, 跳过重新 forward
+save_cache: true                           # bool, 首次 forward 后是否保存 .npz 缓存
+show_progress: true                        # bool, 是否为单样本 BOX forward 显示 tqdm 进度条
+
+# --- raw 输入构造参数 ---
+# 下列字段作为批量默认值, 会在每个样本进入 run_voxel_single() 时被读取。
+target_voxel_size: 1.0       # float, 密度图重采样目标体素大小
+compute_density: true        # bool, 是否在 get_features_when_infer() 中计算原子局部密度特征
+select_first_model: false    # bool, 多 model CIF 的处理策略
+error_dir: null              # str|null, 结构解析或 GT 构造失败时的错误输出目录
+filter_preset: "five_class"  # str, structure GT 与可视化导出时使用的配体筛选预设名
+
+# --- 可由训练 dataset 配置回退的字段 ---
+# run.py 会先把 checkpoint 对应训练配置中的 dataset 节写入 `_train_dataset_cfg`;
+# _get_cfg() 读取这组字段时遵循“推理 YAML 显式值优先, 否则回退到训练 dataset 配置”的顺序。
+density_channel_config: null  # dict|null, null 时回退到训练 dataset.density_channel_config; 同时决定是否真正需要 sim_map_path
+atom_buffer_radius: null      # float|null, null 时回退到训练 dataset.atom_buffer_radius; → split_volume_to_boxes()
+valid_crop_margin: null       # int|null, null 时回退到训练 dataset.valid_crop_margin; → split_volume_to_boxes()
+class_mapping: null           # list[int]|null, null 时回退到训练 dataset.class_mapping; GT 与可视化都会读取
+
+# --- BOX 滑窗与整图合并参数 ---
+# 下列字段统一参与两步:
+#   1. split_volume_to_boxes(): 切出 BOX
+#   2. get_voxel_pred(): 对所有 BOX forward 并合并回整图概率图
+window_size: 48             # int, BOX 边长(voxel)
+stride: 32                  # int, 滑窗步长(voxel)
+batch_size: 1               # int, 每批送入 GPU forward 的 BOX 数
+merge_mode: "mean"          # str, BOX 合并策略; 可选 mean/max
+core_offset: 2              # int, 非边界侧裁剪厚度; 0 表示不裁剪
+gaussian_sigma_ratio: null  # float|null, BOX 合并时的 Gaussian 衰减 sigma 比例; null 表示不启用衰减
+output_heads: ["ligand"]    # list[str], 需要从模型输出中提取并合并的 voxel head; 当前粗定位默认只保留 ligand
+
+# --- ligand 概率图后处理 ---
+# 下列字段统一由 _postprocess_params_from_cfg() 收集为 `post_params`,
+# 再传入 postprocess_ligand_probability_map(...) 对每个样本的整图 ligand 概率做 voxel-only 后处理。
+filter_strength: "basic"      # str, 候选过滤强度档位; basic 仅做基础阈值+连通域过滤, advanced 继续叠加响应分数过滤
+threshold: 0.5                # float, ligand 概率二值化阈值
+min_component_voxels: 10      # int, 连通域最小体素数
+connectivity_policy: "7_none" # str, 两阶段连通域邻接策略; 形如 first_second, 例如 7_none
+sigma_nearby: 1.0             # float, advanced 模式下 ligand 邻域平滑 sigma
+kernel_nearby: 3              # int, advanced 模式下 ligand 邻域平滑核大小
+sigma_response: 1.0           # float, advanced 模式下 receptor response 平滑 sigma
+kernel_response: 3            # int, advanced 模式下 receptor response 平滑核大小
+score_add: 1.0                # float, advanced 模式下 receptor 正向响应加分系数
+score_minus: 1.0              # float, advanced 模式下 receptor 负向响应扣分系数
+voxel_score_min: 0.0          # float, advanced 模式下体素级分数阈值
+instance_score_min: 0.0       # float, advanced 模式下实例级均分阈值
+
+# --- GT 评估 ---
+# GT 来源由单样本阶段的 _resolve_gt_source() 决定:
+#   - eval_gt=false: 不构造 GT
+#   - eval_gt=true 且 labels_npz_path 非 null: 走 labels_npz GT
+#   - eval_gt=true 且 labels_npz_path 为 null: 走 structure GT
+eval_gt: false                    # bool, 是否为每个样本构造 GT 并计算 voxel / instance 指标
+eval_mode: "easy"                 # str, structure GT 模式; easy 使用 cif_path, hard 使用 cif_gt_path, trivial 使用真实结构自评
+labels_npz_path: null             # str|null, 全局默认 labels.npz 路径; raw_pairs_json 中同名字段若非 null, 会逐样本覆盖
+ligand_gt_distance_threshold: 1.7 # float, ligand GT 距离阈值(Å); 与训练 voxel_ligand_loss.hard_label_threshold 对齐
+alpha: 0.6                        # float, instance precision 判定中的包含率阈值
+beta: 0.6                         # float, instance recall 判定中的包含率阈值
+
+# --- 可视化与单样本占位默认值 ---
+# 下列字段本质上是“批量默认值”:
+#   - raw_pairs_json 中某个样本给出非 null 同名字段时, 该值覆盖这里的全局默认
+#   - 若 pair 中该字段缺失或为 null, 则继续使用这里的全局默认
+vis_enable: false      # bool, 是否为每个成功样本额外导出 map/cif 可视化资产
+vis_output_root: null  # str|null, 可视化输出根目录; null 时即使 vis_enable=true 也会跳过可视化
+cif_gt_path: null      # str|null, 全局默认真实结构路径; 常由 raw_pairs_json 逐样本提供
+sample_name: null      # str|null, 全局默认样本名; 常由 raw_pairs_json 逐样本提供, 若仍为 null 则回退为 Path(cif_path).stem
+cif_path: null         # str|null, 全局默认结构文件路径; 通常应由 raw_pairs_json 逐样本提供
+map_path: null         # str|null, 全局默认实验密度图路径; 通常应由 raw_pairs_json 逐样本提供
+sim_map_path: null     # str|null, 全局默认模拟密度图路径; 仅启用 sim/diff/posdiff 通道时才可能被读取
+
+# --- Hydra 运行目录行为 ---
+hydra:
+  job:
+    chdir: false  # bool, 保持进程 cwd 不被 Hydra 自动切换; 方便相对路径按项目根目录解析

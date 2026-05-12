@@ -875,7 +875,8 @@ class Stage1EmbedHead(nn.Module):
                 d_val = int(box_shape_zyx[0, 0].item())
                 h_val = int(box_shape_zyx[0, 1].item())
                 w_val = int(box_shape_zyx[0, 2].item())
-                voxel_grid = atom_feat.new_zeros((batch_size, self.embed_voxel_out_channels, d_val, h_val, w_val))
+                voxel_channels = self.embed_voxel_out_channels + (2 if self.add_occupancy_channels else 0)
+                voxel_grid = atom_feat.new_zeros((batch_size, voxel_channels, d_val, h_val, w_val))
             else:
                 voxel_grid = None
             point_out = atom_feat.new_zeros((0, self.embed_point_out_channels)) if self.has_point_output else None

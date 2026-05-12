@@ -49,10 +49,10 @@ source "${SBATCH_ROOT}/_common.sh"
 write_custom_run_cmd_hook() {
     local TARGET_FILE="$1"
     cat << EOF > "${TARGET_FILE}"
-
 #!/bin/bash
-python /home/penghongen/My_Project/Pocket_Plus/src/inference/run.py --config=标准0_cryoatom_trivial
-
+python Pocket_Plus/src/inference/main/two_stage_basic.py \
+    --config="${CONFIG_NAME}" \
+    ${HYDRA_OVERRIDES}
 EOF
 }
 # ============================================================

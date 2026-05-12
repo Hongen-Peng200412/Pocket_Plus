@@ -1,14 +1,17 @@
-defaults:
-  - L_small_full
-  - _self_
+# @package density_channel_config
+# ============================================================
+# 旧版密度通道配置: 显式保留 smooth 加入前的 40 通道语义
+# ============================================================
+# 用途:
+#   - 旧 checkpoint 的训练配置若保存 enabled_channels: ["all"],
+#     在新版 density_channel_builder 中会被展开为 56 通道。
+#   - 推理旧 checkpoint 时, 应显式覆盖 density_channel_config 为本文件内容,
+#     避免模型输入通道数与旧权重不一致。
+# ============================================================
 
-name: L_small_medium
-
-density_channel_config:
-  clip_percentile: [0.001, 0.999]
-  fit_mask_percentile: 0.003
-  enabled_channels:
-  # 老的 40 通道
+clip_percentile: [0.001, 0.999]
+fit_mask_percentile: 0.003
+enabled_channels:
   - "exp_nonorm_nopost"
   - "exp_nonorm_gauss1"
   - "exp_nonorm_gauss2"

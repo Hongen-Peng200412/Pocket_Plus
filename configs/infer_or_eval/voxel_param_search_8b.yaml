@@ -1,0 +1,152 @@
+# ============================================================
+# voxel-only ligand 后处理参数搜索配置
+# 此文件由 src/inference/main/run.py 通过 Hydra 加载:
+#   python src/inference/main/run.py --config=voxel_param_search ...
+# run.py 会把配置分发到 voxel_pipeline.run_voxel_param_search(), 执行两阶段流程:
+#   1. 先为 raw_pairs_json 中的每个样本生成或读取 GPU forward 缓存
+#   2. 再只基于缓存搜索 voxel-only 后处理参数
+# ============================================================
+
+# --- 运行模式 ---
+mode: "voxel_param_search"  # str, 固定为 voxel_param_search; → run.py: main() 分发到 run_voxel_param_search()
+
+
+# --- 批量样本列表与缓存阶段公共参数 ---
+raw_pairs_json: "/home/penghongen/My_Project/Pocket_Plus/src/inference/utils/val_cryoatom.json"       # str|null, 样本列表 JSON 路径; → _collect_or_build_cache_paths(): load_raw_pairs()
+                           # 每个 pair 至少提供 cif_path/map_path; 其余字段若非 null, 会通过 _merge_sample_pair_cfg() 覆盖同名全局配置
+continue_on_error: true    # bool, 当前 _collect_or_build_cache_paths() 不读取该字段; 保留为与 batch 配置一致的工作流开关
+ckpt_path: "/home/penghongen/My_Project/feedback_plus/logs/ligand/exp002_stardardligand1____job243839/checkpoints/TOP_epoch_05_score_0.7267.ckpt"            # str|null, Lightning checkpoint 路径; → run.py: load_model()/load_training_config(); 运行时必须显式覆盖
+backbone_override: null    # dict|null, 可选 backbone 覆盖配置; 若提供则覆盖 checkpoint 中恢复的 backbone
+device: "cuda:0"           # str, GPU forward 阶段使用的推理设备; → run.py: torch.device(device)
+output_root: "/home/penghongen/My_Project/feedback_plus/infer_out/ligand_base1"  # str, param_search 总输出目录; → run_voxel_param_search(): 写入 best_params.json / best_summary.json / Excel / best_outputs/
+cache_root: "/home/penghongen/My_Project/feedback_plus/infer_cache/ligand_base1"          # str, GPU forward 缓存根目录; → _resolve_cache_path(): 固定写为 cache_root/sample_name.npz
+cache_data_mode: "memory"  # str, 搜索阶段缓存读取模式; disk 逐轮按需读取 .npz, memory 搜索前一次性预加载全部缓存
+use_cache: true            # bool, 若对应样本缓存已存在则直接读取, 跳过重新 forward
+save_cache: true           # bool, 首次 forward 后是否保存 .npz 缓存; param_search 通常依赖缓存, 实际使用时通常应保持 true
+show_progress: true        # bool, 是否为缓存构建阶段的单样本 BOX forward 显示 tqdm 进度条
+
+
+
+# --- raw 输入构造参数 ---
+# 下列字段作为缓存构建阶段的默认值, 会在每个样本进入 run_voxel_single() 时被读取。
+target_voxel_size: 1.0       # float, 密度图重采样目标体素大小
+compute_density: true        # bool, 是否在 get_features_when_infer() 中计算原子局部密度特征
+select_first_model: true    # bool, 多 model CIF 的处理策略
+error_dir: "/home/penghongen/My_Project/feedback_plus/infer_error/ligand_base1"              # str|null, 结构解析或 GT 构造失败时的错误输出目录; 传入 load_from_raw_cif() / load_ligand_gt_from_structure()
+filter_preset: "five_class"  # str, structure GT 与最优参数可视化导出时使用的配体筛选预设名
+
+
+
+# --- 可由训练 dataset 配置回退的字段 ---
+# run.py 会先把 checkpoint 对应训练配置中的 dataset 节写入 `_train_dataset_cfg`;
+# _get_cfg() 读取这组字段时遵循“推理 YAML 显式值优先, 否则回退到训练 dataset 配置”的顺序。
+density_channel_config: null  # dict|null, null 时回退到训练 dataset.density_channel_config; 同时决定是否真正需要 sim_map_path
+atom_buffer_radius: null      # float|null, null 时回退到训练 dataset.atom_buffer_radius; → split_volume_to_boxes()
+valid_crop_margin: null       # int|null, null 时回退到训练 dataset.valid_crop_margin; → split_volume_to_boxes()
+class_mapping: null           # list[int]|null, null 时回退到训练 dataset.class_mapping; GT 与可视化都会读取
+
+
+
+# --- BOX 滑窗与整图合并参数 ---
+# 下列字段统一参与两步:
+#   1. split_volume_to_boxes(): 切出 BOX
+#   2. get_voxel_pred(): 对所有 BOX forward 并合并回整图概率图
+window_size: 80             # int, BOX 边长(voxel)
+stride: 30                  # int, 滑窗步长(voxel)
+num_box_workers: 8          # int, CPU 并行构造 BOX 的线程数; H100 1GPU 脚本申请 24 核, 默认温和开启并行
+batch_size: 16               # int, 每批送入 GPU forward 的 BOX 数
+merge_mode: "mean"          # str, BOX 合并策略; 可选 mean/max
+core_offset: 10              # int, 非边界侧裁剪厚度; 0 表示不裁剪
+gaussian_sigma_ratio: 0.5  # float|null, BOX 合并时的 Gaussian 衰减 sigma 比例; null 表示不启用衰减
+output_heads: ["ligand", "receptor"]    # list[str], advanced 后处理需要 receptor 响应图; receptor 来自训练时的 aux/receptor voxel head
+
+
+
+# --- 后处理基准参数 ---
+# search_space 中的同名字段默认参与搜索并覆盖这些基准值。
+# 若想强制固定某个参数: 在 fixed_search_params 写入参数名; 即使 search_space 仍保留同名条目, 搜索时也会忽略该条目。
+# 下列字段统一由 _postprocess_params_from_cfg() 收集为 `fixed_postprocess_params`,
+# 再与搜索到的活动参数合并后传入 postprocess_ligand_probability_map(...)。
+filter_strength: "advanced"    # str, 候选过滤强度档位; basic 仅做基础阈值+连通域过滤, advanced 继续叠加响应分数过滤; 通常作为算法族固定项
+threshold: 0.05                 # float, ligand 概率二值化阈值
+min_component_voxels: 6       # int, 连通域最小体素数
+connectivity_policy: "7_none"  # str, 两阶段连通域邻接策略; 形如 first_second, 例如 7_none
+sigma_nearby: 1.0              # float, advanced 模式下 ligand 邻域平滑 sigma
+kernel_nearby: 3               # int, advanced 模式下 ligand 邻域平滑核大小
+sigma_response: 1.0            # float, advanced 模式下 receptor response 平滑 sigma
+kernel_response: 3             # int, advanced 模式下 receptor response 平滑核大小
+score_add: 1.0                 # float, advanced 模式下 receptor 正向响应加分系数
+score_minus: 1.0               # float, advanced 模式下 receptor 负向响应扣分系数
+voxel_score_min: 0.0           # float, advanced 模式下体素级分数阈值
+instance_score_min: 0.0        # float, advanced 模式下实例级均分阈值
+fixed_search_params: []        # list[str], 强制固定的后处理参数名; → optimize_postprocess_params(): 同名 search_space 条目会被忽略
+
+
+# --- GT 评估 ---
+# param_search 必须依赖 GT 评分:
+#   - _collect_or_build_cache_paths() 在缓存构建阶段会强制 sample_cfg["eval_gt"] = true
+#   - GT 来源仍遵循 _resolve_gt_source() 规则: labels_npz 优先, 否则走 structure GT
+eval_gt: true                     # bool, 参数搜索期望为 true; 即使误设为 false, 缓存构建 helper 也会在内部强制打开
+eval_mode: "easy"                 # str, structure GT 模式; easy 使用 cif_path, hard 使用 cif_gt_path, trivial 使用真实结构自评
+labels_npz_path: null             # str|null, 全局默认 labels.npz 路径; raw_pairs_json 中同名字段若非 null, 会逐样本覆盖
+ligand_gt_distance_threshold: 1.7 # float, ligand GT 距离阈值(Å); 与训练 voxel_ligand_loss.hard_label_threshold 对齐
+alpha: 0.6                        # float, instance precision 判定中的包含率阈值
+beta: 0.6                         # float, instance recall 判定中的包含率阈值
+
+
+
+# --- 搜索器参数 ---
+search_strategy: "grid"             # str, 搜索策略; → optimize_postprocess_params(): 可选 grid / differential_evolution
+n_jobs: 16                           # int, 后处理评估并行 worker 数; → optimize_postprocess_params(..., n_jobs=...)
+max_iter: 30                        # int, differential_evolution 迭代数; grid 模式下不使用
+popsize: 8                          # int, differential_evolution 种群倍率; grid 模式下不使用
+random_seed: 42                     # int, differential_evolution 随机种子; grid 模式下不使用
+# objective_expr: str, 会被 _score_postprocess_summary() 作为 eval 表达式计算 objective_score; 结果越大越好
+# 可用变量: avg_num_candidates, avg_voxel_precision, avg_voxel_recall, avg_voxel_f1, avg_voxel_iou, avg_voxel_dice,
+#          avg_instance_precision, avg_instance_recall, avg_instance_f1, summary
+# 示例: "0.7 * avg_instance_f1 + 0.3 * avg_voxel_f1 - 0.01 * avg_num_candidates"
+objective_expr: "avg_instance_f1 + 0.5*avg_voxel_f1"   # str, 搜索目标表达式; → _score_postprocess_summary(): 写入 objective_score
+delete_cache_after_search: false    # bool, 当前 src/inference 代码未读取该字段; 现阶段仅是保留的潜在工作流开关
+
+
+
+
+# --- 后处理搜索空间 ---
+# search_space 的 schema 由 voxel_tuning.generate_param_grid() / _build_de_bounds() / _decode_de_vector() 读取。
+# 单个条目支持两种写法:
+#   1. 离散枚举: {values: [...]}
+#   2. 数值区间: {type: int|float, min: ..., max: ..., step: ...}
+# grid 模式使用 step 枚举闭区间; differential_evolution 模式只使用 min/max 或 values 的索引边界。
+search_space:
+  threshold: {type: float, min: 0.05, max: 0.95, step: 0.10}                # dict, ligand 概率阈值搜索空间
+  min_component_voxels: {type: int, min: 5, max: 100, step: 5}              # dict, 最小连通域体素数搜索空间
+  connectivity_policy: {values: ["7_none", "7_7", "19_none", "19_19", "27_none", "27_27"]}  # dict, 连通域邻接策略候选
+  sigma_nearby: {type: float, min: 0.5, max: 3.0, step: 0.5}                # dict, ligand 邻域平滑 sigma 搜索空间
+  kernel_nearby: {values: [3, 5, 7]}                                        # dict, ligand 邻域平滑核大小候选
+  sigma_response: {type: float, min: 0.5, max: 4.0, step: 0.5}              # dict, receptor response 平滑 sigma 搜索空间
+  kernel_response: {values: [3, 5, 7]}                                      # dict, receptor response 平滑核大小候选
+  score_add: {type: float, min: 0.0, max: 3.0, step: 0.5}                   # dict, receptor 正向响应加分系数搜索空间
+  score_minus: {type: float, min: 0.0, max: 3.0, step: 0.5}                 # dict, receptor 负向响应扣分系数搜索空间
+  voxel_score_min: {type: float, min: 0.0, max: 1.0, step: 0.1}             # dict, 体素级分数阈值搜索空间
+  instance_score_min: {type: float, min: 0.0, max: 1.0, step: 0.1}          # dict, 实例级均分阈值搜索空间
+
+
+
+# --- 单样本字段占位与最优参数可视化 ---
+# 这组字段本质上是“批量默认值”:
+#   - raw_pairs_json 中某个样本给出非 null 同名字段时, 该值覆盖这里的全局默认
+#   - 若 pair 中该字段缺失或为 null, 则继续使用这里的全局默认
+# 其中 vis_enable / vis_output_root 只在 best_outputs 阶段再次导出最优参数结果时使用;
+# 缓存构建阶段会被 helper 强制改成 vis_enable=false / vis_output_root=null。
+cif_path: null           # str|null, 全局默认结构文件路径; 通常应由 raw_pairs_json 逐样本提供
+map_path: null           # str|null, 全局默认实验密度图路径; 通常应由 raw_pairs_json 逐样本提供
+sim_map_path: null       # str|null, 全局默认模拟密度图路径; 仅启用 sim/diff/posdiff 通道时才可能被读取
+cif_gt_path: null        # str|null, 全局默认真实结构路径; 常由 raw_pairs_json 逐样本提供
+sample_name: null        # str|null, 全局默认样本名; 常由 raw_pairs_json 逐样本提供, 若仍为 null 则回退为 Path(cif_path).stem
+vis_enable: true        # bool, 是否在 best_outputs 阶段为最优参数结果导出 map/cif 可视化资产
+vis_output_root: "/home/penghongen/My_Project/feedback_plus/infer_vis/ligand_base1"    # str|null, 最优参数可视化输出根目录; → _save_best_outputs_from_cache(): null 时即使 vis_enable=true 也会跳过可视化
+
+# --- Hydra 运行目录行为 ---
+hydra:
+  job:
+    chdir: false  # bool, 保持进程 cwd 不被 Hydra 自动切换; 方便相对路径按项目根目录解析

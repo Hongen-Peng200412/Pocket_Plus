@@ -1,6 +1,6 @@
 # @package _global_
 # ============================================================
-# 实验: 更大的 embed head
+# 实验: 融合 001~003 ———— 但仅有 emb-clip(无 supervision-loss margin clip)
 # ============================================================
 # 搭配 plus.yaml embed head + unfused_embed 数据集:
 #   voxel_backbone 看到 EMDB + embed 49ch + occupancy 2ch
@@ -19,15 +19,15 @@ defaults:
   - override /model/fusion: none                 # 融合: 4 层级全融合
   - override /model/atom_head: none            # Atom Head: 4 层
   - override /model/pseudo_atom: none            # 伪原子
-  - override /model/embed_head: big               # Embed Head: plus (残差 + soft splatting + centroid)
-  - override /loss: aux_ligand_maxLoss                  # 损失
-  - override /dataset: L_small_medium               # 数据集: 无离线 pdb_feature, embed head 在线生成
+  - override /model/embed_head: clipbig               # Embed Head: plus (残差 + soft splatting + centroid)
+  - override /loss: smooth_ligand_loss                  # 损失
+  - override /dataset: L_small_full_buffer               # 数据集: 无离线 pdb_feature, embed head 在线生成
   - override /train: B40_L3                        # 训练: H200 参数
 
 
 # --- 实验标识 ---
-name: bigemb
-tag: "bigemb"
+name: BEST1
+tag: "BEST1"
 experiment_group: "ligand_smallDataset"              # str, run_dir 父文件夹名称
 project_name: PV_ligand_smallDataset                 # wandb 的项目名称
 

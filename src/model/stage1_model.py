@@ -7,8 +7,7 @@ import torch.nn.functional as F
 from hydra.utils import instantiate
 from torch import nn
 
-from src.model.stage1_embed_head import scatter_to_voxel_grid, soft_scatter_to_voxel_grid
-
+from src.model.stage1_embed_head import scatter_to_voxel_grid
 from src.model.pseudo_atoms import PseudoAtomGenerator
 
 _PTV3_HEAD_IMPORT_ERROR: Exception | None = None
@@ -816,22 +815,8 @@ class VolumePointStage1Model(nn.Module):
 
         # ---- 组装体素输入: 数据通道 + embed head 体素通道(若启用) 或 online raw scatter ----
         # embed_output 和 batch["voxel_grid"] 均为循环不变量, 只 scatter 一次
-        if embed_output.get("voxel_embed_per_atom") is not None:
-            # embed head 在线生成 voxel_pdb_embed_grid (已有逻辑)
-            _scatter_fn = (
-                soft_scatter_to_voxel_grid
-                if self.embed_head.use_soft_splatting
-                else scatter_to_voxel_grid
-            )
-            fused_voxel_grid = _scatter_fn(
-                point_feat=embed_output["voxel_embed_per_atom"],
-                atom_coord_local_voxel=embed_output["voxel_coord_local_voxel"],
-                point_batch=embed_output["voxel_batch_index"],
-                box_shape_zyx=batch["box_shape_zyx"],
-                batch_size=int(batch["box_shape_zyx"].shape[0]),
-                reduce=self.embed_head.scatter_reduce,
-                add_occupancy_channels=self.embed_head.add_occupancy_channels,
-            )
+        if embed_output.get("voxel_pdb_embed_grid") is not None:
+            fused_voxel_grid = embed_output["voxel_pdb_embed_grid"]
             voxel_input = torch.cat([batch["voxel_grid"], fused_voxel_grid], dim=1)
         elif self.online_pdb_feature:
             # 无 embed head 时, 在线 scatter raw atom_feat → 体素网格
