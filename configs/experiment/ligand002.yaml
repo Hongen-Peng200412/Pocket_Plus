@@ -1,13 +1,13 @@
 # @package _global_
 # ============================================================
-# 实验: 最强组合 — embed_head=plus + 在线 pdb_feature
+# 实验: 完整密度信息
 # ============================================================
 # 搭配 plus.yaml embed head + unfused_embed 数据集:
 #   voxel_backbone 看到 EMDB + embed 49ch + occupancy 2ch
 #   (pdb_feature 由 embed head 的 voxel_pdb_embed_grid 在线生成,
 #    model.backbone.online_pdb_feature 被 elif 自动跳过)
 #
-# 基于新版数据 (emdb_exp_BOX) 
+# 基于新版数据 (emdb_exp_BOX)
 # ============================================================
 # 用法:
 #   sbatch sbatch/h200/1gpu.sbatch "+experiment=exp000_baseline0"
@@ -15,19 +15,19 @@
 
 defaults:
   - override /model/voxel_backbone: default       # 体素分支: RAUNet-64
-  - override /model/point_backbone: stardard       # 点云分支: PTV3 Dense
-  - override /model/fusion: e234d4                 # 融合: 4 层级全融合
-  - override /model/atom_head: stardard            # Atom Head: 4 层
-  - override /model/pseudo_atom: 64_2_non            # 伪原子
+  - override /model/point_backbone: zeros       # 点云分支: PTV3 Dense
+  - override /model/fusion: none                 # 融合: 4 层级全融合
+  - override /model/atom_head: none            # Atom Head: 4 层
+  - override /model/pseudo_atom: none            # 伪原子
   - override /model/embed_head: plus               # Embed Head: plus (残差 + soft splatting + centroid)
-  - override /loss: ligand_medLoss                  # 损失: Focal Loss
-  - override /dataset: L_small_medium               # 数据集: 无离线 pdb_feature, embed head 在线生成
+  - override /loss: aux_ligand_maxLoss                  # 损失
+  - override /dataset: L_small_full               # 数据集: 无离线 pdb_feature, embed head 在线生成
   - override /train: B40_L3                        # 训练: H200 参数
 
 
 # --- 实验标识 ---
-name: medLoss
-tag: "medLoss"                                # {feedback_root}/logs/{experiment_group}/{tag}____{timestamp}
+name: moredense
+tag: "moredense"
 experiment_group: "ligand_smallDataset"              # str, run_dir 父文件夹名称
 project_name: PV_ligand_smallDataset                 # wandb 的项目名称
 
@@ -48,12 +48,16 @@ model:
     ffn_type: "gated"                # str, PTV3 Block FFN: "mlp" / "gated"
     atom_head_ffn_type: "gated"      # str, atom head 可选 FFN: "mlp" / "gated" / "none"
 
+    
     voxel_backbone:
       ligand_head_hidden_channels: 32
-      aux_head_hidden_channels: 0
+      aux_head_hidden_channels: 32
+      num_conv3d_aux: 2              # int, aux_head 中 Conv3d(3x3)+ReLU 的对数
+      num_conv3d_ligand: 2           # int, ligand_head 中 Conv3d(3x3)+ReLU 的对数
 
   monitor_metric: val/voxel_ligand_pr_auc
   monitor_mode: max
+
 
 train:
   strict_global_batch_size: false

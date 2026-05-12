@@ -555,45 +555,49 @@ class FocalTverskyCombinedLoss(nn.Module):
 # ============================================================
 class UnifiedCompositeLoss(nn.Module):
     """
-    统一复合损失，同时服务 atom、voxel_aux、voxel_ligand 三个分支。特别地, 如果想启用 voxel_ligand 损失, 那么除了在 configs\loss 中开启该损失之外, 还要在 configs\dataset 里面加入 "pdb_dist_BOX"
+    统一复合损失，同时服务 atom、voxel_aux、voxel_ligand 三个分支。
 
-    总损失 = w_focal * ModifiedFocalLoss + w_tversky * SoftTverskyLoss + w_mse * MSELoss
+    总损失 = w_focal * FocalLoss + w_tversky * TverskyLoss + w_mse * MSELoss。
+    若启用 voxel_ligand 损失，训练数据需要提供 ligand_dist_map。
 
-    note1：硬标签 hard_label 与软标签 y_soft 的构造
-        - hard_label 总是优先读取 forward 中的 target. 如果 target 为None, 那就让 ligand_dist_map < hard_label_threshold 的地方成为 hard_label
-        - 只要 ligand_dist_map 非空, 就构造 y_soft = torch.exp(-dist.pow(2) / (2.0 * self.sigma ** 2))
-    
-    note2: 平滑版 focal loss 的计算
-        - 对 hard_label 为1的这部分损失照常计算
-        - 对 hard_label 为0的这部分损失乘以 (1.0 - y_soft) 以平滑之
-    
-    note3: 平滑版 tversky loss 和 mse 的计算:
-        - 统一地, 用平滑标签 (1 - y_soft)、y_soft 替换原本的硬标签 0、1. 比如 tversky 中 tp=概率*y_soft
+    标签构造:
+        - hard_label: torch.Tensor, (*,), int64, 硬标签(取值0或1)
+            - 若 forward 传入 target: 直接使用 target 作为硬标签
+            - 若 target 为 None: 使用 ligand_dist_map < hard_label_threshold 生成硬标签
+        - y_soft: torch.Tensor | None, (*,), float32, 距离高斯软标签
+            - 仅当 ligand_dist_map 非 None 时构造
+            - focal_soft_negative_suppression=false 且 tversky_soft_target=false 且 w_mse=0 时不参与损失
 
+    损失语义:
+        - Focal: 始终使用 hard_label；focal_soft_negative_suppression 控制是否用 y_soft 弱化硬负类损失
+        - Tversky: tversky_soft_target=true 时使用 y_soft，false 时使用 hard_label
+        - MSE: 有 y_soft 时使用 y_soft，否则使用 hard_label；w_mse=0 时关闭
 
     输入参数:
-        - sigma: float, 标量, 软标签高斯核标准差 (Å), 建议值 2.0, 仅 ligand_dist_map 非 None 时生效
-        - hard_label_threshold: float | None, 距离阈值 (Å); None=硬标签从外部 target 读取, float=从 ligand_dist_map 计算
-        - focal_gamma: float, 标量, focal loss 聚焦参数, 建议值 2.0
-        - focal_alpha_neg: float, 标量, 背景(负类) alpha, 建议值 0.75
-        - focal_alpha_pos: float, 标量, 前景(正类) alpha, 建议值 0.25
-        - focal_eps: float, 标量, 数值稳定 eps, 建议值 1e-6
-        - tversky_alpha: float, 标量, Tversky FP 惩罚, 建议值 0.5
-        - tversky_beta: float, 标量, Tversky FN 惩罚, 建议值 0.5
-        - tversky_smooth: float, 标量, Tversky 平滑项, 建议值 1.0
-        - w_focal: float, 标量, focal 损失权重, 建议值 1.0
-        - w_tversky: float, 标量, tversky 损失权重, 建议值 1.0
-        - w_mse: float, 标量, MSE 损失权重, 建议值 0.0 (默认关闭)
+        - sigma: float, 距离高斯软标签标准差, 仅 ligand_dist_map 非 None 时用于构造 y_soft
+        - hard_label_threshold: float | None, 距离阈值; None=硬标签从 target 读取, float=由 ligand_dist_map 生成硬标签
+        - focal_gamma: float, focal 聚焦参数, 建议值 2.0
+        - focal_alpha_neg: float, 背景(负类) alpha 权重
+        - focal_alpha_pos: float, 前景(正类) alpha 权重
+        - focal_eps: float, 数值稳定 eps
+        - tversky_alpha: float, Tversky FP 惩罚系数; 0.5 与 beta=0.5 时等价 Dice
+        - tversky_beta: float, Tversky FN 惩罚系数; 0.5 与 alpha=0.5 时等价 Dice
+        - tversky_smooth: float, Tversky 平滑项
+        - w_focal: float, focal 损失权重
+        - w_tversky: float, tversky 损失权重
+        - w_mse: float, MSE 损失权重; 0 表示关闭
+        - focal_soft_negative_suppression: bool, 是否用 y_soft 对硬负类 focal 损失做距离抑制
+        - tversky_soft_target: bool, 是否让 Tversky 使用 y_soft 作为目标; false 时使用 hard_label
 
     前向输入:
         - logits: torch.Tensor, (*, 1, ...), 单通道预测 logits
-        - target: torch.Tensor | None, (*, ...), int64/float, 硬标签 (0/1); None 时须提供 ligand_dist_map
-        - hardmask: torch.Tensor | None, (*, ...), 几何掩码 (0/1)
-        - valid_mask: torch.Tensor | None, (*, ...), bool, 边界有效区域
-        - ligand_dist_map: torch.Tensor | None, (*, ...), float32, 距离图; 传入时计算 y_soft
+        - target: torch.Tensor | None, (*, ...), 硬标签(取值0或1); None 时须提供 ligand_dist_map 与 hard_label_threshold
+        - hardmask: torch.Tensor | None, (*, ...), 几何掩码(0/1)
+        - valid_mask: torch.Tensor | None, (*, ...), 有效区域掩码
+        - ligand_dist_map: torch.Tensor | None, (*, ...), 距离图; 用于生成 hard_label 和 y_soft
 
     前向输出:
-        - loss: torch.Tensor, 标量
+        - loss: torch.Tensor, 标量, 加权后的复合损失
     """
 
     def __init__(
@@ -610,6 +614,8 @@ class UnifiedCompositeLoss(nn.Module):
         w_focal: float,
         w_tversky: float,
         w_mse: float,
+        focal_soft_negative_suppression: bool = True,
+        tversky_soft_target: bool = True,
     ) -> None:
         super().__init__()
         # float, 标量, 软标签高斯核 σ
@@ -636,8 +642,12 @@ class UnifiedCompositeLoss(nn.Module):
         self.w_focal = float(w_focal)
         # float, 标量, tversky 权重
         self.w_tversky = float(w_tversky)
-        # float, 标量, MSE 权重
+        # float, MSE 损失权重
         self.w_mse = float(w_mse)
+        # bool, 是否用 y_soft 对 hard_label=0 的 focal 损失做距离抑制
+        self.focal_soft_negative_suppression = bool(focal_soft_negative_suppression)
+        # bool, Tversky 是否使用 y_soft；False 时使用 hard_label
+        self.tversky_soft_target = bool(tversky_soft_target)
 
     @staticmethod
     def _maybe_squeeze_channel(x: torch.Tensor, ref_ndim: int) -> torch.Tensor:
@@ -768,9 +778,7 @@ class UnifiedCompositeLoss(nn.Module):
         )
         # torch.Tensor, (*,), float32, 逐元素 focal loss
         focal_per_elem = alpha_per_elem * focal_factor * bce
-        # y_soft 调制: hard=1 保留, hard=0 乘以 (1 - y_soft)
-        if y_soft is not None:
-            # torch.Tensor, (*,), float32, 抑制因子
+        if self.focal_soft_negative_suppression and y_soft is not None:
             suppression = torch.where(
                 hard_label == 1,
                 torch.ones_like(y_soft),
@@ -787,9 +795,8 @@ class UnifiedCompositeLoss(nn.Module):
         # 在有效区域计算; mask 区域 prob=0, target=0, 不贡献 TP/FP/FN
         # torch.Tensor, (*,), float32, masked 预测概率
         masked_prob = prob * mask_float
-        # Tversky 的 target: 有 y_soft 时用 y_soft, 否则用 hard_float
         # torch.Tensor, (*,), float32, masked 目标
-        tversky_target = y_soft if y_soft is not None else hard_float
+        tversky_target = y_soft if self.tversky_soft_target and y_soft is not None else hard_float
         
         masked_target = tversky_target * mask_float
 

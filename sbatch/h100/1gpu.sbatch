@@ -16,9 +16,9 @@
 #SBATCH --cpus-per-task=24
 
 SBATCH_ROOT="${POCKET_PLUS_SBATCH_ROOT:-/home/penghongen/My_Project/Pocket_Plus/sbatch}"
-export POCKET_PLUS_LOCAL_CACHE_ENABLED="${POCKET_PLUS_LOCAL_CACHE_ENABLED:-1}"
+export POCKET_PLUS_LOCAL_CACHE_ENABLED="${POCKET_PLUS_LOCAL_CACHE_ENABLED:-0}"
 export POCKET_PLUS_LOCAL_CACHE_ENV_PACK="${POCKET_PLUS_LOCAL_CACHE_ENV_PACK:-/home/penghongen/My_Project/env_packs/Pocket_Plus_centos7_cu121_allgpu.tar.gz}"
-export POCKET_PLUS_LOCK_PRE_ENABLED="${POCKET_PLUS_LOCK_PRE_ENABLED:-1}"
+export POCKET_PLUS_LOCK_PRE_ENABLED="${POCKET_PLUS_LOCK_PRE_ENABLED:-0}"
 export POCKET_PLUS_LOCK_AFTER_ENABLED="${POCKET_PLUS_LOCK_AFTER_ENABLED:-1}"
 export POCKET_PLUS_TRY_AFTER_END_ENABLED="${POCKET_PLUS_TRY_AFTER_END_ENABLED:-1}"
 source "${SBATCH_ROOT}/_common.sh"
@@ -49,9 +49,7 @@ write_custom_run_cmd_hook() {
     cat << EOF > "${TARGET_FILE}"
 
 #!/bin/bash
-python Pocket_Plus/src/inference/run.py --config=标准0_nucleic_30
-python Pocket_Plus/src/inference/run.py --config=标准0_protein_30
-python Pocket_Plus/src/inference/run.py --config=标准0_cryoatom_trivial_30
+python /home/penghongen/My_Project/Pocket_Plus/src/train.py "+experiment=exp003_stardardligand3"
 
 EOF
 }

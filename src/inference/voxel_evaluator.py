@@ -65,8 +65,8 @@ def evaluate_instance_mask(
     按包含率阈值评估 instance 级 precision/recall/F1。
 
     输入参数:
-        - pred_instance_label: np.ndarray, (D,H,W), 预测 instance 标签, 0为背景, 允许正标签不连续(虽然事实上已经连续了)
-        - gt_instance_label: np.ndarray, (D,H,W), GT instance 标签, 0为背景, 允许正标签不连续(虽然事实上已经连续了)
+        - pred_instance_label: np.ndarray, (D,H,W), 预测 instance 标签, 0为背景, 允许正标签不连续
+        - gt_instance_label: np.ndarray, (D,H,W), GT instance 标签, 0为背景, 允许正标签不连续
         - alpha: float, 预测 instance 被 GT 覆盖的 precision 判定阈值
         - beta: float, GT instance 被预测覆盖的 recall 判定阈值
 

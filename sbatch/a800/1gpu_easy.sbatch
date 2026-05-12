@@ -51,7 +51,7 @@ write_custom_run_cmd_hook() {
     cat << EOF > "${TARGET_FILE}"
 
 #!/bin/bash
-python /home/penghongen/My_Project/Pocket_Plus/src/inference/run.py --config=标准0_cryoatom_easy
+python /home/penghongen/My_Project/Pocket_Plus/src/train.py "+experiment=ligand005__"
 
 EOF
 }

@@ -41,7 +41,7 @@ class VoxelCandidate:
     单个 voxel 后处理候选区域。
 
     输入参数:
-        - instance_id: int, 预测 instance ID, 从1开始
+        - instance_id: int, 预测 instance ID, 从 1 开始连续
         - voxel_count: int, 当前 instance 内体素数量
         - score_mean: float, 当前 instance 内 score_map 平均值
         - score_max: float, 当前 instance 内 score_map 最大值

@@ -20,9 +20,9 @@ python Pocket_Plus/src/inference/main/two_stage_basic.py \
 工作内容:
     1. 读取基础 voxel_param_search YAML, 合并命令行覆盖项。
     2. 只加载一次 checkpoint 和训练配置。
-    3. 第一阶段固定 basic、min_component_voxels=1、connectivity_policy=7_none, 搜索 threshold=0.00..1.00。
+    3. 第一阶段固定 basic、min_component_voxels=5、connectivity_policy=7_none, 搜索 threshold=0.05..1.00。
     4. 从第一阶段 best_params.json 读取最优 threshold。
-    5. 第二阶段固定 basic, 搜索 threshold=[best-0.10,best+0.05]、min_component_voxels=1..10、connectivity_policy=7_none/19_none/27_none。
+    5. 第二阶段固定 basic, 搜索 threshold=[best-0.08,best+0.04]、min_component_voxels=5..10、connectivity_policy=7_none/19_none/27_none。
 
 输出目录:
     - {output_root}/stage1_threshold_only: 第一阶段完整参数搜索产物, 包含 best_params.json、best_summary.json、per_sample_best_metrics.json、搜索历史 Excel 和 best_outputs/。
@@ -111,11 +111,11 @@ def build_stage1_cfg(base_cfg: dict[str, Any], run_root: str) -> dict[str, Any]:
     stage_cfg["output_root"] = _stage_output_root(run_root, "stage1_threshold_only")
     stage_cfg["filter_strength"] = "basic"
     stage_cfg["threshold"] = 0.0
-    stage_cfg["min_component_voxels"] = 1
+    stage_cfg["min_component_voxels"] = 5 
     stage_cfg["connectivity_policy"] = "7_none"
     stage_cfg["search_strategy"] = "grid"
     stage_cfg["search_space"] = {
-        "threshold": {"type": "float", "min": 0.0, "max": 1.0, "step": 0.01},
+        "threshold": {"type": "float", "min": 0.05, "max": 1.0, "step": 0.01},
     }
     stage_cfg["objective_expr"] = str(stage_cfg.get(STAGE1_OBJECTIVE_KEY, DEFAULT_STAGE1_OBJECTIVE_EXPR))
     stage_cfg["fixed_search_params"] = [
@@ -130,18 +130,18 @@ def build_stage2_cfg(base_cfg: dict[str, Any], run_root: str, best_threshold: fl
     if not 0.0 <= float(best_threshold) <= 1.0:
         raise ValueError(f"best_threshold 必须在 [0,1], 实际为 {best_threshold}")
 
-    threshold_min = round(max(0.0, float(best_threshold) - 0.10), 2)
-    threshold_max = round(min(1.0, float(best_threshold) + 0.05), 2)
+    threshold_min = round(max(0.0, float(best_threshold) - 0.08), 2)
+    threshold_max = round(min(1.0, float(best_threshold) + 0.04), 2)
     stage_cfg = copy.deepcopy(base_cfg)
     stage_cfg["output_root"] = _stage_output_root(run_root, "stage2_threshold_component_policy")
     stage_cfg["filter_strength"] = "basic"
     stage_cfg["threshold"] = float(best_threshold)
-    stage_cfg["min_component_voxels"] = 1
+    stage_cfg["min_component_voxels"] = 5
     stage_cfg["connectivity_policy"] = "7_none"
     stage_cfg["search_strategy"] = "grid"
     stage_cfg["search_space"] = {
         "threshold": {"type": "float", "min": threshold_min, "max": threshold_max, "step": 0.01},
-        "min_component_voxels": {"type": "int", "min": 1, "max": 10, "step": 1},
+        "min_component_voxels": {"type": "int", "min": 5, "max": 10, "step": 1},
         "connectivity_policy": {"values": ["7_none", "19_none", "27_none"]},
     }
     stage_cfg["objective_expr"] = str(stage_cfg.get(STAGE2_OBJECTIVE_KEY, DEFAULT_STAGE2_OBJECTIVE_EXPR))

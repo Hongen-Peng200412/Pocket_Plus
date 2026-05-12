@@ -1,0 +1,70 @@
+# @package _global_
+# ============================================================
+# Embed Head 残差模式配置
+# ── 搭配 configs\dataset\stardard_full.yaml → voxel_backbone 将会看到 build_density_channels(exp_raw,sim_raw,receptor_mask) + embed 49ch + occupancy 2ch
+# 在 stardard.yaml 基础上启用残差融合，将原始原子特征通过 skip connection
+#
+# 启用残差的关键参数:
+#   embed_residual_enabled: true       ← 主开关
+#   embed_point_gate_enabled: false    ← true: gate 可学习(初始 0.1); false: gate 固定 1.0
+#   embed_voxel_gate_enabled: false    ← 同上
+#
+# 残差公式 (以 point 路径为例):
+#   embed_point_feat = proj(atom_feat) + gate * embed_point_feat
+#   其中 proj = nn.Linear(49→64) 或 nn.Identity()(当 atom_feature_dim == embed_point_out_channels 时)
+#
+# 若要让 voxel 路径也走 identity shortcut (省去投影):
+#   将 embed_voxel_out_channels 改为 49 (= atom_feature_dim)
+# ============================================================
+model:
+  backbone:
+    embed_head:
+      _target_: src.model.stage1_embed_head.Stage1EmbedHead
+      atom_feature_dim: 49         # int, 原子原始特征维度
+      embed_hidden_dim: 128         # int, 共享 trunk 隐藏通道数
+      embed_voxel_out_channels: 49 # int, scatter 到体素网格后的通道数
+                                    # 改为 49 可触发 identity shortcut (省一个 Linear(49,49))
+      embed_point_out_channels: 64 # int, 输出给点分支的通道数
+      num_trunk_blocks: 0          # int, 共享 trunk block 数 (0=跳过 trunk)
+      num_voxel_blocks: 3          # int, 体素分支 block 数
+      num_point_blocks: 3          # int, 点分支 block 数
+      trunk_buffer_radii: []
+      voxel_buffer_radii: [0.0, 0.0, 0.0]
+      point_buffer_radii: [0.0, 0.0, 0.0]
+      num_heads: 4
+      patch_size: 256
+      serialization_orders: ["z", "z-trans", "hilbert", "hilbert-trans"]
+      shuffle_orders: true
+      qkv_bias: true
+      qk_scale: null
+      attn_drop: 0.1
+      proj_drop: 0.1
+      enable_rpe: false
+      enable_flash: true
+      upcast_attention: false
+      upcast_softmax: false
+      ffn_type: ${model.backbone.ffn_type}               # str, FFN 类型 (由 configs/experiment 覆盖)
+      mlp_ratio: 3
+      act_layer_name: ${model.backbone.act_layer_name}   # str, 激活函数 (由 configs/experiment 覆盖)
+      scatter_reduce: "sum"       # str, per-atom → voxel 聚合方式
+      point_grid_size: 0.25
+      cpe_impl: "pointconv"
+      cpe_kernel_size: 5
+      cpe_receptive_field: 2.0
+      pointconv_block_max_neighbors: 64
+      drop_path: 0.2
+      pre_norm: true
+
+      # --- 残差融合 ---
+      embed_residual_enabled: true       # bool, 启用残差融合, 当 embed_point_out_channels 或 embed_voxel_out_channels=atom_feature_dim 时, 投影残差层为 Identity
+      embed_point_gate_enabled: false     # bool, point gate 是否可学习
+      embed_voxel_gate_enabled: false     # bool, voxel gate 是否可学习
+
+      # --- 可选改进开关 ---
+      add_occupancy_channels: true       # bool, 是否添加 occupancy 通道: 加到最后的 grid 上(送入 voxel_backbone)
+      use_soft_splatting: true           # bool, 是否使用 soft splatting
+      use_centroid_encoding: true        # bool, 是否使用 centroid-aware 偏移编码: 在生产 embed_voxel_out_channels 时拼接到原始特征上
+
+    # embed head 启用时, 点分支 atom_feature_dim = embed_point_out_channels
+    point_backbone:
+      atom_feature_dim: 64

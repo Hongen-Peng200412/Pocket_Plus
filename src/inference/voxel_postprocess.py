@@ -15,43 +15,69 @@ def _build_candidates(
     voxel_size: np.ndarray,
 ) -> list[VoxelCandidate]:
     """
-    从 instance 标签图中导出候选区域元信息。
+    从 instance 标签图中导出 candidates。
 
     输入参数:
-        - instance_label: np.ndarray, (D,H,W), int32, instance 标签
+        - instance_label: np.ndarray, (D,H,W), int32, instance 标签; 0 为背景, 正 id 从 1 开始连续
         - score_map: np.ndarray, (D,H,W), float32, 评分图
         - origin: np.ndarray, (3,), 世界坐标原点(x,y,z)
         - voxel_size: np.ndarray, (3,), 体素大小(x,y,z)
 
     输出:
-        - candidates: list[VoxelCandidate], 候选区域列表, 包含 instance_id、voxel_count、score_mean、center_voxel_zyx 等等
+        - candidates: list[VoxelCandidate], 可变长度, 按 instance_id 升序排列的候选区域列表
     """
+    # np.ndarray, (D,H,W), int32, 输入 instance 标签副本视图; 0 为背景, 正 id 从 1 开始连续
+    label = np.asarray(instance_label, dtype=np.int32)
+    # np.ndarray, (D,H,W), bool, 预测 instance 正区域掩码
+    positive_mask = label > 0
+    if not bool(positive_mask.any()):
+        return []
+
+    # tuple[np.ndarray, np.ndarray, np.ndarray], 每项形状 (N,), 正区域体素坐标(z,y,x)
+    coords_zyx = np.nonzero(positive_mask)
+    # np.ndarray, (N,), int64, 每个正区域体素对应的原始 instance id
+    labels = label[positive_mask].astype(np.int64, copy=False)
+    # np.ndarray, (N,), float64, 每个正区域体素对应的评分
+    scores = np.asarray(score_map, dtype=np.float32)[positive_mask].astype(np.float64, copy=False)
+    # int, 当前标签图中最大的正 instance id
+    max_label = int(labels.max())
+
+    # np.ndarray, (max_label+1,), int64, 每个原始 instance id 的体素数
+    counts = np.bincount(labels, minlength=max_label + 1)
+    # np.ndarray, (max_label+1,), float64, 每个原始 instance id 的评分总和
+    score_sum = np.bincount(labels, weights=scores, minlength=max_label + 1)
+    # np.ndarray, (max_label+1,), float64, 每个原始 instance id 的最高体素评分
+    score_max = np.full(max_label + 1, -np.inf, dtype=np.float64)
+    np.maximum.at(score_max, labels, scores)
+
+    # list[np.ndarray], 长度 3, 每项形状 (max_label+1,), 每个 instance 在 z/y/x 轴的坐标总和
+    coord_sum = [np.bincount(labels, weights=coords_zyx[axis], minlength=max_label + 1) for axis in range(3)]
+    # np.ndarray, (max_label+1,3), int64, 每个 instance 的包围盒最小坐标(z,y,x)
+    # np.iinfo(np.int64).max：获取 64 位有符号整数（int64）所能表示的最大数值
+    bbox_min = np.full((max_label + 1, 3), np.iinfo(np.int64).max, dtype=np.int64)   
+    # np.ndarray, (max_label+1,3), int64, 每个 instance 的包围盒最大坐标(z,y,x)
+    bbox_max = np.full((max_label + 1, 3), np.iinfo(np.int64).min, dtype=np.int64)
+    for axis in range(3):
+        np.minimum.at(bbox_min[:, axis], labels, coords_zyx[axis])
+        np.maximum.at(bbox_max[:, axis], labels, coords_zyx[axis])
+
+    # list[VoxelCandidate], 可变长度, 输出候选区域列表
     candidates: list[VoxelCandidate] = []
-    for instance_id in [int(v) for v in np.unique(instance_label) if int(v) > 0]:
-        # np.ndarray, (N,3), int64, 当前 instance 内体素坐标(z,y,x)
-        coords_zyx = np.argwhere(instance_label == instance_id)
-        if coords_zyx.shape[0] == 0:
+    for instance_id in np.flatnonzero(counts > 0):
+        if int(instance_id) == 0:
             continue
-        # np.ndarray, (N,), float32, 当前 instance 内评分
-        instance_scores = score_map[instance_label == instance_id]
-        # np.ndarray, (3,), float64, 当前 instance 中心体素坐标(z,y,x)
-        center_zyx = coords_zyx.mean(axis=0)
-        # tuple[float,float,float], 当前 instance 中心世界坐标(x,y,z)
-        center_world = voxel_zyx_to_world_xyz(tuple(float(v) for v in center_zyx), origin, voxel_size)
-        # np.ndarray, (3,), int64, 包围盒最小坐标(z,y,x)
-        bbox_min = coords_zyx.min(axis=0)
-        # np.ndarray, (3,), int64, 包围盒最大坐标(z,y,x)
-        bbox_max = coords_zyx.max(axis=0)
+        # np.ndarray, (3,), float64, 当前 instance 的中心体素坐标(z,y,x)
+        center_zyx = np.array([coord_sum[axis][instance_id] / counts[instance_id] for axis in range(3)], dtype=np.float64)
         candidates.append(
             VoxelCandidate(
-                instance_id=instance_id,
-                voxel_count=int(coords_zyx.shape[0]),
-                score_mean=float(instance_scores.mean()),
-                score_max=float(instance_scores.max()),
+                instance_id=int(instance_id),
+                voxel_count=int(counts[instance_id]),
+                score_mean=float(score_sum[instance_id] / counts[instance_id]),
+                score_max=float(score_max[instance_id]),
                 center_voxel_zyx=tuple(float(v) for v in center_zyx.tolist()),
-                center_world_xyz=center_world,
-                bbox_min_zyx=tuple(int(v) for v in bbox_min.tolist()),
-                bbox_max_zyx=tuple(int(v) for v in bbox_max.tolist()),
+                center_world_xyz=voxel_zyx_to_world_xyz(tuple(float(v) for v in center_zyx), origin, voxel_size),
+                bbox_min_zyx=tuple(int(v) for v in bbox_min[instance_id].tolist()),
+                bbox_max_zyx=tuple(int(v) for v in bbox_max[instance_id].tolist()),
             )
         )
     return candidates
@@ -64,30 +90,42 @@ def _filter_instances_by_score(
     instance_score_min: float,
 ) -> np.ndarray:
     """
-    按体素数和实例平均分过滤 instance。
+    按体素数和实例平均分过滤 instance, 并将保留项重新编号为连续正 id。
 
     输入参数:
-        - instance_label: np.ndarray, (D,H,W), int32, instance 标签
+        - instance_label: np.ndarray, (D,H,W), int32, instance 标签; 0 为背景, 正 id 允许不连续
         - score_map: np.ndarray, (D,H,W), float32, 评分图
         - min_component_voxels: int, 最小体素数
         - instance_score_min: float, 最低实例平均分
 
     输出:
-        - filtered_label: np.ndarray, (D,H,W), int32, 过滤并重新编号后的标签
+        - filtered_label: np.ndarray, (D,H,W), int32, 过滤后，id 仍从 1 开始连续
     """
-    filtered_label = np.zeros_like(instance_label, dtype=np.int32)
-    next_id = 1
-    for instance_id in [int(v) for v in np.unique(instance_label) if int(v) > 0]:
-        mask = instance_label == instance_id
-        voxel_count = int(mask.sum())
-        if voxel_count < int(min_component_voxels):
-            continue
-        score_mean = float(score_map[mask].mean())
-        if score_mean < float(instance_score_min):
-            continue
-        filtered_label[mask] = next_id
-        next_id += 1
-    return filtered_label
+    # np.ndarray, (D,H,W), int32, 输入 instance 标签副本视图; 0 为背景
+    label = np.asarray(instance_label, dtype=np.int32)
+    # np.ndarray, (D,H,W), bool, 预测 instance 正区域掩码
+    positive_mask = label > 0
+    if not bool(positive_mask.any()):
+        return np.zeros_like(label, dtype=np.int32)
+
+    # np.ndarray, (N,), int64, 每个正区域体素对应的原始 instance id
+    labels = label[positive_mask].astype(np.int64, copy=False)
+    # np.ndarray, (N,), float64, 每个正区域体素对应的评分
+    scores = np.asarray(score_map, dtype=np.float32)[positive_mask].astype(np.float64, copy=False)
+    # np.ndarray, (max_label+1,), int64, 每个原始 instance id 的体素数
+    counts = np.bincount(labels)
+    # np.ndarray, (max_label+1,), float64, 每个原始 instance id 的评分总和
+    score_sum = np.bincount(labels, weights=scores, minlength=counts.shape[0])
+    # np.ndarray, (max_label+1,), float64, 每个原始 instance id 的平均评分
+    score_mean = np.zeros_like(score_sum, dtype=np.float64)
+    score_mean[counts > 0] = score_sum[counts > 0] / counts[counts > 0]
+    # np.ndarray, (max_label+1,), bool, 每个原始 instance id 是否通过体素数和平均分过滤
+    keep = (counts >= int(min_component_voxels)) & (score_mean >= float(instance_score_min))
+    keep[0] = False
+    # np.ndarray, (max_label+1,), int32, 原始 instance id 到连续 instance id 的映射表
+    new_ids = np.zeros_like(counts, dtype=np.int32)
+    new_ids[keep] = np.arange(1, int(keep.sum()) + 1, dtype=np.int32)
+    return new_ids[label]
 
 # 高斯滤波计算
 def _gaussian_filter_with_kernel(
@@ -323,28 +361,29 @@ def _filter_small_components(
     min_component_voxels: int,
 ) -> np.ndarray:
     """
-    删除体素数过少的连通域。
+    删除体素数过少的连通域, 并将保留项重新编号为连续正 id。
 
     输入参数:
-        - instance_label: np.ndarray, (D,H,W), int32, instance 标签
+        - instance_label: np.ndarray, (D,H,W), int32, instance 标签; 0 为背景, 正 id 允许不连续
         - min_component_voxels: int, 最小体素数
 
     输出:
-        - filtered_label: np.ndarray, (D,H,W), int32, 过滤并重新编号后的标签
+        - filtered_label: np.ndarray, (D,H,W), int32, 过滤后正 id 从 1 开始连续的标签
     """
     if min_component_voxels < 1:
         raise ValueError(f"min_component_voxels 必须 >= 1, 实际为 {min_component_voxels}")
 
-    filtered_label = np.zeros_like(instance_label, dtype=np.int32)
-    next_id = 1
-    for instance_id in [int(v) for v in np.unique(instance_label) if int(v) > 0]:
-        # np.ndarray, (D,H,W), bool, 当前 instance 掩码
-        mask = instance_label == instance_id
-        if int(mask.sum()) < int(min_component_voxels):
-            continue
-        filtered_label[mask] = next_id
-        next_id += 1
-    return filtered_label
+    # np.ndarray, (D,H,W), int32, 输入 instance 标签副本视图; 0 为背景
+    label = np.asarray(instance_label, dtype=np.int32)
+    # np.ndarray, (max_label+1,), int64, 每个原始 instance id 的体素数
+    counts = np.bincount(label.ravel())
+    # np.ndarray, (max_label+1,), bool, 每个原始 instance id 是否通过体素数过滤
+    keep = counts >= int(min_component_voxels)
+    keep[0] = False
+    # np.ndarray, (max_label+1,), int32, 原始 instance id 到连续 instance id 的映射表
+    new_ids = np.zeros_like(counts, dtype=np.int32)
+    new_ids[keep] = np.arange(1, int(keep.sum()) + 1, dtype=np.int32)
+    return new_ids[label]
 
 
 

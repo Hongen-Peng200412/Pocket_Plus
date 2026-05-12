@@ -1,6 +1,6 @@
 # @package _global_
 # ============================================================
-# 实验: 更大的 embed head
+# 实验: 模仿 configs\experiment\ligand005__.yaml , 但是不平滑损失
 # ============================================================
 # 搭配 plus.yaml embed head + unfused_embed 数据集:
 #   voxel_backbone 看到 EMDB + embed 49ch + occupancy 2ch
@@ -19,21 +19,24 @@ defaults:
   - override /model/fusion: none                 # 融合: 4 层级全融合
   - override /model/atom_head: none            # Atom Head: 4 层
   - override /model/pseudo_atom: none            # 伪原子
-  - override /model/embed_head: big               # Embed Head: plus (残差 + soft splatting + centroid)
-  - override /loss: aux_ligand_maxLoss                  # 损失
-  - override /dataset: L_small_medium               # 数据集: 无离线 pdb_feature, embed head 在线生成
+  - override /model/embed_head: clipbig               # Embed Head: plus (残差 + soft splatting + centroid)
+  - override /loss: 7focal_3dice_hard                  # 损失
+  - override /dataset: stardard_full_buffer               # 数据集: 无离线 pdb_feature, embed head 在线生成
   - override /train: B40_L3                        # 训练: H200 参数
 
 
 # --- 实验标识 ---
-name: bigemb
-tag: "bigemb"
-experiment_group: "ligand_smallDataset"              # str, run_dir 父文件夹名称
-project_name: PV_ligand_smallDataset                 # wandb 的项目名称
+name: exp003_stardardligand3
+tag: "exp003_stardardligand3"
+experiment_group: "ligand"              # str, run_dir 父文件夹名称
+project_name: PV_ligand                 # wandb 的项目名称
 
 # --- 模型总体参数 ---
 model:
   backbone:
+    # --- atom head 关闭 ---
+    enable_atom_head: false          # bool, 关闭 atom head; 不构建 atom_token_proj / atom_attention_stack / atom_logit_head
+  
     # --- Logit 输出 ---
     atom_logit_dim: 1                # int, atom 分类 logit 维度; 二分类=1
 
@@ -60,5 +63,5 @@ model:
 
 
 train:
-  strict_global_batch_size: false
-  val_per_epoch: 1
+  strict_global_batch_size: true
+  val_per_epoch: 3

@@ -1,0 +1,10 @@
+{
+  "name": "Pocket Plus",
+  "phase": "building",
+  "goals": [
+    "Maintain a reusable CLAUDE workspace for planning, memory, and session continuity in this repository."
+  ],
+  "progress": [],
+  "blockers": [],
+  "failures": []
+}
