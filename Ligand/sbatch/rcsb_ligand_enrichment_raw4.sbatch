@@ -9,7 +9,7 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --array=0-4
 
-set -euo pipefail
+set -eo pipefail
 
 echo "[Info] Job ${SLURM_JOB_ID}, array task ${SLURM_ARRAY_TASK_ID}/${SLURM_ARRAY_TASK_COUNT}"
 
@@ -19,6 +19,7 @@ export OPENBLAS_NUM_THREADS=1
 export VECLIB_MAXIMUM_THREADS=1
 export NUMEXPR_NUM_THREADS=1
 
+# conda activate.d 脚本中可能引用未定义变量；不能在这里启用 set -u。
 source /home/penghongen/anaconda3/bin/activate Pocket_Plus_centos7_cu121_allgpu
 cd /home/penghongen/My_Project/Pocket_Plus
 

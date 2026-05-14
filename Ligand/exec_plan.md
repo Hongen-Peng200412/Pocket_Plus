@@ -25,6 +25,8 @@ This ExecPlan is a living document. The sections `Progress`, `Surprises & Discov
   Evidence: `git status --short` 显示 `.agents/rules/*.md` 删除、`CLAUDE.md` 等未跟踪文件。本任务只修改 `Ligand/`。
 - Observation: Windows PowerShell 写出的临时 raw.json 可能带 UTF-8 BOM。
   Evidence: 空列表 raw.json 验证首次触发 `JSONDecodeError: Unexpected UTF-8 BOM`; 已将 `load_raw_mapping` 改为 `utf-8-sig` 读取。
+- Observation: 服务器 conda 环境激活脚本不兼容 sbatch 中的 `set -u`。
+  Evidence: `/home/penghongen/anaconda3/envs/Pocket_Plus_centos7_cu121_allgpu/etc/conda/activate.d/activate-binutils_linux-64.sh` 报 `ADDR2LINE: unbound variable`。已将 `Ligand/sbatch/rcsb_ligand_enrichment_raw4.sbatch` 的 `set -euo pipefail` 改为 `set -eo pipefail`。
 
 ## Decision Log
 
@@ -42,6 +44,9 @@ This ExecPlan is a living document. The sections `Progress`, `Surprises & Discov
   Date/Author: 2026-05-14 / User
 - Decision: `--raw-json` 缺省或空字符串表示不过滤；如果 raw.json 文件内容为 `[]`，则处理 0 个样本。
   Rationale: 区分“用户未要求过滤”和“用户显式给出空过滤集”。
+  Date/Author: 2026-05-14 / User + Codex
+- Decision: sbatch 不启用 `set -u`。
+  Rationale: conda activate.d 脚本可能引用未定义变量，启用 nounset 会让环境激活失败；保留 `set -e` 和 `pipefail` 已能覆盖主要失败场景。
   Date/Author: 2026-05-14 / User + Codex
 
 ## Outcomes & Retrospective
