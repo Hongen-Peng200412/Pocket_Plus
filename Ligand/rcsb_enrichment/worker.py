@@ -6,7 +6,7 @@ from pathlib import Path
 
 from . import config
 from .io_utils import load_make_data_ligands
-from .mmcif_mapping import extract_rcsb_atom_site_ligand, load_cif_dict, match_make_data_ligand_to_rcsb, parse_nonpoly_scheme
+from .mmcif_mapping import extract_rcsb_atom_site_ligand, load_cif_dict, match_atom_site_ligand, match_make_data_ligand_to_rcsb, parse_nonpoly_scheme
 from .models import ChemCompDescriptors, MappingRow, Mol2Info, PDBProcessResult, SampleRef
 from .mol2_parser import parse_mol2
 from .rcsb_client import RCSBClient
@@ -137,6 +137,8 @@ def process_one_pdb(sample: SampleRef, output_root: Path, force_download: bool, 
             continue
 
         match = match_make_data_ligand_to_rcsb(ligand, nonpoly_rows)
+        if not match.matched:
+            match = match_atom_site_ligand(ligand, cif_dict)
         row.match_method = match.match_method
         if not match.matched or match.row is None:
             row.status = config.RCSB_INSTANCE_MATCH_FAILED
@@ -178,6 +180,11 @@ def process_one_pdb(sample: SampleRef, output_root: Path, force_download: bool, 
         if mol2.error_message:
             row.status = config.RCSB_NATIVE_MOL2_MISSING
             row.error_message = mol2.error_message
+            readiness = evaluate_tool_readiness(None, bool(row.smiles or row.smiles_stereo), False)
+            row.dockem_input_status = readiness.dockem_input_status
+            row.emerald_id_input_status = readiness.emerald_id_input_status
+            row.pocketxmol_input_status = readiness.pocketxmol_input_status
+            row.docking_ready_warning = readiness.docking_ready_warning
             rows.append(row)
             continue
 
@@ -190,6 +197,11 @@ def process_one_pdb(sample: SampleRef, output_root: Path, force_download: bool, 
         if not mol2_info.raw_has_tripos_molecule or mol2_info.atom_count == 0:
             row.status = config.RCSB_NATIVE_MOL2_MISSING
             row.error_message = "RCSB ModelServer 返回的 mol2 不包含有效 @<TRIPOS>MOLECULE / ATOM section。"
+            readiness = evaluate_tool_readiness(None, bool(row.smiles or row.smiles_stereo), False)
+            row.dockem_input_status = readiness.dockem_input_status
+            row.emerald_id_input_status = readiness.emerald_id_input_status
+            row.pocketxmol_input_status = readiness.pocketxmol_input_status
+            row.docking_ready_warning = readiness.docking_ready_warning
             rows.append(row)
             continue
 

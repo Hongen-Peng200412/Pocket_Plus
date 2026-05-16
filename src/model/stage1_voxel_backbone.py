@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Sequence
+import math
 
 import torch
 from torch import nn
@@ -20,7 +21,10 @@ class Stage1VoxelBackbone(SimpleUnet):
         num_conv3d_aux: int,
         ligand_head_hidden_channels: int,
         num_conv3d_ligand: int,
-        prior_prob: float | None = None,  # float|None, RetinaNet 式先验正类概率; 不为 None 时初始化 voxel_aux_head[-1].bias
+        prior_prob: float | None = None,  # float|None, 单通道 sigmoid 正类先验概率
+        voxel_aux_logit_dim: int = 1,
+        voxel_ligand_logit_dim: int = 1,
+        prior_probs: Sequence[float] | None = None,
     ) -> None:
         """
         Stage1 体素主干网络。
@@ -51,6 +55,8 @@ class Stage1VoxelBackbone(SimpleUnet):
         )
 
         self.feature_channels = int(feature_channels)
+        self.voxel_aux_logit_dim = int(voxel_aux_logit_dim)
+        self.voxel_ligand_logit_dim = int(voxel_ligand_logit_dim)
         self.return_feature_keys = tuple(str(key_name) for key_name in return_feature_keys)
 
         enc0, enc1, enc2, enc3, bottleneck, dec3, dec2, dec1, dec0 = [int(value) for value in planes]
@@ -77,28 +83,37 @@ class Stage1VoxelBackbone(SimpleUnet):
                 aux_layers.append(nn.ReLU())
             # 最后一层 Conv3d 的 in_channels: 若有中间隐藏层则用 aux_head_hidden_channels, 否则用 self.feature_channels
             _last_in = int(aux_head_hidden_channels) if len(aux_layers) > 0 else self.feature_channels
-            aux_layers.append(nn.Conv3d(_last_in, 1, kernel_size=1))
+            aux_layers.append(nn.Conv3d(_last_in, self.voxel_aux_logit_dim, kernel_size=1))
             self.voxel_aux_head = nn.Sequential(*aux_layers)
         else:   # aux_head_hidden_channels <= 0 时不构建(消融模式: 直接用 voxel_final 作为 logit, 节省显存)
+            if self.feature_channels != self.voxel_aux_logit_dim:
+                raise ValueError(
+                    "aux_head_hidden_channels <= 0 时要求 feature_channels == voxel_aux_logit_dim, "
+                    f"实际 feature_channels={self.feature_channels}, voxel_aux_logit_dim={self.voxel_aux_logit_dim}"
+                )
             self.voxel_aux_head = None
 
-        # nn.Sequential | None, `(B, C_final, D, H, W) -> (B, 1, D, H, W)`, 体素 ligand 占据预测头
+        # nn.Sequential | None, `(B, C_final, D, H, W) -> (B, C_logit, D, H, W)`, 体素 ligand 占据预测头
         if int(ligand_head_hidden_channels) > 0:
             ligand_layers: list[nn.Module] = []
             for _ in range(int(num_conv3d_ligand)):
                 ligand_layers.append(nn.Conv3d(self.feature_channels if len(ligand_layers) == 0 else int(ligand_head_hidden_channels), int(ligand_head_hidden_channels), kernel_size=3, padding=1))
                 ligand_layers.append(nn.ReLU())
             _last_in_lig = int(ligand_head_hidden_channels) if len(ligand_layers) > 0 else self.feature_channels
-            ligand_layers.append(nn.Conv3d(_last_in_lig, 1, kernel_size=1))
+            ligand_layers.append(nn.Conv3d(_last_in_lig, self.voxel_ligand_logit_dim, kernel_size=1))
             self.voxel_ligand_head = nn.Sequential(*ligand_layers)
         else:
             self.voxel_ligand_head = None
 
-        # RetinaNet 式偏置初始化: -log((1-π)/π)
-        # head 结构: [Conv3d(3x3), ReLU] * num_conv3d + [Conv3d(1x1)]，最后一个 Conv3d 的索引 = 2 * num_conv3d
-        if prior_prob is not None:
-            import math as _math
-            _bias_val = -_math.log((1.0 - float(prior_prob)) / float(prior_prob))
+        if prior_prob is not None and prior_probs is not None:
+            raise ValueError("prior_prob 和 prior_probs 不能同时配置")
+        if prior_probs is not None:
+            self._init_multiclass_prior_bias(self.voxel_aux_head, self.voxel_aux_logit_dim, prior_probs)
+            self._init_multiclass_prior_bias(self.voxel_ligand_head, self.voxel_ligand_logit_dim, prior_probs)
+        elif prior_prob is not None:
+            if self.voxel_aux_logit_dim != 1 or self.voxel_ligand_logit_dim != 1:
+                raise ValueError("多通道 softmax head 请使用 prior_probs，不要使用单通道 prior_prob")
+            _bias_val = -math.log((1.0 - float(prior_prob)) / float(prior_prob))
             if self.voxel_aux_head is not None:
                 _last_idx = 2 * int(num_conv3d_aux)
                 nn.init.constant_(self.voxel_aux_head[_last_idx].bias, _bias_val)
@@ -114,6 +129,39 @@ class Stage1VoxelBackbone(SimpleUnet):
             out_channels=int(self.shortconvadd.output_channels),
             kernel_size=1,
         )
+
+    @staticmethod
+    def _init_multiclass_prior_bias(head: nn.Module | None, logit_dim: int, prior_probs: Sequence[float]) -> None:
+        """
+        用 softmax 先验概率初始化多通道 Conv3d head 的输出 bias。
+
+        输入参数:
+            - head: nn.Module | None, Sequential 分类头; 最后一层应为带 bias 的 nn.Conv3d
+            - logit_dim: int, 输出类别通道数 C
+            - prior_probs: Sequence[float], (C,), softmax 后期望得到的类别先验概率
+
+        输出:
+            - None, 原地修改 head 最后一层 bias
+        """
+        if head is None:
+            return
+        if int(logit_dim) <= 1:
+            raise ValueError("prior_probs 只适用于多通道 softmax head")
+        # torch.Tensor, (C,), CPU float32 先验概率向量
+        probs = torch.as_tensor(list(prior_probs), dtype=torch.float32)
+        if probs.numel() != int(logit_dim):
+            raise ValueError(f"prior_probs 长度 {probs.numel()} 与 logit_dim={logit_dim} 不一致")
+        if torch.any(probs <= 0):
+            raise ValueError("prior_probs 中所有概率必须大于 0")
+        if not torch.isclose(probs.sum(), torch.tensor(1.0), rtol=1e-4, atol=1e-6):
+            raise ValueError(f"prior_probs 总和必须为 1，实际为 {float(probs.sum())}")
+        # nn.Conv3d, 分类头最后一层, 输出 shape 为 (B, C, D, H, W)
+        last_layer = head[-1]
+        if not isinstance(last_layer, nn.Conv3d) or last_layer.bias is None:
+            raise TypeError("多分类先验初始化要求 head 最后一层是带 bias 的 Conv3d")
+        with torch.no_grad():
+            # torch.Tensor, (C,), log(prior_probs) 后 softmax 等于 prior_probs
+            last_layer.bias.copy_(probs.log().to(device=last_layer.bias.device, dtype=last_layer.bias.dtype))
 
 
     def _forward_single_pass(

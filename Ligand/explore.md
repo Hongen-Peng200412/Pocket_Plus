@@ -126,6 +126,7 @@ https://files.rcsb.org/download/{PDB_ID}.cif
 
 ```text
 _pdbx_nonpoly_scheme
+_pdbx_branch_scheme
 ```
 
 实验中发现，Make_Data 的 `chain_id/res_id` 在测试样例中对应：
@@ -145,6 +146,27 @@ residue number = _pdbx_nonpoly_scheme.pdb_seq_num
 
 > [!IMPORTANT]
 > RCSB ModelServer ligand endpoint 的参数名是 `auth_seq_id`，但在这些样例中实际需要传入 RCSB 页面可见的 PDB residue number，即 `_pdbx_nonpoly_scheme.pdb_seq_num`。如果误用 `_pdbx_nonpoly_scheme.auth_seq_num`，会出现 `element_count: 0`，导致误判为 mol2 缺失。
+
+大规模运行后发现，`RCSB_INSTANCE_MATCH_FAILED` 主要集中在 `NAG/MAN/BMA/FUC/GAL` 等糖类或支链糖残基。原因是这些残基通常不在 `_pdbx_nonpoly_scheme`，而在 `_pdbx_branch_scheme`。正式程序已补充 branch scheme 匹配：
+
+```text
+Make_Data chain_id -> _pdbx_branch_scheme.pdb_asym_id
+Make_Data res_id   -> _pdbx_branch_scheme.pdb_seq_num
+Make_Data resname  -> _pdbx_branch_scheme.mon_id / pdb_mon_id / auth_mon_id
+```
+
+继续诊断剩余 1.4% 非糖类失败后发现，许多特殊 HETATM/修饰残基不在 `_pdbx_nonpoly_scheme` 或 `_pdbx_branch_scheme` 中，但在 `_atom_site` 中可以通过 `auth_asym_id/auth_seq_id` 或 `label_asym_id/label_seq_id` 唯一定位。例如：
+
+```text
+6AP1 ACE chain G res 0
+6VMI Y5P chain A5 res 1
+6VMI P5P chain A5 res 2
+7FGI GTA chain M res 1003
+8CEP KBE/DPP/UAL/MYN chain V res 1-4
+9IF4 S0R chain Y res 1
+```
+
+正式程序已补充 `_atom_site` 兜底匹配。若标识仍无法唯一化，则在正式全量运行中继续使用 Make_Data `candidate_coords_{id}` 做坐标兜底匹配。
 
 ### 4. 下载 RCSB native ligand mol2
 
@@ -278,7 +300,7 @@ SMILES 或 ligand structure
 ```text
 Make_Data ligand instance
 -> RCSB full CIF
--> _pdbx_nonpoly_scheme 对齐
+-> _pdbx_nonpoly_scheme / _pdbx_branch_scheme 对齐
 -> RCSB native ligand mol2
 -> RCSB chemcomp SMILES/InChI/InChIKey
 -> 坐标/重原子/元素组成校验
@@ -333,6 +355,7 @@ reports/validation_summary.json        # 总统计摘要
 array 任务完成后，使用：
 
 ```bash
+cd /home/penghongen/My_Project/Pocket_Plus
 python -m Ligand.rcsb_enrichment.merge_outputs \
   --output-root /storage/penghongen/CIF_Ligand \
   --array-count 5

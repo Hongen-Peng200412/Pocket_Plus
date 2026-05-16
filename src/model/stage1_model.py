@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any, Sequence
+import math
 
 import torch
 import torch.nn.functional as F
@@ -204,7 +205,8 @@ class VolumePointStage1Model(nn.Module):
         enable_atom_head: bool = True,         # bool, 是否构建 atom head; False 时跳过 atom_token_proj / atom_attention_stack / atom_logit_head
         embed_head: nn.Module | Any | None = None,  # embed head 模块或 Hydra 配置; None 时不启用
         pseudo_atom_cfg: dict | None = None,  # 伪原子配置; None 时不启用
-        prior_prob: float | None = None,       # float|None, RetinaNet 式先验正类概率; 不为 None 时将 logit head 末层 bias 初始化为 -log((1-π)/π)
+        prior_prob: float | None = None,       # float|None, 单通道 sigmoid 正类先验概率
+        prior_probs: Sequence[float] | None = None,  # 多通道 softmax 先验概率向量
         online_pdb_feature: bool = False,      # bool, 是否在线 scatter raw atom_feat 到体素网格; 仅在 embed_head 未启用时生效
         online_pdb_feature_reduce: str = "sum", # str, scatter 聚合方式, 建议值 "sum"
         online_pdb_feature_dim: int = 49,      # int, 原子原始特征维度, 建议值 49
@@ -453,15 +455,47 @@ class VolumePointStage1Model(nn.Module):
             self.atom_attention_stack = None
             self.atom_logit_head = None
 
-        # RetinaNet 式偏置初始化: atom_logit_head[2].bias ← -log((1-π)/π)
-        # 只在 prior_prob 不为 None 且 atom_logit_head 已构建时执行
-        # atom_logit_head 结构: [0] Linear, [1] act, [2] Linear(输出) ← 初始化目标
-        if prior_prob is not None and self.atom_logit_head is not None:
-            import math as _math
-            _bias_val = -_math.log((1.0 - float(prior_prob)) / float(prior_prob))
-            nn.init.constant_(self.atom_logit_head[2].bias, _bias_val)
+        if prior_prob is not None and prior_probs is not None:
+            raise ValueError("prior_prob 和 prior_probs 不能同时配置")
+        if self.atom_logit_head is not None:
+            if prior_probs is not None:
+                self._init_linear_multiclass_prior_bias(self.atom_logit_head[2], int(atom_logit_dim), prior_probs)
+            elif prior_prob is not None:
+                if int(atom_logit_dim) != 1:
+                    raise ValueError("多通道 atom head 请使用 prior_probs，不要使用单通道 prior_prob")
+                _bias_val = -math.log((1.0 - float(prior_prob)) / float(prior_prob))
+                nn.init.constant_(self.atom_logit_head[2].bias, _bias_val)
 
     # -------------------------------------------------------- 工具函数 --------------------------------------------------------
+    @staticmethod
+    def _init_linear_multiclass_prior_bias(layer: nn.Module, logit_dim: int, prior_probs: Sequence[float]) -> None:
+        """
+        用 softmax 先验概率初始化多通道 atom Linear head 的输出 bias。
+
+        输入参数:
+            - layer: nn.Module, atom logit head 最后一层, 应为带 bias 的 nn.Linear
+            - logit_dim: int, 输出类别通道数 C
+            - prior_probs: Sequence[float], (C,), softmax 后期望得到的类别先验概率
+
+        输出:
+            - None, 原地修改 layer.bias
+        """
+        if int(logit_dim) <= 1:
+            raise ValueError("prior_probs 只适用于多通道 softmax head")
+        # torch.Tensor, (C,), CPU float32 先验概率向量
+        probs = torch.as_tensor(list(prior_probs), dtype=torch.float32)
+        if probs.numel() != int(logit_dim):
+            raise ValueError(f"prior_probs 长度 {probs.numel()} 与 logit_dim={logit_dim} 不一致")
+        if torch.any(probs <= 0):
+            raise ValueError("prior_probs 中所有概率必须大于 0")
+        if not torch.isclose(probs.sum(), torch.tensor(1.0), rtol=1e-4, atol=1e-6):
+            raise ValueError(f"prior_probs 总和必须为 1，实际为 {float(probs.sum())}")
+        if not isinstance(layer, nn.Linear) or layer.bias is None:
+            raise TypeError("多分类先验初始化要求 atom logit head 最后一层是带 bias 的 Linear")
+        with torch.no_grad():
+            # torch.Tensor, (C,), log(prior_probs) 后 softmax 等于 prior_probs
+            layer.bias.copy_(probs.log().to(device=layer.bias.device, dtype=layer.bias.dtype))
+
     @staticmethod
     def _voxel_xyz_to_grid_sample_xyz(
         point_coord_local_voxel: torch.Tensor,

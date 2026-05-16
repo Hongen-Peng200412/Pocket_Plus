@@ -73,7 +73,7 @@ def box_point_collate(batch: list[dict[str, Any]]) -> dict[str, Any]:
                - "atom_offsets":     torch, (B,),    long,  当前 batch 内每个样本的原子组在总数 (sumN) 的展平序列中的结束偏移位置, 第 i 个样本区间为 [start_i, atom_offsets[i]), 其中 start_i = 0 if i == 0 else atom_offsets[i-1]
 
             4. ligand 信息(用于loss)
-                - "ligand_dist_map": torch, (B, D, H, W), float32, 配体到 BOX 的距离图, 仅当配置了 ligand_dist_BOX 时存在
+                - "ligand_dist_map": torch, (B, D, H, W) 或 (B, C, D, H, W), float32, 配体到 BOX 的距离图, 仅当配置了 ligand_dist_BOX 时存在
 
             5. 元信息字段:
                - 包括 sample_name / pdb_id / class_name / instance_id 等, 保留为长度为 B 的 Python list, 供调试和输出用

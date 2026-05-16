@@ -91,6 +91,8 @@ class BoxPointDataset(Dataset):
         data_folder_names: list[str] | None = None,
         class_folder_names: list[str] | None = None,
         class_mapping: list[int] | None = None,
+        class_names: list[str] | None = None,
+        num_task_classes: int | None = None,
         atom_buffer_radius: float = 4.0,
         cache_size: int = 128,
         valid_crop_margin: int = 2,
@@ -150,6 +152,19 @@ class BoxPointDataset(Dataset):
         self.all_data_path = Path(all_data_path)                    # BOX 根目录
         self.sample_root_path = Path(sample_root_path)              # atoms.npz / labels.npz 根目录
         self.class_mapping = class_mapping                          # voxel 标签类别重映射表
+        self.class_names = list(class_names) if class_names is not None else None
+        if num_task_classes is None:
+            self.num_task_classes = int(max(class_mapping) + 1) if class_mapping is not None else 2
+        else:
+            self.num_task_classes = int(num_task_classes)
+        if self.class_mapping is not None and max(self.class_mapping) != self.num_task_classes - 1:
+            raise ValueError(
+                f"class_mapping 最大值 {max(self.class_mapping)} 必须等于 num_task_classes-1={self.num_task_classes - 1}"
+            )
+        if self.class_names is not None and len(self.class_names) != self.num_task_classes:
+            raise ValueError(
+                f"class_names 长度 {len(self.class_names)} 必须等于 num_task_classes={self.num_task_classes}"
+            )
         self.atom_buffer_radius = float(atom_buffer_radius)         # atom buffer 半径, 单位=世界坐标
         self.cache_size = int(cache_size)                           # 每个 worker 的 cache 容量
         self.valid_crop_margin = int(valid_crop_margin)             # 边界裁边宽度, 单位=voxel
@@ -378,6 +393,53 @@ class BoxPointDataset(Dataset):
             mapped_label[label == old_class_id] = int(new_class_id)
         return mapped_label
 
+    def _build_ligand_dist_map(self, ligand_dist_raw: np.ndarray) -> np.ndarray:
+        """
+        根据 class_mapping 构造 ligand 距离监督图。
+
+        输入参数:
+            - ligand_dist_raw: np.ndarray, (K, D, H, W), 原始 ligand 距离图; 通道 k 对应原始类别 ID k+1
+
+        输出:
+            - ligand_dist_map: np.ndarray, (D, H, W) 或 (C, D, H, W), 二分类返回单通道最小距离图, 多分类返回按新类别归并后的距离图
+        """
+        if ligand_dist_raw.ndim != 4:
+            raise ValueError(f"ligand_dist_raw 必须为 (K,D,H,W)，实际为 {ligand_dist_raw.shape}")
+        if self.class_mapping is None:
+            # np.ndarray, (D, H, W), 未配置类别映射时的全前景最小距离图
+            return np.min(ligand_dist_raw, axis=0).astype(np.float32, copy=False)
+        if len(self.class_mapping) != ligand_dist_raw.shape[0] + 1:
+            raise ValueError(
+                f"class_mapping 长度 {len(self.class_mapping)} 与 ligand_dist 通道数 {ligand_dist_raw.shape[0]} 不匹配"
+            )
+        if self.num_task_classes <= 2:
+            # list[int], 可变长度, 映射后仍为前景的新类别对应的原始距离图通道索引
+            selected_channels = [
+                cls_id - 1 for cls_id in range(1, len(self.class_mapping))
+                if self.class_mapping[cls_id] > 0
+            ]
+            if len(selected_channels) == 0:
+                # np.ndarray, (D, H, W), 没有前景映射时退回全通道最小距离图
+                return np.min(ligand_dist_raw, axis=0).astype(np.float32, copy=False)
+            # np.ndarray, (D, H, W), 二分类前景类别的最小距离图
+            return np.min(ligand_dist_raw[selected_channels], axis=0).astype(np.float32, copy=False)
+
+        # np.ndarray, (C, D, H, W), 多分类距离图; 背景通道保留为 inf 占位
+        mapped = np.full(
+            (self.num_task_classes, *ligand_dist_raw.shape[1:]),
+            np.inf,
+            dtype=np.float32,
+        )
+        for original_class_id in range(1, len(self.class_mapping)):
+            # int, 原始类别 ID 映射后的新任务类别 ID; 0 表示背景
+            new_class_id = int(self.class_mapping[original_class_id])
+            if new_class_id <= 0:
+                continue
+            # int, ligand_dist_raw 中对应原始类别 ID 的通道索引
+            source_channel = original_class_id - 1
+            mapped[new_class_id] = np.minimum(mapped[new_class_id], ligand_dist_raw[source_channel])
+        return mapped
+
     def _load_box_npz_raw(self, class_name: str, sample_name: str) -> dict[str, Any]:
         """
         读取一个 BOX 的原始 voxel 数据与几何元信息, 但暂时不调用 density_channel_builder。
@@ -391,7 +453,7 @@ class BoxPointDataset(Dataset):
         返回字段:
             - `density_raws`: dict[str, np.ndarray], 键为目录名(如 "emdb_exp_BOX", "emdb_sim_BOX"), 值为 (D, H, W) float32 原始密度
             - `voxel_label`: np.ndarray, `(D, H, W)`, int64。
-            - `ligand_dist_map`: np.ndarray | None, `(D, H, W)`, float32, 归约后的单通道 ligand 距离图。
+            - `ligand_dist_map`: np.ndarray | None, `(D, H, W)` 或 `(C, D, H, W)`, float32, 归约后的 ligand 距离图。
 
             - `box_origin_world`: np.ndarray, `(3,)`, 世界坐标系下 BOX 左下近角点，顺序 (x, y, z)。
             - `voxel_size_world`: np.ndarray, `(3,)`, 每个 voxel 在世界坐标中的尺寸，顺序 (x, y, z)。
@@ -428,24 +490,9 @@ class BoxPointDataset(Dataset):
                 box_shape_zyx = np.asarray(grid.shape[-3:], dtype=np.int64)
 
             if "ligand_dist" in folder_name:
-                # ligand_dist 目录: 辅助监督信号, 加载后立即做通道选择 + min 归约
-                # np.ndarray, (K, D, H, W), float32, 原始多通道距离图, 通道 i 对应 class_id = i+1 (见 bind.py bind_LigandMinDist_to_EMDB)
+                # ligand_dist 目录: 辅助监督信号, 二分类保持单通道, 多分类按映射输出类别通道
                 ligand_dist_raw = grid.astype(np.float32, copy=False)
-                if self.class_mapping is not None:
-                    # 只选 class_mapping 映射到非零(前景)的通道, class_mapping 索引就是 class_id, 值 >0 表示该类保留为前景
-                    selected_channels = [
-                        cls_id - 1 for cls_id in range(1, len(self.class_mapping))
-                        if self.class_mapping[cls_id] > 0
-                    ]
-                    if len(selected_channels) > 0:
-                        # np.ndarray, (D, H, W), float32, 选中通道取 min
-                        ligand_dist_map = np.min(ligand_dist_raw[selected_channels], axis=0)
-                    else:
-                        # 无可选通道, 用全通道 min
-                        ligand_dist_map = np.min(ligand_dist_raw, axis=0)
-                else:
-                    # 无 class_mapping, 全通道 min
-                    ligand_dist_map = np.min(ligand_dist_raw, axis=0)
+                ligand_dist_map = self._build_ligand_dist_map(ligand_dist_raw)
             elif "label" in folder_name:
                 voxel_label = self._parse_voxel_label(grid)
                 if self.class_mapping is not None:
@@ -779,10 +826,12 @@ class BoxPointDataset(Dataset):
             axis2=axis2,
             k=k,
         )
-        # ligand_dist_map 同步旋转: (D, H, W) → 3D, axes=(axis1, axis2)
+        # ligand_dist_map 同步旋转: 二分类为 (D,H,W), 多分类为 (C,D,H,W)
         if "ligand_dist_map" in sample_dict:
+            ligand_dist_map = sample_dict["ligand_dist_map"]
+            rotate_axes = (axis1, axis2) if ligand_dist_map.ndim == 3 else (axis1 + 1, axis2 + 1)
             sample_dict["ligand_dist_map"] = np.rot90(
-                sample_dict["ligand_dist_map"], k=k, axes=(axis1, axis2)
+                ligand_dist_map, k=k, axes=rotate_axes
             ).copy()
 
         # ---- 2. 旋转 point 侧坐标 ----

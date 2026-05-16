@@ -20,5 +20,7 @@ logs/
 results/
 output/
 *.txt
-CLAUDE_PLANS
+*.csv
+CLAUDE_PLANS/
+CLAUDE/
 docs

@@ -21,7 +21,10 @@ backbone:
   act_layer_name: "gelu"
   ffn_type: "mlp"
   atom_head_ffn_type: "mlp"
-  prior_prob: 0.01  # see me: 注意需要启用
+  prior_prob: 0.01   # float|null, 单通道 sigmoid 正类先验概率; atom_logit_dim=1 时用于初始化 atom head bias
+                     # → VolumePointStage1Model.__init__: 与 prior_probs 互斥; 多通道 atom head 禁止使用该字段
+  prior_probs: null  # list[float]|null, 多通道 softmax 类别先验概率向量; 长度必须等于 atom_logit_dim 且总和为 1
+                     # → VolumePointStage1Model.__init__: atom_logit_head bias 初始化为 log(prior_probs)
 
   # --- 在线 pdb_feature ---
   # 仅在 embed_head 未启用时生效; embed_head 启用时 forward() 的 elif 结构自动跳过
@@ -29,10 +32,16 @@ backbone:
   online_pdb_feature_reduce: "sum"    # str, scatter 聚合方式
   online_pdb_feature_dim: 49          # int, 原子原始特征维度
 
-# --- 调度器行为 ---  
-interval: "step"                   # str, 调度器更新间隔
-frequency: 1                       # int, 更新频率
-monitor_metric: val/atom_pr_auc    # str, 监控指标
-monitor_mode: max                  # str, "max" / "min"
+# --- 调度器与主监控指标 ---
+# interval/frequency 仅用于完全交给 Lightning 管理的 scheduler。
+# warmup_plateau 使用 cfg.train.scheduler 的显式字段: warmup 固定按 step, plateau 固定在每次 validation end 后读取 monitor_metric。
+interval: "step"                   # str, Lightning-managed scheduler 更新间隔
+frequency: 1                       # int, Lightning-managed scheduler 更新频率
+monitor_metric: val/atom_pr_auc    # str, 主监控指标
+                                   # → train.py: ModelCheckpoint.monitor
+                                   # → VoxelPointStage1Wrapper.on_validation_epoch_end(): warmup_plateau plateau 读取该指标
+monitor_mode: max                  # str, 主指标方向, 取值 max/min
+                                   # → train.py: ModelCheckpoint.mode
+                                   # → configs/train/B40_L3.yaml: scheduler.mode=${model.monitor_mode}
 voxel_ligand_pr_auc_thresholds: 4096  # int | null, higher-resolution binned ligand PR-AUC
 compile: false                     # bool, torch.compile

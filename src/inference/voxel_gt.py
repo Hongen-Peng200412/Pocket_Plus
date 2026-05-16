@@ -29,9 +29,17 @@ def _build_voxel_gt_from_ligand_coords(
         - distance_threshold: float, 体素中心到最近 ligand 原子的前景距离阈值, 建议值 1.7
 
     输出:
-        - result: dict[str, Any], 包含:
-            - "gt_ligand_mask": np.ndarray, (D,H,W), bool, 所有保留 ligand instance 的前景并集
-            - "gt_instance_label": np.ndarray, (D,H,W), int32, ligand instance 标签图, 0 表示背景
+        - result: dict[str, Any], voxel GT 字典, 包含:
+            - "gt_ligand_mask": np.ndarray, (D,H,W), bool, 所有保留 ligand instance 的 union 前景并集
+            - "gt_instance_label": np.ndarray, (D,H,W), int32, union ligand instance 标签图, 0 表示背景
+            - "gt_ligand_mask_by_class_id": dict[int, np.ndarray], class_id -> (D,H,W), bool, 类别内 GT ligand mask
+            - "gt_instance_label_by_class_id": dict[int, np.ndarray], class_id -> (D,H,W), int32, 类别内 GT instance 标签
+            - "gt_instance_meta": list[dict[str, Any]], 每个保留 ligand 的 instance 来源元信息
+                - candidate_id: int, 上游 ligand candidate ID
+                - class_id: int, 映射后的任务类别 ID
+                - union_instance_id: int, union instance 标签中的 ID
+                - class_instance_id: int, 类别内 instance 标签中的 ID
+                - voxel_count: int, 当前 ligand 写入 union GT 的体素数
     """
     origin = np.asarray(origin, dtype=np.float32).reshape(3)
     voxel_size = np.asarray(voxel_size, dtype=np.float32).reshape(3)
@@ -47,36 +55,76 @@ def _build_voxel_gt_from_ligand_coords(
         origin_xyz=origin,
         voxel_size_xyz=voxel_size,
     )
-    # np.ndarray, (D,H,W), int32, GT instance 标签; 0表示背景
+    # np.ndarray, (D,H,W), int32, union GT instance 标签; 0表示背景
     gt_instance_label = np.zeros(grid_shape_zyx, dtype=np.int32)
-    # int, 下一个写入的 GT instance ID; 0 保留给背景
+    # dict[int, np.ndarray], class_id -> (D,H,W), 类别内 GT instance 标签
+    gt_instance_label_by_class_id: dict[int, np.ndarray] = {}
+    # dict[int, int], class_id -> 下一个类别内 instance ID
+    next_class_instance_id: dict[int, int] = {}
+    # list[dict[str, Any]], 每个保留 ligand 的 GT instance 来源元信息
+    gt_instance_meta: list[dict[str, Any]] = []
+    # int, 下一个 union GT instance ID; 0 保留给背景
     next_instance_id = 1
 
     for candidate_id, mapped_class_id in zip(
         ligand_candidate_ids.tolist(),
         mapped_ligand_class_ids.tolist(),
     ):
-        if int(mapped_class_id) <= 0:
+        # int, 当前 ligand 映射后的任务类别 ID; 0 表示不参与前景评估
+        mapped_class_id = int(mapped_class_id)
+        if mapped_class_id <= 0:
             continue
         # np.ndarray, (M,3), float32, 当前 ligand 原子世界坐标(x,y,z)
         ligand_coords = np.asarray(ligand_coords_map[int(candidate_id)], dtype=np.float32)
         if ligand_coords.shape[0] == 0:
             continue
+        if mapped_class_id not in gt_instance_label_by_class_id:
+            gt_instance_label_by_class_id[mapped_class_id] = np.zeros(grid_shape_zyx, dtype=np.int32)
+            next_class_instance_id[mapped_class_id] = 1
 
         # np.ndarray, (D*H*W,), float32, 每个体素中心到当前 ligand 最近原子的距离
         distances, _ = cKDTree(ligand_coords).query(voxel_center_coords, k=1)
         # np.ndarray, (D,H,W), bool, 当前 ligand 距离阈值前景掩码
         instance_mask = distances.reshape(grid_shape_zyx) < float(distance_threshold)
-        # np.ndarray, (D,H,W), bool, 尚未被其他 GT instance 占用且属于当前 ligand 的体素
+        # np.ndarray, (D,H,W), bool, 尚未被其他 GT instance 占用且属于当前 ligand 的 union 体素
         writable_mask = np.logical_and(instance_mask, gt_instance_label == 0)
-        gt_instance_label[writable_mask] = int(next_instance_id)
+        # np.ndarray, (D,H,W), int32, 当前类别内 GT instance 标签
+        class_instance_label = gt_instance_label_by_class_id[mapped_class_id]
+        # np.ndarray, (D,H,W), bool, 尚未被同类 GT instance 占用且属于当前 ligand 的体素
+        class_writable_mask = np.logical_and(instance_mask, class_instance_label == 0)
+        # int, 当前 ligand 在 union GT 中的 instance ID
+        union_instance_id = int(next_instance_id)
+        # int, 当前 ligand 在类别内 GT 中的 instance ID
+        class_instance_id = int(next_class_instance_id[mapped_class_id])
+        gt_instance_label[writable_mask] = union_instance_id
+        class_instance_label[class_writable_mask] = class_instance_id
+        # int, 当前 ligand 写入 union GT 的体素数
+        voxel_count = int(writable_mask.sum())
+        gt_instance_meta.append(
+            {
+                "candidate_id": int(candidate_id),
+                "class_id": mapped_class_id,
+                "union_instance_id": union_instance_id,
+                "class_instance_id": class_instance_id,
+                "voxel_count": voxel_count,
+            }
+        )
         next_instance_id += 1
+        next_class_instance_id[mapped_class_id] = class_instance_id + 1
 
     # np.ndarray, (D,H,W), bool, 所有保留 GT instance 的并集
     gt_ligand_mask = gt_instance_label > 0
+    # dict[int, np.ndarray], class_id -> (D,H,W), 类别内 GT ligand mask
+    gt_ligand_mask_by_class_id = {
+        class_id: class_label > 0
+        for class_id, class_label in gt_instance_label_by_class_id.items()
+    }
     return {
         "gt_ligand_mask": gt_ligand_mask,
         "gt_instance_label": gt_instance_label,
+        "gt_ligand_mask_by_class_id": gt_ligand_mask_by_class_id,
+        "gt_instance_label_by_class_id": gt_instance_label_by_class_id,
+        "gt_instance_meta": gt_instance_meta,
     }
 
 
@@ -104,9 +152,17 @@ def load_ligand_gt_from_labels_npz(
         - ligand_gt_distance_threshold: float, 体素中心到最近 ligand 原子的前景距离阈值, 建议值 1.7
 
     输出:
-        - result: dict[str, Any], 包含:
-            - "gt_ligand_mask": np.ndarray, (D,H,W), bool, 所有保留 ligand instance 的前景并集
-            - "gt_instance_label": np.ndarray, (D,H,W), int32, ligand instance 标签图, 0 表示背景
+        - result: dict[str, Any], voxel GT 字典, 包含:
+            - "gt_ligand_mask": np.ndarray, (D,H,W), bool, 所有保留 ligand instance 的 union 前景并集
+            - "gt_instance_label": np.ndarray, (D,H,W), int32, union ligand instance 标签图, 0 表示背景
+            - "gt_ligand_mask_by_class_id": dict[int, np.ndarray], class_id -> (D,H,W), bool, 类别内 GT ligand mask
+            - "gt_instance_label_by_class_id": dict[int, np.ndarray], class_id -> (D,H,W), int32, 类别内 GT instance 标签
+            - "gt_instance_meta": list[dict[str, Any]], 每个保留 ligand 的 instance 来源元信息
+                - candidate_id: int, 上游 ligand candidate ID
+                - class_id: int, 映射后的任务类别 ID
+                - union_instance_id: int, union instance 标签中的 ID
+                - class_instance_id: int, 类别内 instance 标签中的 ID
+                - voxel_count: int, 当前 ligand 写入 union GT 的体素数
     """
     with np.load(labels_npz_path, allow_pickle=False) as data:
         # np.ndarray, (N_ligand,), int64, labels.npz 中的配体 candidate_id
@@ -172,9 +228,17 @@ def load_ligand_gt_from_structure(
         - ligand_gt_distance_threshold: float, 体素中心到最近 ligand 原子的前景距离阈值, 建议值 1.7
 
     输出:
-        - result: dict[str, Any], 包含:
-            - "gt_ligand_mask": np.ndarray, (D,H,W), bool, 所有保留 ligand instance 的前景并集
-            - "gt_instance_label": np.ndarray, (D,H,W), int32, ligand instance 标签图, 0 表示背景
+        - result: dict[str, Any], voxel GT 字典, 包含:
+            - "gt_ligand_mask": np.ndarray, (D,H,W), bool, 所有保留 ligand instance 的 union 前景并集
+            - "gt_instance_label": np.ndarray, (D,H,W), int32, union ligand instance 标签图, 0 表示背景
+            - "gt_ligand_mask_by_class_id": dict[int, np.ndarray], class_id -> (D,H,W), bool, 类别内 GT ligand mask
+            - "gt_instance_label_by_class_id": dict[int, np.ndarray], class_id -> (D,H,W), int32, 类别内 GT instance 标签
+            - "gt_instance_meta": list[dict[str, Any]], 每个保留 ligand 的 instance 来源元信息
+                - candidate_id: int, 上游 ligand candidate ID
+                - class_id: int, 映射后的任务类别 ID
+                - union_instance_id: int, union instance 标签中的 ID
+                - class_instance_id: int, 类别内 instance 标签中的 ID
+                - voxel_count: int, 当前 ligand 写入 union GT 的体素数
     """
     from src.inference.parse_input import load_gt_from_structure
 

@@ -1,0 +1,92 @@
+# @package _global_
+# ============================================================
+# 实验: 三分类 ligand baseline
+# 目标: 将原二分类前景任务改为 [background, metal_ion, small_molecule] 三分类。
+# 此文件通过 Hydra defaults 覆盖 dataset/model/loss/train 配置, 最终由 src/train.py 消费。
+#   → train.py: main(cfg) 接收合并后的 cfg
+#   → UnifiedDataModule.setup(): instantiate(cfg.dataset, ...)
+#   → train.py: hydra.utils.instantiate(cfg.model, optimizer=..., scheduler=...)
+# ============================================================
+
+# --- Hydra 配置组合 ---
+# defaults: list[str], 按顺序覆盖 config group; _global_ 包下字段会合并到最终 cfg 顶层
+# NOTE: 本实验关闭 point/fusion/atom/pseudo 分支, 保留 voxel ligand/aux 三分类监督。
+defaults:
+  - override /model/voxel_backbone: default  # 使用可配置 aux/ligand head 的 Stage1VoxelBackbone
+  - override /model/point_backbone: zeros    # 点分支占位, 不引入真实 PTV3 计算
+  - override /model/fusion: none             # 不做 voxel->point 融合
+  - override /model/atom_head: none          # 不启用 atom head; 本实验主监控 voxel_ligand_macro_ap
+  - override /model/pseudo_atom: none        # 不注入 pseudo atom
+  - override /model/embed_head: clipbig      # 仍使用 embed_head 产生 voxel 侧 PDB 原子嵌入
+  - override /loss: tri_7focal_3dice_hard    # 三分类硬标签 Focal + Tversky loss
+  - override /dataset: stardard_full_buffer  # 带 atom buffer 的 BOX 数据集配置
+  - override /train: B40_L3                  # 训练 batch / epoch / optimizer / warmup_plateau scheduler 参数组
+
+# --- 实验标识与日志命名 ---
+name: exp000_baseline          # str, 顶层实验名; 当前 train.py 主要使用 cfg.model.name, 这里保留为实验元信息
+tag: "exp000_baseline"        # str, 本次运行标签; → ExperimentManager: run_dir 使用 {tag}____{timestamp}; train.py 默认作为 WandB run name
+experiment_group: "tri_ligand" # str, 实验分组目录名; → train.py: ExperimentManager(experiment_group=cfg.experiment_group)
+project_name: PV_ligand_tri    # str, WandB project 名称; → train.py: WandbLogger(project=cfg.project_name)
+
+# --- 数据集三分类映射 ---
+# class_mapping 的 5 个元素对应原始 label ID 0..4:
+#   0=background, 1=metal_ion, 2=peptide, 3=nucleic, 4=small_molecule
+# 本实验只保留 metal_ion 与 small_molecule 两个前景类, peptide/nucleic 合并回背景。
+dataset:
+  class_mapping: [0, 1, 0, 0, 2]       # list[int], 原始类别 ID → 新任务类别 ID 的映射表
+                                        # → BoxPointDataset._apply_class_mapping(): 同步作用于 voxel_label 与 atom_label
+                                        # → BoxPointDataset._build_ligand_dist_map(): 多分类时输出 (C,D,H,W), channel 0 为 inf 背景占位
+  class_names: [background, metal_ion, small_molecule]  # list[str], 新任务类别名; 顺序必须与映射后类别 ID 0..2 一致
+                                                        # → BoxPointDataset.__init__: 校验长度; VoxelPointStage1Wrapper 用于逐类 AP 日志名
+  num_task_classes: 3                  # int, 新任务类别数 C; C>2 触发 ligand_dist_map 多分类通道构造
+                                       # → BoxPointDataset.__init__: 校验 class_mapping 最大值为 C-1
+
+# --- 模型三分类输出与监控 ---
+model:
+  class_names: ${dataset.class_names}   # list[str], 传给 Wrapper 的类别名; 与 dataset.class_names 保持同源
+                                        # → VoxelPointStage1Wrapper._resolve_class_names(): 构造 val/*_ap_{class_name} 指标名
+  num_task_classes: 3                  # int, 任务类别数元信息; 当前 Wrapper 主要通过各 loss.num_classes 判断多分类指标
+  task_activation: softmax             # str, 任务输出激活语义标记; 三分类 head 使用 softmax 概率解释
+  monitor_metric: val/voxel_ligand_macro_ap  # str, 主监控指标; → train.py ModelCheckpoint.monitor, Wrapper 日志 prog_bar, scheduler monitor
+  monitor_mode: max                    # str, checkpoint 选择方向; macro AP 越大越好
+                                        # → train.py: ModelCheckpoint(mode=cfg.model.monitor_mode)
+
+  backbone:
+    enable_atom_head: false            # bool, 关闭 atom head; forward 不产出 atom_logits, atom_loss 应保持未启用或不作为主监督
+    atom_logit_dim: 3                  # int, atom head 输出通道数; atom head 关闭时仅保持配置与三分类任务一致
+    prior_prob: null                   # float|null, 单通道 sigmoid 先验; 多通道任务必须置 null
+                                       # → VolumePointStage1Model.__init__: prior_prob 与 prior_probs 互斥
+    prior_probs: [0.98, 0.01, 0.01]    # list[float], atom head 多分类先验; 长度必须等于 atom_logit_dim 且总和为 1
+                                       # → VolumePointStage1Model.__init__: atom head 启用时用于 Linear bias=log(prior_probs)
+
+    enable_recycling: true             # bool, 启用 recycle 多轮迭代
+    max_recycles: 3                    # int, 最大 recycle 轮数
+    randomize_recycles: true           # bool, 训练态在 [1,max_recycles] 随机采样轮数
+    detach_recycle_states: true        # bool, recycle 轮间 state detach, 截断跨轮梯度
+    act_layer_name: "gelu"             # str, 主模型中可配置激活函数名称
+    ffn_type: "gated"                  # str, point/backbone block FFN 类型; 当前 point_backbone=zeros 时影响有限
+    atom_head_ffn_type: "gated"        # str, atom head FFN 类型; atom head 关闭时保持配置占位
+
+    # --- voxel backbone 三分类 head ---
+    # 下列字段覆盖 configs/model/voxel_backbone/default.yaml 中的二分类默认值。
+    #   → Stage1VoxelBackbone.__init__: 构造 aux/ligand Conv3d head 并初始化多通道 bias
+    voxel_backbone:
+      ligand_head_hidden_channels: 32  # int, ligand head 隐藏通道数; >0 表示构建 voxel_ligand_head
+      aux_head_hidden_channels: 32     # int, aux head 隐藏通道数; >0 表示构建 voxel_aux_head
+      num_conv3d_aux: 2                # int, aux head 中 Conv3d(3x3)+ReLU 的层数
+      num_conv3d_ligand: 2             # int, ligand head 中 Conv3d(3x3)+ReLU 的层数
+      voxel_aux_logit_dim: 3           # int, aux head 输出通道数; 必须等于 voxel_aux_loss.num_classes
+                                       # → VoxelPointStage1Wrapper._compute_voxel_aux_loss(): logits shape 为 (B,3,D,H,W)
+      voxel_ligand_logit_dim: 3        # int, ligand head 输出通道数; 必须等于 voxel_ligand_loss.num_classes
+                                       # → VoxelPointStage1Wrapper._compute_voxel_ligand_loss(): logits shape 为 (B,3,D,H,W)
+      prior_probs: [0.98, 0.01, 0.01]  # list[float], voxel aux/ligand softmax 类别先验; 顺序为 [background, metal_ion, small_molecule]
+                                       # → Stage1VoxelBackbone._init_multiclass_prior_bias(): Conv3d bias 初始化为 log(prior_probs)
+
+# --- 训练调度覆盖 ---
+# scheduler 直接继承 configs/train/B40_L3.yaml 中的 warmup_plateau 配置。
+#   → VoxelPointStage1Wrapper.configure_optimizers(): 构建 step warmup + validation plateau 组合调度器
+train:
+  strict_global_batch_size: true  # bool, batch size tuner 后强制满足 global_batch_size 可被 per_device_bs*world_size 整除
+                                  # → train.py: _align_global_batch_size(..., strict=cfg.train.strict_global_batch_size)
+  val_per_epoch: 3                # int, 每个 epoch 内验证次数; 每次验证都会参与 warmup_plateau 的 plateau 判断
+                                  # → train.py: _resolve_val_check_interval() 映射为 Lightning val_check_interval

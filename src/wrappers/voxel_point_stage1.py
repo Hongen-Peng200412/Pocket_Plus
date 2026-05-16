@@ -4,7 +4,8 @@ import functools
 from typing import Any, Dict, Optional
 
 import lightning as pl
-from src.modules.losses import UnifiedCompositeLoss
+from src.modules.losses import AdaptiveClassificationCompositeLoss, UnifiedCompositeLoss
+from src.modules.lr_schedulers import WarmupThenReduceLROnPlateau
 import torch
 from hydra.utils import instantiate
 from torch import nn
@@ -82,22 +83,87 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
         from torchmetrics.classification import BinaryAveragePrecision
         self._val_metric_update_counts: dict[str, int] = {}
         self._voxel_ligand_pr_auc_is_binned = voxel_ligand_pr_auc_thresholds is not None
+        self._multiclass_metric_names: dict[str, list[str]] = {"atom": [], "voxel_aux": [], "voxel_ligand": []}
+        self._class_names = self._resolve_class_names(kwargs)
         if self.atom_loss is not None:
             self.val_atom_pr_auc = BinaryAveragePrecision(compute_on_cpu=True)
             self._val_metric_update_counts["val/atom_pr_auc"] = 0
+            self._init_multiclass_ap_metrics("atom", self.atom_loss, BinaryAveragePrecision, None)
         if self.voxel_aux_loss is not None:
             self.val_voxel_aux_pr_auc = BinaryAveragePrecision(compute_on_cpu=True)
             self._val_metric_update_counts["val/voxel_aux_pr_auc"] = 0
+            self._init_multiclass_ap_metrics("voxel_aux", self.voxel_aux_loss, BinaryAveragePrecision, None)
         if self.voxel_ligand_loss is not None:
             self.val_voxel_ligand_pr_auc = BinaryAveragePrecision(
                 compute_on_cpu=True,
                 thresholds=voxel_ligand_pr_auc_thresholds,
             )
             self._val_metric_update_counts["val/voxel_ligand_pr_auc"] = 0
+            self._init_multiclass_ap_metrics("voxel_ligand", self.voxel_ligand_loss, BinaryAveragePrecision, voxel_ligand_pr_auc_thresholds)
+
+        # WarmupThenReduceLROnPlateau | None, 手动管理的 validation 级 plateau 调度器
+        self._warmup_plateau_scheduler: WarmupThenReduceLROnPlateau | None = None
+        # dict[str, Any] | None, checkpoint 恢复时暂存的 plateau 调度器状态
+        self._pending_warmup_plateau_state: dict[str, Any] | None = None
 
     # ------------------------------------------------------------------
     # 工具方法
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _resolve_class_names(kwargs: dict[str, Any]) -> list[str]:
+        """
+        从 wrapper 额外配置中解析类别名列表。
+
+        输入参数:
+            - kwargs: dict[str, Any], Hydra 传入 wrapper 但未显式声明的额外配置项
+
+        输出:
+            - class_names: list[str], (C,), 类别名列表; 未配置时返回二分类默认类别名
+        """
+        # list[str] | None, (C,), 配置中的类别名列表
+        class_names = kwargs.get("class_names", None)
+        if class_names is None:
+            return ["background", "foreground"]
+        return [str(name) for name in class_names]
+
+    def _init_multiclass_ap_metrics(self, prefix: str, loss_module: nn.Module, metric_cls: Any, thresholds: Optional[int]) -> None:
+        """
+        为多分类前景类别创建逐类 AP 指标对象。
+
+        输入参数:
+            - prefix: str, 指标名前缀, 例如 atom / voxel_aux / voxel_ligand
+            - loss_module: nn.Module, 当前监督分支的 loss 模块, 通过 num_classes 判断是否为多分类
+            - metric_cls: Any, torchmetrics AP 指标类
+            - thresholds: int | None, binned AP 阈值数量; None 表示使用非 binned 指标
+
+        输出:
+            - None, 原地注册 self.val_{prefix}_ap_{class_name} 指标
+        """
+        # int, 当前分支类别数; <=2 时只保留二分类 PR-AUC
+        num_classes = int(getattr(loss_module, "num_classes", 1))
+        if num_classes <= 2:
+            return
+        if len(self._class_names) != num_classes:
+            raise ValueError(f"len(self._class_names) != num_classes")
+        # list[str], 可变长度, 当前分支逐前景类别 AP 指标名
+        metric_names: list[str] = []
+        for class_id in range(1, num_classes):
+            # str, 当前前景类别名
+            class_name = self._class_names[class_id]
+            # str, Lightning 日志中使用的逐类 AP 指标名
+            metric_name = f"val/{prefix}_ap_{class_name}"
+            # dict[str, Any], torchmetrics 指标构造参数
+            metric_kwargs = {"compute_on_cpu": True}
+            if thresholds is not None:
+                metric_kwargs["thresholds"] = thresholds
+            setattr(self, f"val_{prefix}_ap_{class_name}", metric_cls(**metric_kwargs))
+            self._val_metric_update_counts[metric_name] = 0
+            metric_names.append(metric_name)
+        # str, 当前分支前景类别 macro AP 指标名
+        macro_name = f"val/{prefix}_macro_ap"
+        self._val_metric_update_counts[macro_name] = 0
+        self._multiclass_metric_names[prefix] = metric_names
 
     @staticmethod
     def _extract_batch(batch: Any) -> dict[str, Any]:
@@ -120,6 +186,99 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
         记录当前验证轮次内某个 metric 收到过至少一次有效 update。
         """
         self._val_metric_update_counts[metric_name] = self._val_metric_update_counts.get(metric_name, 0) + 1
+
+    @staticmethod
+    def _update_metric_on_tensor_device(metric_obj: Any, preds: torch.Tensor, targets: torch.Tensor) -> None:
+        """
+        在 preds 所在设备上更新 torchmetrics 指标。
+
+        输入参数:
+            - metric_obj: Any, torchmetrics 指标对象, 内部可能包含 thresholds 等状态张量
+            - preds: torch.Tensor, (M,), 当前 batch 的预测分数
+            - targets: torch.Tensor, (M,), 当前 batch 的硬标签
+
+        输出:
+            - None, 原地更新 metric_obj 状态
+        """
+        metric_obj.to(preds.device)
+        metric_obj.update(preds, targets)
+
+    @staticmethod
+    def _ligand_target_from_dist(ligand_dist_map: torch.Tensor, hard_label_threshold: float) -> torch.Tensor:
+        """
+        从 ligand 距离图生成验证指标使用的硬标签。
+
+        输入参数:
+            - ligand_dist_map: torch.Tensor, (B, D, H, W) 或 (B, C, D, H, W), ligand 距离监督图
+            - hard_label_threshold: float, ligand 距离阈值
+
+        输出:
+            - target: torch.Tensor, (B, D, H, W), 二分类 0/1 标签或多分类类别 ID 标签
+        """
+        if ligand_dist_map.ndim == 4:
+            # torch.Tensor, (B, D, H, W), 二分类距离阈值标签, 取值 0/1
+            return (ligand_dist_map < float(hard_label_threshold)).long()
+        if ligand_dist_map.ndim != 5:
+            raise ValueError(f"ligand_dist_map 期望为 (B,D,H,W) 或 (B,C,D,H,W)，实际 {tuple(ligand_dist_map.shape)}")
+        # torch.Tensor, (B, C-1, D, H, W), 前景类别距离图, 排除背景通道
+        foreground_dist = ligand_dist_map[:, 1:]
+        # min_dist: torch.Tensor, (B, D, H, W), 最近前景类别距离
+        # min_index: torch.Tensor, (B, D, H, W), 最近前景类别在 foreground_dist 中的 0 基索引
+        min_dist, min_index = foreground_dist.min(dim=1)
+        # torch.Tensor, (B, D, H, W), 最近前景类别 ID, 取值范围 1..C-1
+        target = min_index.long() + 1
+        return torch.where(min_dist < float(hard_label_threshold), target, torch.zeros_like(target))
+
+    def _update_binary_or_multiclass_ap(
+        self,
+        prefix: str,
+        logits: torch.Tensor,
+        target: torch.Tensor,
+        mask: torch.Tensor,
+        binary_metric: Any,
+        binary_metric_name: str,
+    ) -> None:
+        """
+        根据 logits 通道数更新二分类 PR-AUC 或多分类逐前景类 AP。
+
+        输入参数:
+            - prefix: str, 指标名前缀, 例如 atom / voxel_aux / voxel_ligand
+            - logits: torch.Tensor, (N, C) 或 (B, C, D, H, W), 当前分支 logits
+            - target: torch.Tensor, (N,) 或 (B, D, H, W), 当前分支硬标签
+            - mask: torch.Tensor, (N,) 或 (B, D, H, W), 当前分支参与指标统计的位置
+            - binary_metric: Any, 二分类 BinaryAveragePrecision 指标对象
+            - binary_metric_name: str, 二分类指标日志名
+
+        输出:
+            - None, 原地更新 torchmetrics 指标状态
+        """
+        if mask.sum() <= 0:
+            return
+        if logits.shape[1] == 1:
+            # torch.Tensor, (M,), 有效位置 sigmoid 前景概率
+            preds = torch.sigmoid(logits[:, 0]).detach().float().reshape(-1)[mask.reshape(-1)].cpu()
+            # torch.Tensor, (M,), 有效位置二分类标签, 取值 0/1
+            targets = target.reshape(-1).long()[mask.reshape(-1)].cpu()
+            self._update_metric_on_tensor_device(binary_metric, preds, targets)
+            self._mark_val_metric_updated(binary_metric_name)
+            return
+        # torch.Tensor, 与 logits 同形, 多分类 softmax 概率
+        prob = torch.softmax(logits, dim=1).detach().float()
+        # torch.Tensor, (N_all,), 展平后的类别 ID 标签
+        target_flat = target.reshape(-1).long()
+        # torch.Tensor[bool], (N_all,), 展平后的有效统计掩码
+        mask_flat = mask.reshape(-1)
+        for class_id in range(1, logits.shape[1]):
+            class_name = self._class_names[class_id] if class_id < len(self._class_names) else f"class_{class_id}"
+            metric_name = f"val/{prefix}_ap_{class_name}"
+            metric_obj = getattr(self, f"val_{prefix}_ap_{class_name}", None)
+            if metric_obj is None:
+                continue
+            preds = prob[:, class_id].reshape(-1)[mask_flat].cpu()
+            targets = (target_flat[mask_flat] == class_id).long().cpu()
+            self._update_metric_on_tensor_device(metric_obj, preds, targets)
+            self._mark_val_metric_updated(metric_name)
+            self._mark_val_metric_updated(f"val/{prefix}_macro_ap")
 
     # ------------------------------------------------------------------
     # 前向 & 损失计算
@@ -172,7 +331,7 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
                 f"atom_target.shape={tuple(atom_target.shape)}"
             )
         # 根据损失类型分发: UnifiedCompositeLoss 使用新接口, 旧类使用原有接口
-        if isinstance(self.atom_loss, UnifiedCompositeLoss):
+        if isinstance(self.atom_loss, (UnifiedCompositeLoss, AdaptiveClassificationCompositeLoss)):
             loss_out = self.atom_loss(
                 logits=atom_logits,
                 target=atom_target,
@@ -218,7 +377,7 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
         voxel_valid_mask = batch["voxel_valid_mask"]
 
         # 根据损失类型分发
-        if isinstance(self.voxel_aux_loss, UnifiedCompositeLoss):
+        if isinstance(self.voxel_aux_loss, (UnifiedCompositeLoss, AdaptiveClassificationCompositeLoss)):
             loss_out = self.voxel_aux_loss(
                 logits=voxel_logits_aux,
                 target=voxel_target,
@@ -267,7 +426,7 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
         # torch.Tensor, (B, 1, D, H, W), 边界有效掩码
         voxel_valid_mask = batch["voxel_valid_mask"]
 
-        if isinstance(self.voxel_ligand_loss, UnifiedCompositeLoss):
+        if isinstance(self.voxel_ligand_loss, (UnifiedCompositeLoss, AdaptiveClassificationCompositeLoss)):
             loss = self.voxel_ligand_loss(
                 logits=voxel_logits_ligand,
                 target=None,
@@ -368,12 +527,14 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
         if valid.sum() <= 0:
             return
 
-        # torch.Tensor, (N_valid,), float, sigmoid 后的预测概率（仅有效原子, 在 CPU 上）
-        preds = torch.sigmoid(atom_logits[:, 0]).detach().float()[valid].cpu()
-        # torch.Tensor, (N_valid,), long, 有效原子的真值标签（在 CPU 上）
-        targets = atom_target[valid].long().cpu()
-        self.val_atom_pr_auc.update(preds, targets)
-        self._mark_val_metric_updated("val/atom_pr_auc")
+        self._update_binary_or_multiclass_ap(
+            prefix="atom",
+            logits=atom_logits,
+            target=atom_target,
+            mask=valid,
+            binary_metric=self.val_atom_pr_auc,
+            binary_metric_name="val/atom_pr_auc",
+        )
 
     def _update_val_voxel_aux_metric(self, outputs: dict[str, Any], batch: dict[str, Any]) -> None:
         """
@@ -391,24 +552,16 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
         if voxel_logits_aux is None:
             return
 
-        # torch.Tensor, (B*D*H*W,), 展平后的 logits
-        logits_flat = voxel_logits_aux.squeeze(1).reshape(-1)
-        # torch.Tensor, (B*D*H*W,), 展平后的真值标签
-        target_flat = batch["voxel_label"].reshape(-1).long()
-        # torch.Tensor, (B, D, H, W), 合并掩码 (与 voxel_aux_loss 完全一致)
+        target = batch["voxel_label"].long()
         effective_mask = batch["hardmask"].squeeze(1).bool() & batch["voxel_valid_mask"].squeeze(1).bool()
-        # torch.Tensor, (B*D*H*W,), 展平后的有效掩码
-        mask_flat = effective_mask.reshape(-1)
-
-        if mask_flat.sum() <= 0:
-            return
-
-        # torch.Tensor, (N_valid,), float, sigmoid 后的概率
-        preds = torch.sigmoid(logits_flat).detach().float()[mask_flat].cpu()
-        # torch.Tensor, (N_valid,), long, 有效体素的标签
-        targets = target_flat[mask_flat].cpu()
-        self.val_voxel_aux_pr_auc.update(preds, targets)
-        self._mark_val_metric_updated("val/voxel_aux_pr_auc")
+        self._update_binary_or_multiclass_ap(
+            prefix="voxel_aux",
+            logits=voxel_logits_aux,
+            target=target,
+            mask=effective_mask,
+            binary_metric=self.val_voxel_aux_pr_auc,
+            binary_metric_name="val/voxel_aux_pr_auc",
+        )
 
     def _update_val_voxel_ligand_metric(self, outputs: dict[str, Any], batch: dict[str, Any]) -> None:
         """
@@ -430,33 +583,20 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
         if ligand_dist_map is None:
             return
 
-        # torch.Tensor, (B*D*H*W,), 展平后的 logits
-        logits_flat = voxel_logits_ligand.squeeze(1).reshape(-1)
-
-        # 生成二值标签: 与 UnifiedCompositeLoss 中 hard_label 逻辑一致
         hard_label_threshold = getattr(self.voxel_ligand_loss, "hard_label_threshold", None)
         if hard_label_threshold is not None:
-            # torch.Tensor, (B, D, H, W), 距离阈值二值化
-            voxel_target = (ligand_dist_map < float(hard_label_threshold)).long()
+            voxel_target = self._ligand_target_from_dist(ligand_dist_map, float(hard_label_threshold))
         else:
-            # hard_label_threshold 为 None 时退回使用 batch 中的 voxel_label
             voxel_target = batch["voxel_label"]
-        # torch.Tensor, (B*D*H*W,), 展平后的标签
-        target_flat = voxel_target.reshape(-1)
-
-        # torch.Tensor, (B*D*H*W,), 展平后的有效掩码 (仅 valid_mask, 无 hardmask)
-        mask_flat = batch["voxel_valid_mask"].squeeze(1).bool().reshape(-1)
-
-        if mask_flat.sum() <= 0:
-            return
-
-        metric_device = self.device if self._voxel_ligand_pr_auc_is_binned else torch.device("cpu")
-        # torch.Tensor, (N_valid,), float, sigmoid 后的概率
-        preds = torch.sigmoid(logits_flat).detach().float()[mask_flat].to(metric_device)
-        # torch.Tensor, (N_valid,), long, 有效体素的标签
-        targets = target_flat[mask_flat].to(metric_device)
-        self.val_voxel_ligand_pr_auc.update(preds, targets)
-        self._mark_val_metric_updated("val/voxel_ligand_pr_auc")
+        mask = batch["voxel_valid_mask"].squeeze(1).bool()
+        self._update_binary_or_multiclass_ap(
+            prefix="voxel_ligand",
+            logits=voxel_logits_ligand,
+            target=voxel_target,
+            mask=mask,
+            binary_metric=self.val_voxel_ligand_pr_auc,
+            binary_metric_name="val/voxel_ligand_pr_auc",
+        )
 
     # ------------------------------------------------------------------
     # 训练 / 验证步骤
@@ -624,17 +764,27 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
             sync_dist=True,
         )
 
-    def _compute_log_reset_metric_safe(self, metric_obj, metric_name: str) -> None:
+    def _compute_log_reset_metric_safe(self, metric_obj, metric_name: str) -> torch.Tensor:
         """
-        对空样本验证轮次安全的 metric compute/log/reset 流程。
+        对空样本验证轮次安全地计算、日志记录并重置单个 metric。
+
+        输入参数:
+            - metric_obj: BinaryAveragePrecision, torchmetrics 指标对象
+            - metric_name: str, 日志中使用的指标名, 如 "val/atom_pr_auc"
+
+        输出:
+            - score_gpu: torch.Tensor, (), 当前 rank 上计算得到的指标值
         """
+        # int, 当前验证轮次内该 metric 收到的有效 update 次数
         local_updates = int(self._val_metric_update_counts.get(metric_name, 0))
         if local_updates <= 0:
+            # torch.Tensor, (), 空样本验证轮次的安全指标值
             score_gpu = torch.tensor(0.0, device=self.device, dtype=torch.float32)
         else:
             prev_to_sync = getattr(metric_obj, "_to_sync", True)
             metric_obj._to_sync = False
             try:
+                # torch.Tensor, (), 当前 rank 本地 metric 计算值
                 score_local = metric_obj.compute()
             finally:
                 metric_obj._to_sync = prev_to_sync
@@ -650,43 +800,199 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
             on_epoch=True,
             sync_dist=True,
         )
+        return score_gpu
+
+    def _compute_log_reset_multiclass_metrics(self) -> dict[str, torch.Tensor]:
+        """
+        计算、日志记录并重置所有多分类逐类 AP 与 macro AP 指标。
+
+        输出:
+            - computed_metrics: dict[str, torch.Tensor], 当前 validation end 中已计算出的指标名到标量张量的映射
+        """
+        # dict[str, torch.Tensor], validation end 现场计算出的多分类指标
+        computed_metrics: dict[str, torch.Tensor] = {}
+        for prefix, metric_names in self._multiclass_metric_names.items():
+            if len(metric_names) == 0:
+                continue
+            # list[torch.Tensor], 当前 prefix 下有有效 update 的逐类 AP
+            class_scores: list[torch.Tensor] = []
+            for metric_name in metric_names:
+                class_name = metric_name.rsplit("_ap_", 1)[1]
+                metric_obj = getattr(self, f"val_{prefix}_ap_{class_name}")
+                # int, 当前验证轮次内该逐类 AP 收到的有效 update 次数
+                local_updates = int(self._val_metric_update_counts.get(metric_name, 0))
+                if local_updates <= 0:
+                    # torch.Tensor, (), 当前类别无有效样本时的安全 AP
+                    score_gpu = torch.tensor(0.0, device=self.device, dtype=torch.float32)
+                else:
+                    prev_to_sync = getattr(metric_obj, "_to_sync", True)
+                    metric_obj._to_sync = False
+                    try:
+                        score_gpu = metric_obj.compute().to(self.device)
+                    finally:
+                        metric_obj._to_sync = prev_to_sync
+                    class_scores.append(score_gpu)
+                metric_obj.reset()
+                self._val_metric_update_counts[metric_name] = 0
+                computed_metrics[metric_name] = score_gpu
+                self.log(
+                    metric_name,
+                    score_gpu,
+                    prog_bar=(metric_name == self.hparams.monitor_metric),
+                    on_step=False,
+                    on_epoch=True,
+                    sync_dist=True,
+                )
+            macro_name = f"val/{prefix}_macro_ap"
+            macro_score = torch.stack(class_scores).mean() if len(class_scores) > 0 else torch.tensor(0.0, device=self.device)
+            self._val_metric_update_counts[macro_name] = 0
+            computed_metrics[macro_name] = macro_score
+            self.log(
+                macro_name,
+                macro_score,
+                prog_bar=(macro_name == self.hparams.monitor_metric),
+                on_step=False,
+                on_epoch=True,
+                sync_dist=True,
+            )
+        return computed_metrics
+
+    def _sync_metric_for_scheduler(self, metric_value: torch.Tensor) -> torch.Tensor:
+        """
+        将 plateau scheduler 使用的主指标同步为各 rank 一致的标量。
+
+        输入参数:
+            - metric_value: torch.Tensor, (), 当前 rank 上的主指标值
+
+        输出:
+            - synced_metric: torch.Tensor, (), 各 rank 一致的主指标均值
+        """
+        # torch.Tensor, (), 当前 rank 上用于调度器的主指标
+        metric_tensor = metric_value.detach().to(self.device).float().reshape(())
+        if int(self.trainer.world_size) > 1:
+            # torch.Tensor, (world_size,), all_gather 后的各 rank 主指标
+            gathered_metric = self.all_gather(metric_tensor).float()
+            metric_tensor = gathered_metric.mean()
+        return metric_tensor
+
+    def _step_warmup_plateau_scheduler(self, computed_metrics: dict[str, torch.Tensor]) -> None:
+        """
+        在每次 validation end 后按主指标推进 warmup_plateau 的 plateau 部分。
+
+        输入参数:
+            - computed_metrics: dict[str, torch.Tensor], on_validation_epoch_end 现场计算出的指标名到标量张量的映射
+
+        输出:
+            - None, 原地更新 optimizer 中各 param group 的学习率
+        """
+        if self._warmup_plateau_scheduler is None:
+            return
+        if self.trainer.sanity_checking:
+            return
+
+        # str, plateau scheduler 监控的主指标名
+        monitor_name = str(self.hparams.monitor_metric)
+        if monitor_name in computed_metrics:
+            # torch.Tensor, (), 当前 validation end 现场计算出的主指标
+            metric_value = computed_metrics[monitor_name]
+        elif monitor_name in self.trainer.callback_metrics:
+            callback_metric = self.trainer.callback_metrics[monitor_name]
+            metric_value = callback_metric if isinstance(callback_metric, torch.Tensor) else torch.tensor(float(callback_metric), device=self.device)
+        else:
+            raise RuntimeError(
+                f"warmup_plateau scheduler monitor metric {monitor_name!r} is not available after validation."
+            )
+
+        # torch.Tensor, (), DDP 同步后的主指标值
+        synced_metric = self._sync_metric_for_scheduler(metric_value)
+        self._warmup_plateau_scheduler.step_plateau(synced_metric, global_step=int(self.global_step))
 
     def on_validation_epoch_end(self) -> None:
         """
-        验证 epoch 结束时，计算并日志所有已启用的 PR-AUC 指标。
-        当对应损失未启用时，跳过对应指标。
+        验证 epoch 结束时，计算并日志所有已启用的 PR-AUC 指标，然后推进 plateau 调度器。
 
-        流程 (对每个已启用指标):
-            1. 临时关闭自动同步，在各 GPU 本地 compute
-            2. 将结果移到当前 GPU，通过 self.log(sync_dist=True) 跨卡汇聚
+        流程:
+            1. 临时关闭 torchmetrics 自动同步，在各 GPU 本地 compute
+            2. 将结果通过 self.log(sync_dist=True) 写入日志
             3. reset 指标状态，为下一次验证做准备
+            4. 若启用 warmup_plateau, 用主指标推进 ReduceLROnPlateau
         """
+        # dict[str, torch.Tensor], 当前 validation end 已计算出的指标集合
+        computed_metrics: dict[str, torch.Tensor] = {}
         if hasattr(self, "val_atom_pr_auc"):
-            self._compute_log_reset_metric_safe(self.val_atom_pr_auc, "val/atom_pr_auc")
+            computed_metrics["val/atom_pr_auc"] = self._compute_log_reset_metric_safe(
+                self.val_atom_pr_auc,
+                "val/atom_pr_auc",
+            )
         if hasattr(self, "val_voxel_aux_pr_auc"):
-            self._compute_log_reset_metric_safe(self.val_voxel_aux_pr_auc, "val/voxel_aux_pr_auc")
+            computed_metrics["val/voxel_aux_pr_auc"] = self._compute_log_reset_metric_safe(
+                self.val_voxel_aux_pr_auc,
+                "val/voxel_aux_pr_auc",
+            )
         if hasattr(self, "val_voxel_ligand_pr_auc"):
-            self._compute_log_reset_metric_safe(self.val_voxel_ligand_pr_auc, "val/voxel_ligand_pr_auc")
+            computed_metrics["val/voxel_ligand_pr_auc"] = self._compute_log_reset_metric_safe(
+                self.val_voxel_ligand_pr_auc,
+                "val/voxel_ligand_pr_auc",
+            )
+        computed_metrics.update(self._compute_log_reset_multiclass_metrics())
+        self._step_warmup_plateau_scheduler(computed_metrics)
+
+    def on_save_checkpoint(self, checkpoint: dict[str, Any]) -> None:
+        """
+        保存手动管理的 warmup_plateau plateau 状态。
+
+        输入参数:
+            - checkpoint: dict[str, Any], Lightning 即将写入磁盘的 checkpoint 字典
+
+        输出:
+            - None, 原地向 checkpoint 写入 plateau scheduler 状态
+        """
+        if self._warmup_plateau_scheduler is not None:
+            checkpoint["warmup_plateau_reduce_on_plateau_state"] = self._warmup_plateau_scheduler.state_dict()
+
+    def on_load_checkpoint(self, checkpoint: dict[str, Any]) -> None:
+        """
+        恢复手动管理的 warmup_plateau plateau 状态。
+
+        输入参数:
+            - checkpoint: dict[str, Any], Lightning 从磁盘读取的 checkpoint 字典
+
+        输出:
+            - None, 立即恢复或暂存 plateau scheduler 状态
+        """
+        if "warmup_plateau_reduce_on_plateau_state" not in checkpoint:
+            return
+        # dict[str, Any], checkpoint 中保存的 plateau scheduler 状态
+        plateau_state = checkpoint["warmup_plateau_reduce_on_plateau_state"]
+        if self._warmup_plateau_scheduler is None:
+            self._pending_warmup_plateau_state = plateau_state
+        else:
+            self._warmup_plateau_scheduler.load_state_dict(plateau_state)
 
     # ------------------------------------------------------------------
     # 优化器 & 调度器
     # ------------------------------------------------------------------
 
-    def _build_warmup_only_scheduler(
-        self,
-        optimizer: torch.optim.Optimizer,
-        sched_cfg: Any,
-    ) -> torch.optim.lr_scheduler.LRScheduler:
-        total_steps = sched_cfg.get("total_steps", None)
+    def _resolve_warmup_steps(self, sched_cfg: Any) -> int:
+        """
+        从 scheduler 配置中解析 warmup step 数。
+
+        输入参数:
+            - sched_cfg: Any, Hydra scheduler 配置, 需要包含 total_steps/warmup_steps/warmup_ratio
+
+        输出:
+            - warmup_steps: int, 线性 warmup 覆盖的 optimizer step 数
+        """
+        total_steps = sched_cfg["total_steps"]
         if total_steps is None:
             total_steps = getattr(self.trainer, "estimated_stepping_batches", None)
         if total_steps is None or int(total_steps) <= 0:
-            raise RuntimeError("warmup_only scheduler requires a positive total_steps value.")
+            raise RuntimeError("warmup scheduler requires a positive total_steps value.")
         total_steps = int(total_steps)
 
-        warmup_steps = sched_cfg.get("warmup_steps", None)
+        warmup_steps = sched_cfg["warmup_steps"]
         if warmup_steps is None:
-            warmup_ratio = float(sched_cfg.get("warmup_ratio", 0.0) or 0.0)
+            warmup_ratio = float(sched_cfg["warmup_ratio"])
             if not (0.0 <= warmup_ratio < 1.0):
                 raise ValueError(f"warmup_ratio must be in [0, 1), got {warmup_ratio}.")
             warmup_steps = int(round(total_steps * warmup_ratio))
@@ -695,8 +1001,25 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
             raise ValueError(
                 f"warmup_steps must be in [0, total_steps], got warmup_steps={warmup_steps}, total_steps={total_steps}."
             )
+        return warmup_steps
 
-        start_factor = float(sched_cfg.get("warmup_start_factor", 0.1))
+    def _build_warmup_only_scheduler(
+        self,
+        optimizer: torch.optim.Optimizer,
+        sched_cfg: Any,
+    ) -> torch.optim.lr_scheduler.LRScheduler:
+        """
+        构建仅包含 step 级线性 warmup 的 scheduler。
+
+        输入参数:
+            - optimizer: torch.optim.Optimizer, 被调度的优化器
+            - sched_cfg: Any, Hydra scheduler 配置, 需要包含 total_steps/warmup_steps/warmup_ratio/warmup_start_factor
+
+        输出:
+            - scheduler: torch.optim.lr_scheduler.LRScheduler, Lightning step 级调度器
+        """
+        warmup_steps = self._resolve_warmup_steps(sched_cfg)
+        start_factor = float(sched_cfg["warmup_start_factor"])
         if not (0.0 < start_factor <= 1.0):
             raise ValueError(f"warmup_start_factor must be in (0, 1], got {start_factor}.")
 
@@ -709,6 +1032,39 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
             end_factor=1.0,
             total_iters=warmup_steps,
         )
+
+    def _build_warmup_plateau_scheduler(
+        self,
+        optimizer: torch.optim.Optimizer,
+        sched_cfg: Any,
+    ) -> WarmupThenReduceLROnPlateau:
+        """
+        构建 step 级 warmup + validation 级 plateau 的组合 scheduler。
+
+        输入参数:
+            - optimizer: torch.optim.Optimizer, 被调度的优化器
+            - sched_cfg: Any, Hydra scheduler 配置, 需要显式包含 warmup 与 plateau 全部字段
+
+        输出:
+            - scheduler: WarmupThenReduceLROnPlateau, 组合调度器对象
+        """
+        scheduler = WarmupThenReduceLROnPlateau(
+            optimizer,
+            warmup_steps=self._resolve_warmup_steps(sched_cfg),
+            warmup_start_factor=float(sched_cfg["warmup_start_factor"]),
+            mode=str(sched_cfg["mode"]),
+            factor=float(sched_cfg["factor"]),
+            patience=int(sched_cfg["patience"]),
+            threshold=float(sched_cfg["threshold"]),
+            threshold_mode=str(sched_cfg["threshold_mode"]),
+            cooldown=int(sched_cfg["cooldown"]),
+            min_lr=sched_cfg["min_lr"],
+            eps=float(sched_cfg["eps"]),
+        )
+        if self._pending_warmup_plateau_state is not None:
+            scheduler.load_state_dict(self._pending_warmup_plateau_state)
+            self._pending_warmup_plateau_state = None
+        return scheduler
 
     def configure_optimizers(self) -> dict[str, Any]:
         """
@@ -753,6 +1109,15 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
             scheduler = sched_cfg(optimizer=optimizer)
         elif callable(sched_cfg) and not hasattr(sched_cfg, "keys"):
             scheduler = sched_cfg(optimizer=optimizer)
+        elif hasattr(sched_cfg, "get") and sched_cfg.get("name", None) == "warmup_plateau":
+            self._warmup_plateau_scheduler = self._build_warmup_plateau_scheduler(
+                optimizer=optimizer,
+                sched_cfg=sched_cfg,
+            )
+            return {
+                "optimizer": optimizer,
+                "lr_scheduler": self._warmup_plateau_scheduler.lightning_warmup_config(),
+            }
         elif hasattr(sched_cfg, "get") and sched_cfg.get("name", None) == "warmup_only":
             scheduler = self._build_warmup_only_scheduler(optimizer=optimizer, sched_cfg=sched_cfg)
         else:

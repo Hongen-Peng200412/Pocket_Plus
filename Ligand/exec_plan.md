@@ -27,6 +27,16 @@ This ExecPlan is a living document. The sections `Progress`, `Surprises & Discov
   Evidence: 空列表 raw.json 验证首次触发 `JSONDecodeError: Unexpected UTF-8 BOM`; 已将 `load_raw_mapping` 改为 `utf-8-sig` 读取。
 - Observation: 服务器 conda 环境激活脚本不兼容 sbatch 中的 `set -u`。
   Evidence: `/home/penghongen/anaconda3/envs/Pocket_Plus_centos7_cu121_allgpu/etc/conda/activate.d/activate-binutils_linux-64.sh` 报 `ADDR2LINE: unbound variable`。已将 `Ligand/sbatch/rcsb_ligand_enrichment_raw4.sbatch` 的 `set -euo pipefail` 改为 `set -eo pipefail`。
+- Observation: 手动执行 merge 动态脚本时，如果不在仓库根目录运行，Python 找不到 `Ligand` package。
+  Evidence: `/tmp/penghongen/slurm_255197/conda_env/bin/python` 报 `ModuleNotFoundError: No module named 'Ligand'`。已新增 `Ligand/sbatch/merge_rcsb_ligand_outputs.sh`，并在文档中明确 merge 前需要 `cd /home/penghongen/My_Project/Pocket_Plus` 或设置 `PYTHONPATH`。
+- Observation: 大规模失败表中 `RCSB_INSTANCE_MATCH_FAILED` 的 98.6% 是糖类/支链糖残基。
+  Evidence: `failed_cases.csv` 中该状态 44313 行，`NAG/MAN/BMA/FUC/GAL/...` 等 sugar-like CCD 共 43687 行；抽样 `6HUG/NAG/F/1` 位于 `_pdbx_branch_scheme`，不在 `_pdbx_nonpoly_scheme`。已增加 branch scheme 匹配。
+- Observation: `BEF/ALF/MOO` 等无机簇 validation failed 的一类原因是 mol2 元素推断不完整。
+  Evidence: `6AP1/BEF` mol2 atom type 为 `BE`，旧逻辑误推为 `B`；已将 mol2 元素推断改为完整周期表。
+- Observation: merge summary 的 raw/matched 统计不能只从合并 rows 反推。
+  Evidence: 用户合并日志中 `raw_json_entries=0` 且 `matched_parsed_pdb_count=11037`，但 array part 日志显示 raw_json_entries 为 11037、missing 为 648。已让 `merge_outputs.py` 读取 part summary 聚合 raw/matched/missing。
+- Observation: 剩余 1.4% 非糖类 `RCSB_INSTANCE_MATCH_FAILED` 多数可以通过 `_atom_site` 直接匹配。
+  Evidence: Windows 本地复测全部 626 个非糖失败行加 200 个糖类样本，新增逻辑匹配 825/826；其中 559 行走 `ATOM_SITE_AUTH_ASYM_AUTH_SEQ`，266 行走 `BRANCH_PDB_ASYM_PDB_SEQ`。抽样 `6AP1/ACE`、`6VMI/Y5P`、`7FGI/GTA`、`8CEP/KBE`、`9IF4/S0R` 均可下载 RCSB native mol2。
 
 ## Decision Log
 
@@ -48,6 +58,15 @@ This ExecPlan is a living document. The sections `Progress`, `Surprises & Discov
 - Decision: sbatch 不启用 `set -u`。
   Rationale: conda activate.d 脚本可能引用未定义变量，启用 nounset 会让环境激活失败；保留 `set -e` 和 `pipefail` 已能覆盖主要失败场景。
   Date/Author: 2026-05-14 / User + Codex
+- Decision: merge 命令必须从仓库根目录运行，或显式设置 `PYTHONPATH`。
+  Rationale: 当前 `Ligand` 是仓库内源码包，不是 site-packages 里安装好的 package；`python -m Ligand...` 依赖当前工作目录或 `PYTHONPATH` 能找到仓库根目录。
+  Date/Author: 2026-05-15 / User + Codex
+- Decision: RCSB instance 匹配同时支持 `_pdbx_nonpoly_scheme` 和 `_pdbx_branch_scheme`。
+  Rationale: Make_Data class-4 中包含大量糖类 HETATM 残基，RCSB 将糖链 monomer 组织在 branch scheme 中；不支持 branch 会系统性漏配。
+  Date/Author: 2026-05-15 / Codex
+- Decision: 在 scheme 表匹配失败后增加 `_atom_site` 兜底匹配。
+  Rationale: 一些特殊 HETATM/修饰残基不出现在 scheme 表中，但 `_atom_site` 仍有完整 comp/chain/seq/坐标；优先用 Make_Data 坐标唯一化，避免重复实例中标识符可匹配但坐标属于另一个实例；无唯一坐标命中时再按 auth/label 标识分优先级匹配。
+  Date/Author: 2026-05-15 / Codex
 
 ## Outcomes & Retrospective
 
@@ -100,3 +119,34 @@ This ExecPlan is a living document. The sections `Progress`, `Surprises & Discov
 ## Interfaces and Dependencies
 
 依赖 Python 包：`numpy`、`scipy`、`requests`、`Bio`、`joblib`。不依赖 RDKit/OpenBabel。RCSB 网络服务包括 full CIF 下载、Data API chemcomp endpoint、ModelServer ligand endpoint。
+## 2026-05-15 Post-Run Diagnostics
+
+服务器第二轮完整运行后，`RCSB_INSTANCE_MATCH_FAILED` 从 44313 降到 13，说明 `_pdbx_branch_scheme` 与 `_atom_site` 兜底匹配基本解决了 instance 对齐问题。新的主要失败为 `VALIDATION_FAILED=38718`，其中 38652 条是 `_atom_site` 提取阶段的序号过滤过宽：branch 糖链或重复 CCD 链中，同一个 `label_asym_id` 下多个相同 CCD monomer 被一起提取，导致 RCSB CIF 重原子数远大于 Make_Data/native mol2。已修复为只用 atom row 自身的 `auth_seq_id/label_seq_id` 与目标 ligand 序号集合相交，不再把目标 row 序号塞进每一行 atom 的候选集合。
+
+剩余少量 `BCL/CLF/HE2/FRU` 等失败来自 altLoc 选择过窄：这些 ligand instance 只有 `label_alt_id=B`，旧逻辑只接受空 alt、`A` 或 `1`，因此 RCSB CIF 被提取为 0 个重原子。已修复为每个 `_atom_site` instance 选择单个可用 altLoc：优先空 alt、`A`、`1`，否则接受排序后的第一个可用 altLoc。
+
+本地 Windows 复测代表样本 `6HUG/NAG`、`6HUG/MAN`、`6VMI/Y5P`、`6VMI/P5P`、`7Z6Q/BCL`、`8DBY/CLF`、`8XGG/HE2`、`8UVU/FRU`，修复后 RCSB CIF 重原子数均与 Make_Data/native mol2 对齐，`validate_ligand_pair` 返回 `errors=[]`。
+
+## 2026-05-15 Third Server Run Diagnostics
+
+服务器第三轮完整运行后，`PASS_HIGH=189873 / 190256`，`RCSB_INSTANCE_MATCH_FAILED=0`，剩余失败为 `RCSB_NATIVE_MOL2_MISSING=156` 与 `VALIDATION_FAILED=227`。`RCSB_NATIVE_MOL2_MISSING` 集中在 16 个 PDB，错误来自 RCSB ModelServer 返回 `Could not find source file for 'pdb-bcif/...'`，在“只接受 RCSB native mol2”的规则下应保留为外部源缺失。
+
+`VALIDATION_FAILED` 中 220 条来自 branch 糖链的序号语义问题：`_pdbx_branch_scheme.auth_seq_num` 不能用于 `_atom_site` instance 提取；实际应使用 Make_Data `res_id` / `_pdbx_branch_scheme.pdb_seq_num`，否则会在 glycan chain 中选到相邻 monomer。已修复 `extract_rcsb_atom_site_ligand`，目标序号集合只保留 `ligand.res_id` 与 `match.row.pdb_seq_num`。本地复测 `8AA3/FRU`、`8G3R/MAN`、`8G6U/MAN`、`6HUG/NAG`、`8DBY/CLF`、`7Z6Q/BCL`，RCSB CIF/native mol2 均重新对齐，`validate_ligand_pair` 返回 `errors=[]`。
+
+预计修复后剩余真正 validation hard cases 为 7 条：`6JLU/CLA` 的 Make_Data 只保留 5 个重原子而 RCSB/native mol2 为 46 个重原子；`7V68/IXO`、`7V68/2CU`、`9O7S/1KP` 四条链的重原子数一致但 Make_Data 与 RCSB CIF 坐标偏差超过当前阈值。
+
+## 2026-05-15 Fourth Server Run Diagnostics
+
+服务器第四轮完整运行后，`PASS_HIGH=190087 / 190256`，`RCSB_INSTANCE_MATCH_FAILED=0`，`VALIDATION_FAILED=13`，`RCSB_NATIVE_MOL2_MISSING=156`。失败表显示 `RCSB_NATIVE_MOL2_MISSING` 行的工具 readiness 字段为空，导致 summary 中 `NOT_READY_NO_VALID_NATIVE_MOL2_PAIR=13` 只统计到 validation failed，漏掉 156 个 native mol2 缺失条目。已修复 `worker.py`：native mol2 下载失败或返回空 mol2 时，同步填充 DockEM/EMERALD-ID/PocketXMol 的 NOT_READY 状态。
+
+13 个 `VALIDATION_FAILED` 中，6 个来自 `9L5S` 的 `_atom_site` 兜底匹配，ID 精确匹配到 `auth_asym=8` 但坐标偏差 37-53 Å，说明重复实例中标识符匹配不足以唯一化。已调整 `match_atom_site_ligand`：先用 Make_Data 坐标唯一化匹配，只有坐标没有唯一命中时才退回 auth/label 精确匹配。预计这 6 条可被救回。
+
+剩余 7 条更像真实 hard cases：`6JLU/CLA` 为 Make_Data 局部切片重原子数 5 vs RCSB/native mol2 46；`7V68/IXO`、`7V68/2CU`、`9O7S/1KP` 四条链为重原子数一致但坐标偏差超过当前 PASS_HIGH 阈值。
+
+## 2026-05-16 Fifth Server Run Diagnostics
+
+第五轮失败表 `Ligand/logs/failed_cases_5.csv` 显示 `RCSB_NATIVE_MOL2_MISSING=156` 与 `VALIDATION_FAILED=13`，并且工具 readiness 已正确把 169 条失败计入 `NOT_READY_NO_VALID_NATIVE_MOL2_PAIR` / `NOT_READY_NO_VALID_SMILES_OR_STRUCTURE`。这说明统计字段修复生效。
+
+13 条 validation failed 中仍有 6 条 `9L5S/P5P/Y5P`，其 `match_method=ATOM_SITE_COORD`，但校验距离仍为 37-53 Å。诊断为二次提取不一致：匹配阶段用 Make_Data 坐标唯一化找到了正确 `_atom_site` group，但 `extract_rcsb_atom_site_ligand` 又用合成 row 的 label_asym/seq 重新提取，可能在重复实例中漂回另一个 group。已修复为：当 `match_method == ATOM_SITE_COORD` 时，extract 阶段也直接用 Make_Data 坐标唯一化返回同一个 `_atom_site` group。
+
+如果该修复生效，预计 `9L5S` 的 6 条会消失，最后稳定残留为 7 条 hard cases 与 156 条 RCSB native mol2 source 缺失。

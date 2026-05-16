@@ -8,7 +8,20 @@ import numpy as np
 from .models import Mol2Info
 
 
-TWO_LETTER_ELEMENTS = {"CL", "BR", "MG", "ZN", "FE", "MN", "CA", "NA", "CU", "CO", "NI", "SE"}
+ELEMENTS = {
+    "H", "HE", "LI", "BE", "B", "C", "N", "O", "F", "NE",
+    "NA", "MG", "AL", "SI", "P", "S", "CL", "AR", "K", "CA",
+    "SC", "TI", "V", "CR", "MN", "FE", "CO", "NI", "CU", "ZN",
+    "GA", "GE", "AS", "SE", "BR", "KR", "RB", "SR", "Y", "ZR",
+    "NB", "MO", "TC", "RU", "RH", "PD", "AG", "CD", "IN", "SN",
+    "SB", "TE", "I", "XE", "CS", "BA", "LA", "CE", "PR", "ND",
+    "PM", "SM", "EU", "GD", "TB", "DY", "HO", "ER", "TM", "YB",
+    "LU", "HF", "TA", "W", "RE", "OS", "IR", "PT", "AU", "HG",
+    "TL", "PB", "BI", "PO", "AT", "RN", "FR", "RA", "AC", "TH",
+    "PA", "U", "NP", "PU", "AM", "CM", "BK", "CF", "ES", "FM",
+    "MD", "NO", "LR", "RF", "DB", "SG", "BH", "HS", "MT", "DS",
+    "RG", "CN", "NH", "FL", "MC", "LV", "TS", "OG",
+}
 
 
 def infer_element(atom_name: str, atom_type: str) -> str:
@@ -23,14 +36,15 @@ def infer_element(atom_name: str, atom_type: str) -> str:
         - element: str, 元素符号, 如 C / N / Cl
     """
 
-    base = re.sub(r"[^A-Za-z]", "", atom_type.split(".")[0].strip())
+    base = re.sub(r"[^A-Za-z]", "", atom_type.split(".")[0].strip()).upper()
     if base:
-        if len(base) >= 2 and base[:2].upper() in TWO_LETTER_ELEMENTS:
+        if len(base) >= 2 and base[:2] in ELEMENTS:
             return base[:2].title()
-        return base[0].upper()
+        if base[:1] in ELEMENTS:
+            return base[:1].upper()
 
-    name = re.sub(r"[^A-Za-z]", "", atom_name.strip())
-    if len(name) >= 2 and name[:2].upper() in TWO_LETTER_ELEMENTS:
+    name = re.sub(r"[^A-Za-z]", "", atom_name.strip()).upper()
+    if len(name) >= 2 and name[:2] in ELEMENTS:
         return name[:2].title()
     return name[:1].upper()
 

@@ -3,11 +3,11 @@ from __future__ import annotations
 """
 Linux 服务器用法示例:
     -     sbatch sbatch/a100/1gpu.sbatch voxel_param_search "raw_pairs_json=/path/pairs.json ckpt_path=/path/model.ckpt output_root=inference_output/two_stage_basic cache_root=inference_output/voxel_cache stage1_objective_expr=avg_voxel_f1 stage2_objective_expr='avg_instance_f1 + 0.5*avg_voxel_f1'"
-    -     sbatch /home/penghongen/My_Project/Pocket_Plus/sbatch/a100/1gpu.sbatch voxel_param_search "stage1_objective_expr='avg_voxel_f1' stage2_objective_expr='avg_instance_f1 + avg_voxel_f1'"
+    -     sbatch /home/penghongen/My_Project/Pocket_Plus/sbatch/a100/1gpu.sbatch voxel_param_search_16b "stage1_objective_expr='avg_voxel_f1' stage2_objective_expr='avg_instance_f1 + avg_voxel_f1'"
 或者: 
 #!/bin/bash
 python Pocket_Plus/src/inference/main/two_stage_basic.py \
-    --config="voxel_param_search" \
+    --config="voxel_param_search_16b" \
     stage1_objective_expr='avg_voxel_f1' \
     stage2_objective_expr='avg_instance_f1 + avg_voxel_f1'
 
@@ -126,58 +126,156 @@ def build_stage1_cfg(base_cfg: dict[str, Any], run_root: str) -> dict[str, Any]:
     return stage_cfg
 
 
-def build_stage2_cfg(base_cfg: dict[str, Any], run_root: str, best_threshold: float) -> dict[str, Any]:
+def _threshold_window(best_threshold: float) -> dict[str, float | str]:
+    """
+    基于第一阶段最优 threshold 构造第二阶段局部搜索窗口。
+
+    输入参数:
+        - best_threshold: float, 第一阶段最优 threshold, 取值范围 [0,1]
+
+    输出:
+        - search_space: dict[str, float | str], threshold 的 grid 搜索空间配置
+    """
     if not 0.0 <= float(best_threshold) <= 1.0:
         raise ValueError(f"best_threshold 必须在 [0,1], 实际为 {best_threshold}")
-
+    # float, 第二阶段 threshold 搜索下界
     threshold_min = round(max(0.0, float(best_threshold) - 0.08), 2)
+    # float, 第二阶段 threshold 搜索上界
     threshold_max = round(min(1.0, float(best_threshold) + 0.04), 2)
+    return {"type": "float", "min": threshold_min, "max": threshold_max, "step": 0.01}
+
+
+def build_stage2_cfg(base_cfg: dict[str, Any], run_root: str, best_threshold: float | dict[str, float]) -> dict[str, Any]:
+    """
+    构造 two_stage_basic 第二阶段参数搜索配置。
+
+    输入参数:
+        - base_cfg: dict[str, Any], 基础 voxel_param_search 配置
+        - run_root: str, 两阶段输出根目录
+        - best_threshold: float | dict[str, float], 第一阶段最优 threshold; 多分类时为类别名到 threshold 的映射
+
+    输出:
+        - stage_cfg: dict[str, Any], 第二阶段 voxel_param_search 配置
+    """
     stage_cfg = copy.deepcopy(base_cfg)
     stage_cfg["output_root"] = _stage_output_root(run_root, "stage2_threshold_component_policy")
     stage_cfg["filter_strength"] = "basic"
-    stage_cfg["threshold"] = float(best_threshold)
     stage_cfg["min_component_voxels"] = 5
     stage_cfg["connectivity_policy"] = "7_none"
     stage_cfg["search_strategy"] = "grid"
-    stage_cfg["search_space"] = {
-        "threshold": {"type": "float", "min": threshold_min, "max": threshold_max, "step": 0.01},
-        "min_component_voxels": {"type": "int", "min": 5, "max": 10, "step": 1},
-        "connectivity_policy": {"values": ["7_none", "19_none", "27_none"]},
-    }
+    if isinstance(best_threshold, dict):
+        if len(best_threshold) == 0:
+            raise ValueError("best_threshold by_class 映射不能为空")
+        # dict[str, dict[str, Any]], class_name -> 当前类局部 threshold 搜索空间
+        search_space_by_class = {
+            str(class_name): {"threshold": _threshold_window(float(threshold))}
+            for class_name, threshold in best_threshold.items()
+        }
+        # float, 用于保留 stage_cfg.threshold 的全类平均阈值, 实际逐类搜索会使用 search_space_by_class
+        stage_cfg["threshold"] = float(sum(float(v) for v in best_threshold.values()) / len(best_threshold))
+        stage_cfg["search_space"] = {
+            "threshold": {"type": "float", "min": 0.0, "max": 1.0, "step": 0.01},
+            "min_component_voxels": {"type": "int", "min": 5, "max": 10, "step": 1},
+            "connectivity_policy": {"values": ["7_none", "19_none", "27_none"]},
+        }
+        stage_cfg["search_space_by_class"] = search_space_by_class
+    else:
+        stage_cfg["threshold"] = float(best_threshold)
+        stage_cfg["search_space"] = {
+            "threshold": _threshold_window(float(best_threshold)),
+            "min_component_voxels": {"type": "int", "min": 5, "max": 10, "step": 1},
+            "connectivity_policy": {"values": ["7_none", "19_none", "27_none"]},
+        }
+        stage_cfg["search_space_by_class"] = {}
     stage_cfg["objective_expr"] = str(stage_cfg.get(STAGE2_OBJECTIVE_KEY, DEFAULT_STAGE2_OBJECTIVE_EXPR))
     stage_cfg["fixed_search_params"] = list(ADVANCED_SEARCH_PARAM_NAMES)
     return stage_cfg
 
 
-def read_best_threshold(stage1_output_root: str) -> float:
+def read_stage1_best_thresholds(stage1_output_root: str) -> float | dict[str, float]:
+    """
+    读取第一阶段 best_params.json 中的最优 threshold。
+
+    输入参数:
+        - stage1_output_root: str, 第一阶段输出目录
+
+    输出:
+        - best_threshold: float | dict[str, float], 二分类为单个 threshold, 多分类为类别名到 threshold 的映射
+    """
     best_params_path = Path(stage1_output_root) / "best_params.json"
     with best_params_path.open("r", encoding="utf-8") as f:
         best_params = json.load(f)
+    if "by_class" in best_params:
+        # dict[str, float], class_name -> 第一阶段最优 threshold
+        best_threshold_by_class: dict[str, float] = {}
+        for class_name, class_params in best_params["by_class"].items():
+            if "threshold" not in class_params:
+                raise KeyError(f"类别 {class_name} 的 best_params 缺少 threshold")
+            threshold = float(class_params["threshold"])
+            if not 0.0 <= threshold <= 1.0:
+                raise ValueError(f"类别 {class_name} 的 best threshold 必须在 [0,1], 实际为 {threshold}")
+            best_threshold_by_class[str(class_name)] = threshold
+        return best_threshold_by_class
     best_threshold = float(best_params["threshold"])
     if not 0.0 <= best_threshold <= 1.0:
         raise ValueError(f"best threshold 必须在 [0,1], 实际为 {best_threshold}")
     return best_threshold
 
 
+def read_best_threshold(stage1_output_root: str) -> float:
+    """
+    读取二分类第一阶段 best_params.json 中的最优 threshold。
+
+    输入参数:
+        - stage1_output_root: str, 第一阶段输出目录
+
+    输出:
+        - best_threshold: float, 二分类第一阶段最优 threshold
+    """
+    best_threshold = read_stage1_best_thresholds(stage1_output_root)
+    if isinstance(best_threshold, dict):
+        raise ValueError("read_best_threshold 只支持二分类平铺 best_params; 多分类请使用 read_stage1_best_thresholds")
+    return float(best_threshold)
+
+
 def write_two_stage_summary(
     run_root: str,
     stage1_cfg: dict[str, Any],
     stage2_cfg: dict[str, Any],
-    best_threshold: float,
+    best_threshold: float | dict[str, float],
 ) -> None:
+    """
+    写出 two_stage_basic 两阶段搜索摘要。
+
+    输入参数:
+        - run_root: str, 两阶段输出根目录
+        - stage1_cfg: dict[str, Any], 第一阶段参数搜索配置
+        - stage2_cfg: dict[str, Any], 第二阶段参数搜索配置
+        - best_threshold: float | dict[str, float], 第一阶段最优 threshold
+
+    输出:
+        - None, 写出 stage1_best_threshold.txt 和 two_stage_basic_summary.json
+    """
     os.makedirs(run_root, exist_ok=True)
     threshold_path = Path(run_root) / "stage1_best_threshold.txt"
-    threshold_path.write_text(f"{best_threshold:.6f}\n", encoding="utf-8")
+    if isinstance(best_threshold, dict):
+        threshold_path.write_text(json.dumps(best_threshold, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    else:
+        threshold_path.write_text(f"{best_threshold:.6f}\n", encoding="utf-8")
 
     summary = {
         "stage1_output_root": stage1_cfg["output_root"],
         "stage2_output_root": stage2_cfg["output_root"],
-        "stage1_best_threshold": float(best_threshold),
         "stage1_objective_expr": stage1_cfg["objective_expr"],
         "stage2_objective_expr": stage2_cfg["objective_expr"],
-        "stage2_threshold_search_space": stage2_cfg["search_space"]["threshold"],
         "stage2_search_space": stage2_cfg["search_space"],
+        "stage2_search_space_by_class": stage2_cfg.get("search_space_by_class", {}),
     }
+    if isinstance(best_threshold, dict):
+        summary["stage1_best_threshold_by_class"] = best_threshold
+    else:
+        summary["stage1_best_threshold"] = float(best_threshold)
+        summary["stage2_threshold_search_space"] = stage2_cfg["search_space"]["threshold"]
     summary_path = Path(run_root) / "two_stage_basic_summary.json"
     summary_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
 
@@ -220,7 +318,7 @@ def main(argv: list[str] | None = None) -> None:
     _print_stage_cfg("stage1_threshold_only", stage1_cfg)
     run_voxel_param_search(stage1_cfg, model, device)
 
-    best_threshold = read_best_threshold(str(stage1_cfg["output_root"]))
+    best_threshold = read_stage1_best_thresholds(str(stage1_cfg["output_root"]))
     stage2_cfg = build_stage2_cfg(base_cfg, run_root, best_threshold)
     _print_stage_cfg("stage2_threshold_component_policy", stage2_cfg)
     run_voxel_param_search(stage2_cfg, model, device)

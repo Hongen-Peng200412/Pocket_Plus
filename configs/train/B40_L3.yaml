@@ -65,12 +65,23 @@ optimizer:
   weight_decay: 0.01
 
 # --- LR Scheduler ---
+# scheduler: dict, 训练学习率调度器配置
+#   → VoxelPointStage1Wrapper.configure_optimizers(): name=warmup_plateau 时构建 WarmupThenReduceLROnPlateau
+#   → warmup: Lightning 每个 optimizer step 调用一次; plateau: Wrapper.on_validation_epoch_end() 每次验证后按主指标调用一次
 scheduler:
-  name: warmup_only
-  total_steps: null
-  warmup_steps: null
-  warmup_ratio: 0.025
-  warmup_start_factor: 0.33
+  name: warmup_plateau        # str, 调度器模式; 先 warmup, 再按验证主指标 plateau 衰减
+  total_steps: null           # int|null, 总 optimizer step 数; null 表示使用 trainer.estimated_stepping_batches
+  warmup_steps: null          # int|null, warmup step 数; null 表示按 warmup_ratio * total_steps 计算
+  warmup_ratio: 0.025         # float, warmup 占总 optimizer step 的比例; 仅 warmup_steps 为 null 时生效
+  warmup_start_factor: 0.33   # float, warmup 起始学习率比例; LinearLR 从 lr*该比例升到 lr
+  mode: ${model.monitor_mode} # str, plateau 指标方向; 与 cfg.model.monitor_mode 保持一致
+  factor: 0.5                 # float, plateau 触发后学习率乘数
+  patience: 3                 # int, PyTorch 原生 patience; 3 表示第 4 次 bad validation 衰减
+  threshold: 1.0e-4           # float, 主指标改进阈值
+  threshold_mode: abs         # str, 改进阈值模式; abs=绝对提升, rel=相对提升
+  cooldown: 0                 # int, 衰减后跳过 plateau 计数的 validation 次数
+  min_lr: 0.0                 # float|list[float], 学习率下界; 单 float 作用于所有 param group
+  eps: 1.0e-8                 # float, ReduceLROnPlateau 判定学习率变化的最小差值
 # scheduler:
 #   _target_: torch.optim.lr_scheduler.OneCycleLR
 #   _partial_: true

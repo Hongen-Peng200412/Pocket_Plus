@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import copy
+import csv
+import hashlib
 import itertools
 import json
 import os
@@ -34,6 +37,51 @@ def _json_default(value: Any) -> Any:
         return str(value)
     raise TypeError(f"对象不可 JSON 序列化: {type(value)}")
 
+def build_voxel_cache_key(
+    ckpt_path: str,
+    cif_path: str,
+    map_path: str,
+    sim_map_path: str | None,
+    forward_params: dict[str, Any],
+    gt_source: str,
+    labels_npz_path: str | None,
+    cif_gt_path: str | None,
+    gt_params: dict[str, Any],
+) -> str:
+    """
+    根据 forward 输入与 GT 输入生成 voxel 缓存键。
+
+    输入参数:
+        - ckpt_path: str, checkpoint 路径
+        - cif_path: str, 结构文件路径
+        - map_path: str, 实验密度图路径
+        - sim_map_path: str | None, 模拟密度图路径; 未使用模拟图时为 None
+        - forward_params: dict[str, Any], 影响 GPU forward 与整图合并的参数
+        - gt_source: str, GT 来源类型, 可选 none/labels_npz/structure
+        - labels_npz_path: str | None, labels.npz 路径; 非 labels_npz GT 时为 None
+        - cif_gt_path: str | None, hard/trivial GT 结构路径; 无额外 GT 结构时为 None
+        - gt_params: dict[str, Any], 影响 GT 构造的参数
+
+    输出:
+        - cache_key: str, sha256 十六进制缓存键
+    """
+    # dict[str, Any], 参与缓存键计算的稳定 JSON 载荷
+    payload = {
+        "ckpt_path": str(ckpt_path),
+        "cif_path": str(cif_path),
+        "map_path": str(map_path),
+        "sim_map_path": None if sim_map_path is None else str(sim_map_path),
+        "forward_params": dict(forward_params),
+        "gt_source": str(gt_source),
+        "labels_npz_path": None if labels_npz_path is None else str(labels_npz_path),
+        "cif_gt_path": None if cif_gt_path is None else str(cif_gt_path),
+        "gt_params": dict(gt_params),
+    }
+    # str, 排序后的 JSON 文本, 保证同一输入产生稳定 hash
+    payload_json = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=_json_default)
+    return hashlib.sha256(payload_json.encode("utf-8")).hexdigest()
+
+
 def save_voxel_prediction_cache(
     cache_path: str,
     ligand_pred: np.ndarray,
@@ -45,21 +93,27 @@ def save_voxel_prediction_cache(
     meta: dict[str, Any],
     gt_ligand_mask: np.ndarray | None,
     gt_instance_label: np.ndarray | None,
+    gt_ligand_mask_by_class: dict[str, np.ndarray] | None,
+    gt_instance_label_by_class: dict[str, np.ndarray] | None,
+    gt_instance_meta: list[dict[str, Any]] | None,
 ) -> str:
     """
     保存 voxel-only GPU forward 概率缓存。
 
     输入参数:
         - cache_path: str, .npz 输出路径; 调用方显式控制缓存命名
-        - ligand_pred: np.ndarray, (D,H,W), ligand 概率图
-        - receptor_pred: np.ndarray | None, (D,H,W), receptor 概率图
+        - ligand_pred: np.ndarray, (D,H,W) 或 (C,D,H,W), ligand 概率图
+        - receptor_pred: np.ndarray | None, (D,H,W) 或 (C,D,H,W), receptor 概率图
         - hardmask: np.ndarray, (D,H,W), 原子落点掩码
         - resampled_emdb: np.ndarray, (D,H,W), 重采样真实密度
         - origin: np.ndarray, (3,), 世界坐标原点(x,y,z)
         - voxel_size: np.ndarray, (3,), 体素大小(x,y,z)
-        - meta: dict[str, Any], 缓存信息, 包含: sample_name, cache_path, cif_path, map_path, sim_map_path, cif_gt_path, label_npz_path, gt_source, density_channel_names
-        - gt_ligand_mask: np.ndarray | None, (D,H,W), GT ligand 掩码
-        - gt_instance_label: np.ndarray | None, (D,H,W), GT instance 标签
+        - meta: dict[str, Any], 缓存信息, 包含 sample_name、cache_path、class_names 等上下文
+        - gt_ligand_mask: np.ndarray | None, (D,H,W), union GT ligand 掩码
+        - gt_instance_label: np.ndarray | None, (D,H,W), union GT instance 标签
+        - gt_ligand_mask_by_class: dict[str, np.ndarray] | None, 前景类别名到 (D,H,W) GT ligand mask 的映射
+        - gt_instance_label_by_class: dict[str, np.ndarray] | None, 前景类别名到 (D,H,W) GT instance 标签的映射
+        - gt_instance_meta: list[dict[str, Any]] | None, GT instance 来源元信息列表
 
     输出:
         - cache_path: str, 写出的缓存路径
@@ -68,13 +122,30 @@ def save_voxel_prediction_cache(
     if cache_parent:
         os.makedirs(cache_parent, exist_ok=True)
 
-    # np.ndarray, (D,H,W), float32 或空数组, receptor 缓存占位
+    # np.ndarray, (D,H,W) 或 (C,D,H,W), float32 或空数组, receptor 缓存占位
     receptor_array = np.asarray(receptor_pred, dtype=np.float32) if receptor_pred is not None else np.empty((0,), dtype=np.float32)
-    # np.ndarray, (D,H,W), bool 或空数组, GT ligand 缓存占位
+    # np.ndarray, (D,H,W), bool 或空数组, union GT ligand 缓存占位
     gt_mask_array = np.asarray(gt_ligand_mask, dtype=bool) if gt_ligand_mask is not None else np.empty((0,), dtype=bool)
-    # np.ndarray, (D,H,W), int32 或空数组, GT instance 缓存占位
+    # np.ndarray, (D,H,W), int32 或空数组, union GT instance 缓存占位
     gt_instance_array = np.asarray(gt_instance_label, dtype=np.int32) if gt_instance_label is not None else np.empty((0,), dtype=np.int32)
+    # list[str], 可变长度, 逐类 GT 的前景类别名列表
+    gt_class_names = list(gt_ligand_mask_by_class.keys()) if gt_ligand_mask_by_class is not None else []
+    if gt_ligand_mask_by_class is not None and gt_instance_label_by_class is None:
+        raise ValueError("gt_ligand_mask_by_class 存在时必须同时提供 gt_instance_label_by_class")
+    if gt_instance_label_by_class is not None and gt_ligand_mask_by_class is None:
+        raise ValueError("gt_instance_label_by_class 存在时必须同时提供 gt_ligand_mask_by_class")
+    if gt_instance_label_by_class is not None and set(gt_instance_label_by_class.keys()) != set(gt_class_names):
+        raise ValueError("gt_ligand_mask_by_class 与 gt_instance_label_by_class 的类别名不一致")
+
+    # dict[str, np.ndarray], 写入 npz 的逐类 GT 数组字段
+    gt_by_class_arrays: dict[str, np.ndarray] = {}
+    for class_index, class_name in enumerate(gt_class_names):
+        gt_by_class_arrays[f"gt_ligand_mask_class_{class_index}"] = np.asarray(gt_ligand_mask_by_class[class_name], dtype=bool)
+        gt_by_class_arrays[f"gt_instance_label_class_{class_index}"] = np.asarray(gt_instance_label_by_class[class_name], dtype=np.int32)
+
     meta_json = json.dumps(meta, ensure_ascii=False, sort_keys=True, default=_json_default)
+    gt_class_names_json = json.dumps(gt_class_names, ensure_ascii=False, sort_keys=True, default=_json_default)
+    gt_instance_meta_json = json.dumps([] if gt_instance_meta is None else gt_instance_meta, ensure_ascii=False, sort_keys=True, default=_json_default)
 
     np.savez(
         cache_path,
@@ -89,7 +160,11 @@ def save_voxel_prediction_cache(
         has_gt_ligand_mask=np.asarray(gt_ligand_mask is not None, dtype=bool),
         gt_instance_label=gt_instance_array,
         has_gt_instance_label=np.asarray(gt_instance_label is not None, dtype=bool),
+        has_gt_by_class=np.asarray(gt_ligand_mask_by_class is not None, dtype=bool),
+        gt_class_names_json=np.asarray(gt_class_names_json),
+        gt_instance_meta_json=np.asarray(gt_instance_meta_json),
         meta_json=np.asarray(meta_json),
+        **gt_by_class_arrays,
     )
     return cache_path
 
@@ -104,16 +179,40 @@ def load_voxel_prediction_cache(cache_path: str) -> VoxelPredCacheData:
         - data: VoxelPredCacheData, 缓存数据对象
     """
     with np.load(cache_path, allow_pickle=False) as data:
-        # np.ndarray, (D,H,W), float32, ligand 概率图
+        # np.ndarray, (D,H,W) 或 (C,D,H,W), float32, ligand 概率图
         ligand_pred = data["ligand_pred"].astype(np.float32, copy=False)
         # bool, receptor_pred 是否真实存在
         has_receptor_pred = bool(data["has_receptor_pred"].item())
+        # np.ndarray | None, (D,H,W) 或 (C,D,H,W), float32, receptor 概率图
         receptor_pred = data["receptor_pred"].astype(np.float32, copy=False) if has_receptor_pred else None
+        # bool, union GT ligand mask 是否真实存在
         has_gt_ligand_mask = bool(data["has_gt_ligand_mask"].item())
+        # np.ndarray | None, (D,H,W), bool, union GT ligand mask
         gt_ligand_mask = data["gt_ligand_mask"].astype(bool, copy=False) if has_gt_ligand_mask else None
+        # bool, union GT instance label 是否真实存在
         has_gt_instance_label = bool(data["has_gt_instance_label"].item())
+        # np.ndarray | None, (D,H,W), int32, union GT instance 标签
         gt_instance_label = data["gt_instance_label"].astype(np.int32, copy=False) if has_gt_instance_label else None
+        # dict[str, Any], 缓存上下文信息
         meta = json.loads(str(data["meta_json"].item()))
+        # bool, 缓存是否包含逐类 GT 字段
+        has_gt_by_class = "has_gt_by_class" in data.files and bool(data["has_gt_by_class"].item())
+        # dict[str, np.ndarray] | None, 前景类别名到 (D,H,W) GT ligand mask 的映射
+        gt_ligand_mask_by_class = None
+        # dict[str, np.ndarray] | None, 前景类别名到 (D,H,W) GT instance 标签的映射
+        gt_instance_label_by_class = None
+        if has_gt_by_class:
+            # list[str], 可变长度, 逐类 GT 的前景类别名列表
+            gt_class_names = json.loads(str(data["gt_class_names_json"].item()))
+            gt_ligand_mask_by_class = {}
+            gt_instance_label_by_class = {}
+            for class_index, class_name in enumerate(gt_class_names):
+                gt_ligand_mask_by_class[str(class_name)] = data[f"gt_ligand_mask_class_{class_index}"].astype(bool, copy=False)
+                gt_instance_label_by_class[str(class_name)] = data[f"gt_instance_label_class_{class_index}"].astype(np.int32, copy=False)
+        # list[dict[str, Any]] | None, GT instance 来源元信息列表
+        gt_instance_meta = None
+        if "gt_instance_meta_json" in data.files:
+            gt_instance_meta = json.loads(str(data["gt_instance_meta_json"].item()))
 
         return VoxelPredCacheData(
             ligand_pred=ligand_pred,
@@ -124,6 +223,9 @@ def load_voxel_prediction_cache(cache_path: str) -> VoxelPredCacheData:
             voxel_size=data["voxel_size"].astype(np.float32, copy=False),
             gt_ligand_mask=gt_ligand_mask,
             gt_instance_label=gt_instance_label,
+            gt_ligand_mask_by_class=gt_ligand_mask_by_class,
+            gt_instance_label_by_class=gt_instance_label_by_class,
+            gt_instance_meta=gt_instance_meta,
             meta=meta,
         )
 
@@ -237,8 +339,171 @@ def evaluate_cached_sample_with_postprocess(
     )
 
 
+def get_foreground_class_names_from_cache(data: VoxelPredCacheData) -> list[str]:
+    """
+    从缓存数据中解析参与逐类评估的前景类别名。
+
+    输入参数:
+        - data: VoxelPredCacheData, voxel prediction cache 数据, ligand_pred 为 (D,H,W) 或 (C,D,H,W)
+
+    输出:
+        - class_names: list[str], 可变长度, 前景类别名列表; 二分类固定为 ["foreground"]
+    """
+    # np.ndarray, (D,H,W) 或 (C,D,H,W), ligand 概率图
+    ligand_pred = np.asarray(data.ligand_pred)
+    if ligand_pred.ndim == 3:
+        return ["foreground"]
+    if ligand_pred.ndim != 4:
+        raise ValueError(f"ligand_pred 必须为 (D,H,W) 或 (C,D,H,W), 实际为 {ligand_pred.shape}")
+    # list[str], (C,), softmax 任务类别名, 需要包含 background
+    class_names = [str(name) for name in data.meta.get("class_names", [])]
+    if len(class_names) < ligand_pred.shape[0]:
+        raise ValueError(f"缓存 class_names 长度 {len(class_names)} 小于 ligand_pred 通道数 {ligand_pred.shape[0]}")
+    return class_names[1:ligand_pred.shape[0]]
 
 
+def select_class_cache_view(
+    data: VoxelPredCacheData,
+    class_name: str,
+) -> VoxelPredCacheData:
+    """
+    从多分类缓存中切出单个前景类别的 3D 评估视图。
+
+    输入参数:
+        - data: VoxelPredCacheData, voxel prediction cache 数据, ligand_pred 为 (D,H,W) 或 (C,D,H,W)
+        - class_name: str, 要切出的前景类别名; 二分类缓存只能使用 foreground
+
+    输出:
+        - class_data: VoxelPredCacheData, 单类别缓存视图, ligand_pred 为 (D,H,W)
+    """
+    # np.ndarray, (D,H,W) 或 (C,D,H,W), ligand 概率图
+    ligand_pred = np.asarray(data.ligand_pred)
+    if ligand_pred.ndim == 3:
+        if class_name != "foreground":
+            raise ValueError(f"二分类缓存只支持 foreground, 实际请求 {class_name}")
+        # dict[str, Any], 单前景视图的缓存上下文
+        meta = dict(data.meta)
+        meta["selected_class_name"] = "foreground"
+        meta["selected_class_id"] = 1
+        return VoxelPredCacheData(
+            ligand_pred=data.ligand_pred,
+            receptor_pred=data.receptor_pred,
+            hardmask=data.hardmask,
+            resampled_emdb=data.resampled_emdb,
+            origin=data.origin,
+            voxel_size=data.voxel_size,
+            gt_ligand_mask=data.gt_ligand_mask,
+            gt_instance_label=data.gt_instance_label,
+            gt_ligand_mask_by_class=data.gt_ligand_mask_by_class,
+            gt_instance_label_by_class=data.gt_instance_label_by_class,
+            gt_instance_meta=data.gt_instance_meta,
+            meta=meta,
+        )
+    if ligand_pred.ndim != 4:
+        raise ValueError(f"ligand_pred 必须为 (D,H,W) 或 (C,D,H,W), 实际为 {ligand_pred.shape}")
+    # list[str], (C,), softmax 任务类别名, 需要包含 background
+    class_names = [str(name) for name in data.meta.get("class_names", [])]
+    if len(class_names) < ligand_pred.shape[0]:
+        raise ValueError(f"缓存 class_names 长度 {len(class_names)} 小于 ligand_pred 通道数 {ligand_pred.shape[0]}")
+    if class_name not in class_names[1:ligand_pred.shape[0]]:
+        raise ValueError(f"类别 {class_name} 不在前景类别列表 {class_names[1:ligand_pred.shape[0]]} 中")
+    if data.gt_ligand_mask_by_class is None or data.gt_instance_label_by_class is None:
+        raise ValueError("多分类缓存缺少逐类 GT, 请删除旧缓存后重新构建")
+    if class_name not in data.gt_ligand_mask_by_class or class_name not in data.gt_instance_label_by_class:
+        raise ValueError(f"多分类缓存缺少类别 {class_name} 的逐类 GT")
+    # int, 当前前景类别在 softmax 通道中的类别 ID
+    class_id = class_names.index(class_name)
+    # np.ndarray | None, (D,H,W), 当前类别 receptor 概率图
+    receptor_class = None
+    if data.receptor_pred is not None:
+        # np.ndarray, (D,H,W) 或 (C,D,H,W), receptor 概率图
+        receptor_pred = np.asarray(data.receptor_pred)
+        if receptor_pred.ndim == 3:
+            receptor_class = receptor_pred
+        elif receptor_pred.ndim == 4:
+            receptor_class = receptor_pred[class_id]
+        else:
+            raise ValueError(f"receptor_pred 必须为 (D,H,W) 或 (C,D,H,W), 实际为 {receptor_pred.shape}")
+    # dict[str, Any], 单类别视图的缓存上下文
+    meta = dict(data.meta)
+    meta["selected_class_name"] = class_name
+    meta["selected_class_id"] = class_id
+    return VoxelPredCacheData(
+        ligand_pred=ligand_pred[class_id],
+        receptor_pred=receptor_class,
+        hardmask=data.hardmask,
+        resampled_emdb=data.resampled_emdb,
+        origin=data.origin,
+        voxel_size=data.voxel_size,
+        gt_ligand_mask=data.gt_ligand_mask_by_class[class_name],
+        gt_instance_label=data.gt_instance_label_by_class[class_name],
+        gt_ligand_mask_by_class=data.gt_ligand_mask_by_class,
+        gt_instance_label_by_class=data.gt_instance_label_by_class,
+        gt_instance_meta=data.gt_instance_meta,
+        meta=meta,
+    )
+
+
+def evaluate_loaded_cached_sample_for_class_with_postprocess(
+    cache_path: str,
+    data: VoxelPredCacheData,
+    class_name: str,
+    postprocess_params: dict[str, Any],
+    eval_params: dict[str, Any],
+) -> dict[str, Any]:
+    """
+    对已加载缓存的单个前景类别执行后处理并评估。
+
+    输入参数:
+        - cache_path: str, voxel prediction cache 路径, 仅用于标记结果
+        - data: VoxelPredCacheData, 已加载的 voxel prediction cache 数据
+        - class_name: str, 当前评估的前景类别名
+        - postprocess_params: dict[str, Any], 后处理参数
+        - eval_params: dict[str, Any], 评估参数, 包含 alpha/beta
+
+    输出:
+        - metrics: dict[str, Any], 单类别单样本后处理评估结果, 包含 class_name/class_id/cache_path
+    """
+    # VoxelPredCacheData, 单类别 3D 评估视图
+    class_data = select_class_cache_view(data, class_name)
+    metrics = evaluate_loaded_cached_sample_with_postprocess(
+        cache_path=cache_path,
+        data=class_data,
+        postprocess_params=postprocess_params,
+        eval_params=eval_params,
+    )
+    metrics["class_name"] = class_name
+    metrics["class_id"] = int(class_data.meta["selected_class_id"])
+    return metrics
+
+
+def evaluate_cached_sample_for_class_with_postprocess(
+    cache_path: str,
+    class_name: str,
+    postprocess_params: dict[str, Any],
+    eval_params: dict[str, Any],
+) -> dict[str, Any]:
+    """
+    从磁盘读取缓存后对单个前景类别执行后处理并评估。
+
+    输入参数:
+        - cache_path: str, voxel prediction cache 路径
+        - class_name: str, 当前评估的前景类别名
+        - postprocess_params: dict[str, Any], 后处理参数
+        - eval_params: dict[str, Any], 评估参数, 包含 alpha/beta
+
+    输出:
+        - metrics: dict[str, Any], 单类别单样本后处理评估结果
+    """
+    # VoxelPredCacheData, 从磁盘读取的缓存数据
+    data = load_voxel_prediction_cache(cache_path)
+    return evaluate_loaded_cached_sample_for_class_with_postprocess(
+        cache_path=cache_path,
+        data=data,
+        class_name=class_name,
+        postprocess_params=postprocess_params,
+        eval_params=eval_params,
+    )
 
 
 
@@ -340,6 +605,81 @@ def evaluate_postprocess_params_on_cache_set(
         for cache_path in cache_paths
     )
     return _summarize_postprocess_metrics(per_sample, postprocess_params)
+
+
+def evaluate_postprocess_params_on_cache_set_for_class(
+    cache_paths: list[str],
+    loaded_cache_items: list[tuple[str, VoxelPredCacheData]],
+    cache_data_mode: str,
+    class_name: str,
+    postprocess_params: dict[str, Any],
+    eval_params: dict[str, Any],
+    n_jobs: int,
+) -> dict[str, Any]:
+    """
+    对整套缓存的单个前景类别执行后处理参数评估。
+
+    输入参数:
+        - cache_paths: list[str], 可变长度, 缓存路径列表; disk 模式使用
+        - loaded_cache_items: list[tuple[str, VoxelPredCacheData]], 可变长度, 已加载缓存; memory 模式使用
+        - cache_data_mode: str, 缓存读取模式, 可选 disk/memory
+        - class_name: str, 当前评估的前景类别名
+        - postprocess_params: dict[str, Any], 后处理参数
+        - eval_params: dict[str, Any], 评估参数, 包含 alpha/beta
+        - n_jobs: int, joblib 并行 worker 数
+
+    输出:
+        - summarys: dict[str, Any], 单类别整套缓存评估汇总, 包含 avg_* 指标和 class_name
+    """
+    if cache_data_mode == "memory":
+        if len(loaded_cache_items) == 0:
+            raise ValueError("memory 模式下 loaded_cache_items 不能为空")
+        # list[dict[str, Any]], 每个缓存样本在当前类别下的评估结果
+        per_sample = Parallel(n_jobs=int(n_jobs), prefer="threads")(
+            delayed(evaluate_loaded_cached_sample_for_class_with_postprocess)(cache_path, data, class_name, postprocess_params, eval_params)
+            for cache_path, data in loaded_cache_items
+        )
+    elif cache_data_mode == "disk":
+        if len(cache_paths) == 0:
+            raise ValueError("disk 模式下 cache_paths 不能为空")
+        # list[dict[str, Any]], 每个缓存样本在当前类别下的评估结果
+        per_sample = Parallel(n_jobs=int(n_jobs))(
+            delayed(evaluate_cached_sample_for_class_with_postprocess)(cache_path, class_name, postprocess_params, eval_params)
+            for cache_path in cache_paths
+        )
+    else:
+        raise ValueError(f"未知 cache_data_mode: {cache_data_mode}")
+    summarys = _summarize_postprocess_metrics(per_sample, postprocess_params)
+    summarys["class_name"] = class_name
+    return summarys
+
+
+def _macro_average_best_metrics(best_metrics_by_class: dict[str, dict[str, Any]]) -> dict[str, float]:
+    """
+    对逐类最优指标做 macro 平均。
+
+    输入参数:
+        - best_metrics_by_class: dict[str, dict[str, Any]], 类别名到该类 best_metrics 的映射
+
+    输出:
+        - macro_metrics: dict[str, float], 各 avg_* 指标和 objective_score 的跨类别平均值
+    """
+    if len(best_metrics_by_class) == 0:
+        raise ValueError("best_metrics_by_class 不能为空")
+    # set[str], 所有类别共有的数值指标名
+    metric_names: set[str] = set()
+    for class_metrics in best_metrics_by_class.values():
+        for key, value in class_metrics.items():
+            if isinstance(value, (int, float, np.integer, np.floating)):
+                metric_names.add(str(key))
+    # dict[str, float], 跨类别简单平均后的 macro 指标
+    macro_metrics: dict[str, float] = {}
+    for metric_name in sorted(metric_names):
+        values = [float(class_metrics[metric_name]) for class_metrics in best_metrics_by_class.values() if metric_name in class_metrics]
+        if len(values) > 0:
+            macro_metrics[metric_name] = float(np.mean(values))
+    return macro_metrics
+
 
 # 用 summarys 算 score
 def _score_postprocess_summary(
@@ -511,6 +851,281 @@ def optimize_postprocess_params(
 
 
 
+
+
+def _optimize_postprocess_params_for_class(
+    cache_paths: list[str],
+    loaded_cache_items: list[tuple[str, VoxelPredCacheData]],
+    cache_data_mode: str,
+    class_name: str,
+    fixed_postprocess_params: dict[str, Any],
+    search_space: dict[str, Any],
+    search_strategy: str,
+    eval_params: dict[str, Any],
+    optimizer_params: dict[str, Any],
+    n_jobs: int,
+    show_progress: bool,
+) -> dict[str, Any]:
+    """
+    对单个前景类别独立搜索后处理参数。
+
+    输入参数:
+        - cache_paths: list[str], 可变长度, 缓存路径列表; disk 模式下用于逐轮加载
+        - loaded_cache_items: list[tuple[str, VoxelPredCacheData]], 可变长度, memory 模式下预加载缓存
+        - cache_data_mode: str, 缓存数据读取模式, 可选 disk/memory
+        - class_name: str, 当前独立搜索的前景类别名
+        - fixed_postprocess_params: dict[str, Any], 固定后处理参数
+        - search_space: dict[str, Any], 当前类别的参数搜索空间
+        - search_strategy: str, 搜索策略, 可选 grid/differential_evolution
+        - eval_params: dict[str, Any], 评估参数, 包含 alpha/beta
+        - optimizer_params: dict[str, Any], 优化器参数, 包含 objective_expr/fixed_search_params
+        - n_jobs: int, 并行 worker 数
+        - show_progress: bool, 是否显示参数组合搜索进度条
+
+    输出:
+        - result: dict[str, Any], 当前类别参数搜索结果, 包含 best_params/best_metrics/history
+    """
+    # list[str], 被强制固定的后处理参数名; 同名 search_space 条目会被忽略
+    fixed_search_param_names = [str(name) for name in optimizer_params["fixed_search_params"]]
+    # dict[str, Any], 当前类别实际参与搜索的参数空间
+    active_search_space = {
+        str(name): spec
+        for name, spec in search_space.items()
+        if str(name) not in fixed_search_param_names
+    }
+    # list[dict[str, Any]], 当前类别按搜索轨迹累积的评估汇总
+    history: list[dict[str, Any]] = []
+
+    def evaluate_params(search_params: dict[str, Any]) -> dict[str, Any]:
+        """
+        评估当前类别的一组搜索参数。
+
+        输入参数:
+            - search_params: dict[str, Any], 当前类别本轮搜索给出的参数子集
+
+        输出:
+            - summarys: dict[str, Any], 当前类别在该参数下的整套缓存评估汇总
+        """
+        # dict[str, Any], 去掉固定参数后的搜索参数
+        active_search_params = {
+            str(name): value
+            for name, value in search_params.items()
+            if str(name) not in fixed_search_param_names
+        }
+        # dict[str, Any], 当前类别完整后处理参数
+        params = dict(fixed_postprocess_params)
+        params.update(active_search_params)
+        for name in fixed_search_param_names:
+            params[name] = fixed_postprocess_params[name]
+        summarys = evaluate_postprocess_params_on_cache_set_for_class(
+            cache_paths=cache_paths,
+            loaded_cache_items=loaded_cache_items,
+            cache_data_mode=cache_data_mode,
+            class_name=class_name,
+            postprocess_params=params,
+            eval_params=eval_params,
+            n_jobs=n_jobs,
+        )
+        summarys["objective_score"] = _score_postprocess_summary(summarys, optimizer_params)
+        history.append(summarys)
+        return summarys
+
+    if search_strategy not in {"grid", "differential_evolution"}:
+        raise ValueError(f"未知 search_strategy: {search_strategy}")
+    if len(active_search_space) == 0:
+        best_summary = evaluate_params({})
+        return {
+            "best_params": best_summary["postprocess_params"],
+            "best_metrics": {k: v for k, v in best_summary.items() if k.startswith("avg_") or k == "objective_score"},
+            "history": history,
+        }
+    if search_strategy == "grid":
+        best_summary = None
+        # list[dict[str, Any]], 当前类别的离散参数组合
+        grid_params = generate_param_grid(active_search_space)
+        # str, tqdm 显示用的当前类别搜索名称
+        grid_desc = f"voxel param grid [{class_name}]"
+        grid_iter = tqdm(grid_params, total=len(grid_params), desc=grid_desc) if show_progress else grid_params
+        for search_params in grid_iter:
+            summarys = evaluate_params(search_params)
+            if best_summary is None or float(summarys["objective_score"]) > float(best_summary["objective_score"]):
+                best_summary = summarys
+        if best_summary is None:
+            raise RuntimeError(f"类别 {class_name} 的 grid 搜索未产生任何结果")
+        return {
+            "best_params": best_summary["postprocess_params"],
+            "best_metrics": {k: v for k, v in best_summary.items() if k.startswith("avg_") or k == "objective_score"},
+            "history": history,
+        }
+    # list[str], 当前类别 differential_evolution 的搜索参数名列表
+    search_names = [str(name) for name in active_search_space.keys()]
+    # list[tuple[float, float]], 当前类别 differential_evolution 的连续边界
+    bounds = _build_de_bounds(search_names, active_search_space)
+
+    def objective(vector: np.ndarray) -> float:
+        """
+        将 differential_evolution 向量解码后返回负 objective 分数。
+
+        输入参数:
+            - vector: np.ndarray, (P,), 当前优化器参数向量
+
+        输出:
+            - score: float, 负的 objective_score, 供 scipy 最小化
+        """
+        # dict[str, Any], 当前优化器向量解码后的搜索参数
+        search_params = _decode_de_vector(vector, search_names, active_search_space)
+        summarys = evaluate_params(search_params)
+        return -float(summarys["objective_score"])
+
+    de_result = differential_evolution(
+        objective,
+        bounds=bounds,
+        maxiter=int(optimizer_params["max_iter"]),
+        popsize=int(optimizer_params["popsize"]),
+        seed=int(optimizer_params["random_seed"]),
+        polish=False,
+    )
+    # dict[str, Any], differential_evolution 最终向量对应的搜索参数
+    best_search_params = _decode_de_vector(de_result.x, search_names, active_search_space)
+    best_summary = evaluate_params(best_search_params)
+    return {
+        "best_params": best_summary["postprocess_params"],
+        "best_metrics": {k: v for k, v in best_summary.items() if k.startswith("avg_") or k == "objective_score"},
+        "history": history,
+        "optimizer_fun": float(de_result.fun),
+    }
+
+
+def optimize_postprocess_params_by_class(
+    cache_paths: list[str],
+    loaded_cache_items: list[tuple[str, VoxelPredCacheData]],
+    cache_data_mode: str,
+    fixed_postprocess_params: dict[str, Any],
+    search_space: dict[str, Any],
+    search_space_by_class: dict[str, dict[str, Any]],
+    search_strategy: str,
+    eval_params: dict[str, Any],
+    optimizer_params: dict[str, Any],
+    n_jobs: int,
+    show_progress: bool,
+) -> dict[str, Any]:
+    """
+    对多分类缓存的每个前景类别独立搜索后处理参数。
+
+    输入参数:
+        - cache_paths: list[str], 可变长度, 缓存路径列表; disk 模式下用于逐轮加载
+        - loaded_cache_items: list[tuple[str, VoxelPredCacheData]], 可变长度, memory 模式下预加载缓存
+        - cache_data_mode: str, 缓存数据读取模式, 可选 disk/memory
+        - fixed_postprocess_params: dict[str, Any], 固定后处理参数
+        - search_space: dict[str, Any], 全局参数搜索空间
+        - search_space_by_class: dict[str, dict[str, Any]], 类别名到局部搜索空间覆盖项的映射
+        - search_strategy: str, 搜索策略, 可选 grid/differential_evolution
+        - eval_params: dict[str, Any], 评估参数, 包含 alpha/beta
+        - optimizer_params: dict[str, Any], 优化器参数, 包含 objective_expr/fixed_search_params
+        - n_jobs: int, 并行 worker 数
+        - show_progress: bool, 是否显示参数组合搜索进度条
+
+    输出:
+        - result: dict[str, Any], 逐类参数搜索结果, 包含 by_class best_params、by_class/macro best_metrics 和 by_class history
+    """
+    if cache_data_mode == "memory":
+        if len(loaded_cache_items) == 0:
+            raise ValueError("memory 模式下 loaded_cache_items 不能为空")
+        # VoxelPredCacheData, 用于解析类别名的第一条缓存
+        first_data = loaded_cache_items[0][1]
+    elif cache_data_mode == "disk":
+        if len(cache_paths) == 0:
+            raise ValueError("disk 模式下 cache_paths 不能为空")
+        first_data = load_voxel_prediction_cache(cache_paths[0])
+    else:
+        raise ValueError(f"未知 cache_data_mode: {cache_data_mode}")
+    # list[str], 可变长度, 不含 background 的前景类别名
+    class_names = get_foreground_class_names_from_cache(first_data)
+    if class_names == ["foreground"]:
+        raise ValueError("optimize_postprocess_params_by_class 只接受多分类缓存")
+
+    # dict[str, dict[str, Any]], class_name -> 该类完整 best params
+    best_params_by_class: dict[str, dict[str, Any]] = {}
+    # dict[str, dict[str, Any]], class_name -> 该类 best metrics
+    best_metrics_by_class: dict[str, dict[str, Any]] = {}
+    # dict[str, list[dict[str, Any]]], class_name -> 该类搜索历史
+    history_by_class: dict[str, list[dict[str, Any]]] = {}
+    for class_name in class_names:
+        # dict[str, Any], 当前类别的搜索空间, 由全局 search_space 加类别覆盖项得到
+        class_search_space = copy.deepcopy(search_space)
+        class_search_space.update(copy.deepcopy(search_space_by_class.get(class_name, {})))
+        class_result = _optimize_postprocess_params_for_class(
+            cache_paths=cache_paths,
+            loaded_cache_items=loaded_cache_items,
+            cache_data_mode=cache_data_mode,
+            class_name=class_name,
+            fixed_postprocess_params=fixed_postprocess_params,
+            search_space=class_search_space,
+            search_strategy=search_strategy,
+            eval_params=eval_params,
+            optimizer_params=optimizer_params,
+            n_jobs=n_jobs,
+            show_progress=show_progress,
+        )
+        best_params_by_class[class_name] = class_result["best_params"]
+        best_metrics_by_class[class_name] = class_result["best_metrics"]
+        history_by_class[class_name] = class_result["history"]
+
+    return {
+        "best_params": {"by_class": best_params_by_class},
+        "best_metrics": {
+            "by_class": best_metrics_by_class,
+            "macro": _macro_average_best_metrics(best_metrics_by_class),
+        },
+        "history": {"by_class": history_by_class},
+    }
+
+
+def write_best_by_class_csv(
+    best_metrics_by_class: dict[str, dict[str, Any]],
+    best_params_by_class: dict[str, dict[str, Any]],
+    output_root: str,
+) -> str:
+    """
+    写出多分类逐类最优参数与指标的 CSV 汇总。
+
+    输入参数:
+        - best_metrics_by_class: dict[str, dict[str, Any]], 类别名到该类 best metrics 的映射
+        - best_params_by_class: dict[str, dict[str, Any]], 类别名到该类 best params 的映射
+        - output_root: str, 输出目录
+
+    输出:
+        - csv_path: str, 写出的 best_by_class_summary.csv 路径
+    """
+    os.makedirs(output_root, exist_ok=True)
+    # str, 逐类最优结果 CSV 输出路径
+    csv_path = os.path.join(output_root, "best_by_class_summary.csv")
+    # list[str], CSV 列名, 便于人工快速查看各类别最优结果
+    fieldnames = [
+        "class_name",
+        "objective_score",
+        "avg_num_candidates",
+        "avg_voxel_precision",
+        "avg_voxel_recall",
+        "avg_voxel_f1",
+        "avg_voxel_iou",
+        "avg_voxel_dice",
+        "avg_instance_precision",
+        "avg_instance_recall",
+        "avg_instance_f1",
+        "best_params_json",
+    ]
+    with open(csv_path, "w", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        for class_name, best_metrics in best_metrics_by_class.items():
+            # dict[str, Any], 当前类别一行 CSV 内容
+            row = {"class_name": class_name}
+            for field_name in fieldnames[1:-1]:
+                row[field_name] = best_metrics.get(field_name, "")
+            row["best_params_json"] = json.dumps(best_params_by_class[class_name], ensure_ascii=False, sort_keys=True, default=_json_default)
+            writer.writerow(row)
+    return csv_path
 
 
 # ----------------------------------- 使用缓存调参的工具函数 -----------------------------------

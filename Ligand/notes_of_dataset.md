@@ -85,7 +85,9 @@ RCSB full structure CIF。
 
 ```text
 1. 读取 _pdbx_nonpoly_scheme 建立 Make_Data ligand 与 RCSB ligand instance 的对应关系。
-2. 读取 _atom_site 提取 RCSB full CIF 中同一 ligand instance 的重原子坐标和元素组成。
+2. 读取 _pdbx_branch_scheme 建立糖链/支链配体 monomer 与 RCSB ligand instance 的对应关系。
+3. 当 scheme 表缺失时, 读取 _atom_site 直接兜底匹配特殊 HETATM/修饰残基。
+4. 读取 _atom_site 提取 RCSB full CIF 中同一 ligand instance 的重原子坐标和元素组成。
 ```
 
 ### 3.2 `rcsb_chemcomp_cache/{CCD}.json`
@@ -139,7 +141,7 @@ chain_id                                           # str, Make_Data candidate ch
 res_id                                             # int, Make_Data candidate res_id
 insertion_code                                     # str, Make_Data insertion code，缺失为空字符串
 status                                             # str, PASS_HIGH 或失败/跳过状态码
-match_method                                       # str, PDB_STRAND_PDB_SEQ / PDB_STRAND_AUTH_SEQ / FAILED
+match_method                                       # str, PDB_STRAND_PDB_SEQ / PDB_STRAND_AUTH_SEQ / BRANCH_PDB_ASYM_PDB_SEQ / BRANCH_PDB_ASYM_AUTH_SEQ / ATOM_SITE_* / FAILED
 label_asym_id                                      # str, RCSB _pdbx_nonpoly_scheme.asym_id
 pdb_strand_id                                      # str, RCSB _pdbx_nonpoly_scheme.pdb_strand_id
 pdb_seq_num                                        # str, RCSB _pdbx_nonpoly_scheme.pdb_seq_num
@@ -178,7 +180,22 @@ source_part_index                                  # int, array part 编号；�
 source_part_count                                  # int, array part 总数；非 array 总表为 -1
 validation_detail                                  # dict/json, 结构化校验指标
 download_attempts                                  # dict/json, full_cif/chemcomp/mol2 各自下载尝试次数
-rcsb_nonpoly_scheme_row                            # dict/json, 匹配到的 _pdbx_nonpoly_scheme 原始字段
+rcsb_nonpoly_scheme_row                            # dict/json, 匹配到的 _pdbx_nonpoly_scheme 或 _pdbx_branch_scheme 归一化字段
+```
+
+`match_method` 可能取值：
+
+```text
+PDB_STRAND_PDB_SEQ          # 来自 _pdbx_nonpoly_scheme, 用 pdb_strand_id + pdb_seq_num 匹配
+PDB_STRAND_AUTH_SEQ         # 来自 _pdbx_nonpoly_scheme, 用 pdb_strand_id + auth_seq_num 匹配
+BRANCH_PDB_ASYM_PDB_SEQ     # 来自 _pdbx_branch_scheme, 用 pdb_asym_id + pdb_seq_num 匹配
+BRANCH_PDB_ASYM_AUTH_SEQ    # 来自 _pdbx_branch_scheme, 用 pdb_asym_id + auth_seq_num 匹配
+ATOM_SITE_AUTH_ASYM_AUTH_SEQ # 来自 _atom_site, 用 auth_asym_id + auth_seq_id 精确匹配
+ATOM_SITE_AUTH_ASYM_LABEL_SEQ # 来自 _atom_site, 用 auth_asym_id + label_seq_id 精确匹配
+ATOM_SITE_LABEL_ASYM_LABEL_SEQ # 来自 _atom_site, 用 label_asym_id + label_seq_id 精确匹配
+ATOM_SITE_LABEL_ASYM_AUTH_SEQ # 来自 _atom_site, 用 label_asym_id + auth_seq_id 精确匹配
+ATOM_SITE_COORD             # 来自 _atom_site, 优先用 Make_Data 坐标唯一化匹配; 无唯一坐标命中时再用 auth/label 标识匹配
+FAILED                      # 未找到唯一匹配
 ```
 
 ## 5. 状态码说明
@@ -232,9 +249,22 @@ reports/parts/validation_summary_part_{i}_of_{n}.json
 合并命令：
 
 ```bash
+cd /home/penghongen/My_Project/Pocket_Plus
 python -m Ligand.rcsb_enrichment.merge_outputs \
   --output-root /storage/penghongen/CIF_Ligand \
   --array-count 5
+```
+
+如果使用动态重试脚本或从任意目录手动运行，必须先 `cd /home/penghongen/My_Project/Pocket_Plus`，或者显式设置：
+
+```bash
+export PYTHONPATH=/home/penghongen/My_Project/Pocket_Plus:$PYTHONPATH
+```
+
+否则 Python 无法在当前工作目录中发现 `Ligand` package，会报：
+
+```text
+ModuleNotFoundError: No module named 'Ligand'
 ```
 
 读取兼容规则：

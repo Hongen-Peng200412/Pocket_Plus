@@ -52,6 +52,26 @@ def load_part_jsonl(output_root: Path, array_count: int) -> list[MappingRow]:
     return rows
 
 
+def load_part_summaries(output_root: Path, array_count: int) -> list[dict]:
+    """
+    读取 array part summary。
+
+    输入参数:
+        - output_root: Path, 输出根目录
+        - array_count: int, array 分片总数
+
+    输出:
+        - summaries: list[dict], 已存在 part summary 的列表
+    """
+
+    summaries: list[dict] = []
+    for index in range(array_count):
+        path = output_root / "reports" / "parts" / f"validation_summary_part_{index}_of_{array_count}.json"
+        if path.exists():
+            summaries.append(json.loads(path.read_text(encoding="utf-8")))
+    return summaries
+
+
 def main() -> None:
     """
     合并 array parts 输出。
@@ -62,14 +82,23 @@ def main() -> None:
 
     args = parse_args()
     rows = load_part_jsonl(args.output_root, args.array_count)
-    unique_pdb = {row.pdb_id for row in rows if row.pdb_id}
-    missing = sum(1 for row in rows if row.status == "RAW_JSON_PDB_NOT_IN_PARSED_ROOT")
+    part_summaries = load_part_summaries(args.output_root, args.array_count)
+    if part_summaries:
+        raw_json_entries = max(int(item.get("raw_json_entries", 0)) for item in part_summaries)
+        unique_pdb_ids = max(int(item.get("unique_pdb_ids_in_raw_json", 0)) for item in part_summaries)
+        matched_count = sum(int(item.get("matched_parsed_pdb_count", 0)) for item in part_summaries)
+        missing_count = sum(int(item.get("missing_parsed_pdb_count", 0)) for item in part_summaries)
+    else:
+        raw_json_entries = 0
+        unique_pdb_ids = 0
+        matched_count = len({row.pdb_id for row in rows if row.pdb_id and row.status != "RAW_JSON_PDB_NOT_IN_PARSED_ROOT"})
+        missing_count = sum(1 for row in rows if row.status == "RAW_JSON_PDB_NOT_IN_PARSED_ROOT")
     summary = build_summary(
         rows=rows,
-        raw_json_entries=0,
-        unique_pdb_ids_in_raw_json=0,
-        matched_parsed_pdb_count=len(unique_pdb),
-        missing_parsed_pdb_count=missing,
+        raw_json_entries=raw_json_entries,
+        unique_pdb_ids_in_raw_json=unique_pdb_ids,
+        matched_parsed_pdb_count=matched_count,
+        missing_parsed_pdb_count=missing_count,
         output_root=args.output_root,
     )
     summary["created_at"] = datetime.now().isoformat(timespec="seconds")

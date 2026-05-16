@@ -33,6 +33,10 @@ class_folder_names: ["metal_ion", "peptide", "nucleic", "small_molecule", "rando
 # --- 标签映射 (Label Mapping) ---
 # 5 个条目对应体素值 0-4，与 fused.yaml 完全一致，不因新增 random_BOX 目录而改变
 class_mapping: [0, 1, 1, 1, 1]
+class_names: [background, foreground]  # list[str], 任务类别名; 顺序必须与 class_mapping 映射后的类别 ID 0..C-1 对齐
+                                      # → BoxPointDataset.__init__: 校验 len(class_names)==num_task_classes; 实验配置可将同一顺序转发给 model.class_names
+num_task_classes: 2                   # int, 当前训练任务类别数; 2 表示保持单通道 sigmoid 二分类监督
+                                      # → BoxPointDataset.__init__: 决定 ligand_dist_map 二分类 min 归约或多分类 (C,D,H,W) 输出
 
 
 

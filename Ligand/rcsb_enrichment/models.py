@@ -67,6 +67,7 @@ class NonpolySchemeRow:
         - auth_mon_id: str, 作者 ligand ID
         - pdb_strand_id: str, RCSB/PDB chain ID, 与 Make_Data chain_id 对齐
         - pdb_ins_code: str, insertion code
+        - source_scheme: str, 来源 scheme, 取值为 nonpoly 或 branch
     """
 
     asym_id: str
@@ -77,6 +78,7 @@ class NonpolySchemeRow:
     auth_mon_id: str
     pdb_strand_id: str
     pdb_ins_code: str
+    source_scheme: str = ""
 
 
 @dataclass

@@ -12,15 +12,17 @@ class VoxelPredCacheData:
     voxel-only 推理概率缓存数据。
 
     输入参数:
-        - ligand_pred: np.ndarray, (D, H, W), 已按 hardmask 约束的 ligand 概率图
-        - receptor_pred: np.ndarray | None, (D, H, W), 已按 hardmask 约束的 receptor 概率图
+        - ligand_pred: np.ndarray, (D, H, W) 或 (C, D, H, W), 已按 hardmask 约束的 ligand 概率图
+        - receptor_pred: np.ndarray | None, (D, H, W) 或 (C, D, H, W), 已按 hardmask 约束的 receptor 概率图
         - hardmask: np.ndarray, (D, H, W), 原子落点占据掩码(取值0或1)
         - resampled_emdb: np.ndarray, (D, H, W), 重采样真实密度图
         - origin: np.ndarray, (3,), 世界坐标原点(x,y,z)
         - voxel_size: np.ndarray, (3,), 体素大小(x,y,z)
-
-        - gt_ligand_mask: np.ndarray | None, (D, H, W), GT ligand 二值掩码
-        - gt_instance_label: np.ndarray | None, (D, H, W), GT instance 标签(0为背景)
+        - gt_ligand_mask: np.ndarray | None, (D, H, W), union GT ligand 二值掩码
+        - gt_instance_label: np.ndarray | None, (D, H, W), union GT instance 标签(0为背景)
+        - gt_ligand_mask_by_class: dict[str, np.ndarray] | None, 前景类别名到 (D,H,W) GT ligand mask 的映射
+        - gt_instance_label_by_class: dict[str, np.ndarray] | None, 前景类别名到 (D,H,W) GT instance 标签的映射
+        - gt_instance_meta: list[dict[str, Any]] | None, GT instance 来源元信息列表
         - meta: dict[str, Any], 缓存上下文信息
     """
     ligand_pred: np.ndarray
@@ -31,6 +33,9 @@ class VoxelPredCacheData:
     voxel_size: np.ndarray
     gt_ligand_mask: np.ndarray | None
     gt_instance_label: np.ndarray | None
+    gt_ligand_mask_by_class: dict[str, np.ndarray] | None
+    gt_instance_label_by_class: dict[str, np.ndarray] | None
+    gt_instance_meta: list[dict[str, Any]] | None
     meta: dict[str, Any]
 
 

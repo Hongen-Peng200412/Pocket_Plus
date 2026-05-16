@@ -318,8 +318,8 @@ def extract_voxel_head_logits(
             raise ValueError(f"模型输出 {output_key} 为 None, 但 output_heads 请求了 {head_name}")
         if not isinstance(logits, torch.Tensor):
             raise TypeError(f"模型输出 {output_key} 必须是 torch.Tensor, 实际为 {type(logits)}")
-        if logits.ndim != 5 or int(logits.shape[1]) != 1:
-            raise ValueError(f"模型输出 {output_key} 形状必须为 (B, 1, D, H, W), 实际为 {tuple(logits.shape)}")
+        if logits.ndim != 5 or int(logits.shape[1]) < 1:
+            raise ValueError(f"模型输出 {output_key} 形状必须为 (B, C, D, H, W), 实际为 {tuple(logits.shape)}")
         head_logits[head_name] = logits
     return head_logits
 
@@ -544,10 +544,8 @@ def get_voxel_pred(
     if tuple(hardmask_float.shape) != full_shape_zyx:
         raise ValueError(f"hardmask.shape={hardmask_float.shape} 与 full_shape_zyx={full_shape_zyx} 不一致")
 
-    # dict[str, np.ndarray], head 名称 → 整图概率加权和
-    value_sums = {head_name: np.zeros(full_shape_zyx, dtype=np.float32) for head_name in output_heads}
-    # dict[str, np.ndarray], head 名称 → 整图权重累计
-    weight_sums = {head_name: np.zeros(full_shape_zyx, dtype=np.float32) for head_name in output_heads}
+    value_sums: dict[str, np.ndarray] = {}
+    weight_sums: dict[str, np.ndarray] = {}
 
     batched_iter = prepare_batched_boxes(box_dicts=box_dicts, batch_size=batch_size, device=device)
     if show_progress:
@@ -564,36 +562,72 @@ def get_voxel_pred(
         # list[dict], 长度 B, 每个 BOX 的起点元信息
         box_meta_list = batch_dict["_box_meta"]
         for head_name, logits in head_logits.items():
-            # np.ndarray, (B,D_box,H_box,W_box), float32, 当前 head 的 BOX 概率
-            box_probs = torch.sigmoid(logits[:, 0]).detach().cpu().numpy().astype(np.float32)
-            for box_index, box_prob in enumerate(box_probs):
-                _merge_box_probability_into_full(
-                    value_sum=value_sums[head_name],
-                    weight_sum=weight_sums[head_name],
-                    box_prob=box_prob,
-                    box_position_zyx=tuple(int(v) for v in box_meta_list[box_index]["box_position_zyx"]),
-                    full_shape_zyx=full_shape_zyx,
-                    merge_mode=merge_mode,
-                    core_offset=core_offset,
-                    gaussian_sigma_ratio=gaussian_sigma_ratio,
-                )
+            if logits.shape[1] == 1:
+                # np.ndarray, (B, D_box, H_box, W_box), 单通道 sigmoid 前景概率
+                box_probs = torch.sigmoid(logits[:, 0]).detach().cpu().numpy().astype(np.float32)
+                if head_name not in value_sums:
+                    # np.ndarray, (D,H,W), 当前 head 的整图概率累加器
+                    value_sums[head_name] = np.zeros(full_shape_zyx, dtype=np.float32)
+                    # np.ndarray, (D,H,W), 当前 head 的整图权重累加器
+                    weight_sums[head_name] = np.zeros(full_shape_zyx, dtype=np.float32)
+                for box_index, box_prob in enumerate(box_probs):
+                    # tuple[int,int,int], 当前 BOX 在整图数组中的起点坐标(zyx)
+                    box_position_zyx = tuple(int(v) for v in box_meta_list[box_index]["box_position_zyx"])
+                    _merge_box_probability_into_full(
+                        value_sum=value_sums[head_name],
+                        weight_sum=weight_sums[head_name],
+                        box_prob=box_prob,
+                        box_position_zyx=box_position_zyx,
+                        full_shape_zyx=full_shape_zyx,
+                        merge_mode=merge_mode,
+                        core_offset=core_offset,
+                        gaussian_sigma_ratio=gaussian_sigma_ratio,
+                    )
+            else:
+                # np.ndarray, (B, C, D_box, H_box, W_box), 多分类 softmax 概率
+                box_probs = torch.softmax(logits, dim=1).detach().cpu().numpy().astype(np.float32)
+                if head_name not in value_sums:
+                    # np.ndarray, (C,D,H,W), 当前 head 的逐类整图概率累加器
+                    value_sums[head_name] = np.zeros((box_probs.shape[1], *full_shape_zyx), dtype=np.float32)
+                    # np.ndarray, (C,D,H,W), 当前 head 的逐类整图权重累加器
+                    weight_sums[head_name] = np.zeros((box_probs.shape[1], *full_shape_zyx), dtype=np.float32)
+                for box_index in range(box_probs.shape[0]):
+                    # tuple[int,int,int], 当前 BOX 在整图数组中的起点坐标(zyx)
+                    box_position_zyx = tuple(int(v) for v in box_meta_list[box_index]["box_position_zyx"])
+                    for class_id in range(box_probs.shape[1]):
+                        # np.ndarray, (D_box,H_box,W_box), 当前 BOX 当前类别的概率块
+                        class_box_prob = box_probs[box_index, class_id]
+                        _merge_box_probability_into_full(
+                            value_sum=value_sums[head_name][class_id],
+                            weight_sum=weight_sums[head_name][class_id],
+                            box_prob=class_box_prob,
+                            box_position_zyx=box_position_zyx,
+                            full_shape_zyx=full_shape_zyx,
+                            merge_mode=merge_mode,
+                            core_offset=core_offset,
+                            gaussian_sigma_ratio=gaussian_sigma_ratio,
+                        )
 
     result: dict[str, Any] = {"head_weight_maps": weight_sums}
     for head_name in output_heads:
         if merge_mode == "max":
-            # np.ndarray, (D,H,W), float32, max 合并后的概率图
             pred = value_sums[head_name]
         else:
-            # np.ndarray, (D,H,W), float32, 加权平均后的概率图
             pred = np.divide(
                 value_sums[head_name],
                 weight_sums[head_name],
                 out=np.zeros_like(value_sums[head_name], dtype=np.float32),
                 where=weight_sums[head_name] > 0,
             )
+        if pred.ndim == 4:
+            mask_ligand = (1.0 - hardmask_float)[None]
+            mask_receptor = hardmask_float[None]
+        else:
+            mask_ligand = 1.0 - hardmask_float
+            mask_receptor = hardmask_float
         if head_name == "ligand":
-            result["ligand_pred"] = (pred * (1.0 - hardmask_float)).astype(np.float32)
+            result["ligand_pred"] = (pred * mask_ligand).astype(np.float32)
         elif head_name == "receptor":
-            result["receptor_pred"] = (pred * hardmask_float).astype(np.float32)
+            result["receptor_pred"] = (pred * mask_receptor).astype(np.float32)
 
     return result

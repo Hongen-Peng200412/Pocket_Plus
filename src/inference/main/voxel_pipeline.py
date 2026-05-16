@@ -20,7 +20,9 @@ from src.inference.voxel_tuning import (
     evaluate_postprocess_params_on_cache_set,
     load_voxel_prediction_cache,
     optimize_postprocess_params,
+    optimize_postprocess_params_by_class,
     save_voxel_prediction_cache,
+    write_best_by_class_csv,
 )
 from src.inference.utils.voxel_types import VoxelPredCacheData, VoxelPostprocessResult
 from src.inference.utils.utils import build_infer_vis_bundle, write_voxel_batch_excel
@@ -90,7 +92,13 @@ def _build_cache_or_forward(
     # str, GT 来源类型, 可选 none/labels_npz/structure
     gt_source = _resolve_gt_source(cfg_dict)
     # dict[str, Any], voxel GT 数据; eval_gt=false 时保持空值
-    gt_data = {"gt_ligand_mask": None, "gt_instance_label": None}
+    gt_data = {
+        "gt_ligand_mask": None,
+        "gt_instance_label": None,
+        "gt_ligand_mask_by_class_id": {},
+        "gt_instance_label_by_class_id": {},
+        "gt_instance_meta": None,
+    }
     if gt_source == "labels_npz":
         gt_data = load_ligand_gt_from_labels_npz(
             labels_npz_path=str(_get_cfg(cfg_dict, "labels_npz_path", True)),
@@ -115,6 +123,10 @@ def _build_cache_or_forward(
             ligand_gt_distance_threshold=float(_get_cfg(cfg_dict, "ligand_gt_distance_threshold", True)),
         )
 
+    # list[str], (C,), 当前任务类别名; 二分类默认 background/foreground
+    class_names = [str(v) for v in (_get_cfg(cfg_dict, "class_names", False) or ["background", "foreground"])]
+    # tuple[dict[str, np.ndarray] | None, dict[str, np.ndarray] | None], 类别名粒度的逐类 GT
+    gt_ligand_mask_by_class, gt_instance_label_by_class = _gt_by_class_id_to_name(gt_data, class_names)
     meta = {
         "sample_name": _resolve_sample_name(cfg_dict),
         "cache_path": cache_path,
@@ -125,6 +137,8 @@ def _build_cache_or_forward(
         "labels_npz_path": _get_cfg(cfg_dict, "labels_npz_path", False),
         "gt_source": gt_source,
         "density_channel_names": raw_data["density_channel_names"],
+        "class_names": class_names,
+        "class_mapping": _get_cfg(cfg_dict, "class_mapping", False),
     }
     if bool(_get_cfg(cfg_dict, "save_cache", True)):
         save_voxel_prediction_cache(
@@ -138,6 +152,9 @@ def _build_cache_or_forward(
             meta=meta,
             gt_ligand_mask=gt_data["gt_ligand_mask"],
             gt_instance_label=gt_data["gt_instance_label"],
+            gt_ligand_mask_by_class=gt_ligand_mask_by_class,
+            gt_instance_label_by_class=gt_instance_label_by_class,
+            gt_instance_meta=gt_data.get("gt_instance_meta"),
         )
         return load_voxel_prediction_cache(cache_path)
 
@@ -150,6 +167,9 @@ def _build_cache_or_forward(
         voxel_size=raw_data["voxel_size"],
         gt_ligand_mask=gt_data["gt_ligand_mask"],
         gt_instance_label=gt_data["gt_instance_label"],
+        gt_ligand_mask_by_class=gt_ligand_mask_by_class,
+        gt_instance_label_by_class=gt_instance_label_by_class,
+        gt_instance_meta=gt_data.get("gt_instance_meta"),
         meta=meta,
     )
 
@@ -188,41 +208,28 @@ def run_voxel_single(
     _save_probability_outputs(output_dir, cache_data)
 
     post_params = _postprocess_params_from_cfg(cfg_dict)
-    post_result = postprocess_ligand_probability_map(
-        ligand_pred=cache_data.ligand_pred,
-        origin=cache_data.origin,
-        voxel_size=cache_data.voxel_size,
-        threshold=post_params["threshold"],
-        min_component_voxels=post_params["min_component_voxels"],
-        filter_strength=post_params["filter_strength"],
-        connectivity_policy=post_params["connectivity_policy"],
-        sigma_nearby=post_params["sigma_nearby"],
-        kernel_nearby=post_params["kernel_nearby"],
-        receptor_pred=cache_data.receptor_pred,
-        sigma_response=post_params["sigma_response"],
-        kernel_response=post_params["kernel_response"],
-        score_add=post_params["score_add"],
-        score_minus=post_params["score_minus"],
-        voxel_score_min=post_params["voxel_score_min"],
-        instance_score_min=post_params["instance_score_min"],
-    )
-    _save_postprocess_outputs(output_dir, post_result)
+    post_results_by_class = _postprocess_cache_by_class(cache_data, post_params)
+    first_class_name, post_result = next(iter(post_results_by_class.items()))
+    if first_class_name == "foreground":
+        _save_postprocess_outputs(output_dir, post_result)
+    else:
+        for class_name, class_post_result in post_results_by_class.items():
+            class_dir = os.path.join(output_dir, class_name)
+            os.makedirs(class_dir, exist_ok=True)
+            _save_postprocess_outputs(class_dir, class_post_result)
 
-    metrics: dict[str, Any] | None = None
-    if cache_data.gt_ligand_mask is not None and cache_data.gt_instance_label is not None:
-        metrics = {}
-        metrics.update(evaluate_voxel_mask(post_result.binary_mask_filtered, cache_data.gt_ligand_mask))
-        metrics.update(
-            evaluate_instance_mask(
-                pred_instance_label=post_result.instance_label_filtered,
-                gt_instance_label=cache_data.gt_instance_label,
-                alpha=float(_get_cfg(cfg_dict, "alpha", True)),
-                beta=float(_get_cfg(cfg_dict, "beta", True)),
-            )
-        )
+    metrics = _evaluate_post_results_by_class(
+        post_results_by_class=post_results_by_class,
+        cache_data=cache_data,
+        eval_params={
+            "alpha": float(_get_cfg(cfg_dict, "alpha", True)),
+            "beta": float(_get_cfg(cfg_dict, "beta", True)),
+        },
+    )
+    if metrics is not None:
         _write_json(os.path.join(output_dir, "metrics.json"), metrics)
 
-    if bool(_get_cfg(cfg_dict, "vis_enable", True)) and _get_cfg(cfg_dict, "vis_output_root", False) is not None:
+    if first_class_name == "foreground" and bool(_get_cfg(cfg_dict, "vis_enable", True)) and _get_cfg(cfg_dict, "vis_output_root", False) is not None:
         build_infer_vis_bundle(
             output_root=str(_get_cfg(cfg_dict, "vis_output_root", True)),
             cif_path=str(_get_cfg(cfg_dict, "cif_path", True)),
@@ -243,11 +250,14 @@ def run_voxel_single(
             write_pred_atom_coords=False,
         )
 
+    # dict[str, int], 前景类别名到后处理候选数的映射
+    num_candidates_by_class = {class_name: int(len(class_result.candidates)) for class_name, class_result in post_results_by_class.items()}
     result = {
         "sample_name": sample_name,
         "output_dir": output_dir,
         "cache_path": cache_path,
-        "num_candidates": int(len(post_result.candidates)),
+        "num_candidates": int(sum(num_candidates_by_class.values())),
+        "num_candidates_by_class": num_candidates_by_class,
         "metrics": metrics,
         "error": None,
     }
@@ -376,40 +386,27 @@ def _save_best_outputs_from_cache(
         sample_name = str(cache_data.meta.get("sample_name", Path(cache_path).stem))
         sample_dir = os.path.join(best_root, sample_name)
         os.makedirs(sample_dir, exist_ok=True)
-        post_result = postprocess_ligand_probability_map(
-            ligand_pred=cache_data.ligand_pred,
-            origin=cache_data.origin,
-            voxel_size=cache_data.voxel_size,
-            threshold=float(best_params["threshold"]),
-            min_component_voxels=int(best_params["min_component_voxels"]),
-            filter_strength=str(best_params["filter_strength"]),
-            connectivity_policy=str(best_params["connectivity_policy"]),
-            sigma_nearby=float(best_params["sigma_nearby"]),
-            kernel_nearby=int(best_params["kernel_nearby"]),
-            receptor_pred=cache_data.receptor_pred,
-            sigma_response=float(best_params["sigma_response"]),
-            kernel_response=int(best_params["kernel_response"]),
-            score_add=float(best_params["score_add"]),
-            score_minus=float(best_params["score_minus"]),
-            voxel_score_min=float(best_params["voxel_score_min"]),
-            instance_score_min=float(best_params["instance_score_min"]),
-        )
+        post_results_by_class = _postprocess_cache_by_class(cache_data, dict(best_params))
+        first_class_name, post_result = next(iter(post_results_by_class.items()))
         _save_probability_outputs(sample_dir, cache_data)
-        _save_postprocess_outputs(sample_dir, post_result)
-        metrics: dict[str, Any] | None = None
-        if cache_data.gt_ligand_mask is not None and cache_data.gt_instance_label is not None:
-            metrics = {}
-            metrics.update(evaluate_voxel_mask(post_result.binary_mask_filtered, cache_data.gt_ligand_mask))
-            metrics.update(
-                evaluate_instance_mask(
-                    pred_instance_label=post_result.instance_label_filtered,
-                    gt_instance_label=cache_data.gt_instance_label,
-                    alpha=float(eval_params["alpha"]),
-                    beta=float(eval_params["beta"]),
-                )
-            )
+        if first_class_name == "foreground":
+            _save_postprocess_outputs(sample_dir, post_result)
+        else:
+            for class_name, class_post_result in post_results_by_class.items():
+                class_dir = os.path.join(sample_dir, class_name)
+                os.makedirs(class_dir, exist_ok=True)
+                _save_postprocess_outputs(class_dir, class_post_result)
+        metrics = _evaluate_post_results_by_class(
+            post_results_by_class=post_results_by_class,
+            cache_data=cache_data,
+            eval_params={
+                "alpha": float(eval_params["alpha"]),
+                "beta": float(eval_params["beta"]),
+            },
+        )
+        if metrics is not None:
             _write_json(os.path.join(sample_dir, "metrics.json"), metrics)
-        if vis_enabled:
+        if first_class_name == "foreground" and vis_enabled:
             build_infer_vis_bundle(
                 output_root=str(_get_cfg(cfg_dict, "vis_output_root", True)),
                 cif_path=str(cache_data.meta["cif_path"]),
@@ -429,12 +426,15 @@ def _save_best_outputs_from_cache(
                 pred_instance_label=post_result.instance_label_filtered,
                 write_pred_atom_coords=False,
             )
+        # dict[str, int], 前景类别名到最优参数下候选数的映射
+        num_candidates_by_class = {class_name: int(len(class_result.candidates)) for class_name, class_result in post_results_by_class.items()}
         results.append(
             {
                 "sample_name": sample_name,
                 "output_dir": sample_dir,
                 "cache_path": cache_path,
-                "num_candidates": int(len(post_result.candidates)),
+                "num_candidates": int(sum(num_candidates_by_class.values())),
+                "num_candidates_by_class": num_candidates_by_class,
                 "metrics": metrics,
                 "error": None,
             }
@@ -484,29 +484,58 @@ def run_voxel_param_search(
     elif cache_data_mode != "disk":
         raise ValueError(f"未知 cache_data_mode: {cache_data_mode}")
 
-    search_result = optimize_postprocess_params(
+    # int, 当前缓存 ligand_pred 的维度; 3 表示二分类, 4 表示多分类 softmax
+    pred_ndim = _resolve_cache_prediction_ndim(
         cache_paths=cache_paths,
         loaded_cache_items=loaded_cache_items,
         cache_data_mode=cache_data_mode,
-        fixed_postprocess_params=fixed_postprocess_params,
-        search_space=search_space,
-        search_strategy=str(_get_cfg(cfg_dict, "search_strategy", True)),
-        eval_params=eval_params,
-        optimizer_params=optimizer_params,
-        n_jobs=int(_get_cfg(cfg_dict, "n_jobs", True)),
-        show_progress=bool(_get_cfg(cfg_dict, "show_progress", True)),
     )
-
     output_root = str(_get_cfg(cfg_dict, "output_root", True))
     os.makedirs(output_root, exist_ok=True)
-    _write_json(os.path.join(output_root, "best_params.json"), search_result["best_params"])
-    _write_param_search_excel(search_result["history"], output_root)
-    best_summary = evaluate_postprocess_params_on_cache_set(
-        cache_paths=cache_paths,
-        postprocess_params=search_result["best_params"],
-        eval_params=eval_params,
-        n_jobs=int(_get_cfg(cfg_dict, "n_jobs", True)),
-    )
+    if pred_ndim == 3:
+        search_result = optimize_postprocess_params(
+            cache_paths=cache_paths,
+            loaded_cache_items=loaded_cache_items,
+            cache_data_mode=cache_data_mode,
+            fixed_postprocess_params=fixed_postprocess_params,
+            search_space=search_space,
+            search_strategy=str(_get_cfg(cfg_dict, "search_strategy", True)),
+            eval_params=eval_params,
+            optimizer_params=optimizer_params,
+            n_jobs=int(_get_cfg(cfg_dict, "n_jobs", True)),
+            show_progress=bool(_get_cfg(cfg_dict, "show_progress", True)),
+        )
+        _write_json(os.path.join(output_root, "best_params.json"), search_result["best_params"])
+        _write_param_search_excel(search_result["history"], output_root)
+        best_summary = evaluate_postprocess_params_on_cache_set(
+            cache_paths=cache_paths,
+            postprocess_params=search_result["best_params"],
+            eval_params=eval_params,
+            n_jobs=int(_get_cfg(cfg_dict, "n_jobs", True)),
+        )
+    elif pred_ndim == 4:
+        search_result = optimize_postprocess_params_by_class(
+            cache_paths=cache_paths,
+            loaded_cache_items=loaded_cache_items,
+            cache_data_mode=cache_data_mode,
+            fixed_postprocess_params=fixed_postprocess_params,
+            search_space=search_space,
+            search_space_by_class=dict(_get_cfg(cfg_dict, "search_space_by_class", False) or {}),
+            search_strategy=str(_get_cfg(cfg_dict, "search_strategy", True)),
+            eval_params=eval_params,
+            optimizer_params=optimizer_params,
+            n_jobs=int(_get_cfg(cfg_dict, "n_jobs", True)),
+            show_progress=bool(_get_cfg(cfg_dict, "show_progress", True)),
+        )
+        _write_json(os.path.join(output_root, "best_params.json"), search_result["best_params"])
+        best_summary = search_result["best_metrics"]
+        write_best_by_class_csv(
+            best_metrics_by_class=search_result["best_metrics"]["by_class"],
+            best_params_by_class=search_result["best_params"]["by_class"],
+            output_root=output_root,
+        )
+    else:
+        raise ValueError(f"ligand_pred 维度必须为 3 或 4, 实际为 {pred_ndim}")
     best_outputs = _save_best_outputs_from_cache(
         cache_paths=cache_paths,
         best_params=search_result["best_params"],
@@ -532,6 +561,134 @@ def run_voxel_param_search(
 
 
 # ----------------------------------------------- 纯粹工具函数 ------------------------------------------------
+def _resolve_cache_prediction_ndim(
+    cache_paths: list[str],
+    loaded_cache_items: list[tuple[str, VoxelPredCacheData]],
+    cache_data_mode: str,
+) -> int:
+    """
+    检查整批缓存的 ligand_pred 维度是否一致。
+
+    输入参数:
+        - cache_paths: list[str], 可变长度, 缓存路径列表; disk 模式使用
+        - loaded_cache_items: list[tuple[str, VoxelPredCacheData]], 可变长度, 已加载缓存; memory 模式使用
+        - cache_data_mode: str, 缓存读取模式, 可选 disk/memory
+
+    输出:
+        - pred_ndim: int, ligand_pred 维度, 只允许 3 或 4
+    """
+    if cache_data_mode == "memory":
+        if len(loaded_cache_items) == 0:
+            raise ValueError("memory 模式下 loaded_cache_items 不能为空")
+        # list[int], 每个已加载缓存的 ligand_pred.ndim
+        ndims = [int(np.asarray(data.ligand_pred).ndim) for _, data in loaded_cache_items]
+    elif cache_data_mode == "disk":
+        if len(cache_paths) == 0:
+            raise ValueError("disk 模式下 cache_paths 不能为空")
+        # list[int], 每个磁盘缓存的 ligand_pred.ndim
+        ndims = [int(np.asarray(load_voxel_prediction_cache(cache_path).ligand_pred).ndim) for cache_path in cache_paths]
+    else:
+        raise ValueError(f"未知 cache_data_mode: {cache_data_mode}")
+    # set[int], 整批缓存出现过的 ligand_pred 维度集合
+    ndim_set = set(ndims)
+    if len(ndim_set) != 1:
+        raise ValueError(f"整批缓存 ligand_pred 维度不一致: {sorted(ndim_set)}")
+    pred_ndim = int(ndims[0])
+    if pred_ndim not in {3, 4}:
+        raise ValueError(f"ligand_pred 维度必须为 3 或 4, 实际为 {pred_ndim}")
+    return pred_ndim
+
+
+def _average_numeric_metrics_by_class(metrics_by_class: dict[str, dict[str, Any]]) -> dict[str, float]:
+    """
+    对逐类 metrics 中的数值字段做 macro 平均。
+
+    输入参数:
+        - metrics_by_class: dict[str, dict[str, Any]], 前景类别名到该类 metrics 的映射
+
+    输出:
+        - macro_metrics: dict[str, float], 数值字段的类别间平均值
+    """
+    if len(metrics_by_class) == 0:
+        raise ValueError("metrics_by_class 不能为空")
+    # set[str], 所有类别 metrics 中出现的数值字段名
+    metric_names: set[str] = set()
+    for class_metrics in metrics_by_class.values():
+        for key, value in class_metrics.items():
+            if isinstance(value, (int, float, np.integer, np.floating)):
+                metric_names.add(str(key))
+    # dict[str, float], 类别间简单平均后的 macro metrics
+    macro_metrics: dict[str, float] = {}
+    for metric_name in sorted(metric_names):
+        values = [float(class_metrics[metric_name]) for class_metrics in metrics_by_class.values() if metric_name in class_metrics]
+        if len(values) > 0:
+            macro_metrics[metric_name] = float(np.mean(values))
+    return macro_metrics
+
+
+def _evaluate_post_results_by_class(
+    post_results_by_class: dict[str, VoxelPostprocessResult],
+    cache_data: VoxelPredCacheData,
+    eval_params: dict[str, float],
+) -> dict[str, Any] | None:
+    """
+    根据二分类或多分类后处理结果计算评估指标。
+
+    输入参数:
+        - post_results_by_class: dict[str, VoxelPostprocessResult], 前景类别名到后处理结果的映射
+        - cache_data: VoxelPredCacheData, 当前样本缓存数据, 可包含 union GT 和逐类 GT
+        - eval_params: dict[str, float], 评估参数, 包含 alpha/beta
+
+    输出:
+        - metrics: dict[str, Any] | None, 二分类为平铺指标, 多分类为 by_class/macro 嵌套指标; 无 GT 时为 None
+    """
+    if len(post_results_by_class) == 0:
+        raise ValueError("post_results_by_class 不能为空")
+    first_class_name, first_post_result = next(iter(post_results_by_class.items()))
+    if first_class_name == "foreground":
+        if cache_data.gt_ligand_mask is None or cache_data.gt_instance_label is None:
+            return None
+        # dict[str, Any], 二分类沿用平铺 metrics 格式
+        metrics: dict[str, Any] = {}
+        metrics.update(evaluate_voxel_mask(first_post_result.binary_mask_filtered, cache_data.gt_ligand_mask))
+        metrics.update(
+            evaluate_instance_mask(
+                pred_instance_label=first_post_result.instance_label_filtered,
+                gt_instance_label=cache_data.gt_instance_label,
+                alpha=float(eval_params["alpha"]),
+                beta=float(eval_params["beta"]),
+            )
+        )
+        metrics["num_candidates"] = int(len(first_post_result.candidates))
+        return metrics
+    if cache_data.gt_ligand_mask_by_class is None or cache_data.gt_instance_label_by_class is None:
+        if cache_data.gt_ligand_mask is None and cache_data.gt_instance_label is None:
+            return None
+        raise ValueError("多分类评估需要逐类 GT, 请删除旧缓存后重新构建")
+    # dict[str, dict[str, Any]], 前景类别名到该类 metrics 的映射
+    metrics_by_class: dict[str, dict[str, Any]] = {}
+    for class_name, post_result in post_results_by_class.items():
+        if class_name not in cache_data.gt_ligand_mask_by_class or class_name not in cache_data.gt_instance_label_by_class:
+            raise ValueError(f"缓存缺少类别 {class_name} 的逐类 GT")
+        # dict[str, Any], 当前前景类别的平铺 metrics
+        class_metrics: dict[str, Any] = {}
+        class_metrics.update(evaluate_voxel_mask(post_result.binary_mask_filtered, cache_data.gt_ligand_mask_by_class[class_name]))
+        class_metrics.update(
+            evaluate_instance_mask(
+                pred_instance_label=post_result.instance_label_filtered,
+                gt_instance_label=cache_data.gt_instance_label_by_class[class_name],
+                alpha=float(eval_params["alpha"]),
+                beta=float(eval_params["beta"]),
+            )
+        )
+        class_metrics["num_candidates"] = int(len(post_result.candidates))
+        metrics_by_class[class_name] = class_metrics
+    return {
+        "by_class": metrics_by_class,
+        "macro": _average_numeric_metrics_by_class(metrics_by_class),
+    }
+
+
 def _json_default(value: Any) -> Any:
     """
     将 numpy 和 dataclass 对象转换为 JSON 可序列化对象。
@@ -631,6 +788,52 @@ def _merge_sample_pair_cfg(
         if value is not None:
             sample_cfg[key] = value
     return sample_cfg
+
+def _gt_by_class_id_to_name(
+    gt_data: dict[str, Any],
+    class_names: list[str],
+) -> tuple[dict[str, np.ndarray] | None, dict[str, np.ndarray] | None]:
+    """
+    将 class_id 粒度的逐类 GT 转成 class_name 粒度。
+
+    输入参数:
+        - gt_data: dict[str, Any], load_ligand_gt_from_* 返回的 GT 字典
+        - class_names: list[str], (C,), 任务类别名列表, 下标对应 class_id
+
+    输出:
+        - gt_ligand_mask_by_class: dict[str, np.ndarray] | None, 前景类别名到 (D,H,W) GT ligand mask 的映射
+        - gt_instance_label_by_class: dict[str, np.ndarray] | None, 前景类别名到 (D,H,W) GT instance 标签的映射
+    """
+    # dict[int, np.ndarray], class_id -> (D,H,W), 类别内 GT ligand mask
+    mask_by_class_id = gt_data.get("gt_ligand_mask_by_class_id")
+    # dict[int, np.ndarray], class_id -> (D,H,W), 类别内 GT instance 标签
+    label_by_class_id = gt_data.get("gt_instance_label_by_class_id")
+    if mask_by_class_id is None or label_by_class_id is None:
+        if gt_data.get("gt_ligand_mask") is None or gt_data.get("gt_instance_label") is None:
+            return None, None
+        mask_by_class_id = {}
+        label_by_class_id = {}
+    if set(mask_by_class_id.keys()) != set(label_by_class_id.keys()):
+        raise ValueError("逐类 GT mask 与逐类 GT instance label 的 class_id 不一致")
+    if gt_data.get("gt_ligand_mask") is None or gt_data.get("gt_instance_label") is None:
+        return None, None
+    # tuple[int,int,int], GT 体素网格形状(D,H,W)
+    grid_shape_zyx = tuple(int(v) for v in np.asarray(gt_data["gt_ligand_mask"]).shape)
+    # dict[str, np.ndarray], 前景类别名 -> (D,H,W), 类别内 GT ligand mask
+    gt_ligand_mask_by_class: dict[str, np.ndarray] = {}
+    # dict[str, np.ndarray], 前景类别名 -> (D,H,W), 类别内 GT instance 标签
+    gt_instance_label_by_class: dict[str, np.ndarray] = {}
+    for class_id in range(1, len(class_names)):
+        # str, 当前前景类别名
+        class_name = str(class_names[class_id])
+        if class_id in mask_by_class_id:
+            gt_ligand_mask_by_class[class_name] = np.asarray(mask_by_class_id[class_id], dtype=bool)
+            gt_instance_label_by_class[class_name] = np.asarray(label_by_class_id[class_id], dtype=np.int32)
+        else:
+            gt_ligand_mask_by_class[class_name] = np.zeros(grid_shape_zyx, dtype=bool)
+            gt_instance_label_by_class[class_name] = np.zeros(grid_shape_zyx, dtype=np.int32)
+    return gt_ligand_mask_by_class, gt_instance_label_by_class
+
 
 def _resolve_sample_name(cfg_dict: dict[str, Any]) -> str:
     """
@@ -752,7 +955,7 @@ def _postprocess_params_from_cfg(cfg_dict: dict[str, Any]) -> dict[str, Any]:
             - "voxel_score_min": float, 候选体素级分数阈值
             - "instance_score_min": float, 候选实例级分数阈值
     """
-    return {
+    params = {
         "threshold": float(_get_cfg(cfg_dict, "threshold", True)),
         "min_component_voxels": int(_get_cfg(cfg_dict, "min_component_voxels", True)),
         "filter_strength": str(_get_cfg(cfg_dict, "filter_strength", True)),
@@ -766,11 +969,112 @@ def _postprocess_params_from_cfg(cfg_dict: dict[str, Any]) -> dict[str, Any]:
         "voxel_score_min": float(_get_cfg(cfg_dict, "voxel_score_min", True)),
         "instance_score_min": float(_get_cfg(cfg_dict, "instance_score_min", True)),
     }
+    by_class = _get_cfg(cfg_dict, "postprocess_by_class", False)
+    if by_class is not None:
+        params["by_class"] = dict(by_class)
+    return params
 
 
 
 
 # ----------------------------------------------- 用于保存/写入的的工具函数 ------------------------------------------------
+def _postprocess_one_probability_map(
+    prob_map: np.ndarray,
+    receptor_pred: np.ndarray | None,
+    origin: np.ndarray,
+    voxel_size: np.ndarray,
+    post_params: dict[str, Any],
+    class_name: str | None = None,
+) -> VoxelPostprocessResult:
+    """
+    对单个类别的一张 ligand 概率图执行 voxel 后处理。
+
+    输入参数:
+        - prob_map: np.ndarray, (D, H, W), 当前类别 ligand 概率图
+        - receptor_pred: np.ndarray | None, (D, H, W), 当前类别 receptor 概率图或二分类 receptor 概率图
+        - origin: np.ndarray, (3,), 体素网格世界坐标原点
+        - voxel_size: np.ndarray, (3,), 体素大小
+        - post_params: dict[str, Any], 后处理参数字典, 可包含 by_class 子配置
+        - class_name: str | None, 当前前景类别名; None 表示不查 by_class 覆盖项
+
+    输出:
+        - post_result: VoxelPostprocessResult, 当前类别的后处理结果
+    """
+    if class_name is not None and "by_class" in post_params:
+        # dict[str, Any], 当前类别覆盖后的后处理参数
+        class_params = dict(post_params)
+        class_params.update(dict(post_params["by_class"].get(class_name, {})))
+        post_params = class_params
+    return postprocess_ligand_probability_map(
+        ligand_pred=prob_map,
+        origin=origin,
+        voxel_size=voxel_size,
+        threshold=float(post_params["threshold"]),
+        min_component_voxels=int(post_params["min_component_voxels"]),
+        filter_strength=str(post_params["filter_strength"]),
+        connectivity_policy=str(post_params["connectivity_policy"]),
+        sigma_nearby=float(post_params["sigma_nearby"]),
+        kernel_nearby=int(post_params["kernel_nearby"]),
+        receptor_pred=receptor_pred,
+        sigma_response=float(post_params["sigma_response"]),
+        kernel_response=int(post_params["kernel_response"]),
+        score_add=float(post_params["score_add"]),
+        score_minus=float(post_params["score_minus"]),
+        voxel_score_min=float(post_params["voxel_score_min"]),
+        instance_score_min=float(post_params["instance_score_min"]),
+    )
+
+
+def _postprocess_cache_by_class(cache_data: VoxelPredCacheData, post_params: dict[str, Any]) -> dict[str, VoxelPostprocessResult]:
+    """
+    根据缓存中的概率图维度执行二分类或多分类后处理。
+
+    输入参数:
+        - cache_data: VoxelPredCacheData, 当前样本的整图预测缓存
+        - post_params: dict[str, Any], 后处理参数字典, 可包含 by_class 子配置
+
+    输出:
+        - results: dict[str, VoxelPostprocessResult], 类别名到后处理结果的映射; 二分类键为 foreground
+    """
+    # np.ndarray, (D, H, W) 或 (C, D, H, W), ligand 概率图
+    ligand_pred = np.asarray(cache_data.ligand_pred)
+    if ligand_pred.ndim == 3:
+        return {
+            "foreground": _postprocess_one_probability_map(
+                prob_map=ligand_pred,
+                receptor_pred=cache_data.receptor_pred,
+                origin=cache_data.origin,
+                voxel_size=cache_data.voxel_size,
+                post_params=post_params,
+                class_name="foreground",
+            )
+        }
+    if ligand_pred.ndim != 4:
+        raise ValueError(f"ligand_pred 必须为 (D,H,W) 或 (C,D,H,W)，实际为 {ligand_pred.shape}")
+    # list[str], (C,), 缓存中记录的类别名; 缺失时使用 class_{id} 占位
+    class_names = list(cache_data.meta.get("class_names", []))
+    # dict[str, VoxelPostprocessResult], 每个前景类别的后处理结果
+    results: dict[str, VoxelPostprocessResult] = {}
+    for class_id in range(1, ligand_pred.shape[0]):
+        # str, 当前前景类别名
+        class_name = class_names[class_id] if class_id < len(class_names) else f"class_{class_id}"
+        # np.ndarray | None, (D, H, W), 当前类别 receptor 概率图
+        receptor_class = None
+        if cache_data.receptor_pred is not None:
+            # np.ndarray, (D,H,W) 或 (C,D,H,W), receptor 概率图
+            receptor_pred = np.asarray(cache_data.receptor_pred)
+            receptor_class = receptor_pred[class_id] if receptor_pred.ndim == 4 else receptor_pred
+        results[class_name] = _postprocess_one_probability_map(
+            prob_map=ligand_pred[class_id],
+            receptor_pred=receptor_class,
+            origin=cache_data.origin,
+            voxel_size=cache_data.voxel_size,
+            post_params=post_params,
+            class_name=class_name,
+        )
+    return results
+
+
 def _save_postprocess_outputs(
     output_dir: str,
     post_result: VoxelPostprocessResult,
@@ -813,15 +1117,31 @@ def _save_probability_outputs(
     输出:
         - None
     """
+    ligand_pred = cache_data.ligand_pred.astype(np.float32)
     np.savez(
         os.path.join(output_dir, "ligand_pred.npz"),
-        ligand_pred=cache_data.ligand_pred.astype(np.float32),
+        ligand_pred=ligand_pred,
     )
+    if ligand_pred.ndim == 4:
+        class_names = list(cache_data.meta.get("class_names", []))
+        for class_id in range(1, ligand_pred.shape[0]):
+            class_name = class_names[class_id] if class_id < len(class_names) else f"class_{class_id}"
+            class_dir = os.path.join(output_dir, class_name)
+            os.makedirs(class_dir, exist_ok=True)
+            np.savez(os.path.join(class_dir, "ligand_pred.npz"), ligand_pred=ligand_pred[class_id])
     if cache_data.receptor_pred is not None:
+        receptor_pred = cache_data.receptor_pred.astype(np.float32)
         np.savez(
             os.path.join(output_dir, "receptor_pred.npz"),
-            receptor_pred=cache_data.receptor_pred.astype(np.float32),
+            receptor_pred=receptor_pred,
         )
+        if receptor_pred.ndim == 4:
+            class_names = list(cache_data.meta.get("class_names", []))
+            for class_id in range(1, receptor_pred.shape[0]):
+                class_name = class_names[class_id] if class_id < len(class_names) else f"class_{class_id}"
+                class_dir = os.path.join(output_dir, class_name)
+                os.makedirs(class_dir, exist_ok=True)
+                np.savez(os.path.join(class_dir, "receptor_pred.npz"), receptor_pred=receptor_pred[class_id])
 
 def _write_param_search_excel(
     history: list[dict[str, Any]],

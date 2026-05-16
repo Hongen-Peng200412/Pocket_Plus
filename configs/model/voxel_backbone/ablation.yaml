@@ -17,3 +17,9 @@ model:
       num_conv3d_aux: 2             # int, aux_head 中 Conv3d(3x3)+ReLU 的对数
       ligand_head_hidden_channels: 0 # int, ligand 占据头隐藏通道数; <=0 时不构建
       num_conv3d_ligand: 2           # int, ligand_head 中 Conv3d(3x3)+ReLU 的对数
+      voxel_aux_logit_dim: 1          # int, voxel_aux_head 输出通道数; 消融模式 aux_head_hidden_channels<=0 时必须等于 feature_channels
+                                      # → Stage1VoxelBackbone.__init__: aux_head 为 None 时直接以 voxel_final 作为 voxel_logits_aux
+      voxel_ligand_logit_dim: 1       # int, voxel_ligand_head 输出通道数; 1=二分类, >1=多分类
+                                      # → Stage1VoxelBackbone.__init__: ligand_head_hidden_channels<=0 时不会构建 ligand head, 该值仅保留配置对齐
+      prior_probs: null               # list[float]|null, 多通道 softmax head 先验概率; null 表示不做多分类 bias 初始化
+                                      # → Stage1VoxelBackbone.__init__: 仅在对应 head 存在且 prior_probs 非 null 时生效
