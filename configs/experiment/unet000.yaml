@@ -63,5 +63,6 @@ model:
 
 
 train:
-  strict_global_batch_size: true
+  enable_batch_size_tuning: false 
+  batch_size: 10
   val_per_epoch: 5

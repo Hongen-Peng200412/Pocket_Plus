@@ -150,3 +150,21 @@ This ExecPlan is a living document. The sections `Progress`, `Surprises & Discov
 13 条 validation failed 中仍有 6 条 `9L5S/P5P/Y5P`，其 `match_method=ATOM_SITE_COORD`，但校验距离仍为 37-53 Å。诊断为二次提取不一致：匹配阶段用 Make_Data 坐标唯一化找到了正确 `_atom_site` group，但 `extract_rcsb_atom_site_ligand` 又用合成 row 的 label_asym/seq 重新提取，可能在重复实例中漂回另一个 group。已修复为：当 `match_method == ATOM_SITE_COORD` 时，extract 阶段也直接用 Make_Data 坐标唯一化返回同一个 `_atom_site` group。
 
 如果该修复生效，预计 `9L5S` 的 6 条会消失，最后稳定残留为 7 条 hard cases 与 156 条 RCSB native mol2 source 缺失。
+
+## 2026-05-16 Final Server Run Diagnostics
+
+第六轮失败表 `Ligand/logs/failed_cases_6.csv` 与 merge summary 显示最终状态：
+
+```text
+class4_candidate_count = 190256
+PASS_HIGH = 190093
+RCSB_NATIVE_MOL2_MISSING = 156
+VALIDATION_FAILED = 7
+RCSB_INSTANCE_MATCH_FAILED = 0
+```
+
+DockEM/EMERALD-ID/PocketXMol readiness 统计均为 `190093` 条可用、`163` 条不可用，正好等于 `156` 条 native mol2 缺失加 `7` 条 validation hard cases。说明最终工具输入状态统计与状态表一致。
+
+最终 7 条 validation hard cases 为：`6JLU/CLA` 一条 Make_Data 重原子数 5 vs RCSB/native mol2 46；`7V68/IXO`、`7V68/2CU`、`9O7S/1KP` 四条链为重原子数一致但坐标超过严格阈值。`9L5S` 的 6 条 `ATOM_SITE_COORD` 二次提取漂移已消失，说明坐标兜底提取修复生效。
+
+结论：RCSB 单源短期 enrichment 路线达成验收。若把 RCSB ModelServer native mol2 缺失视为外部源不可用，在 RCSB native mol2 可获得条目中，`PASS_HIGH = 190093 / (190256 - 156) = 99.996%`。即使把 native mol2 缺失也计入总分母，`PASS_HIGH = 190093 / 190256 = 99.914%`。

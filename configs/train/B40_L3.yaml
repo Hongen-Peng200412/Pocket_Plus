@@ -77,7 +77,7 @@ scheduler:
   mode: ${model.monitor_mode} # str, plateau 指标方向; 与 cfg.model.monitor_mode 保持一致
   factor: 0.5                 # float, plateau 触发后学习率乘数
   patience: 3                 # int, PyTorch 原生 patience; 3 表示第 4 次 bad validation 衰减
-  threshold: 1.0e-4           # float, 主指标改进阈值
+  threshold: 2.0e-3           # float, 主指标改进阈值
   threshold_mode: abs         # str, 改进阈值模式; abs=绝对提升, rel=相对提升
   cooldown: 0                 # int, 衰减后跳过 plateau 计数的 validation 次数
   min_lr: 0.0                 # float|list[float], 学习率下界; 单 float 作用于所有 param group
