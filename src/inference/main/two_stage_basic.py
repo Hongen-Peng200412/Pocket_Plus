@@ -7,7 +7,7 @@ Linux 服务器用法示例:
 或者: 
 #!/bin/bash
 python Pocket_Plus/src/inference/main/two_stage_basic.py \
-    --config="voxel_param_search_16b" \
+    --config="voxel_param_search_20b_new" \
     stage1_objective_expr='avg_voxel_f1' \
     stage2_objective_expr='avg_instance_f1 + avg_voxel_f1'
 

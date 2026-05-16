@@ -528,7 +528,7 @@ if __name__ == "__main__":
 
 
 
-# NOTE：用来调参的.json
+# NOTE：用来调参的.json——————老版本：真实受体做的密度图
 """
 [Attempt] Executing dynamic command from /home/penghongen/run_cmd_255120.sh...
 #!/bin/bash
@@ -548,3 +548,24 @@ python /home/penghongen/My_Project/Pocket_Plus/src/inference/utils/yield_json_fr
 
 
 
+
+# NOTE：用来调参的.json——————新版本：cryoatom 做的密度图
+"""
+=================================================================================
+[Attempt] Executing dynamic command from /home/penghongen/run_cmd_255120.sh...
+#!/bin/bash
+python /home/penghongen/My_Project/Pocket_Plus/src/inference/utils/yield_json_from_raw_sample.py
+=================================================================================
+---------- 开始生成样本 JSON 文件 ----------
+提取到的初始候选配对总数: 269
+---------- 扫描完成，统计信息 ----------
+  - 初始检查候选配对总数: 269
+  - 实际执行文件和比例探测运算的配对次数: 236
+  - 缺失结构或密度图文件配对数: 156
+  - 因核酸比例不合格而过滤抛弃数: 0
+  - 最终保留且符合要求的有效配对数: 80
+✅ json 生成完毕! 输出在: /home/penghongen/My_Project/Pocket_Plus/src/inference/utils/val_cryoatom_new.json
+=================================================================================
+[Success] Execution finished successfully.
+=================================================================================
+"""

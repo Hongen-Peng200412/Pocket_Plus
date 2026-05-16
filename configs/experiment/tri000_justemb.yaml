@@ -19,12 +19,12 @@ defaults:
   - override /model/pseudo_atom: none        # 不注入 pseudo atom
   - override /model/embed_head: clipbig      # 仍使用 embed_head 产生 voxel 侧 PDB 原子嵌入
   - override /loss: tri_7focal_3dice_hard    # 三分类硬标签 Focal + Tversky loss
-  - override /dataset: stardard_full_buffer  # 带 atom buffer 的 BOX 数据集配置
+  - override /dataset: L_small_full_buffer  # 带 atom buffer 的 BOX 数据集配置
   - override /train: B40_L3                  # 训练 batch / epoch / optimizer / warmup_plateau scheduler 参数组
 
 # --- 实验标识与日志命名 ---
-name: exp000_baseline          # str, 顶层实验名; 当前 train.py 主要使用 cfg.model.name, 这里保留为实验元信息
-tag: "exp000_baseline"        # str, 本次运行标签; → ExperimentManager: run_dir 使用 {tag}____{timestamp}; train.py 默认作为 WandB run name
+name: tri000_justemb          # str, 顶层实验名; 当前 train.py 主要使用 cfg.model.name, 这里保留为实验元信息
+tag: "tri000_justemb"        # str, 本次运行标签; → ExperimentManager: run_dir 使用 {tag}____{timestamp}; train.py 默认作为 WandB run name
 experiment_group: "tri_ligand" # str, 实验分组目录名; → train.py: ExperimentManager(experiment_group=cfg.experiment_group)
 project_name: PV_ligand_tri    # str, WandB project 名称; → train.py: WandbLogger(project=cfg.project_name)
 
