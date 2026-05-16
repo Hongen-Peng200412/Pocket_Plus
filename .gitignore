@@ -19,6 +19,7 @@ log/
 logs/
 results/
 output/
+cryatom_output/
 *.txt
 *.csv
 CLAUDE_PLANS/

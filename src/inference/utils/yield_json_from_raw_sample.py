@@ -474,7 +474,7 @@ if __name__ == "__main__":
     help="可选，真实结构根文件夹（实验解析PDB结构目录，用于 GT 评估）。"
          "若提供，则在输出 JSON 中为每个样本额外添加 cif_gt_path 字段。")
 
-    parser.add_argument("--sim_map_folder", type=str, default="/storage/penghongen/simulated_receptor_map/",
+    parser.add_argument("--sim_map_folder", type=str, default="/storage/penghongen/simulated_cryoatom_map/",
     help="可选，模拟密度图根目录。若提供，则输出 JSON 中为每个样本额外添加 sim_map_path 字段。")
 
     parser.add_argument("--labels_npz_root", type=str, default="/home/penghongen/My_Project/Data/DATA_v2_raw4/parsed_pdb/",
@@ -493,7 +493,7 @@ if __name__ == "__main__":
     default="/home/penghongen/My_Project/Pocket_Plus/src/inference/utils")
 
     parser.add_argument("--output_json_name", type=str, help="生成的 json 文件名称", 
-    default="val_cryoatom.json")
+    default="val_cryoatom_new.json")
 
 
 

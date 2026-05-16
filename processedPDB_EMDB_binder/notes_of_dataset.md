@@ -1,6 +1,10 @@
 # processedPDB_EMDB_binder 数据集说明
 
+若从本文直接进入项目，请先回到根目录 `CLAUDE.md` 阅读总指针、权威层级和 agent 工作规约；本文只是训练 BOX 数据链路中的子说明。
+
 本文记录 `processedPDB_EMDB_binder` 当前数据处理逻辑、服务器落盘路径与维护方式。重点记录与 `Make_Data` 的 `/home/penghongen/My_Project/Data/DATA_v2_raw4` 对应的 1.0 Å 版本：`/storage/penghongen/Pocket_classic/v2_raw4_10A`。
+
+本文是数据导航和字段背景，不是最终契约。涉及 BOX 字段、体素 shape、类别 ID、mask 或 split 时，请核对生成脚本、训练 dataset/collate、真实 `.npz` / `.json` 和运行日志。
 
 ## 1. 服务器数据存放路径总览
 
