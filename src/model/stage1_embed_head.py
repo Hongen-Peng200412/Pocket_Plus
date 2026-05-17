@@ -196,7 +196,8 @@ def scatter_to_voxel_grid(
     total_voxels = batch_size * d_val * h_val * w_val
 
     if point_feat.shape[0] == 0:
-        return point_feat.new_zeros((batch_size, channels, d_val, h_val, w_val))
+        final_channels = channels + (2 if add_occupancy_channels else 0)
+        return point_feat.new_zeros((batch_size, final_channels, d_val, h_val, w_val))
 
     # torch.Tensor, (N, 3), int64, 将 corner 语义坐标 floor 到体素格点索引
     voxel_idx_xyz = atom_coord_local_voxel.floor().long()
@@ -286,7 +287,8 @@ def soft_scatter_to_voxel_grid(
     total_voxels = batch_size * d_val * h_val * w_val
 
     if point_feat.shape[0] == 0:
-        return point_feat.new_zeros((batch_size, channels, d_val, h_val, w_val))
+        final_channels = channels + (2 if add_occupancy_channels else 0)
+        return point_feat.new_zeros((batch_size, final_channels, d_val, h_val, w_val))
 
     # 1. 计算 8 邻域体素索引
     voxel_idx_floor = atom_coord_local_voxel.floor()  # (N, 3)
@@ -769,7 +771,7 @@ class Stage1EmbedHead(nn.Module):
         box_shape_zyx: torch.Tensor,
         voxel_size_world: torch.Tensor,
         global_keep_mask: torch.Tensor,
-    ) -> tuple[Any, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> tuple[Any | None, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         执行一系列 Block 并在每个 block 后按配置裁剪 buffer 原子。
 
@@ -785,6 +787,8 @@ class Stage1EmbedHead(nn.Module):
             - (point, cur_coord, cur_batch, cur_offset, cur_core, cur_local_voxel, global_keep_mask)
         """
         for block_idx, block in enumerate(blocks):
+            if cur_coord.shape[0] == 0:
+                return None, cur_coord, cur_batch, cur_offset, cur_core, cur_local_voxel, global_keep_mask
             point = block(point)
             allowed_r = buffer_radii[block_idx]
             if allowed_r < float("inf"):
@@ -810,6 +814,8 @@ class Stage1EmbedHead(nn.Module):
                     # 更新全局掩码: global_keep_mask 中当前为 True 的位置, 只有那些 local_mask 也为 True 的才保留
                     active_positions = global_keep_mask.nonzero(as_tuple=True)[0]  # 返回 global_keep_mask 中为 True 的索引
                     global_keep_mask[active_positions[~local_mask]] = False
+                    if trim_result["point_feat"].shape[0] == 0:
+                        return None, cur_coord, cur_batch, cur_offset, cur_core, cur_local_voxel, global_keep_mask
                     # 重建 Point 对象
                     point = self._make_point_and_serialize(
                         feat=trim_result["point_feat"],
@@ -936,7 +942,10 @@ class Stage1EmbedHead(nn.Module):
             )
         # 分叉: 保存 trunk 后的状态用于点分支
         if self.has_point_output:
-            trunk_feat_for_point = point.feat.clone()
+            if point is None:
+                trunk_feat_for_point = hidden.new_zeros((0, self.embed_hidden_dim))
+            else:
+                trunk_feat_for_point = point.feat.clone()
             trunk_batch_for_point = cur_batch.clone()
             trunk_offset_for_point = cur_offset.clone()
             trunk_core_for_point = cur_core.clone()
@@ -974,7 +983,9 @@ class Stage1EmbedHead(nn.Module):
                 )
 
             # 体素输出投影 + scatter
-            if self.use_centroid_encoding:
+            if voxel_point is None:
+                voxel_feat_per_atom = hidden.new_zeros((0, self.embed_voxel_out_channels))
+            elif self.use_centroid_encoding:
                 # 计算体素质心和偏移编码
                 voxel_centroids = compute_voxel_centroids(
                     atom_coord_local_voxel=v_local_voxel,
@@ -1030,37 +1041,43 @@ class Stage1EmbedHead(nn.Module):
         # 点分支的裁剪结果决定最终返回给 stage1_model 的原子字段
         embed_point_feat: torch.Tensor | None = None
         if self.has_point_output:
-            p_point = self._make_point_and_serialize(
-                feat=trunk_feat_for_point,
-                coord=trunk_coord_for_point,
-                batch=trunk_batch_for_point,
-                offset=trunk_offset_for_point,
-            )
             p_batch = trunk_batch_for_point
             p_offset = trunk_offset_for_point
             p_core = trunk_core_for_point
             p_local_voxel = trunk_local_voxel_for_point
             p_coord = trunk_coord_for_point
             p_global_keep = trunk_global_keep_for_point
-
-            p_point, p_coord, p_batch, p_offset, p_core, p_local_voxel, p_global_keep = \
-                self._run_blocks_with_trim(
-                    point=p_point,
-                    blocks=self.point_blocks,
-                    buffer_radii=self.point_buffer_radii,
-                    cur_coord=p_coord,
-                    cur_batch=p_batch,
-                    cur_offset=p_offset,
-                    cur_core=p_core,
-                    cur_local_voxel=p_local_voxel,
-                    box_shape_zyx=box_shape_zyx,
-                    voxel_size_world=voxel_size_world,
-                    global_keep_mask=p_global_keep,
+            if trunk_feat_for_point.shape[0] == 0:
+                p_point = None
+            else:
+                p_point = self._make_point_and_serialize(
+                    feat=trunk_feat_for_point,
+                    coord=trunk_coord_for_point,
+                    batch=trunk_batch_for_point,
+                    offset=trunk_offset_for_point,
                 )
+
+                p_point, p_coord, p_batch, p_offset, p_core, p_local_voxel, p_global_keep = \
+                    self._run_blocks_with_trim(
+                        point=p_point,
+                        blocks=self.point_blocks,
+                        buffer_radii=self.point_buffer_radii,
+                        cur_coord=p_coord,
+                        cur_batch=p_batch,
+                        cur_offset=p_offset,
+                        cur_core=p_core,
+                        cur_local_voxel=p_local_voxel,
+                        box_shape_zyx=box_shape_zyx,
+                        voxel_size_world=voxel_size_world,
+                        global_keep_mask=p_global_keep,
+                    )
 
             # 点输出投影
             # torch.Tensor, (N_point, embed_point_out_channels), 投影后的点特征
-            embed_point_feat = self.point_out_proj(p_point.feat)
+            if p_point is None:
+                embed_point_feat = hidden.new_zeros((0, self.embed_point_out_channels))
+            else:
+                embed_point_feat = self.point_out_proj(p_point.feat)
 
             # 点分支的裁剪结果作为最终过滤结果
             final_global_keep = p_global_keep

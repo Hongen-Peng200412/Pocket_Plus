@@ -44,7 +44,8 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
         voxel_aux_loss_weight: float = 0.0,
         voxel_ligand_loss_weight: float = 0.0,
         monitor_metric: str = "val/atom_pr_auc",
-        voxel_ligand_pr_auc_thresholds: Optional[int] = 4096,
+        voxel_ligand_pr_auc_thresholds: Optional[int] = 1024,
+        val_metric_device_policy: str = "auto",
         interval: str = "epoch",
         frequency: int = 1,
         compile: bool = False,
@@ -78,27 +79,27 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
         if compile:
             self.backbone = torch.compile(self.backbone)
 
-        # BinaryAveragePrecision, 验证阶段的 PR-AUC 指标（在 CPU 上计算以节省显存）
+        # BinaryAveragePrecision, 验证阶段的 PR-AUC 指标；binned 指标默认在 GPU 更新，非 binned 指标默认在 CPU 累积状态
         # 各指标仅在对应损失启用时构建; 一个 epoch 可能多次验证，每次都会 reset/update/compute
         from torchmetrics.classification import BinaryAveragePrecision
         self._val_metric_update_counts: dict[str, int] = {}
-        self._voxel_ligand_pr_auc_is_binned = voxel_ligand_pr_auc_thresholds is not None
+        self._val_metric_specs: dict[str, dict[str, Any]] = {}
         self._multiclass_metric_names: dict[str, list[str]] = {"atom": [], "voxel_aux": [], "voxel_ligand": []}
         self._class_names = self._resolve_class_names(kwargs)
         if self.atom_loss is not None:
             self.val_atom_pr_auc = BinaryAveragePrecision(compute_on_cpu=True)
-            self._val_metric_update_counts["val/atom_pr_auc"] = 0
+            self._register_val_metric("val/atom_pr_auc", thresholds=None, branch="atom")
             self._init_multiclass_ap_metrics("atom", self.atom_loss, BinaryAveragePrecision, None)
         if self.voxel_aux_loss is not None:
             self.val_voxel_aux_pr_auc = BinaryAveragePrecision(compute_on_cpu=True)
-            self._val_metric_update_counts["val/voxel_aux_pr_auc"] = 0
+            self._register_val_metric("val/voxel_aux_pr_auc", thresholds=None, branch="voxel_aux")
             self._init_multiclass_ap_metrics("voxel_aux", self.voxel_aux_loss, BinaryAveragePrecision, None)
         if self.voxel_ligand_loss is not None:
             self.val_voxel_ligand_pr_auc = BinaryAveragePrecision(
-                compute_on_cpu=True,
+                compute_on_cpu=voxel_ligand_pr_auc_thresholds is None,
                 thresholds=voxel_ligand_pr_auc_thresholds,
             )
-            self._val_metric_update_counts["val/voxel_ligand_pr_auc"] = 0
+            self._register_val_metric("val/voxel_ligand_pr_auc", thresholds=voxel_ligand_pr_auc_thresholds, branch="voxel_ligand")
             self._init_multiclass_ap_metrics("voxel_ligand", self.voxel_ligand_loss, BinaryAveragePrecision, voxel_ligand_pr_auc_thresholds)
 
         # WarmupThenReduceLROnPlateau | None, 手动管理的 validation 级 plateau 调度器
@@ -127,6 +128,27 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
             return ["background", "foreground"]
         return [str(name) for name in class_names]
 
+    def _register_val_metric(self, metric_name: str, thresholds: Optional[int], branch: str, class_id: int | None = None) -> None:
+        """
+        注册验证指标的更新策略元信息。
+
+        输入参数:
+            - metric_name: str, Lightning 日志中的指标名
+            - thresholds: int | None, binned AP 的阈值数量; None 表示非 binned AP
+            - branch: str, 指标所属分支, 例如 atom / voxel_aux / voxel_ligand
+            - class_id: int | None, 多分类前景类别 ID; 二分类主指标为 None
+
+        输出:
+            - None, 原地记录 metric 更新次数与设备策略元信息
+        """
+        self._val_metric_update_counts[metric_name] = 0
+        self._val_metric_specs[metric_name] = {
+            "thresholds": thresholds,
+            "binned": thresholds is not None,
+            "branch": branch,
+            "class_id": class_id,
+        }
+
     def _init_multiclass_ap_metrics(self, prefix: str, loss_module: nn.Module, metric_cls: Any, thresholds: Optional[int]) -> None:
         """
         为多分类前景类别创建逐类 AP 指标对象。
@@ -154,11 +176,11 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
             # str, Lightning 日志中使用的逐类 AP 指标名
             metric_name = f"val/{prefix}_ap_{class_name}"
             # dict[str, Any], torchmetrics 指标构造参数
-            metric_kwargs = {"compute_on_cpu": True}
+            metric_kwargs = {"compute_on_cpu": thresholds is None}
             if thresholds is not None:
                 metric_kwargs["thresholds"] = thresholds
             setattr(self, f"val_{prefix}_ap_{class_name}", metric_cls(**metric_kwargs))
-            self._val_metric_update_counts[metric_name] = 0
+            self._register_val_metric(metric_name, thresholds=thresholds, branch=prefix, class_id=class_id)
             metric_names.append(metric_name)
         # str, 当前分支前景类别 macro AP 指标名
         macro_name = f"val/{prefix}_macro_ap"
@@ -187,12 +209,36 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
         """
         self._val_metric_update_counts[metric_name] = self._val_metric_update_counts.get(metric_name, 0) + 1
 
-    @staticmethod
-    def _update_metric_on_tensor_device(metric_obj: Any, preds: torch.Tensor, targets: torch.Tensor) -> None:
+    def _resolve_metric_update_device(self, metric_name: str, source_device: torch.device) -> torch.device:
         """
-        在 preds 所在设备上更新 torchmetrics 指标。
+        根据指标类型选择 update 设备。
 
         输入参数:
+            - metric_name: str, Lightning 日志中的指标名
+            - source_device: torch.device, 当前 logits/preds 所在设备
+
+        输出:
+            - device: torch.device, 本次 metric.update 使用的设备
+        """
+        policy = str(self.hparams.val_metric_device_policy)
+        if policy == "cpu":
+            return torch.device("cpu")
+        if policy == "gpu":
+            return source_device if source_device.type != "cpu" else self.device
+        if policy != "auto":
+            raise ValueError(f"Unknown val_metric_device_policy: {policy!r}")
+
+        spec = self._val_metric_specs[metric_name]
+        if bool(spec["binned"]):
+            return source_device if source_device.type != "cpu" else self.device
+        return torch.device("cpu")
+
+    def _update_val_metric(self, metric_name: str, metric_obj: Any, preds: torch.Tensor, targets: torch.Tensor) -> None:
+        """
+        按指标设备策略更新 torchmetrics 指标。
+
+        输入参数:
+            - metric_name: str, Lightning 日志中的指标名
             - metric_obj: Any, torchmetrics 指标对象, 内部可能包含 thresholds 等状态张量
             - preds: torch.Tensor, (M,), 当前 batch 的预测分数
             - targets: torch.Tensor, (M,), 当前 batch 的硬标签
@@ -200,7 +246,10 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
         输出:
             - None, 原地更新 metric_obj 状态
         """
-        metric_obj.to(preds.device)
+        device = self._resolve_metric_update_device(metric_name, preds.device)
+        preds = preds.to(device, non_blocking=True)
+        targets = targets.to(device, non_blocking=True)
+        metric_obj.to(device)
         metric_obj.update(preds, targets)
 
     @staticmethod
@@ -256,10 +305,10 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
             return
         if logits.shape[1] == 1:
             # torch.Tensor, (M,), 有效位置 sigmoid 前景概率
-            preds = torch.sigmoid(logits[:, 0]).detach().float().reshape(-1)[mask.reshape(-1)].cpu()
+            preds = torch.sigmoid(logits[:, 0]).detach().float().reshape(-1)[mask.reshape(-1)]
             # torch.Tensor, (M,), 有效位置二分类标签, 取值 0/1
-            targets = target.reshape(-1).long()[mask.reshape(-1)].cpu()
-            self._update_metric_on_tensor_device(binary_metric, preds, targets)
+            targets = target.reshape(-1).long()[mask.reshape(-1)]
+            self._update_val_metric(binary_metric_name, binary_metric, preds, targets)
             self._mark_val_metric_updated(binary_metric_name)
             return
         # torch.Tensor, 与 logits 同形, 多分类 softmax 概率
@@ -274,9 +323,9 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
             metric_obj = getattr(self, f"val_{prefix}_ap_{class_name}", None)
             if metric_obj is None:
                 continue
-            preds = prob[:, class_id].reshape(-1)[mask_flat].cpu()
-            targets = (target_flat[mask_flat] == class_id).long().cpu()
-            self._update_metric_on_tensor_device(metric_obj, preds, targets)
+            preds = prob[:, class_id].reshape(-1)[mask_flat]
+            targets = (target_flat[mask_flat] == class_id).long()
+            self._update_val_metric(metric_name, metric_obj, preds, targets)
             self._mark_val_metric_updated(metric_name)
             self._mark_val_metric_updated(f"val/{prefix}_macro_ap")
 
@@ -674,7 +723,7 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
         batch_dict = self._extract_batch(batch)
         outputs = self(batch_dict)
         total_loss, loss_dict = self._compute_total_loss(outputs=outputs, batch=batch_dict)
-        # 用当前 batch 更新 PR-AUC 指标
+        # 用当前 batch 更新 PR-AUC 指标；tuner 阶段也完整计算，以便尽早暴露真实验证链路问题
         self._update_val_atom_metric(outputs=outputs, batch=batch_dict)
         self._update_val_voxel_aux_metric(outputs=outputs, batch=batch_dict)
         self._update_val_voxel_ligand_metric(outputs=outputs, batch=batch_dict)

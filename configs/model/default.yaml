@@ -43,5 +43,6 @@ monitor_metric: val/atom_pr_auc    # str, 主监控指标
 monitor_mode: max                  # str, 主指标方向, 取值 max/min
                                    # → train.py: ModelCheckpoint.mode
                                    # → configs/train/B40_L3.yaml: scheduler.mode=${model.monitor_mode}
-voxel_ligand_pr_auc_thresholds: 4096  # int | null, higher-resolution binned ligand PR-AUC
+voxel_ligand_pr_auc_thresholds: 1024  # int | null, binned ligand PR-AUC 阈值数; 训练期默认 1024, 最终评估可显式覆盖为 4096
+val_metric_device_policy: auto        # str, 验证 AP 更新设备策略; auto=非 binned 走 CPU 省显存, binned 走 GPU 加速阈值扫描
 compile: false                     # bool, torch.compile
