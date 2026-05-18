@@ -2,15 +2,32 @@
 针对本项目可能改进的点:
 1. 前几次池化时保持C_alpha原子, 或者可以更进一步让某次池化后只保持C_alpha原子, 这样就能与残基级别的特征(ESM2)做灵活的融合
 2. 加入别的序列化方法, 比如按照氨基酸顺序排列
+
+对齐契约（修改时必须全量同步）:
+    - 本段、CLAUDE/plans/implement/tri_ligand_sparse_refine/00-master.md、src/model/stage1_point_backbone.py 和 tests/model/test_ptv3_no_sparseconv.py 必须同步更新。
+    - PTV3 点分支不再依赖旧稀疏卷积库; 禁止重新引入旧稀疏卷积导入、张量类型、模块类型或旧稀疏卷积特征字段。
+    - Embedding.embedding_impl 只支持 "pointconv"; Block.cpe_impl 只支持 "pointconv" 或 "none"。
+    - enc_cpe_kernel_size/dec_cpe_kernel_size 是 legacy 配置字段; pointconv CPE 不消费这些 kernel size。
+
+Point 字段契约:
+    - feat: torch.Tensor, (N, C), floating, 当前点特征。
+    - coord: torch.Tensor, (N, 3), floating, 点坐标, 轴顺序 (x, y, z)。
+    - batch: torch.Tensor, (N,), int64/long, 每个点所属 BOX/样本索引。
+    - offset: torch.Tensor, (B,), int64/long, 每个 BOX/样本在展平点序列中的结束偏移。
+    - grid_size: float, 点云离散化 grid size。
+    - grid_coord: torch.Tensor, (N, 3), int32/int64, 可选字段, 由 coord/grid_size 得到的离散坐标。
+    - serialized_code: torch.Tensor, (K, N), int64/long, K 个序列化顺序对应的编码。
+    - serialized_order: torch.Tensor, (K, N), int64/long, 每个序列化顺序下的排序后索引。
+    - serialized_inverse: torch.Tensor, (K, N), int64/long, 每个序列化顺序下的逆索引。
+    - pseudo_mask: torch.Tensor, (N,), bool, 可选字段, True 表示 P anchor; 01 阶段只透传给后续 type-aware 改造。
 """
 import sys  # sys, 系统相关功能
-from typing import List, Optional, Tuple  # typing, 类型提示
+from typing import List  # typing, 类型提示
 from functools import partial  # functools, 偏函数
 from addict import Dict  # addict, 字典增强库
 import math  # math, 数学运算
 import torch  # torch, PyTorch深度学习框架
 import torch.nn as nn  # torch.nn, 神经网络模块
-import spconv.pytorch as spconv  # spconv, 稀疏卷积库
 import torch_scatter  # torch_scatter, 张量分散操作
 import torch_cluster  # torch_cluster, 点云邻域搜索
 from timm.models.layers import DropPath  # timm, 随机深度模块
@@ -110,9 +127,6 @@ class Point(Dict):
             - "serialized_order": torch.Tensor, (k, N), 由编码确定的序列化顺序列表：代表一个映射, order[i][j]代表第i种序列化顺序下, 第j个点经过排序后所处的位置
             - "serialized_inverse": torch.Tensor, (k, N), 由编码确定的逆映射列表：代表一个映射, inverse[i][j]代表第i种序列化顺序下, 第j个点在排序前所处的位置
         
-        稀疏卷积相关属性:
-            - "sparse_shape": list, 稀疏卷积张量的空间形状
-            - "sparse_conv_feat": spconv.SparseConvTensor, 由Point信息初始化的稀疏卷积张量
     """
     def __init__(self, *args, **kwargs):
         """
@@ -136,9 +150,6 @@ class Point(Dict):
             - "serialized_order": torch.Tensor, (k, N), 由编码确定的序列化顺序列表：代表一个映射, order[i][j]代表第i种序列化顺序下, 第j个点经过排序后所处的位置
             - "serialized_inverse": torch.Tensor, (k, N), 由编码确定的逆映射列表：代表一个映射, inverse[i][j]代表第i种序列化顺序下, 第j个点在排序前所处的位置
         
-        稀疏卷积相关属性:
-            - "sparse_shape": list, 稀疏卷积张量的空间形状
-            - "sparse_conv_feat": spconv.SparseConvTensor, 由Point信息初始化的稀疏卷积张量
         """
         super().__init__(*args, **kwargs)
         # 如果"batch"不存在但"offset"存在,则根据offset生成batch
@@ -209,54 +220,23 @@ class Point(Dict):
         self["serialized_order"] = order
         self["serialized_inverse"] = inverse
 
-    def sparsify(self, pad=96):
+    def sparsify(self, _pad=96):
         """
-        点云稀疏化,为稀疏卷积准备spconv.SparseConvTensor。
-        
+        保留旧调用点所需的网格坐标准备逻辑, 不再构造点分支稀疏卷积张量。
+
         输入参数:
-            - pad: int, 稀疏形状的填充值,默认96
-        
-        依赖:
-            ["grid_coord" 或 "coord" + "grid_size"; "batch"; "feat"]
-        
-        功能:
-            1. 如果不存在grid_coord, 则根据coord和grid_size计算
-            2. 计算稀疏形状
-            3. 创建SparseConvTensor对象
-        
+            - _pad: int, legacy 参数, 当前 pointconv 路径不消费
+
         输出:
-            在self中添加"sparse_shape"和"sparse_conv_feat"属性
+            - None, 必要时在 self 中补充 grid_coord
         """
-        # 检查必需的属性是否存在
         assert {"feat", "batch"}.issubset(self.keys())
-        # 如果grid_coord不存在,则根据coord和grid_size计算网格坐标
         if "grid_coord" not in self.keys():
             assert {"grid_size", "coord"}.issubset(self.keys())
-            # torch.Tensor, (N, 3), 计算网格坐标
+            # torch.Tensor, (N, 3), 点云坐标按 grid_size 离散化后的网格坐标
             self["grid_coord"] = torch.div(
                 self.coord - self.coord.min(0)[0], self.grid_size, rounding_mode="trunc"
             ).int()
-        # 计算稀疏形状
-        if "sparse_shape" in self.keys():
-            # list, 如果已存在则直接使用
-            sparse_shape = self.sparse_shape
-        else:
-            # list, 否则根据grid_coord的最大值和pad计算
-            sparse_shape = torch.add(
-                torch.max(self.grid_coord, dim=0).values, pad
-            ).tolist()
-        # spconv.SparseConvTensor, 创建稀疏卷积张量
-        sparse_conv_feat = spconv.SparseConvTensor(
-            features=self.feat,  # torch.Tensor, (N, C), 特征
-            indices=torch.cat(
-                [self.batch.unsqueeze(-1).int(), self.grid_coord.int()], dim=1  # torch.Tensor, (N, 4), 索引 [batch, x, y, z]
-            ).contiguous(),
-            spatial_shape=sparse_shape,  # list, 空间形状
-            batch_size=self.batch[-1].tolist() + 1,  # int, batch大小
-        )
-        # 保存稀疏形状和稀疏卷积特征
-        self["sparse_shape"] = sparse_shape
-        self["sparse_conv_feat"] = sparse_conv_feat
 
 
 class PointModule(nn.Module):
@@ -356,47 +336,21 @@ class PointSequential(PointModule):
 
     def forward(self, input):
         """
-        前向传播,依次执行所有模块。
-        
+        前向传播, 依次执行 PointModule 或普通 PyTorch 模块。
+
         输入参数:
-            - input: Point 或 spconv.SparseConvTensor 或 torch.Tensor, 输入数据
-        
+            - input: Point 或 torch.Tensor, 输入数据
+
         输出:
-            - output: Point 或 spconv.SparseConvTensor 或 torch.Tensor, 输出数据
-        
-        功能:
-            根据模块类型分别处理:
-            1. PointModule: 直接传入Point对象
-            2. SpConv模块: 处理sparse_conv_feat
-            3. 普通PyTorch模块: 处理feat或features
+            - output: Point 或 torch.Tensor, 输出数据
         """
-        for k, module in self._modules.items():
-            # Point module: 直接传入Point对象
+        for module in self._modules.values():
             if isinstance(module, PointModule):
                 input = module(input)
-            # Spconv module: 处理稀疏卷积特征
-            elif spconv.modules.is_spconv_module(module):
-                if isinstance(input, Point):
-                    # spconv.SparseConvTensor, 对sparse_conv_feat进行稀疏卷积
-                    input.sparse_conv_feat = module(input.sparse_conv_feat)
-                    # torch.Tensor, 更新特征
-                    input.feat = input.sparse_conv_feat.features
-                else:
-                    input = module(input)
-            # PyTorch module: 处理普通特征
             else:
                 if isinstance(input, Point):
-                    # torch.Tensor, 对feat进行前向传播
+                    # torch.Tensor, (N, C), 普通 PyTorch 模块处理后的点特征
                     input.feat = module(input.feat)
-                    # 如果存在sparse_conv_feat,则更新其特征
-                    if "sparse_conv_feat" in input.keys():
-                        input.sparse_conv_feat = input.sparse_conv_feat.replace_feature(
-                            input.feat
-                        )
-                elif isinstance(input, spconv.SparseConvTensor):
-                    # 如果索引不为空,则更新特征
-                    if input.indices.shape[0] != 0:
-                        input = input.replace_feature(module(input.features))
                 else:
                     input = module(input)
         return input
@@ -1122,7 +1076,7 @@ class Block(PointModule):
         num_heads,
         patch_size=48,
         cpe_kernel_size=5,
-        cpe_impl="sparseconv",
+        cpe_impl="pointconv",
         cpe_receptive_field=2.0,
         pointconv_block_max_neighbors=16,
         mlp_ratio=4.0,
@@ -1149,8 +1103,8 @@ class Block(PointModule):
                 - channels: int, 特征通道数
                 - num_heads: int, 注意力头数
                 - patch_size: int, patch大小,默认48
-                - cpe_kernel_size: int, Block 内 CPE 稀疏卷积的卷积核大小(仅 sparseconv 模式)
-                - cpe_impl: str, CPE 实现方式, "sparseconv" / "pointconv" / "none"(不使用CPE)
+                - cpe_kernel_size: int, legacy 字段; pointconv CPE 不消费该值
+                - cpe_impl: str, CPE 实现方式, "pointconv" / "none"(不使用CPE)
                 - cpe_receptive_field: float, 世界坐标感受野半径(Å)(仅 pointconv 模式)
                 - pointconv_block_max_neighbors: int, 点云卷积 CPE 最大邻居数(仅 pointconv 模式)
                 - mlp_ratio: float, MLP隐藏层通道数比例,默认4.0
@@ -1163,7 +1117,7 @@ class Block(PointModule):
                 - act_layer: callable, 激活函数类,默认nn.GELU
                 - pre_norm: bool, 是否使用预归一化,默认True
                 - order_index: int, 使用的序列化顺序索引,默认0
-                - cpe_indice_key: str 或 None, CPE的索引键(sparseconv 做缓存; pointconv 做邻域图缓存)
+                - cpe_indice_key: str 或 None, pointconv CPE 邻域图缓存键
                 - enable_rpe: bool, 是否启用相对位置编码,默认False
                 - enable_flash: bool, 是否启用Flash Attention,默认True
                 - upcast_attention: bool, 是否在注意力计算时上转为float,默认True
@@ -1175,7 +1129,7 @@ class Block(PointModule):
         self.channels = channels
         # str, CPE 实现方式
         self.cpe_impl = str(cpe_impl)
-        # int, Block 内 CPE 稀疏卷积核大小; 原模型默认 kernel_size=3, 当前项目默认改为 5。
+        # int, legacy CPE kernel size; 当前 pointconv CPE 不消费该值
         self.cpe_kernel_size = int(cpe_kernel_size)
         # bool, 是否使用预归一化
         self.pre_norm = pre_norm
@@ -1184,19 +1138,6 @@ class Block(PointModule):
         if self.cpe_impl == "none":
             # None, 不使用 CPE(用于 embed head / atom head 等无稀疏卷积场景)
             self.cpe = None
-        elif self.cpe_impl == "sparseconv":
-            # PointSequential, 稀疏卷积 CPE: SubMConv3d -> Linear -> Norm
-            self.cpe = PointSequential(
-                spconv.SubMConv3d(
-                    channels,
-                    channels,
-                    kernel_size=self.cpe_kernel_size,
-                    bias=True,
-                    indice_key=cpe_indice_key,
-                ),
-                nn.Linear(channels, channels),
-                norm_layer(channels),
-            )
         elif self.cpe_impl == "pointconv":
             # PointConvCPE, 点云卷积 CPE
             self.cpe = PointConvCPE(
@@ -1207,7 +1148,7 @@ class Block(PointModule):
                 norm_layer=norm_layer,
             )
         else:
-            raise ValueError(f"Block: cpe_impl 必须是 'sparseconv'/'pointconv'/'none', 当前为 '{self.cpe_impl}'")
+            raise ValueError(f"Block: cpe_impl 必须是 'pointconv' 或 'none', 当前为 '{self.cpe_impl}'")
 
         # PointSequential, 第一个归一化层
         self.norm1 = PointSequential(norm_layer(channels))
@@ -1307,9 +1248,6 @@ class Block(PointModule):
             if not self.pre_norm:
                 point = self.norm2(point)
 
-        # 更新稀疏卷积特征(仅在有 sparse_conv_feat 时)
-        if hasattr(point, "keys") and "sparse_conv_feat" in point.keys():
-            point.sparse_conv_feat = point.sparse_conv_feat.replace_feature(point.feat)
         return point
 
 
@@ -1481,8 +1419,6 @@ class SerializedPooling(PointModule):
         # 如果存在激活函数,则应用
         if self.act is not None:
             point = self.act(point)
-        # 稀疏化点云
-        point.sparsify()
         return point
 
 
@@ -1654,9 +1590,6 @@ class PointConvEmbedding(PointModule):
             point.feat = self.norm(point.feat)
         if self.act is not None:
             point.feat = self.act(point.feat)
-        # 保持 point.feat 与 sparse_conv_feat 一致, 以兼容 pointconv embedding + sparseconv CPE 的混合路径
-        if "sparse_conv_feat" in point.keys():
-            point.sparse_conv_feat = point.sparse_conv_feat.replace_feature(point.feat)
         return point
 
 
@@ -1666,22 +1599,22 @@ class Embedding(PointModule):
         in_channels,
         embed_channels,
         embedding_kernel_size=7,
-        embedding_impl="sparseconv",
+        embedding_impl="pointconv",
         embedding_receptive_field=5.0,
         pointconv_embed_max_neighbors=32,
         norm_layer=None,
         act_layer=None,
     ):
         """
-            对最原始特征的嵌入层(内部 PointConvEmbedding 和 稀疏卷积嵌入 二选一)
-            
+            对最原始点特征执行 pointconv embedding。
+
             输入参数:
                 - in_channels: int, 输入通道数
                 - embed_channels: int, 嵌入通道数
-                - embedding_kernel_size: int, embedding 稀疏卷积核大小(仅 sparseconv 模式)
-                - embedding_impl: str, 实现方式, "sparseconv" 或 "pointconv"
-                - embedding_receptive_field: float, 世界坐标感受野半径(Å)(仅 pointconv 模式)
-                - pointconv_embed_max_neighbors: int, 点云卷积最大邻居数(仅 pointconv 模式)
+                - embedding_kernel_size: int, legacy 字段; pointconv embedding 不消费该值
+                - embedding_impl: str, 实现方式, 只支持 "pointconv"
+                - embedding_receptive_field: float, pointconv 世界坐标感受野半径
+                - pointconv_embed_max_neighbors: int, pointconv 每个点最大邻居数
                 - norm_layer: callable 或 None, 归一化层类
                 - act_layer: callable 或 None, 激活函数类
         """
@@ -1695,36 +1628,17 @@ class Embedding(PointModule):
         # int, embedding 稀疏卷积核大小
         self.embedding_kernel_size = int(embedding_kernel_size)
 
-        if self.embedding_impl == "sparseconv":
-            # PointSequential, 稀疏卷积 stem
-            self.stem = PointSequential(
-                conv=spconv.SubMConv3d(
-                    in_channels,
-                    embed_channels,
-                    kernel_size=self.embedding_kernel_size,
-                    padding=1,
-                    bias=False,
-                    indice_key="stem",
-                )
-            )
-            if norm_layer is not None:
-                self.stem.add(norm_layer(embed_channels), name="norm")
-            if act_layer is not None:
-                self.stem.add(act_layer(), name="act")
-            self._pointconv_embed = None
-        elif self.embedding_impl == "pointconv":
-            # PointConvEmbedding, 点云卷积 embedding
-            self._pointconv_embed = PointConvEmbedding(
-                in_channels=in_channels,
-                embed_channels=embed_channels,
-                receptive_field=float(embedding_receptive_field),
-                max_neighbors=int(pointconv_embed_max_neighbors),
-                norm_layer=norm_layer,
-                act_layer=act_layer,
-            )
-            self.stem = None
-        else:
-            raise ValueError(f"Embedding: embedding_impl 必须是 'sparseconv' 或 'pointconv', 当前为 '{self.embedding_impl}'")
+        if self.embedding_impl != "pointconv":
+            raise ValueError(f"Embedding: embedding_impl 只支持 'pointconv', 当前为 '{self.embedding_impl}'")
+        # PointConvEmbedding, 点云卷积 embedding
+        self._pointconv_embed = PointConvEmbedding(
+            in_channels=in_channels,
+            embed_channels=embed_channels,
+            receptive_field=float(embedding_receptive_field),
+            max_neighbors=int(pointconv_embed_max_neighbors),
+            norm_layer=norm_layer,
+            act_layer=act_layer,
+        )
 
 
     def forward(self, point: Point):
@@ -1737,12 +1651,7 @@ class Embedding(PointModule):
             输出:
                 - point: Point, 嵌入后的点云数据
         """
-        if self.embedding_impl == "sparseconv":
-            # Point, 应用稀疏卷积 stem
-            point = self.stem(point)
-        else:
-            # Point, 应用点云卷积 embedding
-            point = self._pointconv_embed(point)
+        point = self._pointconv_embed(point)
         return point
 
 
@@ -1770,8 +1679,8 @@ class PointTransformerV3(PointModule):
         order=("z", "z-trans", "hilbert", "hilbert-trans"),
         stride=(4, 2, 2, 2),                      
         embedding_kernel_size=7,
-        embedding_impl="sparseconv",
-        cpe_impl="sparseconv",
+        embedding_impl="pointconv",
+        cpe_impl="pointconv",
 
         embedding_receptive_field=5.0,
         pointconv_embed_max_neighbors=64,
@@ -1824,15 +1733,15 @@ class PointTransformerV3(PointModule):
                     - shuffle_orders: bool, 训练时是否随机打乱多种序列化顺序的使用,默认True
 
                 - embedding 参数:
-                    - embedding_impl: str, embedding 实现方式, "sparseconv" 或 "pointconv"
-                    - embedding_kernel_size: int, embedding 稀疏卷积核大小(仅 sparseconv 模式)
+                    - embedding_impl: str, embedding 实现方式, 只支持 "pointconv"
+                    - embedding_kernel_size: int, legacy 字段; pointconv embedding 不消费该值
                     - embedding_receptive_field: float, embedding 世界坐标感受野(Å)(仅 pointconv 模式)
                     - pointconv_embed_max_neighbors: int, embedding 点云卷积最大邻居数(仅 pointconv 模式)
                     
                 - cpe 参数:
-                    - cpe_impl: str, Block CPE 实现方式, "sparseconv" 或 "pointconv"
-                    - enc_cpe_kernel_size: tuple[int], 编码器每层 CPE 离散 kernel size(仅 sparseconv 模式), len=num_stages
-                    - dec_cpe_kernel_size: tuple[int], 解码器每层 CPE 离散 kernel size(仅 sparseconv 模式), len=num_stages-1
+                    - cpe_impl: str, Block CPE 实现方式, 取值 "pointconv" / "none"
+                    - enc_cpe_kernel_size: tuple[int], legacy 字段; pointconv CPE 不消费该值
+                    - dec_cpe_kernel_size: tuple[int], legacy 字段; pointconv CPE 不消费该值
                     - enc_cpe_receptive_field: tuple[float], 编码器每层 CPE 世界坐标感受野(Å)(仅 pointconv 模式), len=num_stages
                     - dec_cpe_receptive_field: tuple[float], 解码器每层 CPE 世界坐标感受野(Å)(仅 pointconv 模式), len=num_stages-1
                     - pointconv_block_max_neighbors: int, Block CPE 点云卷积最大邻居数(仅 pointconv 模式)
@@ -1906,18 +1815,11 @@ class PointTransformerV3(PointModule):
         )
 
         # 参数校验
-        if self.cpe_impl == "sparseconv":
-            for s, ks in enumerate(enc_cpe_kernel_size):
-                ks_int = int(ks)
-                assert ks_int > 0 and ks_int % 2 == 1, (
-                    f"sparseconv 模式下 enc_cpe_kernel_size[{s}]={ks} 必须为正奇数"
-                )
-            for s, ks in enumerate(dec_cpe_kernel_size):
-                ks_int = int(ks)
-                assert ks_int > 0 and ks_int % 2 == 1, (
-                    f"sparseconv 模式下 dec_cpe_kernel_size[{s}]={ks} 必须为正奇数"
-                )
-        elif self.cpe_impl == "pointconv":
+        if self.embedding_impl != "pointconv":
+            raise ValueError(f"PointTransformerV3: embedding_impl 只支持 'pointconv', 当前为 '{self.embedding_impl}'")
+        if self.cpe_impl not in {"pointconv", "none"}:
+            raise ValueError(f"PointTransformerV3: cpe_impl 必须是 'pointconv' 或 'none', 当前为 '{self.cpe_impl}'")
+        if self.cpe_impl == "pointconv":
             for s, rf in enumerate(enc_cpe_receptive_field):
                 assert float(rf) > 0, (
                     f"pointconv 模式下 enc_cpe_receptive_field[{s}]={rf} 必须为正数"
@@ -2125,9 +2027,6 @@ class PointTransformerV3(PointModule):
         point = Point(data_dict)
         # 执行序列化: 根据空间填充曲线对点云排序,生成serialized_code/order/inverse/depth
         point.serialization(order=self.order, shuffle_orders=self.shuffle_orders)
-        # 稀疏化: 构建SparseTensor(稀疏卷积所需的数据结构)
-        point.sparsify()
-
         # Point, 通过嵌入层将原始特征(in_channels维)映射到enc_channels[0]维
         point = self.embedding(point)
         # Point, 通过编码器逐层提取特征(逐阶段下采样: N -> N/s1 -> N/s1/s2 -> ...)
@@ -2186,10 +2085,9 @@ class PTV3BackboneAdapter(nn.Module):
             - pcd_features: Point, 最高分辨率点云特征
             - aux: list[Point], 多尺度点云特征(低 -> 高)
         """
-        # 1) 构建 Point 并完成序列化与稀疏化
+        # 1) 构建 Point 并完成序列化
         point = Point(data_dict)
         point.serialization(order=self._order, shuffle_orders=self._shuffle_orders)
-        point.sparsify()
 
         # 2) Embedding
         point = self.ptv3.embedding(point)

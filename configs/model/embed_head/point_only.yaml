@@ -37,8 +37,8 @@ model:
       act_layer_name: ${model.backbone.act_layer_name}
       scatter_reduce: "sum"
       point_grid_size: 0.25
-      cpe_impl: "pointconv"
-      cpe_kernel_size: 5
+      cpe_impl: "pointconv"        # str, CPE 实现方式, 取值 "none" / "pointconv"
+      cpe_kernel_size: 5           # int, legacy 字段; pointconv CPE 不消费该值
       cpe_receptive_field: 2.0
       pointconv_block_max_neighbors: 64
       drop_path: 0.2

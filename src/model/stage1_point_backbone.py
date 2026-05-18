@@ -1,3 +1,30 @@
+"""
+Stage1 point backbone 的 PTV3/zeros 封装。
+
+对齐契约（修改时必须全量同步）:
+    - 本段、CLAUDE/plans/implement/tri_ligand_sparse_refine/00-master.md、src/model/stage1_model.py::_run_point_backbone 和 tests/model/test_ptv3_no_sparseconv.py 必须同步更新。
+    - 输入可以是 real-only 或最后一轮 mixed batch; 若 mixed, 顺序必须与 pseudo_atoms.py 的 `[real_i..., pseudo_i...]` layout 一致。
+    - embedding_impl 只支持 "pointconv"; cpe_impl 只支持 "pointconv" 或 "none"; PTV3 点分支不得重新引入旧稀疏卷积依赖或旧稀疏卷积特征字段。
+
+forward 输入字段契约:
+    - atom_feat: torch.Tensor, (N, F_atom), floating, real atom 或 mixed 全点特征。
+    - atom_coord_centered_world: torch.Tensor, (N, 3), floating, 点坐标, 轴顺序 (x, y, z)。
+    - atom_batch_index: torch.Tensor, (N,), int64/long, 每个点所属 BOX 索引。
+    - atom_offsets: torch.Tensor, (B,), int64/long, 每个 BOX 在展平点序列中的结束偏移。
+    - recycle_in: torch.Tensor | None, (N, C_recycle), floating, 上一轮 point recycle 状态; mixed 最后一轮由 Stage1 主模型补齐 P anchor 槽位。
+    - point_feature_hook: Callable[[str, Any], Any] | None, 可选 hook, 在导出命名点特征时注入 voxel-to-point 融合。
+    - return_feature_names: Sequence[str], 可变长度, 请求导出的点特征名, 必须属于 available_feature_names。
+
+forward 输出字段契约:
+    - point_feat: torch.Tensor, (N, C_point), floating, 点分支最终输出特征。
+    - point_state["coord"]: torch.Tensor, (N, 3), floating, atom head 复用的点坐标。
+    - point_state["batch"]: torch.Tensor, (N,), int64/long, atom head 复用的 BOX 索引。
+    - point_state["offset"]: torch.Tensor, (B,), int64/long, atom head 复用的结束偏移。
+    - point_state["grid_size"]: float, atom head/PTV3 复用的点云 grid size。
+    - point_state["grid_coord"]: torch.Tensor, (N, 3), int32/int64, 可选字段, PTV3 离散网格坐标。
+    - point_recycle_out: torch.Tensor, (N, C_recycle), floating, 下一轮 recycle 输入; mixed 最后一轮后由 Stage1 主模型裁成 real-only。
+    - point_feature_dict: dict[str, torch.Tensor], 每个请求特征名对应一个 (N, C_name) floating 张量。
+"""
 from __future__ import annotations
 
 from typing import Any, Callable, Sequence
@@ -104,13 +131,13 @@ class Stage1PointBackbone(nn.Module):
                 - out_channels: int, 点云分支最终输出维度
                 - recycle_feature_dim: int, 点分支 recycle 特征维度
                 - recycle_in_norm_mode: str, recycle 输入归一化模式, 可选 "layernorm" 或 "none"
-                - embedding_impl: str, embedding 实现方式, "sparseconv" 或 "pointconv"
-                - cpe_impl: str, Block CPE 实现方式, "sparseconv" 或 "pointconv"
+                - embedding_impl: str, embedding 实现方式, 只支持 "pointconv"
+                - cpe_impl: str, Block CPE 实现方式, 取值 "pointconv" / "none"
                 - embedding_receptive_field: float, embedding 世界坐标感受野(Å)(仅 pointconv)
                 - pointconv_embed_max_neighbors: int, embedding 最大邻居数(仅 pointconv)
                 - pointconv_block_max_neighbors: int, Block CPE 最大邻居数(仅 pointconv)
-                - enc_cpe_kernel_size: Sequence[int], 编码器每层 CPE kernel size(仅 sparseconv)
-                - dec_cpe_kernel_size: Sequence[int], 解码器每层 CPE kernel size(仅 sparseconv)
+                - enc_cpe_kernel_size: Sequence[int], legacy 字段; pointconv CPE 不消费该值
+                - dec_cpe_kernel_size: Sequence[int], legacy 字段; pointconv CPE 不消费该值
                 - enc_cpe_receptive_field: Sequence[float], 编码器每层 CPE 感受野(仅 pointconv)
                 - dec_cpe_receptive_field: Sequence[float], 解码器每层 CPE 感受野(仅 pointconv)
                 
@@ -135,6 +162,10 @@ class Stage1PointBackbone(nn.Module):
         self.embedding_kernel_size = int(embedding_kernel_size)
         self.embedding_impl = str(embedding_impl)
         self.cpe_impl = str(cpe_impl)
+        if self.embedding_impl != "pointconv":
+            raise ValueError(f"Stage1PointBackbone: embedding_impl 只支持 'pointconv', 当前为 '{self.embedding_impl}'")
+        if self.cpe_impl not in {"pointconv", "none"}:
+            raise ValueError(f"Stage1PointBackbone: cpe_impl 必须是 'pointconv' 或 'none', 当前为 '{self.cpe_impl}'")
         self.serialization_orders = tuple(str(order_name) for order_name in serialization_orders)
         self.shuffle_orders = bool(shuffle_orders)
         self.cls_mode = bool(cls_mode)
@@ -388,7 +419,6 @@ class Stage1PointBackbone(nn.Module):
                 - 那些在forward中固定的参数是: 
                     - voxel_output_dict(体素分支返回的结果字典);  
                     - batch(本batch所有的样本原信息, 如空间坐标和batch索引);  
-                    - 仅用于记录的 sampled_point_fusion_feat_dict
 
             - feature_dict: dict[str, torch.Tensor], 仅用于记录: 如果 feature name 在 return_feature_names 中, 则新增条目: 键为当前变量名 feature name, 值为它的值
             - return_feature_names: tuple[str, ...], 仅用于记录: 需要记录的变量名列表
@@ -398,9 +428,6 @@ class Stage1PointBackbone(nn.Module):
         """
         if point_feature_hook is not None:
             point_like = point_feature_hook(feature_name, point_like)
-            if hasattr(point_like, "keys") and "sparse_conv_feat" in point_like.keys():
-                point_like["sparse_conv_feat"] = point_like["sparse_conv_feat"].replace_feature(point_like.feat)
-
         if feature_name in return_feature_names:
             # torch.Tensor, `(N_current, C_current)`，当前变量名对应的点特征张量。
             feature_dict[feature_name] = point_like.feat
@@ -431,7 +458,6 @@ class Stage1PointBackbone(nn.Module):
                 - 那些在forward中固定的参数是: 
                     - voxel_output_dict(体素分支返回的结果字典);  
                     - batch(本batch所有的样本原信息, 如空间坐标和batch索引);  
-                    - 仅用于记录的 sampled_point_fusion_feat_dict
 
             - return_feature_names: tuple[str, ...], 需要记录的点变量名列表
 
@@ -463,9 +489,8 @@ class Stage1PointBackbone(nn.Module):
             feature_dict=point_feature_dict,
             return_feature_names=return_feature_names,
         )
-        # 序列化与稀疏化
+        # 序列化: 后续 embedding / Block 使用 serialized_order 与 grid_coord
         point.serialization(order=self.serialization_orders, shuffle_orders=self.shuffle_orders)
-        point.sparsify()
         # (对原始输入做的) 初始嵌入, 将送入PTV3
         point = self.point_encoder.embedding(point)
         point = self._apply_feature_hook(
@@ -596,7 +621,6 @@ class Stage1PointBackbone(nn.Module):
                 - 那些在forward中固定的参数是: 
                     - voxel_output_dict(体素分支返回的结果字典);  
                     - batch(本batch所有的样本原信息, 如空间坐标和batch索引);  
-                    - 仅用于记录的 sampled_point_fusion_feat_dict
 
             - return_feature_names: tuple[str, ...], 需要记录的点变量名列表
 

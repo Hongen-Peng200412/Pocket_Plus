@@ -32,16 +32,16 @@ model:
       dec_patch_size: [128, 96, 72, 64, 64]
 
       # --- 嵌入层 ---
-      embedding_kernel_size: 5       # int, sparseconv 卷积核
-      embedding_impl: pointconv      # str, "sparseconv" / "pointconv"
+      embedding_kernel_size: 5       # int, legacy 字段; pointconv embedding 不消费该值
+      embedding_impl: pointconv      # str, embedding 实现方式, 只支持 "pointconv"
       embedding_receptive_field: 5.0 # float, pointconv 感受野(Å)
       pointconv_embed_max_neighbors: 64
 
       # --- CPE ---
-      cpe_impl: pointconv            # str, Block CPE: "sparseconv" / "pointconv"
+      cpe_impl: pointconv            # str, Block CPE 实现方式, 取值 "pointconv" / "none"
       pointconv_block_max_neighbors: 32
-      enc_cpe_kernel_size: [5, 5, 5, 5, 5]
-      dec_cpe_kernel_size: [5, 5, 5, 5, 5]
+      enc_cpe_kernel_size: [5, 5, 5, 5, 5]   # list[int], legacy 字段; pointconv CPE 不消费该值
+      dec_cpe_kernel_size: [5, 5, 5, 5, 5]   # list[int], legacy 字段; pointconv CPE 不消费该值
       enc_cpe_receptive_field: [2.0, 2.0, 8.0, 12.0, 16.0]
       dec_cpe_receptive_field: [2.0, 2.0, 8.0, 12.0, 16.0]
 

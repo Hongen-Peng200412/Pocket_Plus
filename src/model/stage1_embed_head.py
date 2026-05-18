@@ -17,6 +17,22 @@ embed head 前置模块：
 坐标约定同 box_point_dataset.py:
     - atom_coord_local_voxel: corner 语义连续体素坐标, 顺序 (x, y, z)
     - atom_coord_centered_world: 以 BOX 中心为原点的世界坐标, 顺序 (x, y, z)
+
+对齐契约（修改时必须全量同步）:
+    - 本段、CLAUDE/plans/implement/tri_ligand_sparse_refine/00-master.md 和 src/model/stage1_model.py::_run_embed_head_once 必须同步更新。
+    - embed head 只允许处理 real-only atom, 不允许接收 pseudo_mask、real_mask 或 P anchor 字段。
+
+    - atom_feat: torch.Tensor, (N_real, F_atom), floating, real atom 原始特征。
+    - atom_coord_centered_world: torch.Tensor, (N_real, 3), floating, 以 BOX 中心为原点的世界坐标, 轴顺序 (x, y, z)。
+    - atom_batch_index: torch.Tensor, (N_real,), int64/long, 每个 real atom 所属 BOX 索引。
+    - atom_offsets: torch.Tensor, (B,), int64/long, 每个 BOX 在 real-only 展平序列中的结束偏移。
+    - atom_coord_local_voxel: torch.Tensor, (N_real, 3), floating, corner 语义连续局部体素坐标, 轴顺序 (x, y, z)。
+    - box_shape_zyx: torch.Tensor, (B, 3), int64/long, BOX 体素尺寸, 轴顺序 (z, y, x)。
+    - voxel_size_world: torch.Tensor, (B, 3), floating, 每个 voxel 的世界坐标尺寸, 轴顺序 (x, y, z)。
+    - atom_is_in_core_box: torch.Tensor, (N_real,), bool, real atom 是否在 core box 内。
+    - global_keep_mask: torch.Tensor, (N_real,), bool, 输出字段, True 表示原始 real atom 被 embed 裁剪后保留。
+    - embed_point_feat: torch.Tensor | None, (N_keep, embed_point_out_channels), floating, 裁剪后点分支特征; 未启用点输出时为 None。
+    - voxel_pdb_embed_grid: torch.Tensor | None, (B, C_embed, D, H, W), floating, scatter 后体素嵌入; 未启用体素输出时为 None。
 """
 from __future__ import annotations
 
@@ -525,8 +541,8 @@ class Stage1EmbedHead(nn.Module):
             - mlp_ratio: int, FFN 隐藏层膨胀倍率(仅 ffn_type != "none" 时生效)
             - act_layer_name: str, 激活函数名称, 支持 "gelu"/"silu"/"relu"/"leakyrelu"
             - point_grid_size: float, 内部 Point 对象的离散化粒度
-            - cpe_impl: str, CPE 实现方式 "none"/"sparseconv"/"pointconv"
-            - cpe_kernel_size: int, sparseconv CPE 卷积核大小(仅 cpe_impl="sparseconv" 时生效), 建议值 5
+            - cpe_impl: str, CPE 实现方式 "none"/"pointconv"
+            - cpe_kernel_size: int, legacy 字段; pointconv CPE 不消费该值
             - cpe_receptive_field: float, pointconv CPE 世界坐标感受野半径(Å)(仅 cpe_impl="pointconv" 时生效), 建议值 2.0
             - pointconv_block_max_neighbors: int, pointconv CPE 每个点最大邻居数(仅 cpe_impl="pointconv" 时生效), 建议值 16
             - drop_path: float, 随机深度(stochastic depth) drop 概率, 建议值 0.0
