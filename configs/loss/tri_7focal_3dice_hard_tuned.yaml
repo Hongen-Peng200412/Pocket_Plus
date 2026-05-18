@@ -1,0 +1,60 @@
+# @package _global_
+# ============================================================
+# 三分类硬标签 Focal + Tversky 损失配置
+# 此文件通过 experiment defaults 覆盖 cfg.model.* 下的 loss 字段。
+#   → train.py: hydra.utils.instantiate(cfg.model, optimizer=..., scheduler=...)
+#   → VoxelPointStage1Wrapper.__init__: instantiate(voxel_aux_loss / voxel_ligand_loss)
+# ============================================================
+
+model:
+  # --- voxel auxiliary loss: 体素化受体结合原子语义监督 ---
+  # 共享消费路径:
+  #   → VoxelPointStage1Wrapper._compute_voxel_aux_loss(): logits=outputs["voxel_logits_aux"], target=batch["voxel_label"]
+  #   → AdaptiveClassificationCompositeLoss.forward(): C>1 时走 softmax 多分类硬标签路径
+  voxel_aux_loss:
+    # _target_: str, Hydra 目标类全称; 实例化为同时支持二分类/多分类的复合分类损失
+    _target_: src.modules.losses.AdaptiveClassificationCompositeLoss
+    num_classes: 3                  # int, softmax 类别数; 必须等于 voxel_aux_logit_dim 与映射后标签类别数
+    sigma: 2.0                      # float, 距离软标签高斯 sigma; voxel_aux_loss 传入硬 target 时该值不参与多分类 aux 路径
+    hard_label_threshold: null      # float|null, target=None 时才用于由 ligand_dist_map 生成硬标签; aux 分支直接使用 voxel_label
+    focal_gamma: 2.0                # float, Focal Loss 聚焦参数; 较大值降低易分类位置贡献
+    focal_alpha: [0.2, 0.7, 0.1]    # list[float], (C,) 每类 focal 权重; 顺序为 [background, metal_ion, small_molecule]
+    focal_alpha_neg: 0.5            # float, 二分类兼容参数; C>1 多分类路径不使用
+    focal_alpha_pos: 0.5            # float, 二分类兼容参数; C>1 多分类路径不使用
+    focal_eps: 1.0e-6               # float, 概率裁剪 epsilon, 防止 log/幂次计算数值不稳定
+    tversky_alpha: 0.5              # float, Tversky FP 惩罚系数; 0.5 与 beta=0.5 时等价 Dice
+    tversky_beta: 0.5               # float, Tversky FN 惩罚系数
+    tversky_smooth: 1.0             # float, Tversky 平滑项, 避免空前景类别除零
+    w_focal: 0.7                    # float, focal 分项权重
+    w_tversky: 0.3                  # float, tversky 分项权重
+    w_mse: 0.0                      # float, MSE 分项权重; 三分类硬标签实验关闭该项
+    focal_soft_negative_suppression: false  # bool, 二分类软负样本抑制开关; C>1 多分类路径不使用
+    tversky_soft_target: false              # bool, 二分类 Tversky 是否使用软标签; C>1 多分类路径不使用
+  voxel_aux_loss_weight: 0.1        # float, aux loss 加到 total_loss 前的 wrapper 级权重
+                                   # → VoxelPointStage1Wrapper._compute_total_loss()
+
+  # --- voxel ligand loss: ligand 距离图派生的三分类区域监督 ---
+  # 共享消费路径:
+  #   → VoxelPointStage1Wrapper._compute_voxel_ligand_loss(): target=None, ligand_dist_map=batch["ligand_dist_map"]
+  #   → AdaptiveClassificationCompositeLoss._target_from_multiclass_dist(): 期望 ligand_dist_map 为 (B,C,D,H,W), channel 0 是背景占位 inf
+  voxel_ligand_loss:
+    # _target_: str, Hydra 目标类全称; 由 ligand_dist_map 与 hard_label_threshold 生成多分类硬标签
+    _target_: src.modules.losses.AdaptiveClassificationCompositeLoss
+    num_classes: 3                  # int, softmax 类别数; 必须等于 voxel_ligand_logit_dim 与 ligand_dist_map 的 C
+    sigma: 2.0                      # float, 距离软标签高斯 sigma; 当前 hard-label 多分类路径不使用 y_soft
+    hard_label_threshold: 1.7       # float, ligand 距离阈值; min foreground distance 小于该值的位置标为最近前景类别, 否则为 background
+    focal_gamma: 2.0                # float, Focal Loss 聚焦参数
+    focal_alpha: [0.2, 0.7, 0.1]  # list[float], (C,) 每类 focal 权重; 顺序必须与 dataset.class_names / logits 通道一致
+    focal_alpha_neg: 0.5            # float, 二分类兼容参数; C>1 多分类路径不使用
+    focal_alpha_pos: 0.5            # float, 二分类兼容参数; C>1 多分类路径不使用
+    focal_eps: 1.0e-6               # float, 概率裁剪 epsilon
+    tversky_alpha: 0.5              # float, 前景类 Tversky FP 惩罚系数; 多分类路径会排除背景后对前景类别求均值
+    tversky_beta: 0.5               # float, 前景类 Tversky FN 惩罚系数
+    tversky_smooth: 1.0             # float, Tversky 平滑项
+    w_focal: 0.7                    # float, focal 分项权重
+    w_tversky: 0.3                  # float, tversky 分项权重
+    w_mse: 0.0                      # float, MSE 分项权重; 三分类硬标签实验关闭该项
+    focal_soft_negative_suppression: false  # bool, 二分类软负样本抑制开关; C>1 多分类路径不使用
+    tversky_soft_target: false              # bool, 二分类 Tversky 是否使用软标签; C>1 多分类路径不使用
+  voxel_ligand_loss_weight: 1.0     # float, ligand loss 加到 total_loss 前的 wrapper 级权重
+                                   # → VoxelPointStage1Wrapper._compute_total_loss()
