@@ -18,7 +18,7 @@ model:
     atom_head_upcast_softmax: false
     atom_head_mlp_ratio: 4
     atom_head_pseudo_feature_dim: null  # int|null, P anchor feature 输出通道数; null 表示等于 atom_head_hidden_dim
-    atom_head_cpe_impl: "none"     # str, CPE 实现方式, 取值 "none" / "pointconv"
+    atom_head_cpe_impl: "pointconv"     # str, CPE 实现方式, 取值 "none" / "pointconv"
     atom_head_cpe_kernel_size: 5    # int, legacy 字段; pointconv CPE 不消费该值
     atom_head_cpe_receptive_field: 2.0
     atom_head_pointconv_max_neighbors: 16
