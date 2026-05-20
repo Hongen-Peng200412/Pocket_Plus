@@ -21,15 +21,15 @@ defaults:
   - override /model/pseudo_atom: none            # 伪原子
   - override /model/embed_head: passthrough               # 完全没有
   - override /loss: unet                  # 损失
-  - override /dataset: S_unet               # 数据集: 无离线 pdb_feature, embed head 在线生成
+  - override /dataset: S_unet_base               # 数据集: 无离线 pdb_feature, embed head 在线生成
   - override /train: B40_L3                        # 训练: H200 参数
 
 
 # --- 实验标识 ---
-name: S_unet000
-tag: "S_unet000"
-experiment_group: "S_unet000"              # str, run_dir 父文件夹名称
-project_name: PV_S_unet000                 # wandb 的项目名称
+name: S_unet000_base
+tag: "S_unet000_base"
+experiment_group: "S_unet"              # str, run_dir 父文件夹名称
+project_name: PV_S_unet                 # wandb 的项目名称
 
 # --- 模型总体参数 ---
 model:

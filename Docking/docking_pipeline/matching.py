@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import numpy as np
+
 from .config import MatchingOptions
 from .records import AssignmentResult, PairScore
 
@@ -93,15 +95,8 @@ def solve_assignment_with_virtual_nodes(
         - result: AssignmentResult, 包含真实匹配、未匹配项与虚拟边审计信息
     """
     receptor_scope = scores[0].receptor_scope
-    n = max(len(site_ids), len(ligand_labels))
-    padded_sites = site_ids + [f"__virtual_site_{i:03d}" for i in range(n - len(site_ids))]
-    padded_ligands = ligand_labels + [f"__virtual_ligand_{i:03d}" for i in range(n - len(ligand_labels))]
     score_map = {(item.site_id, item.ligand_label): item for item in scores}
-    chosen, total = _assignment_dp(
-        padded_sites,
-        padded_ligands,
-        lambda site, ligand: _virtual_aware_cost(site, ligand, score_map, site_ignore_costs, ligand_missing_costs),
-    )
+    chosen, total, solver = _solve_virtual_assignment_edges(score_map, site_ids, ligand_labels, site_ignore_costs, ligand_missing_costs)
     real_pairs: list[PairScore] = []
     virtual_edges: list[dict[str, object]] = []
     unmatched_sites: list[str] = []
@@ -122,7 +117,84 @@ def solve_assignment_with_virtual_nodes(
         unmatched_sites=tuple(unmatched_sites),
         unmatched_ligands=tuple(unmatched_ligands),
         virtual_edges=tuple(virtual_edges),
+        solver=solver,
     )
+
+
+def _solve_virtual_assignment_edges(
+    score_map: dict[tuple[str, str], PairScore],
+    site_ids: list[str],
+    ligand_labels: list[str],
+    site_ignore_costs: dict[str, float],
+    ligand_missing_costs: dict[str, float],
+) -> tuple[list[tuple[str, str, float]], float, str]:
+    """
+    求解带虚拟节点的 assignment 边。
+
+    输入参数:
+        - score_map: dict[tuple[str, str], PairScore], 真实 site-ligand 边成本
+        - site_ids: list[str], 真实预测 site 标签
+        - ligand_labels: list[str], 真实 ligand 标签
+        - site_ignore_costs: dict[str, float], 真实 site 匹配虚拟 ligand 的成本
+        - ligand_missing_costs: dict[str, float], 虚拟 site 匹配真实 ligand 的成本
+
+    输出:
+        - result: tuple[list[tuple[str, str, float]], float, str], 选中边、总成本和实际 solver 名称
+    """
+    n = max(len(site_ids), len(ligand_labels))
+    padded_sites = site_ids + [f"__virtual_site_{i:03d}" for i in range(n - len(site_ids))]
+    padded_ligands = ligand_labels + [f"__virtual_ligand_{i:03d}" for i in range(n - len(ligand_labels))]
+    if n <= 16:
+        chosen, total = _assignment_dp(
+            padded_sites,
+            padded_ligands,
+            lambda site, ligand: _virtual_aware_cost(site, ligand, score_map, site_ignore_costs, ligand_missing_costs),
+        )
+        return chosen, total, "dp_virtual"
+    chosen, total = _assignment_scipy(padded_sites, padded_ligands, score_map, site_ignore_costs, ligand_missing_costs)
+    return chosen, total, "scipy_hungarian"
+
+
+def _assignment_scipy(
+    padded_sites: list[str],
+    padded_ligands: list[str],
+    score_map: dict[tuple[str, str], PairScore],
+    site_ignore_costs: dict[str, float],
+    ligand_missing_costs: dict[str, float],
+) -> tuple[list[tuple[str, str, float]], float]:
+    """
+    使用 scipy 的 Hungarian solver 求解较大方阵。
+
+    输入参数:
+        - padded_sites: list[str], 补齐后的左侧 site 节点
+        - padded_ligands: list[str], 补齐后的右侧 ligand 节点
+        - score_map: dict[tuple[str, str], PairScore], 真实边成本
+        - site_ignore_costs: dict[str, float], 忽略 site 成本
+        - ligand_missing_costs: dict[str, float], 漏掉 ligand 成本
+
+    输出:
+        - result: tuple[list[tuple[str, str, float]], float], 选中边与总成本
+    """
+    from scipy.optimize import linear_sum_assignment
+
+    cost = np.asarray(
+        [
+            [
+                _virtual_aware_cost(site, ligand, score_map, site_ignore_costs, ligand_missing_costs)
+                for ligand in padded_ligands
+            ]
+            for site in padded_sites
+        ],
+        dtype=float,
+    )
+    row_indices, col_indices = linear_sum_assignment(cost)
+    chosen = [
+        (padded_sites[row], padded_ligands[col], float(cost[row, col]))
+        for row, col in zip(row_indices, col_indices)
+    ]
+    return chosen, float(cost[row_indices, col_indices].sum())
+
+
 
 
 def _minmax(values: list[float]) -> list[float]:
@@ -153,6 +225,7 @@ def _assign_sites_to_ligands(
         total_cost=total,
         pairs=pairs,
         unmatched_ligands=tuple(label for label in ligand_labels if label not in matched_ligands),
+        solver="dp_rectangular",
     )
 
 
@@ -175,6 +248,7 @@ def _assign_ligands_to_subset_of_sites(
         total_cost=total,
         pairs=pairs,
         unmatched_sites=tuple(site for site in site_ids if site not in matched_sites),
+        solver="dp_rectangular",
     )
 
 

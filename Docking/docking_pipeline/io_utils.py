@@ -12,6 +12,7 @@ from .records import InferenceSite, LigandCandidate
 
 STANDALONE_METAL_CCD = {"MG", "MN", "ZN", "CA", "NA", "K", "FE", "CU", "CO", "NI", "CD", "HG", "CL", "BR", "IOD"}
 MOL2_METAL_TYPES = {"FE", "MG", "MN", "ZN", "CA", "NA", "K", "CU", "CO", "NI", "CD", "HG", "MO", "W", "V"}
+ROSETTA_NAME_DIGITS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 
 
 def read_json(path: Path) -> Any:
@@ -151,6 +152,23 @@ def mol2_internal_metals(path: Path) -> tuple[str, ...]:
     return tuple(sorted(metals))
 
 
+def rosetta_ligand_name(index: int) -> str:
+    """
+    为 ligand 生成不碰撞 CCD 内置名的三字符 Rosetta residue 名称。
+
+    输入参数:
+        - index: int, 从 1 开始的 ligand 序号
+
+    输出:
+        - name: str, 长度为 3 的 Rosetta residue 名称, 例如 `L01`
+    """
+    if index < 100:
+        return f"L{index:02d}"
+    high = index // len(ROSETTA_NAME_DIGITS)
+    low = index % len(ROSETTA_NAME_DIGITS)
+    return f"Z{ROSETTA_NAME_DIGITS[high]}{ROSETTA_NAME_DIGITS[low]}"
+
+
 def read_ligand_candidates(mapping_csv: Path, pdb_id: str) -> list[LigandCandidate]:
     """
     从 ligand mapping CSV 中读取当前样本可用于 docking 的候选 mol2。
@@ -190,8 +208,9 @@ def read_ligand_candidates(mapping_csv: Path, pdb_id: str) -> list[LigandCandida
         mol2_path = Path(row.get("native_mol2_path", ""))
         heavy_atoms = int(row.get("mol2_heavy_atoms") or 0)
         ccd_id = row.get("ccd_id", "").upper()
-        label = f"{ccd_id}_{len(ligands) + 1:02d}" if ccd_counts[ccd_id] > 1 else ccd_id
-        rosetta_name = ccd_id[:3] if ccd_counts[ccd_id] == 1 and len(ccd_id) <= 3 else f"L{len(ligands) + 1:02d}"
+        ligand_index = len(ligands) + 1
+        label = f"{ccd_id}_{ligand_index:02d}" if ccd_counts[ccd_id] > 1 else ccd_id
+        rosetta_name = rosetta_ligand_name(ligand_index)
         ligands.append(
             LigandCandidate(
                 pdb_id=pdb_id.lower(),

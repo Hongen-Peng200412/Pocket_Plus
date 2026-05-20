@@ -50,9 +50,7 @@ write_custom_run_cmd_hook() {
     local TARGET_FILE="$1"
     cat << EOF > "${TARGET_FILE}"
 #!/bin/bash
-python Pocket_Plus/src/inference/main/two_stage_basic.py \
-    --config="${CONFIG_NAME}" \
-    ${HYDRA_OVERRIDES}
+python /home/penghongen/My_Project/Pocket_Plus/src/train.py "+experiment=N_clipbig_mix"
 EOF
 }
 # ============================================================

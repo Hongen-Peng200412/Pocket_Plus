@@ -469,6 +469,7 @@ def extract_real_point_output(    # 特化函数
     if isinstance(feature_dict, dict):
         trimmed_feature_dict: dict[str, Any] = {}
         for feature_name, feature_value in feature_dict.items():
+            # 只承诺 point_feat/point_state/point_recycle_out 是 real-only，要在契约里写清楚 pooled point_feature_dict 不保证 real-only。
             if torch.is_tensor(feature_value) and feature_value.ndim >= 1 and feature_value.shape[0] == real_mask.shape[0]:
                 trimmed_feature_dict[feature_name] = feature_value[real_mask]
             else:

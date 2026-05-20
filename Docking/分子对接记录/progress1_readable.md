@@ -335,7 +335,7 @@ lig_dens
 ligscore
 网络 instance score_mean
 网络 instance score_max
-预测体素数
+预测的该 instance 的体素数
 预测 mask 与 docking pose 的 shape overlap
 ligand heavy atom 数
 ligand 半径
@@ -348,15 +348,14 @@ map 分辨率
 然后训练传统模型：
 
 * 网格搜索线性权重。
-* XGBoost 或 LightGBM 或 Catboost 等先进的 tree ensemble(如果实现不复杂且训练成本可接受)。
+* XGBoost 或 LightGBM 或 Catboost 等先进的 tree ensemble(如果实现不复杂且训练成本可接受)[似乎比较好？]。
 * Logistic regression / ranking SVM。
 * Random forest。
 
 目标可以是：
 
-* 正确 site-ligand pair 的二分类。
 * 正确 ligand 在同一 site 中排名靠前。
-* 正确 site assignment 的整体匹配成本最小、排名靠前、正确率最高后者它们的混合。
+* 正确 site assignment 的整体匹配成本最小、排名靠前、正确率或者它们的混合[似乎比较好？]。
 
 ## 9. 当前风险
 

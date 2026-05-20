@@ -174,6 +174,7 @@ class AssignmentResult:
         - unmatched_sites: tuple[str, ...], 未匹配预测位点
         - unmatched_ligands: tuple[str, ...], 未匹配 ligand
         - virtual_edges: tuple[dict[str, Any], ...], 涉及虚拟节点的边, 用于审计
+        - solver: str, 本次 assignment 实际使用的求解器名称
 
     输出:
         - AssignmentResult: 不可变记录对象, 用于写入审计摘要
@@ -185,3 +186,4 @@ class AssignmentResult:
     unmatched_sites: tuple[str, ...] = ()
     unmatched_ligands: tuple[str, ...] = ()
     virtual_edges: tuple[dict[str, Any], ...] = field(default_factory=tuple)
+    solver: str = ""

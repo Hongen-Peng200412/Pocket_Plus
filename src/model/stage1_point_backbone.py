@@ -7,23 +7,25 @@ Stage1 point backbone 的 PTV3/zeros 封装。
     - embedding_impl 只支持 "pointconv"; cpe_impl 只支持 "pointconv" 或 "none"; PTV3 点分支不得重新引入旧稀疏卷积依赖或旧稀疏卷积特征字段。
 
 forward 输入字段契约:
-    - atom_feat: torch.Tensor, (N, F_atom), floating, real atom 或 mixed 全点特征。
-    - atom_coord_centered_world: torch.Tensor, (N, 3), floating, 点坐标, 轴顺序 (x, y, z)。
-    - atom_batch_index: torch.Tensor, (N,), int64/long, 每个点所属 BOX 索引。
+    - atom_feat: torch.Tensor, (N_all, F_atom), floating, real-only 或 mixed 全点特征。
+    - atom_coord_centered_world: torch.Tensor, (N_all, 3), floating, 点坐标, 轴顺序 (x, y, z)。
+    - atom_batch_index: torch.Tensor, (N_all,), int64/long, 每个点所属 BOX 索引。
     - atom_offsets: torch.Tensor, (B,), int64/long, 每个 BOX 在展平点序列中的结束偏移。
-    - recycle_in: torch.Tensor | None, (N, C_recycle), floating, 上一轮 point recycle 状态; mixed 最后一轮由 Stage1 主模型补齐 P anchor 槽位。
+    - recycle_in: torch.Tensor | None, (N_all, C_recycle), floating, 上一轮 point recycle 状态; mixed 最后一轮由 Stage1 主模型补齐 P anchor 槽位。
+    - pseudo_mask: torch.Tensor | None, (N_all,), bool, True 表示 P anchor; None 表示未携带 type 标注。
     - point_feature_hook: Callable[[str, Any], Any] | None, 可选 hook, 在导出命名点特征时注入 voxel-to-point 融合。
     - return_feature_names: Sequence[str], 可变长度, 请求导出的点特征名, 必须属于 available_feature_names。
 
 forward 输出字段契约:
-    - point_feat: torch.Tensor, (N, C_point), floating, 点分支最终输出特征。
-    - point_state["coord"]: torch.Tensor, (N, 3), floating, atom head 复用的点坐标。
-    - point_state["batch"]: torch.Tensor, (N,), int64/long, atom head 复用的 BOX 索引。
+    - point_feat: torch.Tensor, (N_all, C_point), floating, 点分支最终输出特征。
+    - point_state["coord"]: torch.Tensor, (N_all, 3), floating, atom head 复用的点坐标。
+    - point_state["batch"]: torch.Tensor, (N_all,), int64/long, atom head 复用的 BOX 索引。
     - point_state["offset"]: torch.Tensor, (B,), int64/long, atom head 复用的结束偏移。
     - point_state["grid_size"]: float, atom head/PTV3 复用的点云 grid size。
-    - point_state["grid_coord"]: torch.Tensor, (N, 3), int32/int64, 可选字段, PTV3 离散网格坐标。
-    - point_recycle_out: torch.Tensor, (N, C_recycle), floating, 下一轮 recycle 输入; mixed 最后一轮后由 Stage1 主模型裁成 real-only。
-    - point_feature_dict: dict[str, torch.Tensor], 每个请求特征名对应一个 (N, C_name) floating 张量。
+    - point_state["grid_coord"]: torch.Tensor, (N_all, 3), int32/int64, 可选字段, PTV3 离散网格坐标。
+    - point_state["pseudo_mask"]: torch.Tensor, (N_all,), bool, 可选字段, 输入或中间 Point 携带 mask 时必须透传。
+    - point_recycle_out: torch.Tensor, (N_all, C_recycle), floating, 下一轮 recycle 输入; mixed 最后一轮后由 Stage1 主模型裁成 real-only。
+    - point_feature_dict: dict[str, torch.Tensor], 每个请求特征名对应一个 (N_current, C_name) floating 张量。
 """
 from __future__ import annotations
 
@@ -31,6 +33,13 @@ from typing import Any, Callable, Sequence
 
 import torch
 from torch import nn
+
+from src.model.typed_point import (
+    TypedPointConfig,
+    apply_type_aware_tensor_module,
+    normalize_typed_point_cfg,
+    validate_pseudo_mask,
+)
 
 _PTV3_IMPORT_ERROR: Exception | None = None
 try:
@@ -118,6 +127,7 @@ class Stage1PointBackbone(nn.Module):
         pdnorm_conditions: Sequence[str],  # ("ScanNet", "S3DIS", "Structured3D")
         act_layer_name: str,  # "gelu"
         ffn_type: str,  # "mlp"
+        typed_point_cfg: dict[str, Any] | TypedPointConfig | None = None,
     ) -> None:
         """
             Stage1 点分支。
@@ -173,6 +183,8 @@ class Stage1PointBackbone(nn.Module):
         self.dec_channels = tuple(int(value) for value in dec_channels)
         self.dec_depths = tuple(int(value) for value in dec_depths)
         self.act_layer_name = str(act_layer_name)
+        # TypedPointConfig, typed point 全局配置
+        self.typed_point_cfg = normalize_typed_point_cfg(typed_point_cfg)
 
         # 编码器阶段名称("point_enc0"(无下采样), "point_enc1", "point_enc2", "point_enc3", "point_enc4")
         self.enc_stage_names = tuple(f"point_enc{stage_idx}" for stage_idx in range(len(self.enc_channels)))
@@ -236,13 +248,17 @@ class Stage1PointBackbone(nn.Module):
         )
         # nn.Linear, `(sumN, C_recycle) -> (sumN, F_atom)`，将上一轮 point recycle 状态投影回当前 atom 特征空间
         self.recycle_input_proj = nn.Linear(self.recycle_feature_dim, self.atom_feature_dim)
-        # nn.Sequential, `(sumN, F_atom) -> (sumN, C_input_embed)`，输入到点主干前的原子特征投影。
-        self.atom_input_proj = nn.Sequential(
-            nn.Linear(self.atom_feature_dim, int(input_embed_hidden_dim)),
-            nn.LayerNorm(int(input_embed_hidden_dim)),
-            _act_cls(),
-            nn.Linear(int(input_embed_hidden_dim), self.input_embed_dim),
-        )
+        if self.typed_point_cfg.use_separate_point_input_proj:
+            # nn.Sequential, real 点输入到点主干前的原子特征投影
+            self.atom_input_proj_real = self._build_atom_input_proj(_act_cls, int(input_embed_hidden_dim))
+            # nn.Sequential, pseudo 点输入到点主干前的原子特征投影
+            self.atom_input_proj_pseudo = self._build_atom_input_proj(_act_cls, int(input_embed_hidden_dim))
+            self.atom_input_proj = None
+        else:
+            # nn.Sequential, `(sumN, F_atom) -> (sumN, C_input_embed)`，输入到点主干前的原子特征投影。
+            self.atom_input_proj = self._build_atom_input_proj(_act_cls, int(input_embed_hidden_dim))
+            self.atom_input_proj_real = None
+            self.atom_input_proj_pseudo = None
         if self.backend == "ptv3":
             if PointTransformerV3 is None:
                 raise ImportError("backend='ptv3' 需要 PTV3 相关依赖。") from _PTV3_IMPORT_ERROR
@@ -281,6 +297,13 @@ class Stage1PointBackbone(nn.Module):
                 enable_flash=bool(enable_flash),
                 upcast_attention=bool(upcast_attention),
                 upcast_softmax=bool(upcast_softmax),
+                separate_qkv=self.typed_point_cfg.use_separate_qkv,
+                separate_attn_proj=self.typed_point_cfg.use_separate_attn_proj,
+                separate_ffn=self.typed_point_cfg.use_separate_ffn,
+                separate_cpe=self.typed_point_cfg.use_separate_cpe,
+                separate_embedding=self.typed_point_cfg.use_separate_embedding,
+                separate_pooling_proj=self.typed_point_cfg.use_separate_pooling_proj,
+                separate_unpooling_proj=self.typed_point_cfg.use_separate_unpooling_proj,
                 cls_mode=bool(cls_mode),
                 pdnorm_bn=bool(pdnorm_bn),
                 pdnorm_ln=bool(pdnorm_ln),
@@ -320,6 +343,24 @@ class Stage1PointBackbone(nn.Module):
             )
         return normalized_feature_names
 
+    def _build_atom_input_proj(self, act_cls: type[nn.Module], input_embed_hidden_dim: int) -> nn.Module:
+        """
+        构造 atom feature 到 point input feature 的投影模块。
+
+        输入参数:
+            - act_cls: type[nn.Module], 激活函数类
+            - input_embed_hidden_dim: int, 输入投影隐藏通道数
+
+        输出:
+            - module: nn.Module, (N_all, F_atom) -> (N_all, C_input_embed) 的投影模块
+        """
+        return nn.Sequential(
+            nn.Linear(self.atom_feature_dim, int(input_embed_hidden_dim)),
+            nn.LayerNorm(int(input_embed_hidden_dim)),
+            act_cls(),
+            nn.Linear(int(input_embed_hidden_dim), self.input_embed_dim),
+        )
+
     def _export_point_state(self, point_like: Any) -> dict[str, Any]:
         """
         从 Point 对象中导出 atom head 需要复用的点状态(coord, batch, offset, grid_size, 可选grid_coord)
@@ -343,12 +384,16 @@ class Stage1PointBackbone(nn.Module):
         }
         if "grid_coord" in point_like:
             point_state["grid_coord"] = point_like["grid_coord"]
+        if "pseudo_mask" in point_like:
+            # torch.Tensor, (N_all,), bool, P anchor 掩码
+            point_state["pseudo_mask"] = point_like["pseudo_mask"]
         return point_state
 
     def _build_point_input_feat(
         self,
         atom_feat: torch.Tensor,
         recycle_in: torch.Tensor | None,
+        pseudo_mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """
         按 AF2 风格将 recycle 状态投影回 atom 特征空间，并构造点主干输入特征。
@@ -392,8 +437,17 @@ class Stage1PointBackbone(nn.Module):
         recycle_residual = self.recycle_input_proj(recycle_feat)
         # torch.Tensor, `(sumN, F_atom)`, 融合 recycle 残差后的 atom 特征
         fused_atom_feat = atom_feat + recycle_residual
-        # torch.Tensor, `(sumN, C_input_embed)`, 输入到点主干前的投影特征
-        point_input_feat = self.atom_input_proj(fused_atom_feat)
+        if self.typed_point_cfg.use_separate_point_input_proj:
+            # torch.Tensor, `(sumN, C_input_embed)`, type-aware 输入投影特征
+            point_input_feat = apply_type_aware_tensor_module(
+                fused_atom_feat,
+                pseudo_mask,
+                self.atom_input_proj_real,
+                self.atom_input_proj_pseudo,
+            )
+        else:
+            # torch.Tensor, `(sumN, C_input_embed)`, shared 输入投影特征
+            point_input_feat = self.atom_input_proj(fused_atom_feat)
         return point_input_feat
 
 
@@ -442,6 +496,7 @@ class Stage1PointBackbone(nn.Module):
         atom_offsets: torch.Tensor,
         point_feature_hook: PointFeatureHook | None,
         return_feature_names: tuple[str, ...],
+        pseudo_mask: torch.Tensor | None = None,
     ) -> dict[str, Any]:
         """
         以显式阶段变量的方式执行 PTV3 前向。
@@ -472,16 +527,19 @@ class Stage1PointBackbone(nn.Module):
             raise ImportError("构造 Point 对象需要 PTV3 相关依赖。") from _PTV3_IMPORT_ERROR
 
         # 初始阶段
+        # dict[str, Any], 初始 Point 字段
+        point_dict = {
+            "feat": point_input_feat,
+            "coord": atom_coord_centered_world,
+            "batch": atom_batch_index,
+            "offset": atom_offsets,
+            "grid_size": self.point_grid_size,
+        }
+        if pseudo_mask is not None:
+            # torch.Tensor, (N_all,), bool, P anchor 掩码
+            point_dict["pseudo_mask"] = pseudo_mask
         # 初始化的 Point: `(sumN, C_input)` + 坐标/批次信息，进入 PTV3 前的基础点对象。
-        point = Point(
-            {
-                "feat": point_input_feat,
-                "coord": atom_coord_centered_world,
-                "batch": atom_batch_index,
-                "offset": atom_offsets,
-                "grid_size": self.point_grid_size,
-            }
-        )
+        point = Point(point_dict)
         point = self._apply_feature_hook(
             feature_name="point_input_feat",
             point_like=point,
@@ -548,6 +606,7 @@ class Stage1PointBackbone(nn.Module):
         atom_offsets: torch.Tensor,
         return_feature_names: Sequence[str] | None = None,
         point_input_feat: torch.Tensor | None = None,
+        pseudo_mask: torch.Tensor | None = None,
     ) -> dict[str, Any]:
         """
         为 `backend="zeros"` 构造点分支占位输出。
@@ -574,6 +633,8 @@ class Stage1PointBackbone(nn.Module):
         # torch.Tensor, `(B,)`, PTV3 风格结束偏移
         point_offsets = atom_offsets.to(device=atom_batch_index.device, dtype=torch.long)
         atom_count = int(atom_feat.shape[0])
+        # torch.Tensor | None, (N_all,), bool, 校验后的 P anchor 掩码
+        pseudo_mask = validate_pseudo_mask(pseudo_mask, atom_count, name="Stage1PointBackbone.build_zeros_output")
         # torch.Tensor, `(sumN, C_point)`, zeros 后端提供给 atom head 的全零占位特征
         point_feat = atom_feat.new_zeros((atom_count, self.out_channels))
         point_state = {
@@ -582,6 +643,9 @@ class Stage1PointBackbone(nn.Module):
             "offset": point_offsets,
             "grid_size": self.point_grid_size,
         }
+        if pseudo_mask is not None:
+            # torch.Tensor, (N_all,), bool, P anchor 掩码
+            point_state["pseudo_mask"] = pseudo_mask
         point_feature_dict: dict[str, torch.Tensor] = {}
         if point_input_feat is not None and "point_input_feat" in requested_feature_names:
             point_feature_dict["point_input_feat"] = point_input_feat
@@ -604,6 +668,7 @@ class Stage1PointBackbone(nn.Module):
         recycle_in: torch.Tensor | None = None,
         point_feature_hook: PointFeatureHook | None = None,
         return_feature_names: Sequence[str] | None = None,
+        pseudo_mask: torch.Tensor | None = None,
     ) -> dict[str, Any]:
         """
         执行一次点分支前向。
@@ -639,10 +704,13 @@ class Stage1PointBackbone(nn.Module):
         # torch.Tensor, `(B,)`, PTV3 风格结束偏移，保持原始 batch 视图不压缩。
         point_offsets = atom_offsets.to(device=atom_batch_index.device, dtype=torch.long)
         atom_count = int(atom_feat.shape[0])
+        # torch.Tensor | None, (N_all,), bool, 校验后的 P anchor 掩码
+        pseudo_mask = validate_pseudo_mask(pseudo_mask, atom_count, name="Stage1PointBackbone.forward")
         # torch.Tensor, `(sumN, C_input_embed)`, 输入到点主干前的投影特征
         point_input_feat = self._build_point_input_feat(
             atom_feat=atom_feat,
             recycle_in=recycle_in,
+            pseudo_mask=pseudo_mask,
         )
 
 
@@ -656,6 +724,9 @@ class Stage1PointBackbone(nn.Module):
                 "offset": point_offsets,
                 "grid_size": self.point_grid_size,
             }
+            if pseudo_mask is not None:
+                # torch.Tensor, (0,), bool, 空 batch 的 P anchor 掩码
+                point_state["pseudo_mask"] = pseudo_mask
             point_feature_dict = {}
             if "point_input_feat" in requested_feature_names:
                 point_feature_dict["point_input_feat"] = point_input_feat
@@ -678,6 +749,7 @@ class Stage1PointBackbone(nn.Module):
                 atom_offsets=point_offsets,
                 return_feature_names=requested_feature_names,
                 point_input_feat=point_input_feat,
+                pseudo_mask=pseudo_mask,
             )
         else:
             output_dict = self._forward_ptv3(
@@ -687,6 +759,7 @@ class Stage1PointBackbone(nn.Module):
                 atom_offsets=point_offsets,
                 point_feature_hook=point_feature_hook,
                 return_feature_names=requested_feature_names,
+                pseudo_mask=pseudo_mask,
             )
             point_feat = output_dict["point_feat"]
             point_state = output_dict["point_state"]

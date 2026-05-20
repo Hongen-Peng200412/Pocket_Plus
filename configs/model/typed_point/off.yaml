@@ -1,0 +1,16 @@
+# @package _global_
+# 显式关闭 typed point real/pseudo 分参配置, 用于 shared baseline / ablation。
+model:
+  backbone:
+    typed_point_cfg:
+      enabled: false                      # bool, 全局 typed point 开关; false 时所有 use_separate_* 为 false
+      separate_qkv: true                  # bool, enabled=false 时不生效
+      separate_attn_proj: true            # bool, enabled=false 时不生效
+      separate_ffn: true                  # bool, enabled=false 时不生效
+      separate_cpe: true                  # bool, enabled=false 时不生效
+      separate_embedding: true            # bool, enabled=false 时不生效
+      separate_pooling_proj: true         # bool, enabled=false 时不生效
+      separate_unpooling_proj: true       # bool, enabled=false 时不生效
+      separate_fusion: true               # bool, enabled=false 时不生效
+      separate_point_input_proj: true     # bool, enabled=false 时不生效
+      separate_atom_token_proj: true      # bool, enabled=false 时不生效

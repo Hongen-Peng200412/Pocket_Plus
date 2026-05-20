@@ -15,6 +15,7 @@ model:
       out_channels: 64               # int, 点分支最终输出通道数
       recycle_feature_dim: 64        # int, recycle 特征维度
       recycle_in_norm_mode: layernorm  # str, 对上一轮 point recycle_out 先做归一化再投影; "layernorm" / "none"
+      typed_point_cfg: ${model.backbone.typed_point_cfg}  # dict, 全局 typed point 配置引用
 
       # --- 序列化 ---
       serialization_orders: ["z", "z-trans", "hilbert", "hilbert-trans"]

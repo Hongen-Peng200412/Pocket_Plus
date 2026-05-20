@@ -45,6 +45,12 @@ from torch import nn
 
 from src.model.stage1_atom_head import Stage1AtomHead
 from src.model.stage1_embed_head import scatter_to_voxel_grid
+from src.model.typed_point import (
+    TypedPointConfig,
+    apply_type_aware_tensor_module,
+    normalize_typed_point_cfg,
+    validate_pseudo_mask,
+)
 from src.model.pseudo_atoms import (
     PseudoAtomLayout,
     extract_real_point_output,
@@ -109,6 +115,7 @@ class VolumePointStage1Model(nn.Module):
         online_pdb_feature_reduce: str = "sum",
         online_pdb_feature_dim: int = 49,
         atom_head_pseudo_feature_dim: int | None = None,
+        typed_point_cfg: dict[str, Any] | TypedPointConfig | None = None,
     ) -> None:
         """
         Stage1 体素-点云联合模型, voxel backbone 每轮 recycle, P anchors 只在最后一轮注入。
@@ -174,6 +181,8 @@ class VolumePointStage1Model(nn.Module):
         if resolve_act_layer is None:
             raise ImportError("VolumePointStage1Model 需要 PTV3 resolve_act_layer。") from _PTV3_IMPORT_ERROR
 
+        # TypedPointConfig, Stage1 全局 typed point 配置
+        self.typed_point_cfg = normalize_typed_point_cfg(typed_point_cfg)
         self.embed_head = embed_head if isinstance(embed_head, nn.Module) else instantiate(embed_head) if embed_head is not None else None
         self.online_pdb_feature = bool(online_pdb_feature)
         self.online_pdb_feature_reduce = str(online_pdb_feature_reduce)
@@ -242,13 +251,35 @@ class VolumePointStage1Model(nn.Module):
             voxel_channels = int(self.voxel_backbone.feature_channels_by_name[voxel_name])
             fusion_input_dim = point_channels + voxel_channels
             fusion_hidden_dim = max(point_channels, int(round(float(fusion_input_dim) * float(fusion_mlp_ratio))))
-            self.point_fusion_modules[point_name] = nn.Sequential(
-                nn.Linear(fusion_input_dim, fusion_hidden_dim),
-                nn.LayerNorm(fusion_hidden_dim),
-                act_cls(),
-                nn.Dropout(float(fusion_proj_drop)),
-                nn.Linear(fusion_hidden_dim, point_channels),
-            )
+            if self.typed_point_cfg.use_separate_fusion:
+                # nn.ModuleDict, real/pseudo 两套 voxel-to-point fusion MLP
+                self.point_fusion_modules[point_name] = nn.ModuleDict(
+                    {
+                        "real": self._build_point_fusion_module(
+                            fusion_input_dim,
+                            fusion_hidden_dim,
+                            point_channels,
+                            act_cls,
+                            float(fusion_proj_drop),
+                        ),
+                        "pseudo": self._build_point_fusion_module(
+                            fusion_input_dim,
+                            fusion_hidden_dim,
+                            point_channels,
+                            act_cls,
+                            float(fusion_proj_drop),
+                        ),
+                    }
+                )
+            else:
+                # nn.Sequential, shared voxel-to-point fusion MLP
+                self.point_fusion_modules[point_name] = self._build_point_fusion_module(
+                    fusion_input_dim,
+                    fusion_hidden_dim,
+                    point_channels,
+                    act_cls,
+                    float(fusion_proj_drop),
+                )
 
         self.enable_atom_head = bool(enable_atom_head)
         if self.enable_atom_head:
@@ -283,10 +314,40 @@ class VolumePointStage1Model(nn.Module):
                 append_coord_mask=bool(atom_head_append_coord_mask),
                 prior_prob=prior_prob,
                 prior_probs=prior_probs,
+                typed_point_cfg=self.typed_point_cfg,
             )
         else:
             self.atom_head_append_coord_mask = False
             self.atom_head = None
+
+    def _build_point_fusion_module(
+        self,
+        fusion_input_dim: int,
+        fusion_hidden_dim: int,
+        point_channels: int,
+        act_cls: type[nn.Module],
+        fusion_proj_drop: float,
+    ) -> nn.Module:
+        """
+        构造 voxel-to-point concat_linear 融合 MLP。
+
+        输入参数:
+            - fusion_input_dim: int, 点特征与体素采样特征拼接后的通道数
+            - fusion_hidden_dim: int, 融合 MLP 隐藏通道数
+            - point_channels: int, 输出点特征通道数
+            - act_cls: type[nn.Module], 激活函数类
+            - fusion_proj_drop: float, dropout 概率
+
+        输出:
+            - module: nn.Module, (N_all, fusion_input_dim) -> (N_all, point_channels) 的融合模块
+        """
+        return nn.Sequential(
+            nn.Linear(fusion_input_dim, fusion_hidden_dim),
+            nn.LayerNorm(fusion_hidden_dim),
+            act_cls(),
+            nn.Dropout(float(fusion_proj_drop)),
+            nn.Linear(fusion_hidden_dim, point_channels),
+        )
 
 
     # ---------------------------------------- 纯粹工具函数 ----------------------------------------
@@ -483,6 +544,8 @@ class VolumePointStage1Model(nn.Module):
         point_like: Any,
         voxel_output_dict: dict[str, Any],
         batch: dict[str, Any],
+        *,
+        require_pseudo_mask: bool = False,
     ) -> Any:
         """
         对点云分支中名为 feature_name 的变量执行 voxel-to-point 融合。
@@ -513,7 +576,26 @@ class VolumePointStage1Model(nn.Module):
         )
         # torch.Tensor, (N, C_point + C_voxel), 融合 MLP 输入特征
         fusion_input = torch.cat([point_like.feat, sampled_voxel_feat], dim=-1)
-        point_like.feat = self.point_fusion_modules[feature_name](fusion_input)
+        # torch.Tensor | None, (N,), bool, 当前 point_like 分辨率的 P anchor 掩码
+        pseudo_mask = point_like.get("pseudo_mask", None) if hasattr(point_like, "get") else None
+        pseudo_mask = validate_pseudo_mask(
+            pseudo_mask,
+            int(fusion_input.shape[0]),
+            name="VolumePointStage1Model._fuse_point_variable",
+        )
+        # nn.Module, 当前 point 变量对应的 fusion module
+        fusion_module = self.point_fusion_modules[feature_name]
+        if self.typed_point_cfg.use_separate_fusion:
+            if require_pseudo_mask and pseudo_mask is None:
+                raise RuntimeError("typed fusion 的 mixed point_like 必须携带 pseudo_mask。")
+            point_like.feat = apply_type_aware_tensor_module(
+                fusion_input,
+                pseudo_mask,
+                fusion_module["real"],
+                fusion_module["pseudo"],
+            )
+        else:
+            point_like.feat = fusion_module(fusion_input)
         return point_like
 
 
@@ -650,11 +732,21 @@ class VolumePointStage1Model(nn.Module):
             - point_output_dict: dict[str, Any], point backbone 原始输出, mixed 路径下保留 mixed 顺序
         """
         # torch.Tensor | None, (sumN_current, C_point), 当前轮传给 point backbone 的 recycle 状态
+        if pseudo_layout is None:
+            pseudo_mask = None
+        else:
+            if "pseudo_mask" not in batch:
+                raise RuntimeError("mixed point batch 必须包含 pseudo_mask。")
+            # torch.Tensor, (N_all,), bool, mixed batch 的 P anchor 掩码
+            pseudo_mask = batch["pseudo_mask"]
+        # torch.Tensor | None, (sumN_current, C_point), 当前轮传给 point backbone 的 recycle 状态
         current_point_recycle = (
             interleave_real_and_pseudo_tensor(point_recycle_in, pseudo_layout)
             if pseudo_layout is not None
             else point_recycle_in
         )
+        # bool, fusion hook 是否要求当前 point_like 必须携带 pseudo_mask
+        require_pseudo_mask_for_fusion = pseudo_layout is not None
         if getattr(self.point_backbone, "backend", None) == "zeros":
             point_output_dict = self.point_backbone.build_zeros_output(
                 atom_feat=batch["atom_feat"],
@@ -662,6 +754,7 @@ class VolumePointStage1Model(nn.Module):
                 atom_batch_index=batch["atom_batch_index"],
                 atom_offsets=batch["atom_offsets"],
                 return_feature_names=self.point_feature_names_to_return,
+                pseudo_mask=pseudo_mask,
             )
         else:
             def point_feature_hook(feature_name: str, point_like: Any) -> Any:
@@ -670,6 +763,7 @@ class VolumePointStage1Model(nn.Module):
                     point_like=point_like,
                     voxel_output_dict=voxel_output_dict,
                     batch=batch,
+                    require_pseudo_mask=require_pseudo_mask_for_fusion,
                 )
 
             point_output_dict = self.point_backbone(
@@ -680,6 +774,7 @@ class VolumePointStage1Model(nn.Module):
                 recycle_in=current_point_recycle,
                 point_feature_hook=point_feature_hook,
                 return_feature_names=self.point_feature_names_to_return,
+                pseudo_mask=pseudo_mask,
             )
         return point_output_dict
 

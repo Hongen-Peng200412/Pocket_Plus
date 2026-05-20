@@ -29,6 +29,13 @@ from typing import Any, Sequence
 import torch
 from torch import nn
 
+from src.model.typed_point import (
+    TypedPointConfig,
+    apply_type_aware_tensor_module,
+    normalize_typed_point_cfg,
+    validate_pseudo_mask,
+)
+
 _PTV3_HEAD_IMPORT_ERROR: Exception | None = None
 try:
     from src.model.PTV3bakcbone.model import Point, Block
@@ -66,6 +73,7 @@ class Stage1SerializedAttentionStack(nn.Module):
         pointconv_block_max_neighbors: int,
         drop_path: float,
         pre_norm: bool,
+        typed_point_cfg: dict[str, Any] | TypedPointConfig | None = None,
     ) -> None:
         """
         用 PTV3 Block 堆叠处理 Stage1 atom token。
@@ -111,6 +119,8 @@ class Stage1SerializedAttentionStack(nn.Module):
         if len(self.serialization_orders) == 0:
             raise ValueError("serialization_orders 不能为空。")
         self.shuffle_orders = bool(shuffle_orders)
+        # TypedPointConfig, atom head attention stack 使用的 typed point 配置
+        self.typed_point_cfg = normalize_typed_point_cfg(typed_point_cfg)
 
         # nn.ModuleList, 长度 num_layers, atom token 的共享 attention Block 序列
         self.layers = nn.ModuleList(
@@ -137,6 +147,10 @@ class Stage1SerializedAttentionStack(nn.Module):
                     cpe_kernel_size=int(cpe_kernel_size),
                     cpe_receptive_field=float(cpe_receptive_field),
                     pointconv_block_max_neighbors=int(pointconv_block_max_neighbors),
+                    separate_qkv=self.typed_point_cfg.use_separate_qkv,
+                    separate_attn_proj=self.typed_point_cfg.use_separate_attn_proj,
+                    separate_ffn=self.typed_point_cfg.use_separate_ffn,
+                    separate_cpe=self.typed_point_cfg.use_separate_cpe,
                 )
                 for layer_idx in range(int(num_layers))
             ]
@@ -154,8 +168,11 @@ class Stage1SerializedAttentionStack(nn.Module):
             return token_feat
         if Point is None:
             raise ImportError("Stage1SerializedAttentionStack 需要 PTV3 Point。") from _PTV3_HEAD_IMPORT_ERROR
-        if pseudo_mask is not None and pseudo_mask.shape[0] != token_feat.shape[0]:
-            raise RuntimeError("pseudo_mask 的点数必须与 token_feat 一致。")
+        pseudo_mask = validate_pseudo_mask(
+            pseudo_mask,
+            int(token_feat.shape[0]),
+            name="Stage1SerializedAttentionStack.forward",
+        )
 
         # dict[str, Any], (N, *), 用 point backbone 状态和 atom token 重建的 Point 输入
         point_dict = {
@@ -215,6 +232,7 @@ class Stage1AtomHead(nn.Module):
         append_coord_mask: bool,
         prior_prob: float | None = None,
         prior_probs: Sequence[float] | None = None,
+        typed_point_cfg: dict[str, Any] | TypedPointConfig | None = None,
     ) -> None:
         """
         Stage1 atom head: mixed 点共享 attention, real 输出 atom logits, pseudo 输出 P anchor feature。
@@ -270,15 +288,22 @@ class Stage1AtomHead(nn.Module):
         self.atom_logit_dim = int(atom_logit_dim)
         self.append_coord_mask = bool(append_coord_mask)
         self.pseudo_feature_dim = int(pseudo_feature_dim) if pseudo_feature_dim is not None else self.hidden_dim
+        # TypedPointConfig, atom head 使用的 typed point 配置
+        self.typed_point_cfg = normalize_typed_point_cfg(typed_point_cfg)
 
         # int, atom token projection 输入通道数; append_coord_mask=True 时追加 xyz 与 bool mask
         token_input_dim = self.point_channels + (4 if self.append_coord_mask else 0)
-        # nn.Sequential, (N_all, token_input_dim) -> (N_all, hidden_dim), atom token 输入投影
-        self.atom_token_proj = nn.Sequential(
-            nn.Linear(token_input_dim, self.hidden_dim),
-            nn.LayerNorm(self.hidden_dim),
-            act_layer(),
-        )
+        if self.typed_point_cfg.use_separate_atom_token_proj:
+            # nn.Sequential, real 点 atom token 输入投影
+            self.atom_token_proj_real = self._build_atom_token_proj(token_input_dim, act_layer)
+            # nn.Sequential, pseudo 点 atom token 输入投影
+            self.atom_token_proj_pseudo = self._build_atom_token_proj(token_input_dim, act_layer)
+            self.atom_token_proj = None
+        else:
+            # nn.Sequential, (N_all, token_input_dim) -> (N_all, hidden_dim), atom token 输入投影
+            self.atom_token_proj = self._build_atom_token_proj(token_input_dim, act_layer)
+            self.atom_token_proj_real = None
+            self.atom_token_proj_pseudo = None
         # Stage1SerializedAttentionStack, (N_all, hidden_dim), mixed 或 real-only 共享 attention
         self.atom_attention_stack = Stage1SerializedAttentionStack(
             channels=self.hidden_dim,
@@ -304,6 +329,7 @@ class Stage1AtomHead(nn.Module):
             pointconv_block_max_neighbors=int(pointconv_block_max_neighbors),
             drop_path=float(drop_path),
             pre_norm=bool(pre_norm),
+            typed_point_cfg=self.typed_point_cfg,
         )
         # nn.Sequential, (N_real, hidden_dim) -> (N_real, atom_logit_dim), real atom 分类尾部
         self.real_atom_logit_head = nn.Sequential(
@@ -328,6 +354,27 @@ class Stage1AtomHead(nn.Module):
             # float, sigmoid 正类先验对应的输出 bias
             bias_val = -math.log((1.0 - float(prior_prob)) / float(prior_prob))
             nn.init.constant_(self.real_atom_logit_head[2].bias, bias_val)
+
+    def _build_atom_token_proj(
+        self,
+        token_input_dim: int,
+        act_layer: type[nn.Module],
+    ) -> nn.Module:
+        """
+        构造 atom token 输入投影模块。
+
+        输入参数:
+            - token_input_dim: int, atom token 输入通道数
+            - act_layer: type[nn.Module], 激活函数类
+
+        输出:
+            - module: nn.Module, (N_all, token_input_dim) -> (N_all, hidden_dim) 的投影模块
+        """
+        return nn.Sequential(
+            nn.Linear(token_input_dim, self.hidden_dim),
+            nn.LayerNorm(self.hidden_dim),
+            act_layer(),
+        )
 
     @staticmethod
     def _init_linear_multiclass_prior_bias(
@@ -369,8 +416,7 @@ class Stage1AtomHead(nn.Module):
         atom_valid_mask: torch.Tensor,
         pseudo_mask: torch.Tensor | None = None,
     ) -> dict[str, torch.Tensor | None]:
-        if pseudo_mask is not None and pseudo_mask.shape[0] != point_feat.shape[0]:
-            raise RuntimeError("pseudo_mask 的点数必须与 point_feat 一致。")
+        pseudo_mask = validate_pseudo_mask(pseudo_mask, int(point_feat.shape[0]), name="Stage1AtomHead.forward")
 
         if self.append_coord_mask:
             # torch.Tensor, (N_all, point_channels + 4), 点特征 + centered-world xyz + real 监督 mask
@@ -386,8 +432,17 @@ class Stage1AtomHead(nn.Module):
             # torch.Tensor, (N_all, point_channels), 纯 point backbone 特征 token
             atom_tokens = point_feat
 
-        # torch.Tensor, (N_all, hidden_dim), atom token 投影结果
-        atom_hidden = self.atom_token_proj(atom_tokens)
+        if self.typed_point_cfg.use_separate_atom_token_proj:
+            # torch.Tensor, (N_all, hidden_dim), type-aware atom token 投影结果
+            atom_hidden = apply_type_aware_tensor_module(
+                atom_tokens,
+                pseudo_mask,
+                self.atom_token_proj_real,
+                self.atom_token_proj_pseudo,
+            )
+        else:
+            # torch.Tensor, (N_all, hidden_dim), shared atom token 投影结果
+            atom_hidden = self.atom_token_proj(atom_tokens)
         # torch.Tensor, (N_all, hidden_dim), shared attention stack 输出; mixed 路径保留全点顺序
         atom_hidden = self.atom_attention_stack(
             point_state=point_state,

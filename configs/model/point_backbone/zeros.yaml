@@ -15,6 +15,7 @@ model:
       out_channels: 96               # int, 点分支最终输出通道数, 它必须等于 dec_channels[0]!!!!! # NOTE
       recycle_feature_dim: 96        # int, recycle 特征维度, 它必须等于 dec_channels[0]!!!!! # NOTE
       recycle_in_norm_mode: layernorm  # str, 对上一轮 point recycle_out 先做归一化再投影; "layernorm" / "none"
+      typed_point_cfg: ${model.backbone.typed_point_cfg}  # dict, 全局 typed point 配置引用
 
       # --- 序列化 ---
       serialization_orders: ["z", "z-trans", "hilbert", "hilbert-trans"]
