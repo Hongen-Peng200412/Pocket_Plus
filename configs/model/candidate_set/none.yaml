@@ -1,0 +1,8 @@
+# @package _global_
+# ============================================================
+# Sparse candidate set 默认关闭配置
+# 此文件由 configs/base.yaml 的 defaults 引入, 以 cfg.model.backbone.candidate_set_cfg 传给 VolumePointStage1Model
+# ============================================================
+model:
+  backbone:
+    candidate_set_cfg: null  # null, 不构造 SparseCandidateSetBuilder; _prepare_pseudo_batch 保持空 pseudo_outputs

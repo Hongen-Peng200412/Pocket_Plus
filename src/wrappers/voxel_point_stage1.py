@@ -46,6 +46,8 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
         monitor_metric: str = "val/atom_pr_auc",
         voxel_ligand_pr_auc_thresholds: Optional[int] = 1024,
         val_metric_device_policy: str = "auto",
+        initial_p_best_by_class: list[float] | tuple[float, ...] | None = None,
+        initial_p_sampling_by_class: list[float] | tuple[float, ...] | None = None,
         interval: str = "epoch",
         frequency: int = 1,
         compile: bool = False,
@@ -79,6 +81,24 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
         if compile:
             self.backbone = torch.compile(self.backbone)
 
+        # tuple[int, ...] | None, sparse candidate builder 配置的候选类别 ID
+        self._sparse_candidate_class_ids: tuple[int, ...] | None = self._resolve_sparse_candidate_class_ids()
+        # torch.Tensor | None, (K,), best-F1 阈值缓存; builder 未启用时为 None
+        self._cached_voxel_ligand_p_best_by_class: torch.Tensor | None = self._init_candidate_threshold_cache(
+            initial_p_best_by_class,
+            "initial_p_best_by_class",
+        )
+        # torch.Tensor | None, (K,), sampling 阈值缓存; builder 未启用时为 None
+        self._cached_voxel_ligand_p_sampling_by_class: torch.Tensor | None = self._init_candidate_threshold_cache(
+            initial_p_sampling_by_class,
+            "initial_p_sampling_by_class",
+        )
+        # torch.Tensor | None, (K,), 每类 best-F1 这个值本身的缓存; builder 未启用时为 None
+        self._cached_voxel_ligand_best_f1_by_class: torch.Tensor | None = (
+            None if self._sparse_candidate_class_ids is None else torch.full((len(self._sparse_candidate_class_ids),), float("nan"), dtype=torch.float32)
+        )
+        self._candidate_warmup_steps = 0
+
         # BinaryAveragePrecision, 验证阶段的 PR-AUC 指标；binned 指标默认在 GPU 更新，非 binned 指标默认在 CPU 累积状态
         # 各指标仅在对应损失启用时构建; 一个 epoch 可能多次验证，每次都会 reset/update/compute
         from torchmetrics.classification import BinaryAveragePrecision
@@ -102,6 +122,36 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
             self._register_val_metric("val/voxel_ligand_pr_auc", thresholds=voxel_ligand_pr_auc_thresholds, branch="voxel_ligand")
             self._init_multiclass_ap_metrics("voxel_ligand", self.voxel_ligand_loss, BinaryAveragePrecision, voxel_ligand_pr_auc_thresholds)
 
+        if self._sparse_candidate_class_ids is not None:
+            if voxel_ligand_pr_auc_thresholds is None or int(voxel_ligand_pr_auc_thresholds) <= 0:
+                raise ValueError("candidate threshold stats 启用时 voxel_ligand_pr_auc_thresholds 必须为正整数。")
+            # int, threshold histogram bin 数
+            self._voxel_ligand_threshold_bin_count: int | None = int(voxel_ligand_pr_auc_thresholds)
+            # torch.Tensor, (num_bins,), bin lower-edge 阈值网格
+            self.register_buffer(
+                "_voxel_ligand_threshold_grid",
+                torch.arange(int(voxel_ligand_pr_auc_thresholds), dtype=torch.float32) / float(voxel_ligand_pr_auc_thresholds),
+                persistent=False,
+            )
+            # torch.Tensor, (K,num_bins), 每类正例概率 histogram
+            self.register_buffer(
+                "_voxel_ligand_pos_hist_by_class",
+                torch.zeros((len(self._sparse_candidate_class_ids), int(voxel_ligand_pr_auc_thresholds)), dtype=torch.long),
+                persistent=False,
+            )
+            # torch.Tensor, (K,num_bins), 每类负例概率 histogram
+            self.register_buffer(
+                "_voxel_ligand_neg_hist_by_class",
+                torch.zeros((len(self._sparse_candidate_class_ids), int(voxel_ligand_pr_auc_thresholds)), dtype=torch.long),
+                persistent=False,
+            )
+        else:
+            self._voxel_ligand_threshold_bin_count = None
+            self._voxel_ligand_threshold_grid = None
+            self._voxel_ligand_pos_hist_by_class = None
+            self._voxel_ligand_neg_hist_by_class = None
+        self._sync_sparse_candidate_runtime_to_backbone()
+
         # WarmupThenReduceLROnPlateau | None, 手动管理的 validation 级 plateau 调度器
         self._warmup_plateau_scheduler: WarmupThenReduceLROnPlateau | None = None
         # dict[str, Any] | None, checkpoint 恢复时暂存的 plateau 调度器状态
@@ -110,6 +160,100 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
     # ------------------------------------------------------------------
     # 工具方法
     # ------------------------------------------------------------------
+
+    def _unwrap_backbone(self) -> nn.Module:
+        """
+        返回未被 torch.compile 包装的 backbone。
+
+        输出:
+            - backbone: nn.Module, 原始 VolumePointStage1Model 或等价模块
+        """
+        return getattr(self.backbone, "_orig_mod", self.backbone)
+
+    def _resolve_sparse_candidate_class_ids(self) -> tuple[int, ...] | None:
+        """
+        从 backbone 的 candidate builder 读取候选类别 ID。
+
+        输出:
+            - class_ids: tuple[int, ...] | None, builder 未启用时为 None; 启用时为前景类别 ID
+        """
+        backbone = self._unwrap_backbone()
+        if not hasattr(backbone, "get_sparse_candidate_class_ids"):
+            return None
+        class_ids = backbone.get_sparse_candidate_class_ids()
+        if class_ids is None:
+            return None
+        if self.voxel_ligand_loss is None:
+            raise ValueError("candidate builder 启用时必须配置 voxel_ligand_loss。")
+        num_classes = int(getattr(self.voxel_ligand_loss, "num_classes", 2))
+        if num_classes <= 2 and tuple(class_ids) != (1,):
+            raise ValueError("二分类 voxel_ligand_loss 只允许 candidate_class_ids=(1,)。")
+        if num_classes > 2:
+            invalid_ids = [class_id for class_id in class_ids if class_id <= 0 or class_id >= num_classes]
+            if invalid_ids:
+                raise ValueError(f"candidate_class_ids={tuple(class_ids)} 与 voxel_ligand_loss.num_classes={num_classes} 不匹配。")
+        return tuple(int(class_id) for class_id in class_ids)
+
+    def _init_candidate_threshold_cache(
+        self,
+        initial_values: list[float] | tuple[float, ...] | None,
+        value_name: str,
+    ) -> torch.Tensor | None:
+        """
+        从显式 initial 参数初始化 candidate threshold cache。
+
+        输入参数:
+            - initial_values: list[float] | tuple[float, ...] | None, (K,), 用户显式给定的初始阈值
+            - value_name: str, 错误信息中的参数名
+
+        输出:
+            - cache: torch.Tensor | None, (K,), builder 未启用或未提供 initial 时为 None
+        """
+        if self._sparse_candidate_class_ids is None:
+            if initial_values is not None:
+                raise ValueError(f"{value_name} 只能在 candidate builder 启用时配置。")
+            return None
+        if initial_values is None:
+            return None
+        cache = torch.as_tensor(list(initial_values), dtype=torch.float32).reshape(-1)
+        if int(cache.numel()) != len(self._sparse_candidate_class_ids):
+            raise ValueError(f"{value_name} 长度必须等于 candidate_class_ids 数量。")
+        if not bool(torch.isfinite(cache).all()):
+            raise ValueError(f"{value_name} 不能包含 NaN/Inf。")
+        return cache
+
+    def _normalize_candidate_checkpoint_tensor(self, value: Any, value_name: str) -> torch.Tensor:
+        """
+        将 checkpoint 中的 candidate cache 规范化为 CPU float 向量。
+
+        输入参数:
+            - value: Any, checkpoint 中读取的张量或可转张量对象
+            - value_name: str, 错误信息中的字段名
+
+        输出:
+            - tensor: torch.Tensor, (K,), CPU float candidate cache
+        """
+        # torch.Tensor, (K,), checkpoint cache 的 CPU float 视图
+        tensor = torch.as_tensor(value).detach().cpu().float().reshape(-1)
+        if int(tensor.numel()) != len(self._sparse_candidate_class_ids):
+            raise ValueError(f"checkpoint 中的 {value_name} 长度必须等于 candidate_class_ids 数量。")
+        return tensor
+
+    def _load_candidate_checkpoint_threshold(self, value: Any, value_name: str) -> torch.Tensor:
+        """
+        从 checkpoint 读取并校验 candidate threshold cache。
+
+        输入参数:
+            - value: Any, checkpoint 中读取的张量或可转张量对象
+            - value_name: str, 错误信息中的字段名
+
+        输出:
+            - tensor: torch.Tensor, (K,), finite CPU float candidate threshold cache
+        """
+        tensor = self._normalize_candidate_checkpoint_tensor(value, value_name)
+        if not bool(torch.isfinite(tensor).all()):
+            raise ValueError(f"checkpoint 中的 {value_name} 不能包含 NaN/Inf。")
+        return tensor
 
     @staticmethod
     def _resolve_class_names(kwargs: dict[str, Any]) -> list[str]:
@@ -208,6 +352,133 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
         记录当前验证轮次内某个 metric 收到过至少一次有效 update。
         """
         self._val_metric_update_counts[metric_name] = self._val_metric_update_counts.get(metric_name, 0) + 1
+
+    def _reset_voxel_ligand_threshold_histograms(self) -> None:
+        """
+        清空 voxel ligand candidate threshold histogram。
+
+        输出:
+            - None, 原地清零 pos/neg histogram; builder 未启用时 no-op
+        """
+        if self._sparse_candidate_class_ids is None:
+            return
+        self._voxel_ligand_pos_hist_by_class.zero_()
+        self._voxel_ligand_neg_hist_by_class.zero_()
+
+    def _update_voxel_ligand_best_f1_stats(
+        self,
+        logits: torch.Tensor,
+        ligand_dist_map: torch.Tensor,
+        valid_mask: torch.Tensor,
+    ) -> None:
+        """
+        累加 candidate threshold best-F1 使用的 voxel ligand 概率 histogram。
+
+        输入参数:
+            - logits: torch.Tensor, (B,1,D,H,W) 或 (B,C,D,H,W), ligand head logits
+            - ligand_dist_map: torch.Tensor, (B,D,H,W) 或 (B,C,D,H,W), ligand 距离监督图
+            - valid_mask: torch.Tensor, (B,D,H,W) 或 (B,1,D,H,W), 有效体素掩码
+
+        输出:
+            - None, 原地累加 pos/neg histogram
+        """
+        if self._sparse_candidate_class_ids is None:
+            return
+        hard_label_threshold = getattr(self.voxel_ligand_loss, "hard_label_threshold", None)
+        if hard_label_threshold is None:
+            raise ValueError("candidate threshold stats 启用时 voxel_ligand_loss.hard_label_threshold 不能为 None。")
+        if valid_mask.ndim == 5 and valid_mask.shape[1] == 1:
+            mask = valid_mask.squeeze(1).bool()
+        elif valid_mask.ndim == 4:
+            mask = valid_mask.bool()
+        else:
+            raise ValueError(f"voxel_valid_mask 期望为 (B,D,H,W) 或 (B,1,D,H,W)，实际 {tuple(valid_mask.shape)}")
+        # torch.Tensor, (B,D,H,W), 多分类类别 ID 或二分类 0/1 标签
+        target = self._ligand_target_from_dist(ligand_dist_map, float(hard_label_threshold)).to(device=logits.device)
+        mask = mask.to(device=logits.device)
+        if logits.shape[1] == 1:
+            if self._sparse_candidate_class_ids != (1,):
+                raise ValueError("单通道 voxel_ligand logits 只允许 candidate_class_ids=(1,)。")
+            # torch.Tensor, (B,1,D,H,W), 二分类前景概率
+            prob_by_class = torch.sigmoid(logits[:, :1]).detach().float()
+        else:
+            if max(self._sparse_candidate_class_ids) >= int(logits.shape[1]):
+                raise ValueError(f"candidate_class_ids={self._sparse_candidate_class_ids} 超出 logits channel 数 {int(logits.shape[1])}。")
+            # torch.Tensor, (B,C,D,H,W), 多分类 softmax 概率
+            prob = torch.softmax(logits, dim=1).detach().float()
+            # torch.Tensor, (K,), 候选类别 channel 索引
+            class_index = torch.as_tensor(self._sparse_candidate_class_ids, device=logits.device, dtype=torch.long)
+            prob_by_class = prob.index_select(dim=1, index=class_index)
+        num_bins = int(self._voxel_ligand_threshold_bin_count)
+        for class_pos, class_id in enumerate(self._sparse_candidate_class_ids):
+            # torch.Tensor, (M,), 当前类在有效体素上的概率
+            prob_flat = prob_by_class[:, class_pos].reshape(-1)[mask.reshape(-1)]
+            # torch.Tensor, (M,), 当前类 one-vs-rest 硬标签
+            target_flat = (target.reshape(-1)[mask.reshape(-1)] == int(class_id))
+            if prob_flat.numel() == 0:
+                continue
+            # torch.Tensor, (M,), 概率所在 histogram bin
+            bin_idx = torch.floor(prob_flat.clamp(0.0, 1.0) * num_bins).long().clamp(max=num_bins - 1)
+            # torch.Tensor, (num_bins,), 当前 batch 正例 histogram
+            pos_hist = torch.bincount(bin_idx[target_flat], minlength=num_bins).to(device=self.device, dtype=torch.long)
+            # torch.Tensor, (num_bins,), 当前 batch 负例 histogram
+            neg_hist = torch.bincount(bin_idx[~target_flat], minlength=num_bins).to(device=self.device, dtype=torch.long)
+            self._voxel_ligand_pos_hist_by_class[class_pos] += pos_hist
+            self._voxel_ligand_neg_hist_by_class[class_pos] += neg_hist
+
+    @staticmethod
+    def _is_tuning_trainer(trainer: Any) -> bool:
+        """
+        判断当前 trainer 是否处于 Lightning tuner 生命周期。
+
+        输入参数:
+            - trainer: Any, Lightning Trainer 或测试 stub
+
+        输出:
+            - is_tuning: bool, True 表示 batch-size tuning 等 tuner 探测阶段
+        """
+        # str, trainer state.fn 的小写字符串表示; Lightning 版本间枚举名可能不同
+        state_fn = getattr(getattr(trainer, "state", None), "fn", None)
+        state_fn_name = str(getattr(state_fn, "value", state_fn)).lower()
+        return "tun" in state_fn_name
+
+    def _sync_sparse_candidate_runtime_to_backbone(self) -> None:
+        """
+        将 wrapper 中的 candidate runtime/cache 同步给 backbone。
+
+        输出:
+            - None, builder 未启用时 no-op
+        """
+        if self._sparse_candidate_class_ids is None:
+            return
+        backbone = self._unwrap_backbone()
+        try:
+            trainer = self.trainer
+        except RuntimeError:
+            trainer = None
+        if trainer is None:
+            allow_warmup = False
+            global_step = 0
+        else:
+            state_fn = getattr(getattr(trainer, "state", None), "fn", None)
+            state_fn_name = str(getattr(state_fn, "value", state_fn)).lower()
+            allow_warmup = (
+                bool(getattr(trainer, "sanity_checking", False))
+                or "fit" in state_fn_name
+                or self._is_tuning_trainer(trainer)
+            )
+            global_step = int(getattr(trainer, "global_step", self.global_step))
+        if hasattr(backbone, "set_sparse_candidate_runtime"):
+            backbone.set_sparse_candidate_runtime(
+                global_step=global_step,
+                candidate_warmup_steps=int(self._candidate_warmup_steps),
+                allow_warmup_fixed_topk=allow_warmup,
+            )
+        if hasattr(backbone, "set_sparse_candidate_thresholds"):
+            backbone.set_sparse_candidate_thresholds(
+                p_best_by_class=self._cached_voxel_ligand_p_best_by_class,
+                p_sampling_by_class=self._cached_voxel_ligand_p_sampling_by_class,
+            )
 
     def _resolve_metric_update_device(self, metric_name: str, source_device: torch.device) -> torch.device:
         """
@@ -646,6 +917,11 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
             binary_metric=self.val_voxel_ligand_pr_auc,
             binary_metric_name="val/voxel_ligand_pr_auc",
         )
+        self._update_voxel_ligand_best_f1_stats(
+            logits=voxel_logits_ligand,
+            ligand_dist_map=ligand_dist_map,
+            valid_mask=batch["voxel_valid_mask"],
+        )
 
     # ------------------------------------------------------------------
     # 训练 / 验证步骤
@@ -663,6 +939,7 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
             - total_loss: torch.Tensor, 标量, 加权总损失（用于反向传播）
         """
         batch_dict = self._extract_batch(batch)
+        self._sync_sparse_candidate_runtime_to_backbone()
         outputs = self(batch_dict)
         total_loss, loss_dict = self._compute_total_loss(outputs=outputs, batch=batch_dict)
 
@@ -721,6 +998,7 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
             - total_loss: torch.Tensor, 标量, 加权总损失
         """
         batch_dict = self._extract_batch(batch)
+        self._sync_sparse_candidate_runtime_to_backbone()
         outputs = self(batch_dict)
         total_loss, loss_dict = self._compute_total_loss(outputs=outputs, batch=batch_dict)
         # 用当前 batch 更新 PR-AUC 指标；tuner 阶段也完整计算，以便尽早暴露真实验证链路问题
@@ -906,6 +1184,103 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
             )
         return computed_metrics
 
+    def _compute_log_update_voxel_ligand_best_f1_thresholds(self) -> dict[str, torch.Tensor]:
+        """
+        从本轮 validation histogram 计算并缓存 voxel ligand best-F1 与 sampling 阈值。
+
+        输出:
+            - metrics: dict[str, torch.Tensor], 当前 validation end 现场计算出的阈值指标
+        """
+        if self._sparse_candidate_class_ids is None:
+            return {}
+        try:
+            trainer = self.trainer
+        except RuntimeError:
+            trainer = None
+        if trainer is not None and (bool(getattr(trainer, "sanity_checking", False)) or self._is_tuning_trainer(trainer)):
+            self._reset_voxel_ligand_threshold_histograms()
+            return {}
+        # torch.Tensor, (K,num_bins), 当前 rank 本地正例 histogram
+        pos_hist = self._voxel_ligand_pos_hist_by_class.detach().to(device=self.device, dtype=torch.float32)
+        # torch.Tensor, (K,num_bins), 当前 rank 本地负例 histogram
+        neg_hist = self._voxel_ligand_neg_hist_by_class.detach().to(device=self.device, dtype=torch.float32)
+        if trainer is not None and int(getattr(trainer, "world_size", 1)) > 1:
+            pos_hist = self.all_gather(pos_hist).sum(dim=0)
+            neg_hist = self.all_gather(neg_hist).sum(dim=0)
+        # torch.Tensor, (K,num_bins), 每个 bin lower-edge 作为阈值时的 TP/FP/FN
+        tp_at_threshold = torch.cumsum(pos_hist.flip(-1), dim=-1).flip(-1)
+        fp_at_threshold = torch.cumsum(neg_hist.flip(-1), dim=-1).flip(-1)
+        fn_at_threshold = pos_hist.sum(dim=-1, keepdim=True) - tp_at_threshold
+        denominator = 2.0 * tp_at_threshold + fp_at_threshold + fn_at_threshold
+        f1_by_threshold = torch.where(denominator > 0.0, 2.0 * tp_at_threshold / denominator, torch.zeros_like(denominator))
+        # torch.Tensor, (K,), 本轮计算得到的 best-F1 阈值候选; 无旧缓存时先填 NaN
+        new_p_best = (
+            torch.full((len(self._sparse_candidate_class_ids),), float("nan"), device=self.device, dtype=torch.float32)
+            if self._cached_voxel_ligand_p_best_by_class is None
+            else self._cached_voxel_ligand_p_best_by_class.to(device=self.device).clone()
+        )
+        # torch.Tensor, (K,), 本轮计算得到的 sampling 阈值候选; 无旧缓存时先填 NaN
+        new_p_sampling = (
+            torch.full((len(self._sparse_candidate_class_ids),), float("nan"), device=self.device, dtype=torch.float32)
+            if self._cached_voxel_ligand_p_sampling_by_class is None
+            else self._cached_voxel_ligand_p_sampling_by_class.to(device=self.device).clone()
+        )
+        # torch.Tensor, (K,), 本轮计算得到的 best-F1 分数候选; 无旧缓存时先填 NaN
+        new_best_f1 = self._cached_voxel_ligand_best_f1_by_class.clone().to(device=self.device)
+        all_hist = pos_hist + neg_hist
+        threshold_grid = self._voxel_ligand_threshold_grid.to(device=self.device)
+        metrics: dict[str, torch.Tensor] = {}
+        updated_class_positions: list[int] = []
+        for class_pos, class_id in enumerate(self._sparse_candidate_class_ids):
+            if all_hist[class_pos].sum() <= 0 or pos_hist[class_pos].sum() <= 0:
+                continue
+            best_bin = int(torch.argmax(f1_by_threshold[class_pos]).item())
+            n_best_total = tp_at_threshold[class_pos, best_bin] + fp_at_threshold[class_pos, best_bin]
+            candidate_builder = self._unwrap_backbone().candidate_set_builder
+            n_sampling_total = int(torch.ceil(n_best_total * float(candidate_builder.adaptive_expand_factor[class_pos])).item())
+            cumulative_all = torch.cumsum(all_hist[class_pos].flip(0), dim=0)
+            if n_sampling_total <= 0:
+                sampling_bin = best_bin
+            elif cumulative_all[-1] < n_sampling_total:
+                sampling_bin = 0
+            else:
+                reversed_pos = int((cumulative_all >= n_sampling_total).nonzero(as_tuple=False)[0].item())
+                sampling_bin = int(all_hist.shape[1] - 1 - reversed_pos)
+            new_p_best[class_pos] = threshold_grid[best_bin]
+            new_p_sampling[class_pos] = threshold_grid[sampling_bin]
+            new_best_f1[class_pos] = f1_by_threshold[class_pos, best_bin]
+            updated_class_positions.append(class_pos)
+            class_name = self._class_names[class_id] if class_id < len(self._class_names) else f"class_{class_id}"
+            metrics[f"val/voxel_ligand_p_best_by_class_{class_name}"] = new_p_best[class_pos]
+            metrics[f"val/voxel_ligand_p_sampling_by_class_{class_name}"] = new_p_sampling[class_pos]
+            metrics[f"val/voxel_ligand_best_f1_by_class_{class_name}"] = new_best_f1[class_pos]
+        if len(updated_class_positions) > 0:
+            updated_index = torch.as_tensor(updated_class_positions, device=self.device, dtype=torch.long)
+            metrics["val/voxel_ligand_macro_best_f1_by_class"] = new_best_f1.index_select(0, updated_index).mean()
+        self._cached_voxel_ligand_p_best_by_class = new_p_best.detach().cpu()
+        self._cached_voxel_ligand_p_sampling_by_class = new_p_sampling.detach().cpu()
+        self._cached_voxel_ligand_best_f1_by_class = new_best_f1.detach().cpu()
+        self._sync_sparse_candidate_runtime_to_backbone()
+        if trainer is not None:
+            for metric_name, metric_value in metrics.items():
+                self.log(
+                    metric_name,
+                    metric_value.to(device=self.device),
+                    prog_bar=(metric_name == self.hparams.monitor_metric),
+                    on_step=False,
+                    on_epoch=True,
+                    sync_dist=True,
+                )
+        if len(metrics) > 0 and (trainer is None or bool(getattr(trainer, "is_global_zero", True))):
+            print(
+                "[CandidateThreshold] "
+                f"p_best_by_class={self._cached_voxel_ligand_p_best_by_class.tolist()}, "
+                f"p_sampling_by_class={self._cached_voxel_ligand_p_sampling_by_class.tolist()}, "
+                f"best_f1_by_class={self._cached_voxel_ligand_best_f1_by_class.tolist()}"
+            )
+        self._reset_voxel_ligand_threshold_histograms()
+        return metrics
+
     def _sync_metric_for_scheduler(self, metric_value: torch.Tensor) -> torch.Tensor:
         """
         将 plateau scheduler 使用的主指标同步为各 rank 一致的标量。
@@ -956,6 +1331,15 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
         synced_metric = self._sync_metric_for_scheduler(metric_value)
         self._warmup_plateau_scheduler.step_plateau(synced_metric, global_step=int(self.global_step))
 
+    def on_validation_epoch_start(self) -> None:
+        """
+        验证 epoch 开始时清空 candidate threshold histogram。
+
+        输出:
+            - None, 原地清空本轮 histogram 状态
+        """
+        self._reset_voxel_ligand_threshold_histograms()
+
     def on_validation_epoch_end(self) -> None:
         """
         验证 epoch 结束时，计算并日志所有已启用的 PR-AUC 指标，然后推进 plateau 调度器。
@@ -984,6 +1368,7 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
                 "val/voxel_ligand_pr_auc",
             )
         computed_metrics.update(self._compute_log_reset_multiclass_metrics())
+        computed_metrics.update(self._compute_log_update_voxel_ligand_best_f1_thresholds())
         self._step_warmup_plateau_scheduler(computed_metrics)
 
     def on_save_checkpoint(self, checkpoint: dict[str, Any]) -> None:
@@ -998,6 +1383,38 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
         """
         if self._warmup_plateau_scheduler is not None:
             checkpoint["warmup_plateau_reduce_on_plateau_state"] = self._warmup_plateau_scheduler.state_dict()
+        try:
+            trainer = self.trainer
+        except RuntimeError:
+            trainer = None
+        if self._sparse_candidate_class_ids is not None:
+            checkpoint["voxel_ligand_candidate_class_ids"] = self._sparse_candidate_class_ids
+            if trainer is not None and self._is_tuning_trainer(trainer):
+                return
+            if self._cached_voxel_ligand_p_best_by_class is None or self._cached_voxel_ligand_p_sampling_by_class is None:
+                return
+            # torch.Tensor, (K,), 待写入 checkpoint 的 best-F1 threshold cache
+            p_best_tensor = self._normalize_candidate_checkpoint_tensor(
+                self._cached_voxel_ligand_p_best_by_class,
+                "voxel_ligand_p_best_by_class",
+            )
+            # torch.Tensor, (K,), 待写入 checkpoint 的 sampling threshold cache
+            p_sampling_tensor = self._normalize_candidate_checkpoint_tensor(
+                self._cached_voxel_ligand_p_sampling_by_class,
+                "voxel_ligand_p_sampling_by_class",
+            )
+            if not (bool(torch.isfinite(p_best_tensor).all()) and bool(torch.isfinite(p_sampling_tensor).all())):
+                return
+            checkpoint["voxel_ligand_p_best_by_class"] = p_best_tensor
+            checkpoint["voxel_ligand_p_sampling_by_class"] = p_sampling_tensor
+            if self._cached_voxel_ligand_best_f1_by_class is not None:
+                # torch.Tensor, (K,), 待写入 checkpoint 的 best-F1 分数 cache
+                best_f1_tensor = self._normalize_candidate_checkpoint_tensor(
+                    self._cached_voxel_ligand_best_f1_by_class,
+                    "voxel_ligand_best_f1_by_class",
+                )
+                if bool(torch.isfinite(best_f1_tensor).all()):
+                    checkpoint["voxel_ligand_best_f1_by_class"] = best_f1_tensor
 
     def on_load_checkpoint(self, checkpoint: dict[str, Any]) -> None:
         """
@@ -1009,14 +1426,36 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
         输出:
             - None, 立即恢复或暂存 plateau scheduler 状态
         """
-        if "warmup_plateau_reduce_on_plateau_state" not in checkpoint:
-            return
-        # dict[str, Any], checkpoint 中保存的 plateau scheduler 状态
-        plateau_state = checkpoint["warmup_plateau_reduce_on_plateau_state"]
-        if self._warmup_plateau_scheduler is None:
-            self._pending_warmup_plateau_state = plateau_state
-        else:
-            self._warmup_plateau_scheduler.load_state_dict(plateau_state)
+        if self._sparse_candidate_class_ids is not None:
+            checkpoint_class_ids = checkpoint.get("voxel_ligand_candidate_class_ids", None)
+            if checkpoint_class_ids is not None and tuple(int(x) for x in checkpoint_class_ids) != self._sparse_candidate_class_ids:
+                raise ValueError("checkpoint 中的 voxel_ligand_candidate_class_ids 与当前 candidate_class_ids 不一致。")
+            has_p_best = "voxel_ligand_p_best_by_class" in checkpoint
+            has_p_sampling = "voxel_ligand_p_sampling_by_class" in checkpoint
+            if has_p_best != has_p_sampling:
+                raise ValueError("checkpoint 中的 voxel_ligand_p_best_by_class 与 voxel_ligand_p_sampling_by_class 必须成对出现。")
+            if has_p_best:
+                self._cached_voxel_ligand_p_best_by_class = self._load_candidate_checkpoint_threshold(
+                    checkpoint["voxel_ligand_p_best_by_class"],
+                    "voxel_ligand_p_best_by_class",
+                )
+                self._cached_voxel_ligand_p_sampling_by_class = self._load_candidate_checkpoint_threshold(
+                    checkpoint["voxel_ligand_p_sampling_by_class"],
+                    "voxel_ligand_p_sampling_by_class",
+                )
+            if "voxel_ligand_best_f1_by_class" in checkpoint:
+                self._cached_voxel_ligand_best_f1_by_class = self._normalize_candidate_checkpoint_tensor(
+                    checkpoint["voxel_ligand_best_f1_by_class"],
+                    "voxel_ligand_best_f1_by_class",
+                )
+            self._sync_sparse_candidate_runtime_to_backbone()
+        if "warmup_plateau_reduce_on_plateau_state" in checkpoint:
+            # dict[str, Any], checkpoint 中保存的 plateau scheduler 状态
+            plateau_state = checkpoint["warmup_plateau_reduce_on_plateau_state"]
+            if self._warmup_plateau_scheduler is None:
+                self._pending_warmup_plateau_state = plateau_state
+            else:
+                self._warmup_plateau_scheduler.load_state_dict(plateau_state)
 
     # ------------------------------------------------------------------
     # 优化器 & 调度器
@@ -1056,6 +1495,7 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
         self,
         optimizer: torch.optim.Optimizer,
         sched_cfg: Any,
+        warmup_steps: int,
     ) -> torch.optim.lr_scheduler.LRScheduler:
         """
         构建仅包含 step 级线性 warmup 的 scheduler。
@@ -1063,11 +1503,11 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
         输入参数:
             - optimizer: torch.optim.Optimizer, 被调度的优化器
             - sched_cfg: Any, Hydra scheduler 配置, 需要包含 total_steps/warmup_steps/warmup_ratio/warmup_start_factor
+            - warmup_steps: int, 已解析出的 warmup step 数
 
         输出:
             - scheduler: torch.optim.lr_scheduler.LRScheduler, Lightning step 级调度器
         """
-        warmup_steps = self._resolve_warmup_steps(sched_cfg)
         start_factor = float(sched_cfg["warmup_start_factor"])
         if not (0.0 < start_factor <= 1.0):
             raise ValueError(f"warmup_start_factor must be in (0, 1], got {start_factor}.")
@@ -1086,6 +1526,7 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
         self,
         optimizer: torch.optim.Optimizer,
         sched_cfg: Any,
+        warmup_steps: int,
     ) -> WarmupThenReduceLROnPlateau:
         """
         构建 step 级 warmup + validation 级 plateau 的组合 scheduler。
@@ -1093,13 +1534,14 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
         输入参数:
             - optimizer: torch.optim.Optimizer, 被调度的优化器
             - sched_cfg: Any, Hydra scheduler 配置, 需要显式包含 warmup 与 plateau 全部字段
+            - warmup_steps: int, 已解析出的 warmup step 数
 
         输出:
             - scheduler: WarmupThenReduceLROnPlateau, 组合调度器对象
         """
         scheduler = WarmupThenReduceLROnPlateau(
             optimizer,
-            warmup_steps=self._resolve_warmup_steps(sched_cfg),
+            warmup_steps=warmup_steps,
             warmup_start_factor=float(sched_cfg["warmup_start_factor"]),
             mode=str(sched_cfg["mode"]),
             factor=float(sched_cfg["factor"]),
@@ -1152,24 +1594,41 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
 
         sched_cfg = self.hparams.scheduler
         if sched_cfg is None:
+            self._candidate_warmup_steps = 0
+            self._sync_sparse_candidate_runtime_to_backbone()
             return {"optimizer": optimizer}
 
         if isinstance(sched_cfg, functools.partial):
+            self._candidate_warmup_steps = 0
+            self._sync_sparse_candidate_runtime_to_backbone()
             scheduler = sched_cfg(optimizer=optimizer)
         elif callable(sched_cfg) and not hasattr(sched_cfg, "keys"):
+            self._candidate_warmup_steps = 0
+            self._sync_sparse_candidate_runtime_to_backbone()
             scheduler = sched_cfg(optimizer=optimizer)
         elif hasattr(sched_cfg, "get") and sched_cfg.get("name", None) == "warmup_plateau":
+            self._candidate_warmup_steps = self._resolve_warmup_steps(sched_cfg)
+            self._sync_sparse_candidate_runtime_to_backbone()
             self._warmup_plateau_scheduler = self._build_warmup_plateau_scheduler(
                 optimizer=optimizer,
                 sched_cfg=sched_cfg,
+                warmup_steps=self._candidate_warmup_steps,
             )
             return {
                 "optimizer": optimizer,
                 "lr_scheduler": self._warmup_plateau_scheduler.lightning_warmup_config(),
             }
         elif hasattr(sched_cfg, "get") and sched_cfg.get("name", None) == "warmup_only":
-            scheduler = self._build_warmup_only_scheduler(optimizer=optimizer, sched_cfg=sched_cfg)
+            self._candidate_warmup_steps = self._resolve_warmup_steps(sched_cfg)
+            self._sync_sparse_candidate_runtime_to_backbone()
+            scheduler = self._build_warmup_only_scheduler(
+                optimizer=optimizer,
+                sched_cfg=sched_cfg,
+                warmup_steps=self._candidate_warmup_steps,
+            )
         else:
+            self._candidate_warmup_steps = 0
+            self._sync_sparse_candidate_runtime_to_backbone()
             scheduler = instantiate(sched_cfg, optimizer=optimizer)
             # 某些调度器工厂返回的是 callable 而非真正的 scheduler 实例，需要额外调用一次
             if hasattr(scheduler, "__call__") and not hasattr(scheduler, "step"):

@@ -21,14 +21,19 @@ This ExecPlan is a living document. The sections `Progress`, `Surprises & Discov
 - [x] (2026-05-19 00:00Z) 本地运行 `python -m compileall Docking` 通过；在 `Pocket_Plus_windows` 环境中完成 instance 后处理与虚拟节点 matching 的合成输入测试。
 - [ ] 使用固定同步脚本同步到服务器。
 - [x] (2026-05-19 00:00Z) 使用固定同步脚本同步到服务器，并完成服务器环境导入验证。
-- [x] (2026-05-19 00:00Z) 在服务器允许目录完成 4 样本经验参数批次 `20260519_repro_known4_nstruct2`: 20/20 Rosetta job 成功。
-- [x] (2026-05-19 00:00Z) 在服务器允许目录完成 4 样本 raw-instance 批次 `20260519_repro_known4_raw_nstruct2`: 24/24 Rosetta job 成功；这是去掉 7zdf round1 重复矩阵后的旧样本全矩阵复现。
+- [x] (2026-05-19 00:00Z) 在服务器允许目录完成 4 样本经验参数批次 `20260519_repro_known4_nstruct2`: 20/20 Rosetta job 跑通。
+- [x] (2026-05-19 00:00Z) 在服务器允许目录完成 4 样本 raw-instance 批次 `20260519_repro_known4_raw_nstruct2`: 24/24 Rosetta job 跑通；这是去掉 7zdf round1 重复矩阵后的旧样本全矩阵复现。
 - [x] (2026-05-19 00:00Z) 完成 full80 单参数预扫描：未截断预计 105250 Rosetta job，top5 预计 10440 job，top2 预计 4358 job，top1 预计 2186 job。
 - [x] (2026-05-20 00:00Z) full80 top1 `nstruct=2` 原批次 `20260519_full80_top1_nstruct2` 已停止在 67 个样本完成、13 个样本 pending 的状态，并保留已有输出。
 - [x] (2026-05-20 00:00Z) Slurm job `268093` 运行超过 18 小时后仍未收尾；已诊断为虚拟节点 assignment 在多 ligand 样本上出现大矩阵复杂度爆炸，取消该 job 以释放 48 CPU。
 - [x] (2026-05-20 00:00Z) 已修复 `solve_assignment_with_virtual_nodes` 的大矩阵求解：小矩阵走 DP，大矩阵必须走 scipy Hungarian solver；如果服务器没有 scipy，应直接报错，不做近似 fallback。`AssignmentResult.solver` 会记录实际 solver。
-- [ ] (2026-05-20 00:00Z) 剩余 13 样本批次 `20260520_full80_top1_pending13_scipy_required` 已提交为 Slurm job `268268`，当前仍在运行；中途审计显示 `8g4o`、`8utb`、`8wis` 3 个样本完成、10 个样本 pending、当前新 run Rosetta job `262/262` 成功。
+- [ ] (2026-05-20 00:00Z) 剩余 13 样本批次 `20260520_full80_top1_pending13_scipy_required` 已提交为 Slurm job `268268`，当前仍在运行；中途审计显示 `8g4o`、`8utb`、`8wis` 3 个样本完成、10 个样本 pending、当前新 run Rosetta job `262/262` 跑通。
 - [x] (2026-05-20 00:00Z) 完成一次中途审计并修复本地 Rosetta ligand residue 命名：`io_utils.read_ligand_candidates` 不再把唯一 `ATP/GDP` 等 CCD 名直接作为 `rosetta_name`，统一生成 `L01` 等三字符内部名，避免与 Rosetta 内置 residue type 冲突。
+- [x] (2026-05-21 00:34+08:00) 先用 SSH key 检查 Slurm job `268268` 失败；随后根据用户补充的 `.skill` 密码完成只读服务器检查。
+- [x] (2026-05-21 00:34+08:00) 确认 Slurm job `268268` 仍在运行，`sacct/squeue` 显示 `RUNNING`、48 CPU、节点 `cnode01`、已运行约 9 小时 55 分钟。
+- [x] (2026-05-21 00:34+08:00) `20260520_full80_top1_pending13_scipy_required` 当前 13 个样本目录中 10 个有 summary、2 个 pending（`7w4g`, `8ca3`）、1 个 error（`8ypd`）；补跑 run 已完成样本的 Rosetta job 为 1062/1106 跑通，44 个失败 job 全部分布在 `6zku`。
+- [x] (2026-05-21 00:34+08:00) 合并原 run 已完成部分和补跑已完成部分后，full80 top1 当前有 77/80 个样本有 summary，其中 57 个 `ok`、20 个 `skipped_no_sites_or_ligands`；已完成样本 Rosetta job 合计 1886/1950 跑通。
+- [x] (2026-05-21 00:55+08:00) 本轮尝试再次只读检查 `268268` 与 pending13 run，但本地沙箱阻止 socket 连接；full80 top1 状态不能从本轮推进。
 - [ ] 读取服务器审计结果，更新本计划的发现、结果和未完成项。
 
 ## Surprises & Discoveries
@@ -49,7 +54,7 @@ This ExecPlan is a living document. The sections `Progress`, `Surprises & Discov
   Evidence: Slurm job `266512` stdout 显示实际命令为 `--sample-list 7zdf`。后续改用允许目录中的样本列表文本文件。
 
 - Observation: 保守 instance 后处理会改变旧 smoke 矩阵大小，不能直接称为旧结果复现。
-  Evidence: Slurm job `266780` 使用默认 `min_voxels=30` 后，4 个已知样本全部成功但总 job 数为 20；其中 `8pmd` 从旧文档的 12 job 变为 8 job，说明小 instance 被过滤。
+  Evidence: Slurm job `266780` 使用默认 `min_voxels=30` 后，4 个已知样本 Rosetta job 全部跑通但总 job 数为 20；其中 `8pmd` 从旧文档的 12 job 变为 8 job，说明小 instance 被过滤。
 
 - Observation: full80 若不限制每样本进入 docking 的 site 数，会产生不可接受的 Rosetta job 规模。
   Evidence: 单参数预扫描 `20260519_prescan_full80_conservative` 显示 80 样本 raw sites 2664、后处理 sites 1626、预计 Rosetta job 105250。top5 仍为 10440 job，top2 为 4358 job，top1 为 2186 job。
@@ -58,13 +63,25 @@ This ExecPlan is a living document. The sections `Progress`, `Surprises & Discov
   Evidence: Slurm job `268093` 运行 18:41:02 时仍有 13 个 pending 样本；多个 pending 样本已经写完大量 scorefile，例如 `6zgf` 有 168 个 scorefile、`8wlu` 有 150 个 scorefile，但没有样本级 summary。说明 Rosetta 已完成，卡点在后处理 assignment。
 
 - Observation: 修复 solver 后，剩余 13 样本的长尾主要表现为 Rosetta job 数随 ligand 数放大，而不是 assignment 再次死锁。
-  Evidence: Slurm job `268268` 运行约 2.7 小时时，新 run 已完成 `8g4o`、`8utb`、`8wis`，分别为 78/78、100/100、84/84 Rosetta job 成功，完成样本 assignment solver 均记录为 `scipy_hungarian`；其余 pending 样本仍持续产生日志和 scorefile。
+  Evidence: Slurm job `268268` 运行约 2.7 小时时，新 run 已完成 `8g4o`、`8utb`、`8wis`，分别为 78/78、100/100、84/84 Rosetta job 跑通，完成样本 assignment solver 均记录为 `scipy_hungarian`；其余 pending 样本仍持续产生日志和 scorefile。
 
 - Observation: 原 run 的样本级 `ok` 不能等价于 Rosetta job 全成功，必须在最终统计中保留 job 级失败列表。
   Evidence: 原 run 已完成部分共有 20 个失败 Rosetta job，分布在 `6bk8`、`7njo`、`8bly`、`8css`、`8uua`。归因包括 `pdb_UNK` residue 的 RamaPrePro 表缺失 2 个、Rosetta minimization 后 zero-length vector 15 个、`ATP` 内置 residue 与自生成 `ATP.params` 命名冲突 2 个、signal 11 崩溃 1 个。
 
 - Observation: 复用唯一 CCD 名称作为 `rosetta_name` 会和 Rosetta 自带 residue type 发生缓存冲突。
   Evidence: `8css` 的 `ATP` true/cryoatom receptor 两个 job 失败日志显示 `Residue type ATP is already in the ResidueTypeSetCache`。本地已改为所有 ligand 均使用 `L01` 等内部 Rosetta 名称，审计标签仍保留原始 `ccd_id` 和 `label`。
+
+- Observation: `268268` 尚未完成，但补跑 run 已从 3 个 completed 推进到 10 个 completed。
+  Evidence: 密码登录后只读查询显示 `sacct/squeue` 仍为 `RUNNING`；`20260520_full80_top1_pending13_scipy_required` 的 completed 样本为 `6zgf`, `6zku`, `7mtc`, `7tb8`, `7z7s`, `8g4o`, `8utb`, `8wis`, `8wlu`, `8xh9`，pending 为 `7w4g`, `8ca3`，error 为 `8ypd`。
+
+- Observation: 补跑 run 的 assignment solver 字段已经按修复预期记录为 `scipy_hungarian`。
+  Evidence: `20260520_full80_top1_pending13_scipy_required` 已完成样本的 assignment 记录中 `solver_counts` 为 `scipy_hungarian: 30`；原 run 的历史 assignment solver 为空字段，共 141 条，说明旧输出不能反推 solver。
+
+- Observation: 当前新增失败集中在 `6zku`，不是全局性 solver 死锁。
+  Evidence: 补跑 run 已完成部分共有 1106 个 planned/result jobs，1062 个跑通、44 个失败；44 个失败 job 全部来自 `6zku`，returncode 为 `-11` 34 个、`1` 10 个，stderr tail 均归类为 Rosetta crash/internal error。
+
+- Observation: 本轮没有拿到新的 full80 top1 远端反馈。
+  Evidence: 密码 SSH 在本地 socket 创建阶段失败，错误为 `PermissionError: [WinError 10013] 以一种访问权限不允许的方式做了一个访问套接字的尝试。`；因此 `268268` 是否已完成、`7w4g`/`8ca3` 是否收尾、`8ypd` 是否仍为 error 都需要下一轮重新核对。
 
 ## Decision Log
 
@@ -112,6 +129,10 @@ This ExecPlan is a living document. The sections `Progress`, `Surprises & Discov
 
 2026-05-20 中途审计结论：同意用户关于长尾复杂度的判断。当前不应为了等待全部样本完成而暂停分析；已经完成和半完成样本足以确认两个问题：一是大矩阵 assignment 需要强制走 `scipy_hungarian`，二是 Rosetta 内置 residue 名称冲突需要在 ligand 命名层面修复。当前本地代码已修复第二点，但尚未同步服务器；等待 `268268` 完成或停止后再同步，避免影响正在运行的批次。
 
+2026-05-21 更新：根据用户补充的服务器密码，已完成只读服务器核对。`268268` 仍在运行，不能启动会超出资源上限的重型新任务。当前 full80 top1 已有 77/80 个样本有 summary，剩余 `7w4g`、`8ca3` pending，`8ypd` error。已完成样本的 Rosetta job 跑通率为 1886/1950，其中原 run 824/844，补跑 run 1062/1106。补跑 run 的 solver 字段已确认是 `scipy_hungarian`。
+
+2026-05-21 00:55+08:00 更新：本轮服务器状态未能核对，原因是当前本地沙箱阻止 SSH socket。不要据此改写 77/80、1886/1950 或 pending/error 统计；这些仍沿用 00:34+08:00 的最后可信远端观察。下一次服务器可访问时，第一优先级仍是确认 `268268` 是否完成并合并两段 full80 top1。
+
 ## Context and Orientation
 
 项目根目录是 `C:\Users\15919\OneDrive\My_Project\Pocket_Plus`。本轮只允许编辑本地 `Docking` 目录。服务器运行产物只能写入 `/home/penghongen/分子对接尝试`。服务器可只读访问 Pocket Plus 项目、Rosetta、推理结果、ligand 数据和结构数据。
@@ -154,7 +175,7 @@ This ExecPlan is a living document. The sections `Progress`, `Surprises & Discov
 
 第六步，同步服务器并运行。只能使用 `C:\Users\15919\OneDrive\My_Project\scrips++\run_sync.bat`。服务器上只在 `/home/penghongen/分子对接尝试` 下写入。先复现 7zdf、8dd7、8x9s、8pmd，再提交 full80 经验参数 `nstruct=2` 批处理与不跑 Rosetta 的 instance 预扫描。CPU 总核数不超过 48。
 
-第七步，读取结果并更新报告。汇总样本数、可运行样本数、无可对接 ligand 样本、Rosetta job 成功率、decoy 聚合、普通/虚拟 matching 结果、instance 过滤和合并统计、预扫描参数候选。把重要结论更新到本 ExecPlan 与后续报告。
+第七步，读取结果并更新报告。汇总样本数、可运行样本数、无可对接 ligand 样本、Rosetta job 跑通率、decoy 聚合、普通/虚拟 matching 结果、instance 过滤和合并统计、预扫描参数候选。把重要结论更新到本 ExecPlan 与后续报告。真正的 docking 成功率不在本计划内计算，必须交给 evaluation 计划基于 GT、RMSD 和 top k/top k% 单独统计。
 
 ## Concrete Steps
 
@@ -237,8 +258,10 @@ full80 CPU sbatch 提交应使用 `Docking/sbatch/docking_cpu_batch.sbatch`，�
 
 2026-05-19: 首次复现 sbatch job `266337` 在 conda activate 阶段失败，原因是 `set -u` 与 conda hook 中未绑定变量冲突。已修订 sbatch 模板，准备重新同步并提交。
 
-2026-05-19: 服务器侧确认推理根目录当前可发现 80 个样本。预扫描 smoke `20260519_prescan_smoke3` 对 3 个样本、2 个参数组合成功写出 6 行结果。4 样本经验参数批次 `266780` 成功完成 20/20，但因 `min_voxels=30` 改变了 8pmd 矩阵，需另跑 raw-instance 复现。
+2026-05-19: 服务器侧确认推理根目录当前可发现 80 个样本。预扫描 smoke `20260519_prescan_smoke3` 对 3 个样本、2 个参数组合跑通并写出 6 行结果。4 样本经验参数批次 `266780` 跑通 20/20，但因 `min_voxels=30` 改变了 8pmd 矩阵，需另跑 raw-instance 复现。
 
-2026-05-19: 完成 raw-instance 4 样本复现 `20260519_repro_known4_raw_nstruct2`，去掉旧文档中 7zdf round1 重复矩阵后为 24/24 成功。完成 full80 预扫描并选择 top1 作为第一轮全样本 docking 口径。Slurm job `268093` 已启动，5 分钟时已有 35 个样本目录、11 个样本完成或跳过、0 个失败。
+2026-05-19: 完成 raw-instance 4 样本复现 `20260519_repro_known4_raw_nstruct2`，去掉旧文档中 7zdf round1 重复矩阵后为 24/24 Rosetta job 跑通。完成 full80 预扫描并选择 top1 作为第一轮全样本 docking 口径。Slurm job `268093` 已启动，5 分钟时已有 35 个样本目录、11 个样本完成或跳过、0 个失败。
 
-2026-05-20: 诊断并修复 full80 top1 卡点。`268093` 在 18 小时后仍未完成，已完成 67 个样本 summary、0 个样本级失败、partial Rosetta 成功率 824/844；剩余 13 个样本中多个已经完成 Rosetta 输出但卡在虚拟节点 assignment。已取消该 job。根据用户要求，移除无 scipy 时的贪心兜底，改为直接报错，并在 assignment 审计中写入实际 solver。
+2026-05-20: 诊断并修复 full80 top1 卡点。`268093` 在 18 小时后仍未完成，已完成 67 个样本 summary、0 个样本级失败、partial Rosetta 跑通率 824/844；剩余 13 个样本中多个已经完成 Rosetta 输出但卡在虚拟节点 assignment。已取消该 job。根据用户要求，移除无 scipy 时的贪心兜底，改为直接报错，并在 assignment 审计中写入实际 solver。
+
+2026-05-20: 根据用户反馈修正术语边界。本计划只统计流程跑通、Rosetta job 跑通、solver 和失败日志，不再把这些称为对接成功；真正成功率由新的 evaluation 计划基于 GT center hit、Hungarian match accuracy、RMSD 和 top k/top k% 计算。

@@ -7,6 +7,34 @@ Stage1 体素-点云联合模型的清理后主流程。
     - P anchors 只允许在最后一次 recycle 的 _prepare_pseudo_batch 后进入 point backbone; 01 阶段 _prepare_pseudo_batch 返回 real-only batch、None layout、空 pseudo_outputs。
     - mixed layout 若存在, 必须来自 pseudo_atoms.inject_pseudo_atoms, 每个 BOX 内顺序固定为 `[real_i..., pseudo_i...]`, 先真实原子, 然后再是伪原子。
 
+训练时 sparse candidate voxel set C 的契约:
+    - C 只在最后一轮 recycle 的 _prepare_pseudo_batch 中生成; 前几轮 recycle 不注入候选体素, 只滚动 voxel/point recycle state。
+    - 总开关是 cfg.model.backbone.candidate_set_cfg:
+        - null: 关闭 C 生成, 对应 configs/model/candidate_set/none.yaml。
+        - 非 null: 由 VolumePointStage1Model.__init__ 实例化 SparseCandidateSetBuilder, 对应 configs/model/candidate_set/tri.yaml 或 binary.yaml。
+    - 候选类别与每类超参完全由 cfg.model.backbone.candidate_set_cfg 控制。
+    - warmup fixed topk 是否生效, 不由 candidate_set_cfg 单独决定, 而是由 wrapper 同步的 runtime 状态决定:
+        - src/wrappers/voxel_point_stage1.py::configure_optimizers() 只有在 scheduler.name 为 warmup_plateau 或 warmup_only 时, 才会解析出 candidate_warmup_steps。
+        - _sync_sparse_candidate_runtime_to_backbone() 会把 global_step、candidate_warmup_steps、allow_warmup_fixed_topk 同步到本模型。
+        - fit/sanity/tuning lifecycle 可允许 scheduler warmup fixed topk；standalone validate/test/predict 不允许。
+        - 当前 forward 满足 global_step < candidate_warmup_steps 且 allow_warmup_fixed_topk=True 时, _should_use_candidate_fixed_topk() 返回 True；warmup 外 threshold cache 缺失必须 fail-fast，不做 bootstrap 回退。
+    - warmup fixed topk 的真实行为:
+        - 对每个 BOX、每个 candidate_class, 先在 voxel_valid_mask 内收集有效体素概率 prob_valid。
+        - target_count = min(warmup_topc_per_class[class], max_candidate_voxels_per_class[class], N_valid)。
+        - 直接对 prob_valid 做 topk, 取该 BOX/类别概率最高的 target_count 个体素进入 C。
+    - adaptive_threshold 的训练主流程分成两个阶段:
+        - 验证阶段统计全局 best-F1 阈值: wrapper._update_voxel_ligand_best_f1_stats() 在 voxel_valid_mask 内累加各候选类别的正负样本 histogram。硬标签来自 ligand_dist_map 与 voxel_ligand_loss.hard_label_threshold, 多分类时按 one-vs-rest 统计每个 candidate_class。
+        - validation end 刷新阈值缓存: wrapper._compute_log_update_voxel_ligand_best_f1_thresholds() 在 histogram 网格上枚举阈值, 取 F1 最大的 bin 作为 p_best_by_class[class]。同时统计该阈值以上的总体体素数 n_best_total=TP+FP, 再计算 n_sampling_total=ceil(n_best_total * adaptive_expand_factor[class]) 作为扩张后的全局目标规模, 并记录对应 sampling 阈值 p_sampling_by_class[class]。
+    - adaptive_threshold 在训练 forward 里生成 C 时, 实际采用的是 per-box best-F1 扩张 topk, 不是直接按全局 sampling 阈值截断:
+        - 对当前 BOX/类别先计算 n_best_box = count(prob_valid > p_best_by_class[class])————注意上一段 p_best_by_class 是验证时缓存的, 但是这里和下一个 p_best_by_class 是本box临时计算的结果。
+        - target_before_cap = ceil(n_best_box * adaptive_expand_factor[class])。
+        - target_count = min(target_before_cap, max_candidate_voxels_per_class[class], N_valid)。
+        - 再对该 BOX/类别的 prob_valid 做 topk, 取概率最高的 target_count 个体素进入 C。
+        - 这意味着 p_best_by_class 决定“每个 BOX 估计应有多少个 best-F1 体素”, adaptive_expand_factor 决定在这个数量上扩张多少倍, 而真正入选的是该 BOX 内 topk 概率最大的体素。
+    - recorded_threshold 是 builder 支持的另一种模式:
+        - 它直接使用 wrapper 缓存的 p_sampling_by_class 做按阈值筛选, 仅在超过 max_candidate_voxels_per_class 时再回退为局部 topk 截断。
+        - 当前 tri/binary 配置默认不用这一路径, 但 selection_mode 切到 recorded_threshold 后会改为该行为。
+
 forward 输入的 batch 关键字段契约:
     - voxel_grid: torch.Tensor, (B, C_in, D, H, W), floating, voxel backbone 输入密度/特征体。
     - box_shape_zyx: torch.Tensor, (B, 3), int64/long, 每个 BOX 的体素尺寸, 轴顺序 (z, y, x)。
@@ -116,6 +144,7 @@ class VolumePointStage1Model(nn.Module):
         online_pdb_feature_dim: int = 49,
         atom_head_pseudo_feature_dim: int | None = None,
         typed_point_cfg: dict[str, Any] | TypedPointConfig | None = None,
+        candidate_set_cfg: dict[str, Any] | nn.Module | None = None,
     ) -> None:
         """
         Stage1 体素-点云联合模型, voxel backbone 每轮 recycle, P anchors 只在最后一轮注入。
@@ -126,6 +155,7 @@ class VolumePointStage1Model(nn.Module):
             - enable_atom_head: bool, 是否构造 Stage1AtomHead
             - embed_head: nn.Module | Any | None, embed head 模块或 Hydra 配置
             - pseudo_atom_cfg: dict | None, legacy 字段; 新流程只允许 None
+            - candidate_set_cfg: dict[str, Any] | nn.Module | None, sparse candidate set builder 配置; None 表示关闭 C 生成
 
             - prior_prob: float | None, 单通道 sigmoid 正类先验概率
             - prior_probs: Sequence[float] | None, 多通道 softmax 类别先验概率
@@ -192,6 +222,19 @@ class VolumePointStage1Model(nn.Module):
         self.voxel_backbone = voxel_backbone if isinstance(voxel_backbone, nn.Module) else instantiate(voxel_backbone)
         # nn.Module, 点分支模块
         self.point_backbone = point_backbone if isinstance(point_backbone, nn.Module) else instantiate(point_backbone)
+        # nn.Module | None, sparse candidate voxel set C 生成器
+        self.candidate_set_builder = (
+            candidate_set_cfg
+            if (candidate_set_cfg is None or isinstance(candidate_set_cfg, nn.Module))
+            else instantiate(candidate_set_cfg)
+        )
+        # torch.Tensor | None, (K,), wrapper 同步过来的 best-F1 阈值缓存
+        self._candidate_p_best_by_class: torch.Tensor | None = None
+        # torch.Tensor | None, (K,), wrapper 同步过来的 sampling 阈值缓存
+        self._candidate_p_sampling_by_class: torch.Tensor | None = None
+        self._candidate_warmup_steps = 0
+        self._candidate_global_step = 0
+        self._candidate_allow_warmup_fixed_topk = False
         self.point_fusion_items = tuple(
             (str(point_name), voxel_name_str)
             for point_name, voxel_name in (point_fusion_map or {}).items()
@@ -698,19 +741,44 @@ class VolumePointStage1Model(nn.Module):
         voxel_output_dict: dict[str, Any],
     ) -> tuple[dict[str, Any], PseudoAtomLayout | None, dict[str, Any]]:
         """
-        在最后一轮 voxel backbone 后准备 P anchor mixed batch。
+        在最后一轮 voxel backbone 后准备 sparse candidate C 与 P anchor mixed batch。
 
         输入参数:
             - batch: dict[str, Any], 当前 real-only canonical batch
-            - voxel_output_dict: dict[str, Any], 当前 recycle 的 _run_voxel_backbone() 输出; 后续 03/04 将读取 voxel_logits_ligand 生成 C/P
+            - voxel_output_dict: dict[str, Any], 当前 recycle 的 _run_voxel_backbone() 输出; 03 读取 voxel_logits_ligand 生成 C
 
         输出:
-            - point_batch: dict[str, Any], 01 阶段仍为 real-only batch; 后续阶段可返回 mixed batch
-            - pseudo_layout: PseudoAtomLayout | None, 01 阶段为 None; 后续阶段描述 real/P mixed 布局
-            - pseudo_outputs: dict[str, Any], 01 阶段为空; 后续阶段透传 C/P 元数据
+            - point_batch: dict[str, Any], 03 阶段仍为 real-only batch
+            - pseudo_layout: PseudoAtomLayout | None, 03 阶段为 None; 后续阶段描述 real/P mixed 布局
+            - pseudo_outputs: dict[str, Any], 03 阶段透传 C 元数据
         """
-        del voxel_output_dict
-        return batch, None, {}
+        if self.candidate_set_builder is None:
+            return batch, None, {}
+        voxel_logits_ligand = voxel_output_dict.get("voxel_logits_ligand")
+        if voxel_logits_ligand is None:
+            raise RuntimeError("candidate_set_builder 已启用，但 voxel_logits_ligand 为空；请启用 ligand head 并对齐 voxel_ligand_logit_dim。")
+        # bool, scheduler warmup 内使用 fixed per-class topc
+        use_fixed_warmup = self._should_use_candidate_fixed_topk()
+        # torch.Tensor | None, (K,), best-F1 阈值移动到 logits 设备
+        p_best_by_class = (
+            None
+            if self._candidate_p_best_by_class is None
+            else self._candidate_p_best_by_class.to(device=voxel_logits_ligand.device)
+        )
+        # torch.Tensor | None, (K,), sampling 阈值移动到 logits 设备
+        p_sampling_by_class = (
+            None
+            if self._candidate_p_sampling_by_class is None
+            else self._candidate_p_sampling_by_class.to(device=voxel_logits_ligand.device)
+        )
+        candidate_outputs = self.candidate_set_builder(
+            voxel_logits_ligand=voxel_logits_ligand,
+            voxel_valid_mask=batch["voxel_valid_mask"],
+            p_best_by_class=p_best_by_class,
+            p_sampling_by_class=p_sampling_by_class,
+            use_fixed_warmup=use_fixed_warmup,
+        )
+        return batch, None, candidate_outputs
 
     def _run_point_backbone(
         self,
@@ -925,3 +993,75 @@ class VolumePointStage1Model(nn.Module):
         self._run_atom_head(outputs, atom_head_batch=last_atom_head_batch, pseudo_layout=last_pseudo_layout)
         outputs["recycle_passes_used"] = recycle_steps
         return outputs
+
+
+
+
+    # ============================================================
+    # ==================== 工具函数: 关于 Sparse Candidate Builder ====================
+    # ============================================================
+    
+    def get_sparse_candidate_class_ids(self) -> tuple[int, ...] | None:
+        """
+        返回 sparse candidate builder 配置的候选类别 ID。
+
+        输出:
+            - class_ids: tuple[int, ...] | None, builder 未启用时为 None; 启用时为前景候选类别 ID
+        """
+        if self.candidate_set_builder is None:
+            return None
+        if not hasattr(self.candidate_set_builder, "candidate_class_ids"):
+            raise AttributeError("candidate_set_builder 必须暴露 candidate_class_ids。")
+        return tuple(int(class_id) for class_id in self.candidate_set_builder.candidate_class_ids)
+
+    def set_sparse_candidate_thresholds(
+        self,
+        p_best_by_class: torch.Tensor | None,
+        p_sampling_by_class: torch.Tensor | None,
+    ) -> None:
+        """
+        保存 wrapper 同步过来的 candidate threshold cache。
+
+        输入参数:
+            - p_best_by_class: torch.Tensor | None, (K,), best-F1 阈值缓存; None 表示尚不可用
+            - p_sampling_by_class: torch.Tensor | None, (K,), sampling 阈值缓存; None 表示尚不可用
+
+        输出:
+            - None, 原地更新 runtime cache: self._candidate_p_best_by_class / self._candidate_p_sampling_by_class
+        """
+        self._candidate_p_best_by_class = None if p_best_by_class is None else p_best_by_class.detach().cpu().float().reshape(-1)
+        self._candidate_p_sampling_by_class = None if p_sampling_by_class is None else p_sampling_by_class.detach().cpu().float().reshape(-1)
+
+    def set_sparse_candidate_runtime(
+        self,
+        global_step: int,
+        candidate_warmup_steps: int,
+        allow_warmup_fixed_topk: bool,
+    ) -> None:
+        """
+        保存 wrapper 同步过来的 candidate runtime 状态。
+
+        输入参数:
+            - global_step: int, 当前 optimizer step
+            - candidate_warmup_steps: int, scheduler warmup step 数; 仅此阶段允许 fixed topk
+            - allow_warmup_fixed_topk: bool, 当前 lifecycle 是否允许 warmup fixed topk; standalone validate/test/predict 为 False
+
+        输出:
+            - None, 原地更新 runtime 状态: self._candidate_global_step / self._candidate_warmup_steps / self._candidate_allow_warmup_fixed_topk
+        """
+        self._candidate_global_step = int(global_step)
+        self._candidate_warmup_steps = int(candidate_warmup_steps)
+        self._candidate_allow_warmup_fixed_topk = bool(allow_warmup_fixed_topk)
+
+    def _should_use_candidate_fixed_topk(self) -> bool:
+        """
+        判断当前 forward 是否处于 candidate fixed topk 阶段。
+
+        输出:
+            - use_fixed: bool, True 表示 scheduler warmup 内使用固定 per-class topc
+        """
+        return (
+            self._candidate_allow_warmup_fixed_topk
+            and self._candidate_warmup_steps > 0
+            and self._candidate_global_step < self._candidate_warmup_steps
+        )

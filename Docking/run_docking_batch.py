@@ -34,6 +34,7 @@ def main() -> None:
     parser.add_argument("--merge-min-voxel-distance", type=float, default=2.5, help="合并的最近体素距离阈值")
     parser.add_argument("--merge-center-distance", type=float, default=6.0, help="合并的中心距离阈值")
     parser.add_argument("--merge-max-bbox-span-increase", type=float, default=8.0, help="合并后包围盒对角线允许增加量")
+    parser.add_argument("--shard-id", help="array 分片 ID; 设置后只写 shard summary, 避免并发覆盖总表")
     parser.add_argument("--plain-assignment", action="store_true", help="使用普通矩形 assignment, 不使用虚拟节点")
     parser.add_argument("--dry-run", action="store_true", help="生成输入和审计, 不执行 Rosetta")
     args = parser.parse_args()
@@ -46,7 +47,15 @@ def main() -> None:
     sample_ids = _resolve_sample_ids(paths, args.sample_list)
     if args.max_samples is not None:
         sample_ids = sample_ids[: args.max_samples]
-    (run_root / "config" / "sample_list.txt").write_text("\n".join(sample_ids) + "\n", encoding="utf-8")
+    config_dir = run_root / "config"
+    tables_dir = run_root / "tables"
+    if args.shard_id:
+        config_dir = config_dir / "shards"
+        tables_dir = tables_dir / "shards"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    tables_dir.mkdir(parents=True, exist_ok=True)
+    sample_list_name = "sample_list.txt" if not args.shard_id else f"{args.shard_id}_sample_list.txt"
+    (config_dir / sample_list_name).write_text("\n".join(sample_ids) + "\n", encoding="utf-8")
 
     rosetta_options = replace(RosettaOptions.smoke(), nstruct=args.nstruct)
     instance_options = InstancePostprocessOptions(
@@ -63,10 +72,12 @@ def main() -> None:
         "jobs": args.jobs,
         "dry_run": args.dry_run,
         "plain_assignment": args.plain_assignment,
+        "shard_id": args.shard_id,
         "max_sites_per_sample": args.max_sites_per_sample,
         "instance_options": instance_options.__dict__,
     }
-    write_json(run_root / "config" / "run_config.json", config)
+    config_name = "run_config.json" if not args.shard_id else f"{args.shard_id}_run_config.json"
+    write_json(config_dir / config_name, config)
 
     summaries = _parallel_map(
         [
@@ -95,8 +106,9 @@ def main() -> None:
         "num_success": sum(int(item.get("num_success", 0)) for item in summaries),
         "samples": summaries,
     }
-    write_json(run_root / "tables" / "batch_summary.json", batch_summary)
-    print(f"写入批处理汇总: {run_root / 'tables' / 'batch_summary.json'}")
+    summary_name = "batch_summary.json" if not args.shard_id else f"{args.shard_id}_summary.json"
+    write_json(tables_dir / summary_name, batch_summary)
+    print(f"写入批处理汇总: {tables_dir / summary_name}")
 
 
 def run_one(payload: dict[str, Any]) -> dict[str, Any]:

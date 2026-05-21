@@ -203,13 +203,18 @@ def _build_merge_candidates(
 ) -> list[dict[str, Any]]:
     """计算所有两两 instance 合并候选特征。"""
     candidates: list[dict[str, Any]] = []
+    center_only = options.merge_min_voxel_distance >= 1.0e8 and options.merge_max_bbox_span_increase >= 1.0e8
     for left_index, left in enumerate(sites):
         for right in sites[left_index + 1 :]:
             left_coords = coords_by_id[left.instance_id]
             right_coords = coords_by_id[right.instance_id]
-            min_distance = _nearest_point_distance(left_coords, right_coords)
             center_distance = float(np.linalg.norm(np.asarray(left.center_world_xyz) - np.asarray(right.center_world_xyz)))
-            bbox_increase = _bbox_span_increase(left_coords, right_coords)
+            if center_only:
+                min_distance = 0.0
+                bbox_increase = 0.0
+            else:
+                min_distance = _nearest_point_distance(left_coords, right_coords)
+                bbox_increase = _bbox_span_increase(left_coords, right_coords)
             should_merge = (
                 min_distance <= options.merge_min_voxel_distance
                 and center_distance <= options.merge_center_distance
