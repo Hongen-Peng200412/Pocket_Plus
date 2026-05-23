@@ -117,6 +117,7 @@ realistic 输出：
 - 2026-05-21：已生成审计：`samples/<sample>/audit/summary.json` 计数为 0；但 `samples/**/audit/summary.json`（包含 `variants/...` 子目录）已生成 49 个 summary，说明当前审计主要落在 variant 级目录而不是 sample 根目录（后续汇总应以 `samples/**/audit/summary.json` 为准）。
 - 2026-05-21T18:11+08:00：再次尝试本轮只读检查 `squeue/sacct`、审计计数和 realistic 是否已启动；但当前工作站到 `10.102.33.220:10022` 的 SSH 在连接前即返回 `Permission denied`，且本地 `C:\Users\15919\.ssh` 目录不可读，因此本轮没有比 17:21+08:00 更新的服务器状态。不要把下面的运行中样本列表和 49 个 variant summary 当作 18:11+08:00 的新鲜观察。
 - 2026-05-21：SSH 已恢复并获得新反馈。`274549` 已完成 6/20 个样本，0 个失败 task；完成样本为 `8dd7, 8x9s, 7vla, 8v7l, 8p71, 8wpf`。这些样本共 240 个 Rosetta job，240 个成功。`274550/274551/274552` 仍在 dependency pending。
+- 2026-05-22：oracle array `274549` 已完成 12/20 个样本，0 个 Slurm 失败 task；8 个样本仍在运行，realistic array 仍未开始。已完成样本的样本级 summary 合计 1120/1120 个 Rosetta job 成功；但 `6bk8` 运行中的部分 variant 已暴露 Rosetta job 级失败，典型错误为 `pdb_UNK` 缺少 RamaPrePro 主链 score table。
 
 ## 结果与分析
 
@@ -179,3 +180,34 @@ realistic 输出：
 ```
 
 realistic array 尚未开始；它会在 oracle array 和 oracle 汇总之后启动。
+
+### 2026-05-22 oracle 长尾检查
+
+已完成样本：
+
+```text
+8dd7, 8x9s, 7vla, 8v7l, 7zdf, 8v6v, 8p71, 8wpf, 8pmd, 7n70, 7zdl, 8wox
+```
+
+这些样本对应 240 个 variant、1120 个 Rosetta job，目前样本级 summary 中 1120 个成功。`tables/batch_summary.json` 仍不存在，因为 oracle 汇总 job `274550` 还在 dependency pending。
+
+仍在运行样本：
+
+```text
+7nnl, 7tju, 8umt, 8vm0, 6bk8, 7ut7, 8x0b, 7v19
+```
+
+目前没有 Slurm 失败 task，也没有 sbatch stderr。需要注意的是，`6bk8` 的部分 variant summary 已经出现 Rosetta job 级失败。典型错误是：
+
+```text
+ERROR: Error in core::scoring::RamaPrePro::get_mainchain_torsions_covered():
+No mainchain score table for residue type pdb_UNK exists.
+```
+
+这表示 array 任务本身没有失败，但 Rosetta 在处理某些输入结构时把某些 residue 当作 `pdb_UNK`，并在 Cartesian/minimization 相关 RamaPrePro 打分项上退出。后续最终汇总时应把它归为“Rosetta 输入/residue type 兼容性问题”，不能算作 Slurm 或 array 调度失败。
+
+### ETA 粗略预测
+
+oracle array 当前被最后 8 个样本支配，尤其 `7v19`、`7ut7`、`8x0b`、`8vm0` 这类 ligand 数较多的样本。按当前 variant 级进度线性外推，oracle 还可能需要约 12 到 36 小时；最乐观是若后续 offset Hungarian 很快失败或跳过，约半天内结束；保守估计是 `7v19` 继续长尾，约 1 到 1.5 天。
+
+realistic array 尚未开始。它不是 oracle 的 20 个 variant 矩阵，但 `easy20_by_instance_f1` 里包含 `8ut3`、`8wis`、`8xh9` 这类复杂样本，因此仍可能有长尾。当前粗略预计全链路（oracle 汇总 + realistic + realistic 汇总）还需要约 2 到 3 天。

@@ -1,0 +1,30 @@
+# @package _global_
+# ============================================================
+# 三分类 softmax 任务 preset
+# 此文件由 base.yaml 的 defaults 或实验 override 载入, 合并到 cfg.model.backbone。
+# 类别顺序固定为 [background, metal_ion, small_molecule], 前景候选只使用 class_id 1 和 2。
+# 主要消费者:
+#   → VolumePointStage1Model.__init__: 读取 atom_logit_dim / prior_prob / prior_probs。
+#   → Stage1VoxelBackbone.__init__: 读取 voxel_backbone.* 输出通道与 prior_probs。
+#   → sparse_refine 子配置: 通过 ${model.backbone.sparse_refine_task.*} 复用候选类别与 per-class 预算。
+# ============================================================
+model:
+  backbone:
+    # --- Atom / voxel 输出语义 ---
+    atom_logit_dim: 3                  # int, atom head 输出通道数; 3 表示按类别顺序输出 softmax logits
+    prior_prob: null                   # float|null, sigmoid 正类先验; 多通道 softmax 路径必须为 null
+    prior_probs: [0.98, 0.01, 0.01]    # list[float], atom head softmax 类别先验; 长度必须等于 atom_logit_dim 且顺序同类别表
+    voxel_backbone:
+      voxel_aux_logit_dim: 3           # int, voxel aux head 输出通道数; 与三分类 loss 的 num_classes 对齐
+      voxel_ligand_logit_dim: 3        # int, voxel ligand head 输出通道数; SparseCandidateSetBuilder 对其做 softmax 后取前景类
+      prior_probs: [0.98, 0.01, 0.01]  # list[float], voxel aux/ligand head softmax 先验; 顺序为 background/metal_ion/small_molecule
+
+    # --- Sparse refine 三分类前景契约 ---
+    # 下列列表必须等长, 位置 0/1 分别对应 class_id 1/2。
+    # candidate_set/anchor_sampler 配置通过 OmegaConf 插值读取这些字段, 保证 C 与 P 的类别顺序一致。
+    sparse_refine_task:
+      candidate_class_ids: [1, 2]                    # list[int], 前景候选类别 ID; 顺序与所有 per-class 参数一致
+      warmup_topc_per_class: [1000, 40000]           # list[int], warmup 阶段每个 BOX/类别直接 top-k 进入候选 C 的上限
+      adaptive_expand_factor: [10.0, 10.0]           # list[float], adaptive_threshold 下相对 best-F1 正例数的候选扩张倍数
+      max_candidate_voxels_per_class: [1000, 40000]  # list[int], 每个 BOX/类别候选 C 行数硬上限
+      max_anchors_per_class: [128, 1024]             # list[int], 每个 BOX/类别 P anchor 采样上限

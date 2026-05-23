@@ -1,0 +1,10 @@
+# @package _global_
+# ============================================================
+# Sparse candidate set 关闭配置
+# 写入 cfg.model.backbone.candidate_set_cfg=null。
+#   → VolumePointStage1Model.__init__: 不构造 SparseCandidateSetBuilder。
+#   → VolumePointStage1Model._prepare_pseudo_batch(): 直接返回 real-only batch 和空 pseudo_outputs。
+# ============================================================
+model:
+  backbone:
+    candidate_set_cfg: null  # null, 关闭 sparse candidate voxel set C 生成

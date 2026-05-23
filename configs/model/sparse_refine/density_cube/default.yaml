@@ -1,0 +1,25 @@
+# @package _global_
+# ============================================================
+# Density cube encoder 默认配置
+# 此文件写入 cfg.model.backbone.density_cube_cfg。
+# 为 P anchor 从 batch["voxel_grid"] 抽取局部 cube, 编码为 inject_pseudo_atoms 使用的 pseudo_feat。
+#   → VolumePointStage1Model.__init__: instantiate(density_cube_cfg) 构造 DensityCubeEncoder。
+#   → train.py::_initialize_lazy_modules_before_ddp(): in_channels=null 时按首个 dataset 样本设置 raw voxel_grid 通道数。
+#   → VolumePointStage1Model._prepare_pseudo_batch(): density_cube_encoder(batch["voxel_grid"], anchor_voxel_zyx, anchor_batch_index)。
+# ============================================================
+model:
+  backbone:
+    density_cube_cfg:
+      # _target_: str, density cube encoder 类全称; Hydra 据此实例化 nn.Module
+      _target_: src.model.sparse_refine.density_cube.DensityCubeEncoder
+      in_channels: null  # int|null, batch["voxel_grid"] 原始通道数; null 表示训练启动前 lazy 初始化
+      cube_size: 11      # int, P anchor 周围 cube 边长, 必须为 >=1 的奇数
+      hidden_channels: 64 # int, Conv3d hidden 通道数; norm=group 时必须能被 num_groups 整除
+      num_downsample: 2  # int, stride=2 下采样 Conv3d block 数; 用于控制 cube 内卷积开销
+      num_conv: 2        # int, 下采样后的普通 stride=1 Conv3d block 数
+      out_dim: ${model.backbone.point_backbone.atom_feature_dim} # int, pseudo_feat 输出维度, 必须等于 point backbone atom_feature_dim
+      encoder_type: conv_gap # str, encoder 类型; 当前只支持 conv_gap
+      norm: group        # str, 归一化类型; 取值 group/none, 不使用 BatchNorm3d 或 LayerNorm
+      num_groups: 8      # int, GroupNorm group 数; hidden_channels 必须整除该值
+      act: silu          # str, 激活函数; 取值 silu/relu/gelu
+      chunk_size: 512    # int, 每次抽取/编码的 P anchor 数; 用于控制临时 cube 张量显存

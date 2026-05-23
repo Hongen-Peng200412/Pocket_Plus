@@ -1,0 +1,9 @@
+# @package _global_
+# ============================================================
+# Sparse refine 总入口配置
+# 此文件由 base.yaml 的 defaults 中 "- model/sparse_refine: default" 引用。
+# 它只声明 sparse refine 配置组入口, 不直接写入 cfg.model.backbone 字段。
+# 子模块由 base.yaml 中的 model/sparse_refine/* defaults 控制, 实验可分别 override。
+#   → Hydra: 合并 candidate_set / anchor_sampler / density_cube / anchor_class_conditioning 子配置。
+# ============================================================
+model: {}  # dict, 占位节点; 保持配置组可组合, 实际字段由子配置写入

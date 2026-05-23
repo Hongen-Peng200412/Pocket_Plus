@@ -1,5 +1,5 @@
 # @package _global_
-# 不进行任何运算, 搭配 point backbone 为none时使用，对应不对点云做任何建模
+# atom head 无 attention block 变体: 仍构造 token projection 和 logit head, 只是 atom_head_num_layers=0
 model:
   backbone:
     atom_head_hidden_dim: 128      # int, 隐藏维度

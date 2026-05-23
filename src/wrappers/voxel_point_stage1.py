@@ -104,6 +104,7 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
         from torchmetrics.classification import BinaryAveragePrecision
         self._val_metric_update_counts: dict[str, int] = {}
         self._val_metric_specs: dict[str, dict[str, Any]] = {}
+        self._val_metric_devices: dict[str, torch.device] = {}
         self._multiclass_metric_names: dict[str, list[str]] = {"atom": [], "voxel_aux": [], "voxel_ligand": []}
         self._class_names = self._resolve_class_names(kwargs)
         if self.atom_loss is not None:
@@ -239,16 +240,16 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
             raise ValueError(f"checkpoint 中的 {value_name} 长度必须等于 candidate_class_ids 数量。")
         return tensor
 
-    def _load_candidate_checkpoint_threshold(self, value: Any, value_name: str) -> torch.Tensor:
+    def _load_candidate_checkpoint_finite_tensor(self, value: Any, value_name: str) -> torch.Tensor:
         """
-        从 checkpoint 读取并校验 candidate threshold cache。
+        从 checkpoint 读取并校验 candidate finite cache。
 
         输入参数:
             - value: Any, checkpoint 中读取的张量或可转张量对象
             - value_name: str, 错误信息中的字段名
 
         输出:
-            - tensor: torch.Tensor, (K,), finite CPU float candidate threshold cache
+            - tensor: torch.Tensor, (K,), finite CPU float candidate cache
         """
         tensor = self._normalize_candidate_checkpoint_tensor(value, value_name)
         if not bool(torch.isfinite(tensor).all()):
@@ -520,7 +521,9 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
         device = self._resolve_metric_update_device(metric_name, preds.device)
         preds = preds.to(device, non_blocking=True)
         targets = targets.to(device, non_blocking=True)
-        metric_obj.to(device)
+        if self._val_metric_devices.get(metric_name) != device:
+            metric_obj.to(device)
+            self._val_metric_devices[metric_name] = device
         metric_obj.update(preds, targets)
 
     @staticmethod
@@ -1435,16 +1438,16 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
             if has_p_best != has_p_sampling:
                 raise ValueError("checkpoint 中的 voxel_ligand_p_best_by_class 与 voxel_ligand_p_sampling_by_class 必须成对出现。")
             if has_p_best:
-                self._cached_voxel_ligand_p_best_by_class = self._load_candidate_checkpoint_threshold(
+                self._cached_voxel_ligand_p_best_by_class = self._load_candidate_checkpoint_finite_tensor(
                     checkpoint["voxel_ligand_p_best_by_class"],
                     "voxel_ligand_p_best_by_class",
                 )
-                self._cached_voxel_ligand_p_sampling_by_class = self._load_candidate_checkpoint_threshold(
+                self._cached_voxel_ligand_p_sampling_by_class = self._load_candidate_checkpoint_finite_tensor(
                     checkpoint["voxel_ligand_p_sampling_by_class"],
                     "voxel_ligand_p_sampling_by_class",
                 )
             if "voxel_ligand_best_f1_by_class" in checkpoint:
-                self._cached_voxel_ligand_best_f1_by_class = self._normalize_candidate_checkpoint_tensor(
+                self._cached_voxel_ligand_best_f1_by_class = self._load_candidate_checkpoint_finite_tensor(
                     checkpoint["voxel_ligand_best_f1_by_class"],
                     "voxel_ligand_best_f1_by_class",
                 )

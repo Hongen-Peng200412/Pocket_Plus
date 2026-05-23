@@ -1,0 +1,7 @@
+# @package _global_
+# ============================================================
+# Sparse refine 关闭入口配置
+# 此文件用于显式关闭 sparse refine 总入口时保持配置组存在。
+# 子模块关闭仍由 base.yaml 的 model/sparse_refine/*: none 默认项提供。
+# ============================================================
+model: {}  # dict, 占位节点; 不写入 candidate_set_cfg / anchor_sampler_cfg / density_cube_cfg

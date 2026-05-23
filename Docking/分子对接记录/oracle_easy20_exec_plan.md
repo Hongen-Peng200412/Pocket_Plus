@@ -40,6 +40,8 @@ This ExecPlan is a living document. The sections `Progress`, `Surprises & Discov
 - [x] (2026-05-21) 已完成只读 SSH 检查（10.102.33.220:10022）：oracle array `274549_0..11` 正在 RUNNING，`274549_12..19` 因 `JobArrayTaskLimit` 等待；`274550/274551/274552` 仍为 dependency 等待。oracle run 目录存在，但 `tables/batch_summary.json` 尚未生成（需等待 `274550` 汇总 job）。
 - [x] (2026-05-21T18:11+08:00) 再次尝试本轮只读检查 `squeue/sacct` 与 oracle/realistic run 目录；但本机对 `10.102.33.220:10022` 的 SSH 在连接前即返回 `Permission denied`，且本地 `C:\Users\15919\.ssh` 目录不可读，因此本轮没有获得比 17:21+08:00 更新的远端事实。
 - [x] (2026-05-21) SSH 连接已恢复并获得新反馈：oracle array `274549` 已完成 6/20 个样本，0 个失败 task；完成样本合计 240/240 个 Rosetta job 成功。`274550/274551/274552` 仍为 dependency pending。
+- [x] (2026-05-22) 检查 oracle array 长尾：`274549` 已完成 12/20 个 array task，0 个 Slurm 失败 task；8 个 task 仍在运行，`274550/274551/274552` 仍为 dependency pending。
+- [x] (2026-05-22) 定位到 `6bk8` 部分 Rosetta 单 job 失败：`RamaPrePro` 对 `pdb_UNK` residue type 无主链 score table，导致 returncode 1；这是 Rosetta job 级失败，不是 array/sbatch 失败。
 - [ ] 运行完成后汇总流程跑通率、RMSD、assignment 和分层统计。
 
 ## Surprises & Discoveries
@@ -85,6 +87,12 @@ This ExecPlan is a living document. The sections `Progress`, `Surprises & Discov
 - Observation: 当前 oracle 运行的长尾来自样本计算量差异，而不是排队或脚本错误。
   Evidence: 已完成的 array task 为 `274549_0/1/2/3/6/7`；仍运行的 task 对应 `7zdf`、`8v6v`、`8pmd`、`7n70`、`7nnl`、`7tju`、`7zdl`、`8umt`、`8wox`、`8vm0`、`6bk8`、`7ut7`；`8x0b`、`7v19` 因 `%12` array limit 尚未启动。
 
+- Observation: 到 2026-05-22 检查时，oracle array 已从“排队长尾”转为“计算长尾”，且已经完成 12/20 个样本。
+  Evidence: `sacct` 显示 `274549_0/1/2/3/4/5/6/7/8/9/12/14` 为 `COMPLETED` 且 `ExitCode=0:0`；`274549_10/11/13/15/16/17/18/19` 仍在运行。样本级 summary 显示已完成样本合计 240 个 variant、1120 个 Rosetta job、1120 个成功 Rosetta job。
+
+- Observation: `6bk8` 是当前第一个明确出现 Rosetta job 级失败的样本，失败集中在 `IHP`/`GTP` 相关 true/offset oracle variant，尤其 true receptor 路径。
+  Evidence: `6bk8/variants/*/*/audit/summary.json` 中多处 `num_success < num_jobs`。失败日志 `dock_site001_true_receptor_IHP.stderr.log` 与 `ROSETTA_CRASH.log` 报错：`RamaPrePro::get_mainchain_torsions_covered(): No mainchain score table for residue type pdb_UNK exists`。这说明 sbatch array 仍在正常运行，但 Rosetta 对输入中某些 `UNK` residue type 不能做 RamaPrePro 主链项。
+
 ## Decision Log
 
 - Decision: easy20 统计使用 `min_voxels=1`、`merge_center_distance=8.0`、其他合并约束放宽到极大值。
@@ -112,6 +120,8 @@ This ExecPlan is a living document. The sections `Progress`, `Surprises & Discov
 2026-05-21T18:11+08:00 更新：本轮优先尝试按自动化要求重新检查 `squeue/sacct`、oracle run 审计计数与 realistic 是否启动。但当前工作站对 `10.102.33.220:10022` 的 SSH 连接在建立前即返回 `Permission denied`，而本地 `C:\Users\15919\.ssh` 目录也因权限限制不可读，无法回退到 key 配置检查。因此本轮没有新的服务器事实；最后可信远端观察仍是 17:21+08:00：oracle array `274549` 运行中、`274550/274551/274552` 仍在 dependency 等待、variant 级 `audit/summary.json` 已有 49 个、`tables/batch_summary.json` 尚未生成。
 
 2026-05-21 后续更新：SSH 已恢复；上一条 Permission denied 不是当前阻塞。oracle array `274549` 仍在运行，已完成 6 个样本：`8dd7`、`8x9s`、`7vla`、`8v7l`、`8p71`、`8wpf`。这些样本全部 `status=ok`，合计 240 个 Rosetta job 全部成功。当前仍无 oracle `batch_summary.json`，因为汇总 job `274550` 仍在 dependency pending；realistic `274551` 尚未开始。
+
+2026-05-22 更新：oracle array `274549` 仍在运行；已完成 12/20 个 array task，0 个 Slurm 失败。完成样本为 `8dd7`、`8x9s`、`7vla`、`8v7l`、`7zdf`、`8v6v`、`8p71`、`8wpf`、`8pmd`、`7n70`、`7zdl`、`8wox`，样本级 summary 合计 `num_variants=240`、`num_jobs=1120`、`num_success=1120`。未完成但正在运行的样本为 `7nnl`、`7tju`、`8umt`、`8vm0`、`6bk8`、`7ut7`、`8x0b`、`7v19`。`6bk8` 的 partial variant summary 已显示 Rosetta job 级失败，典型错误为 `pdb_UNK` 缺少 RamaPrePro 主链 score table。realistic 仍未开始。
 
 ## Context and Orientation
 

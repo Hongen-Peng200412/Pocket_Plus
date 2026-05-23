@@ -1,0 +1,13 @@
+# @package _global_
+# ============================================================
+# P anchor 来源类别 embedding 条件化配置
+# 此文件写入 cfg.model.backbone.anchor_class_conditioning_cfg。
+# 在 density cube 生成 pseudo_feat 后、inject_pseudo_atoms 前, 按 anchor_class 加入可学习类别 embedding。
+#   → VolumePointStage1Model.__init__: 根据 anchor_sampler.candidate_class_ids 构造 nn.Embedding。
+#   → VolumePointStage1Model._condition_anchor_pseudo_feat(): 将 embedding 加到 pseudo_feat, 不改变末维。
+# ============================================================
+model:
+  backbone:
+    anchor_class_conditioning_cfg:
+      mode: add_embedding  # str, 条件化模式; 当前仅支持 add_embedding
+      init_std: 0.02       # float, nn.Embedding 权重正态初始化标准差; 必须 > 0

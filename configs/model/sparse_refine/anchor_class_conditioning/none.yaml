@@ -1,0 +1,10 @@
+# @package _global_
+# ============================================================
+# P anchor 来源类别条件化关闭配置
+# 写入 cfg.model.backbone.anchor_class_conditioning_cfg=null。
+#   → VolumePointStage1Model.__init__: 不构造 anchor_class_embedding。
+#   → VolumePointStage1Model._condition_anchor_pseudo_feat(): 直接返回 density cube 输出的 pseudo_feat。
+# ============================================================
+model:
+  backbone:
+    anchor_class_conditioning_cfg: null  # null, 不向 P anchor 初始 pseudo_feat 注入来源类别 embedding

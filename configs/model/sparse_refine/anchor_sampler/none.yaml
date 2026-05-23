@@ -1,0 +1,10 @@
+# @package _global_
+# ============================================================
+# P anchor sampler 关闭配置
+# 写入 cfg.model.backbone.anchor_sampler_cfg=null。
+#   → VolumePointStage1Model.__init__: 不构造 SparseAnchorSampler。
+#   → VolumePointStage1Model._prepare_pseudo_batch(): 只透传候选 C, 不注入 P anchors。
+# ============================================================
+model:
+  backbone:
+    anchor_sampler_cfg: null  # null, 关闭 C→P anchor 采样与 mixed point 注入

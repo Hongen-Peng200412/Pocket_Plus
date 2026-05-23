@@ -1,0 +1,19 @@
+# @package _global_
+# ============================================================
+# Sparse candidate set 启用配置
+# 此文件写入 cfg.model.backbone.candidate_set_cfg。
+# binary/tri 的类别 ID 与 per-class 预算统一来自 model/task preset 的 sparse_refine_task。
+#   → VolumePointStage1Model.__init__: instantiate(candidate_set_cfg) 构造 SparseCandidateSetBuilder。
+#   → VolumePointStage1Model._prepare_pseudo_batch(): 用 voxel_logits_ligand / voxel_valid_mask 生成候选 C。
+# ============================================================
+# 下面的很多指标在 configs\model\task 里面调
+model:
+  backbone:
+    candidate_set_cfg:
+      # _target_: str, C 候选生成器类全称; Hydra 据此实例化 nn.Module
+      _target_: src.model.sparse_refine.candidate_set.SparseCandidateSetBuilder
+      selection_mode: adaptive_threshold  # str, 候选选择模式; warmup 后按 best-F1 阈值估计数量再取 per-box top-k
+      candidate_class_ids: ${model.backbone.sparse_refine_task.candidate_class_ids}                       # list[int], 候选前景类别 ID; 三分类 preset 为 [1, 2]
+      warmup_topc_per_class: ${model.backbone.sparse_refine_task.warmup_topc_per_class}                   # list[int], warmup 阶段每个 BOX/类别的固定 top-C 上限
+      adaptive_expand_factor: ${model.backbone.sparse_refine_task.adaptive_expand_factor}                 # list[float], adaptive_threshold 下 best-F1 正例数扩张倍数
+      max_candidate_voxels_per_class: ${model.backbone.sparse_refine_task.max_candidate_voxels_per_class} # list[int], 每个 BOX/类别候选 C 行数硬上限

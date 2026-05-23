@@ -10,8 +10,8 @@ Stage1 体素-点云联合模型的清理后主流程。
 训练时 sparse candidate voxel set C 的契约:
     - C 只在最后一轮 recycle 的 _prepare_pseudo_batch 中生成; 前几轮 recycle 不注入候选体素, 只滚动 voxel/point recycle state。
     - 总开关是 cfg.model.backbone.candidate_set_cfg:
-        - null: 关闭 C 生成, 对应 configs/model/candidate_set/none.yaml。
-        - 非 null: 由 VolumePointStage1Model.__init__ 实例化 SparseCandidateSetBuilder, 对应 configs/model/candidate_set/tri.yaml 或 binary.yaml。
+        - null: 关闭 C 生成, 对应 configs/model/sparse_refine/candidate_set/none.yaml。
+        - 非 null: 由 VolumePointStage1Model.__init__ 实例化 SparseCandidateSetBuilder, 对应 configs/model/sparse_refine/candidate_set/tri.yaml 或 binary.yaml。
     - 候选类别与每类超参完全由 cfg.model.backbone.candidate_set_cfg 控制。
     - warmup fixed topk 是否生效, 不由 candidate_set_cfg 单独决定, 而是由 wrapper 同步的 runtime 状态决定:
         - src/wrappers/voxel_point_stage1.py::configure_optimizers() 只有在 scheduler.name 为 warmup_plateau 或 warmup_only 时, 才会解析出 candidate_warmup_steps。
@@ -83,6 +83,7 @@ from src.model.pseudo_atoms import (
     PseudoAtomLayout,
     extract_real_point_output,
     extract_real_tensor_from_mixed,
+    inject_pseudo_atoms,
     interleave_real_and_pseudo_tensor,
 )
 
@@ -145,6 +146,9 @@ class VolumePointStage1Model(nn.Module):
         atom_head_pseudo_feature_dim: int | None = None,
         typed_point_cfg: dict[str, Any] | TypedPointConfig | None = None,
         candidate_set_cfg: dict[str, Any] | nn.Module | None = None,
+        anchor_sampler_cfg: dict[str, Any] | nn.Module | None = None,
+        density_cube_cfg: dict[str, Any] | nn.Module | None = None,
+        anchor_class_conditioning_cfg: dict[str, Any] | None = None,
     ) -> None:
         """
         Stage1 体素-点云联合模型, voxel backbone 每轮 recycle, P anchors 只在最后一轮注入。
@@ -156,6 +160,9 @@ class VolumePointStage1Model(nn.Module):
             - embed_head: nn.Module | Any | None, embed head 模块或 Hydra 配置
             - pseudo_atom_cfg: dict | None, legacy 字段; 新流程只允许 None
             - candidate_set_cfg: dict[str, Any] | nn.Module | None, sparse candidate set builder 配置; None 表示关闭 C 生成
+            - anchor_sampler_cfg: dict[str, Any] | nn.Module | None, sparse P anchor sampler 配置; None 表示只生成 C
+            - density_cube_cfg: dict[str, Any] | nn.Module | None, density cube encoder 配置; anchor sampler 启用时必填
+            - anchor_class_conditioning_cfg: dict[str, Any] | None, P 初始特征类别条件化配置; None 表示关闭
 
             - prior_prob: float | None, 单通道 sigmoid 正类先验概率
             - prior_probs: Sequence[float] | None, 多通道 softmax 类别先验概率
@@ -222,19 +229,74 @@ class VolumePointStage1Model(nn.Module):
         self.voxel_backbone = voxel_backbone if isinstance(voxel_backbone, nn.Module) else instantiate(voxel_backbone)
         # nn.Module, 点分支模块
         self.point_backbone = point_backbone if isinstance(point_backbone, nn.Module) else instantiate(point_backbone)
+
+
+
+
         # nn.Module | None, sparse candidate voxel set C 生成器
         self.candidate_set_builder = (
             candidate_set_cfg
             if (candidate_set_cfg is None or isinstance(candidate_set_cfg, nn.Module))
             else instantiate(candidate_set_cfg)
         )
-        # torch.Tensor | None, (K,), wrapper 同步过来的 best-F1 阈值缓存
-        self._candidate_p_best_by_class: torch.Tensor | None = None
+        # nn.Module | None, sparse P anchor sampler
+        self.anchor_sampler = (
+            anchor_sampler_cfg
+            if (anchor_sampler_cfg is None or isinstance(anchor_sampler_cfg, nn.Module))
+            else instantiate(anchor_sampler_cfg)
+        )
+        # nn.Module | None, density cube pseudo feature encoder
+        self.density_cube_encoder = (
+            density_cube_cfg
+            if (density_cube_cfg is None or isinstance(density_cube_cfg, nn.Module))
+            else instantiate(density_cube_cfg)
+        )
+        if self.anchor_sampler is not None and self.candidate_set_builder is None:
+            raise ValueError("anchor_sampler 启用时必须同时启用 candidate_set_builder。")
+        if self.anchor_sampler is not None and self.density_cube_encoder is None:
+            raise ValueError("anchor_sampler 启用时必须同时配置 density_cube_encoder。")
+        if self.anchor_sampler is None and self.density_cube_encoder is not None:
+            raise ValueError("density_cube_encoder 只能在 anchor_sampler 启用时配置。")
+        if self.anchor_sampler is not None:
+            if hasattr(self.candidate_set_builder, "candidate_class_ids") and hasattr(self.anchor_sampler, "candidate_class_ids"):
+                if tuple(int(x) for x in self.candidate_set_builder.candidate_class_ids) != tuple(
+                    int(x) for x in self.anchor_sampler.candidate_class_ids
+                ):
+                    raise ValueError("anchor_sampler.candidate_class_ids 必须与 candidate_set_builder.candidate_class_ids 一致。")
+            if not hasattr(self.density_cube_encoder, "out_dim"):
+                raise AttributeError("density_cube_encoder 必须暴露 out_dim。")
+        self.anchor_class_conditioning_mode = "none"
+        self.anchor_class_conditioning_init_std = 0.02
+        self.anchor_class_embedding: nn.Embedding | None = None
+        self.register_buffer("_anchor_class_ids", torch.empty((0,), dtype=torch.long), persistent=False)
+        if anchor_class_conditioning_cfg is not None:
+            if self.anchor_sampler is None:
+                raise ValueError("anchor_class_conditioning_cfg 启用时必须同时启用 anchor_sampler。")
+            mode = str(anchor_class_conditioning_cfg["mode"])
+            if mode != "add_embedding":
+                raise ValueError("anchor_class_conditioning_cfg.mode 只支持 add_embedding。")
+            self.anchor_class_conditioning_mode = mode
+            if "init_std" in anchor_class_conditioning_cfg:
+                self.anchor_class_conditioning_init_std = float(anchor_class_conditioning_cfg["init_std"])
+            if self.anchor_class_conditioning_init_std <= 0.0:
+                raise ValueError("anchor_class_conditioning_cfg.init_std 必须 > 0。")
+            candidate_class_ids = tuple(int(class_id) for class_id in self.anchor_sampler.candidate_class_ids)
+            self._anchor_class_ids = torch.as_tensor(candidate_class_ids, dtype=torch.long)
+            self.anchor_class_embedding = nn.Embedding(len(candidate_class_ids), int(self.point_backbone.atom_feature_dim))
+            nn.init.normal_(self.anchor_class_embedding.weight, mean=0.0, std=self.anchor_class_conditioning_init_std)
+        # torch.Tensor, (K,) 或 (0,), wrapper 同步过来的 best-F1 阈值缓存
+        self.register_buffer("_candidate_p_best_by_class", torch.empty((0,), dtype=torch.float32), persistent=False)
         # torch.Tensor | None, (K,), wrapper 同步过来的 sampling 阈值缓存
-        self._candidate_p_sampling_by_class: torch.Tensor | None = None
+        self.register_buffer("_candidate_p_sampling_by_class", torch.empty((0,), dtype=torch.float32), persistent=False)
+        self._has_candidate_p_best_by_class = False
+        self._has_candidate_p_sampling_by_class = False
         self._candidate_warmup_steps = 0
         self._candidate_global_step = 0
         self._candidate_allow_warmup_fixed_topk = False
+
+
+
+
         self.point_fusion_items = tuple(
             (str(point_name), voxel_name_str)
             for point_name, voxel_name in (point_fusion_map or {}).items()
@@ -273,6 +335,9 @@ class VolumePointStage1Model(nn.Module):
         self.point_feature_names_to_return = tuple(
             dict.fromkeys([point_name for point_name, _ in self.point_fusion_items] + ["point_feat"])
         )
+
+        if self.density_cube_encoder is not None and int(self.density_cube_encoder.out_dim) != int(self.point_backbone.atom_feature_dim):
+            raise ValueError("density_cube_encoder.out_dim 必须等于 point_backbone.atom_feature_dim。")
 
         available_voxel_feature_names = tuple(self.voxel_backbone.feature_channels_by_name.keys())
         available_point_feature_names = tuple(self.point_backbone.feature_channels_by_name.keys())
@@ -443,6 +508,36 @@ class VolumePointStage1Model(nn.Module):
             dtype=point_coord_centered_world.dtype,
         ) + (0.5 * box_shape_xyz)
 
+    def _condition_anchor_pseudo_feat(
+        self,
+        pseudo_feat: torch.Tensor,
+        anchor_class: torch.Tensor,
+    ) -> torch.Tensor:
+        """
+        按 P anchor 来源类别对初始 pseudo feature 做条件化。
+
+        输入参数:
+            - pseudo_feat: torch.Tensor, (sumP, F_atom), density cube 输出的 P 初始特征
+            - anchor_class: torch.Tensor, (sumP,), P 来源候选类别 ID
+
+        输出:
+            - conditioned_feat: torch.Tensor, (sumP, F_atom), 加入类别 embedding 后的 P 初始特征
+        """
+        if self.anchor_class_conditioning_mode == "none":
+            return pseudo_feat
+        if self.anchor_class_embedding is None:
+            raise RuntimeError("anchor_class_conditioning_mode 启用但 anchor_class_embedding 未构造。")
+        # torch.Tensor, (sumP, K), P 来源类别与配置类别的匹配矩阵
+        class_match = anchor_class[:, None] == self._anchor_class_ids.to(device=anchor_class.device, dtype=anchor_class.dtype)[None, :]
+        # torch.Tensor, (sumP,), True 表示该 P 来源类别存在于 candidate_class_ids 中
+        known_mask = class_match.any(dim=1)
+        if not bool(known_mask.all()):
+            unknown_classes = torch.unique(anchor_class[~known_mask]).detach().cpu().tolist()
+            raise RuntimeError(f"anchor_class 包含未配置类别: {unknown_classes}。")
+        # torch.Tensor, (sumP,), P 来源类别在 candidate_class_ids 中的局部下标
+        local_index = class_match.to(dtype=torch.long).argmax(dim=1)
+        return pseudo_feat + self.anchor_class_embedding(local_index.to(device=pseudo_feat.device))
+
     @staticmethod
     def _counts_from_offsets(atom_offsets: torch.Tensor) -> torch.Tensor:
         """
@@ -468,9 +563,10 @@ class VolumePointStage1Model(nn.Module):
             - in_channels: int, 数据集 voxel_grid 通道数, 不含 embed/online scatter 追加通道
 
         输出:
-            - None, 原地调用 voxel_backbone.set_input_channels
+            - None, 原地调用 voxel_backbone 与 density_cube_encoder 的 set_input_channels
         """
-        actual_in_channels = int(in_channels)
+        raw_in_channels = int(in_channels)
+        actual_in_channels = raw_in_channels
         if self.embed_head is not None and self.embed_head.has_voxel_output:
             extra = int(self.embed_head.embed_voxel_out_channels)
             if self.embed_head.add_occupancy_channels:
@@ -480,6 +576,8 @@ class VolumePointStage1Model(nn.Module):
             actual_in_channels += self.online_pdb_feature_dim
         if hasattr(self.voxel_backbone, "set_input_channels"):
             self.voxel_backbone.set_input_channels(actual_in_channels)
+        if self.density_cube_encoder is not None and hasattr(self.density_cube_encoder, "set_input_channels"):
+            self.density_cube_encoder.set_input_channels(raw_in_channels)
 
 
 
@@ -759,18 +857,10 @@ class VolumePointStage1Model(nn.Module):
             raise RuntimeError("candidate_set_builder 已启用，但 voxel_logits_ligand 为空；请启用 ligand head 并对齐 voxel_ligand_logit_dim。")
         # bool, scheduler warmup 内使用 fixed per-class topc
         use_fixed_warmup = self._should_use_candidate_fixed_topk()
-        # torch.Tensor | None, (K,), best-F1 阈值移动到 logits 设备
-        p_best_by_class = (
-            None
-            if self._candidate_p_best_by_class is None
-            else self._candidate_p_best_by_class.to(device=voxel_logits_ligand.device)
-        )
-        # torch.Tensor | None, (K,), sampling 阈值移动到 logits 设备
-        p_sampling_by_class = (
-            None
-            if self._candidate_p_sampling_by_class is None
-            else self._candidate_p_sampling_by_class.to(device=voxel_logits_ligand.device)
-        )
+        # torch.Tensor | None, (K,), best-F1 阈值缓存; buffer 随模型迁移设备
+        p_best_by_class = self._candidate_p_best_by_class if self._has_candidate_p_best_by_class else None
+        # torch.Tensor | None, (K,), sampling 阈值缓存; buffer 随模型迁移设备
+        p_sampling_by_class = self._candidate_p_sampling_by_class if self._has_candidate_p_sampling_by_class else None
         candidate_outputs = self.candidate_set_builder(
             voxel_logits_ligand=voxel_logits_ligand,
             voxel_valid_mask=batch["voxel_valid_mask"],
@@ -778,7 +868,35 @@ class VolumePointStage1Model(nn.Module):
             p_sampling_by_class=p_sampling_by_class,
             use_fixed_warmup=use_fixed_warmup,
         )
-        return batch, None, candidate_outputs
+        if self.anchor_sampler is None:
+            return batch, None, candidate_outputs
+
+        # dict[str, torch.Tensor], P anchor 坐标、计数与 metadata
+        anchor_outputs = self.anchor_sampler(candidate_outputs=candidate_outputs, batch=batch)
+        # torch.Tensor, (sumP, F_atom), P anchor 初始点特征
+        pseudo_feat = self.density_cube_encoder(
+            voxel_grid=batch["voxel_grid"],
+            anchor_voxel_zyx=anchor_outputs["anchor_voxel_zyx"],
+            anchor_batch_index=anchor_outputs["anchor_batch_index"],
+        )
+        pseudo_feat = self._condition_anchor_pseudo_feat(pseudo_feat, anchor_outputs["anchor_class"])
+        if int(pseudo_feat.shape[-1]) != int(batch["atom_feat"].shape[-1]):
+            raise RuntimeError("density cube pseudo_feat 末维必须等于 batch['atom_feat'] 末维。")
+        # dict[str, torch.Tensor], inject_pseudo_atoms 输入字段
+        pseudo_dict = {
+            "pseudo_coord_centered_world": anchor_outputs["anchor_coord_centered_world"],
+            "pseudo_coord_local_voxel": anchor_outputs["anchor_coord_local_voxel"],
+            "pseudo_coord_world": anchor_outputs["anchor_coord_world"],
+            "pseudo_feat": pseudo_feat,
+            "pseudo_batch_index": anchor_outputs["anchor_batch_index"],
+            "pseudo_counts": anchor_outputs["anchor_counts"],
+            "pseudo_anchor_class": anchor_outputs["anchor_class"],
+            "pseudo_anchor_voxel_zyx": anchor_outputs["anchor_voxel_zyx"],
+            "pseudo_source_candidate_index": anchor_outputs["anchor_source_candidate_index"],
+        }
+        point_batch, pseudo_layout = inject_pseudo_atoms(batch, pseudo_dict)
+        pseudo_outputs = {**candidate_outputs, **anchor_outputs}
+        return point_batch, pseudo_layout, pseudo_outputs
 
     def _run_point_backbone(
         self,
@@ -1029,8 +1147,19 @@ class VolumePointStage1Model(nn.Module):
         输出:
             - None, 原地更新 runtime cache: self._candidate_p_best_by_class / self._candidate_p_sampling_by_class
         """
-        self._candidate_p_best_by_class = None if p_best_by_class is None else p_best_by_class.detach().cpu().float().reshape(-1)
-        self._candidate_p_sampling_by_class = None if p_sampling_by_class is None else p_sampling_by_class.detach().cpu().float().reshape(-1)
+        target_device = self._candidate_p_best_by_class.device
+        if p_best_by_class is None:
+            self._candidate_p_best_by_class = torch.empty((0,), device=target_device, dtype=torch.float32)
+            self._has_candidate_p_best_by_class = False
+        else:
+            self._candidate_p_best_by_class = p_best_by_class.detach().to(device=target_device, dtype=torch.float32).reshape(-1)
+            self._has_candidate_p_best_by_class = True
+        if p_sampling_by_class is None:
+            self._candidate_p_sampling_by_class = torch.empty((0,), device=target_device, dtype=torch.float32)
+            self._has_candidate_p_sampling_by_class = False
+        else:
+            self._candidate_p_sampling_by_class = p_sampling_by_class.detach().to(device=target_device, dtype=torch.float32).reshape(-1)
+            self._has_candidate_p_sampling_by_class = True
 
     def set_sparse_candidate_runtime(
         self,

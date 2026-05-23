@@ -93,6 +93,14 @@ def _has_uninitialized_parameters(module: torch.nn.Module) -> bool:
     return False
 
 
+def _needs_input_channel_initialization(model: torch.nn.Module) -> bool:
+    """Return True when a backbone submodule is waiting for dataset input channels."""
+    backbone = getattr(model, "backbone", None)
+    maybe_compiled_backbone = getattr(backbone, "_orig_mod", backbone)
+    density_cube_encoder = getattr(maybe_compiled_backbone, "density_cube_encoder", None)
+    return density_cube_encoder is not None and getattr(density_cube_encoder, "in_channels", None) is None
+
+
 def _extract_input_tensor(sample):
     """Extract input tensor from dataset sample."""
     if torch.is_tensor(sample):
@@ -112,7 +120,7 @@ def _initialize_lazy_modules_before_ddp(model: torch.nn.Module, datamodule: pl.L
     """
     Materialize lazy parameters before Lightning wraps model with DDP.
     """
-    if not _has_uninitialized_parameters(model):
+    if not _has_uninitialized_parameters(model) and not _needs_input_channel_initialization(model):
         return
 
     datamodule.setup(stage="fit")
@@ -137,7 +145,16 @@ def _initialize_lazy_modules_before_ddp(model: torch.nn.Module, datamodule: pl.L
 
     maybe_compiled_backbone.set_input_channels(in_channels)
     if verbose:
-        print(f"[Train] Lazy backbone initialized before DDP: in_channels={in_channels}")
+        voxel_backbone = getattr(maybe_compiled_backbone, "voxel_backbone", None)
+        density_cube_encoder = getattr(maybe_compiled_backbone, "density_cube_encoder", None)
+        voxel_backbone_in_channels = getattr(voxel_backbone, "in_channels", None)
+        density_cube_in_channels = getattr(density_cube_encoder, "in_channels", None)
+        print(
+            "[Train] Lazy modules initialized before DDP: "
+            f"raw [voxel_grid] channels={in_channels}, "
+            f"[voxel_backbone] in_channels={voxel_backbone_in_channels}, "
+            f"[density_cube] _in_channels={density_cube_in_channels}"
+        )
 
     if _has_uninitialized_parameters(model):
         raise RuntimeError(

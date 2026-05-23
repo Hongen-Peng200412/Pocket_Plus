@@ -1,0 +1,10 @@
+# @package _global_
+# ============================================================
+# Density cube encoder 关闭配置
+# 写入 cfg.model.backbone.density_cube_cfg=null。
+#   → VolumePointStage1Model.__init__: 不构造 DensityCubeEncoder。
+#   → 若 anchor_sampler_cfg 非 null 且 density_cube_cfg=null, VolumePointStage1Model.__init__ 会 fail-fast。
+# ============================================================
+model:
+  backbone:
+    density_cube_cfg: null  # null, 关闭 P anchor 初始 pseudo_feat 的 density cube 编码
