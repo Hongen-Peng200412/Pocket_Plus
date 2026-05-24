@@ -81,11 +81,13 @@ from src.model.typed_point import (
 )
 from src.model.pseudo_atoms import (
     PseudoAtomLayout,
+    extract_pseudo_tensor_from_mixed,
     extract_real_point_output,
     extract_real_tensor_from_mixed,
     inject_pseudo_atoms,
     interleave_real_and_pseudo_tensor,
 )
+from src.model.sparse_refine.anchor_sampler import build_anchor_coordinates
 
 _PTV3_IMPORT_ERROR: Exception | None = None
 try:
@@ -148,6 +150,8 @@ class VolumePointStage1Model(nn.Module):
         candidate_set_cfg: dict[str, Any] | nn.Module | None = None,
         anchor_sampler_cfg: dict[str, Any] | nn.Module | None = None,
         density_cube_cfg: dict[str, Any] | nn.Module | None = None,
+        anchor_to_candidate_cfg: dict[str, Any] | nn.Module | None = None,
+        sparse_refine_head_cfg: dict[str, Any] | nn.Module | None = None,
         anchor_class_conditioning_cfg: dict[str, Any] | None = None,
     ) -> None:
         """
@@ -162,6 +166,8 @@ class VolumePointStage1Model(nn.Module):
             - candidate_set_cfg: dict[str, Any] | nn.Module | None, sparse candidate set builder 配置; None 表示关闭 C 生成
             - anchor_sampler_cfg: dict[str, Any] | nn.Module | None, sparse P anchor sampler 配置; None 表示只生成 C
             - density_cube_cfg: dict[str, Any] | nn.Module | None, density cube encoder 配置; anchor sampler 启用时必填
+            - anchor_to_candidate_cfg: dict[str, Any] | nn.Module | None, P -> C 邻居搜索配置; None 表示关闭 refine
+            - sparse_refine_head_cfg: dict[str, Any] | nn.Module | None, C refined logits head 配置; None 表示关闭 refine
             - anchor_class_conditioning_cfg: dict[str, Any] | None, P 初始特征类别条件化配置; None 表示关闭
 
             - prior_prob: float | None, 单通道 sigmoid 正类先验概率
@@ -251,12 +257,24 @@ class VolumePointStage1Model(nn.Module):
             if (density_cube_cfg is None or isinstance(density_cube_cfg, nn.Module))
             else instantiate(density_cube_cfg)
         )
+        # nn.Module | None, P -> C KNN 边搜索模块
+        self.anchor_to_candidate = (
+            anchor_to_candidate_cfg
+            if (anchor_to_candidate_cfg is None or isinstance(anchor_to_candidate_cfg, nn.Module))
+            else instantiate(anchor_to_candidate_cfg)
+        )
+        # dict[str, Any] | nn.Module | None, 在通道信息确定后构造的 sparse refine head 配置
+        pending_sparse_refine_head_cfg = sparse_refine_head_cfg
         if self.anchor_sampler is not None and self.candidate_set_builder is None:
             raise ValueError("anchor_sampler 启用时必须同时启用 candidate_set_builder。")
         if self.anchor_sampler is not None and self.density_cube_encoder is None:
             raise ValueError("anchor_sampler 启用时必须同时配置 density_cube_encoder。")
         if self.anchor_sampler is None and self.density_cube_encoder is not None:
             raise ValueError("density_cube_encoder 只能在 anchor_sampler 启用时配置。")
+        if (self.anchor_to_candidate is None) != (pending_sparse_refine_head_cfg is None):
+            raise ValueError("anchor_to_candidate_cfg 与 sparse_refine_head_cfg 必须同时启用或同时关闭。")
+        if self.anchor_to_candidate is not None and (self.candidate_set_builder is None or self.anchor_sampler is None):
+            raise ValueError("P -> C refine 启用时必须同时启用 candidate_set_builder 与 anchor_sampler。")
         if self.anchor_sampler is not None:
             if hasattr(self.candidate_set_builder, "candidate_class_ids") and hasattr(self.anchor_sampler, "candidate_class_ids"):
                 if tuple(int(x) for x in self.candidate_set_builder.candidate_class_ids) != tuple(
@@ -330,6 +348,7 @@ class VolumePointStage1Model(nn.Module):
             dict.fromkeys(
                 tuple(str(feature_name) for feature_name in self.voxel_backbone.return_feature_keys)
                 + tuple(voxel_name for _, voxel_name in self.point_fusion_items)
+                + (("voxel_final",) if self.anchor_to_candidate is not None else ())
             )
         )
         self.point_feature_names_to_return = tuple(
@@ -428,6 +447,31 @@ class VolumePointStage1Model(nn.Module):
             self.atom_head_append_coord_mask = False
             self.atom_head = None
 
+
+        self.sparse_refine_head: nn.Module | None = None
+        if pending_sparse_refine_head_cfg is not None:
+            if self.atom_head is None:
+                raise ValueError("sparse_refine_head_cfg 启用时必须启用 atom head。")
+            if "voxel_final" not in self.voxel_backbone.feature_channels_by_name:
+                raise KeyError("sparse refine 固定要求 voxel backbone 导出 voxel_final。")
+            if not hasattr(self.voxel_backbone, "voxel_ligand_logit_dim"):
+                raise AttributeError("sparse refine 要求 voxel_backbone 暴露 voxel_ligand_logit_dim。")
+            if not hasattr(self.candidate_set_builder, "candidate_class_ids"):
+                raise AttributeError("sparse refine 要求 candidate_set_builder 暴露 candidate_class_ids。")
+            injected_head_kwargs = {
+                "logit_dim": int(self.voxel_backbone.voxel_ligand_logit_dim),
+                "C_voxel_backbone_dim": int(self.voxel_backbone.feature_channels_by_name["voxel_final"]),
+                "P_point_backbone_dim": int(self.point_backbone.feature_channels_by_name["point_feat"]),
+                "P_atom_head_dim": int(self.atom_head.pseudo_feature_dim),
+                "P_voxel_backbone_dim": int(self.voxel_backbone.feature_channels_by_name["voxel_final"]),
+                "candidate_class_ids": tuple(int(value) for value in self.candidate_set_builder.candidate_class_ids),
+            }
+            self.sparse_refine_head = (
+                pending_sparse_refine_head_cfg
+                if isinstance(pending_sparse_refine_head_cfg, nn.Module)
+                else instantiate(pending_sparse_refine_head_cfg, **injected_head_kwargs)
+            )
+
     def _build_point_fusion_module(
         self,
         fusion_input_dim: int,
@@ -507,6 +551,31 @@ class VolumePointStage1Model(nn.Module):
             device=point_coord_centered_world.device,
             dtype=point_coord_centered_world.dtype,
         ) + (0.5 * box_shape_xyz)
+
+    @staticmethod
+    def _gather_voxel_feature_at_zyx(
+        voxel_feat: torch.Tensor,
+        voxel_zyx: torch.Tensor,
+        point_batch_index: torch.Tensor,
+    ) -> torch.Tensor:
+        """
+        按离散 voxel center 坐标直接读取体素特征。
+
+        输入参数:
+            - voxel_feat: torch.Tensor, (B, C, D, H, W), 体素特征图
+            - voxel_zyx: torch.Tensor, (N, 3), 点来源 voxel 坐标, 轴顺序 z/y/x
+            - point_batch_index: torch.Tensor, (N,), 每个点所属 BOX 索引
+
+        输出:
+            - point_feat: torch.Tensor, (N, C), 点位置对应的体素特征
+        """
+        return voxel_feat[
+            point_batch_index,
+            :,
+            voxel_zyx[:, 0],
+            voxel_zyx[:, 1],
+            voxel_zyx[:, 2],
+        ].contiguous()
 
     def _condition_anchor_pseudo_feat(
         self,
@@ -1021,6 +1090,95 @@ class VolumePointStage1Model(nn.Module):
             atom_head_batch.get("atom_global_indices"), pseudo_layout
         )
 
+    def _run_sparse_refine_head(
+        self,
+        outputs: dict[str, Any],
+        voxel_output_dict: dict[str, Any],
+        point_batch: dict[str, Any],
+        pseudo_layout: PseudoAtomLayout | None,
+    ) -> None:
+        """
+        在 final atom head 后将 P 消息聚合回唯一候选 C 并输出 refined logits。
+
+        输入参数:
+            - outputs: dict[str, Any], final recycle 输出字典，将原地追加 sparse refine 字段
+            - voxel_output_dict: dict[str, Any], final voxel backbone 输出
+            - point_batch: dict[str, Any], final real/P mixed batch，提供 BOX 坐标字段
+            - pseudo_layout: PseudoAtomLayout | None, final mixed 布局
+
+        输出:
+            - None, 原地写入消息有效掩码与 `ligand_refine_logits_C`
+        """
+        if self.sparse_refine_head is None:
+            return
+        if self.anchor_to_candidate is None or pseudo_layout is None:
+            raise RuntimeError("sparse refine 启用时 final recycle 必须存在 P anchor mixed layout。")
+        if outputs.get("pseudo_feature") is None:
+            raise RuntimeError("sparse refine 必须在 atom head 输出 pseudo_feature 后执行。")
+        # torch.Tensor, (sumP, C_point), final mixed point_feat 中属于 P 的 backbone 特征
+        P_point_backbone_feat = extract_pseudo_tensor_from_mixed(outputs["fused_point_feat"], pseudo_layout)
+        # torch.Tensor, (sumP, C_pseudo), atom head 输出的 P pseudo_feature
+        P_atom_head_feat = outputs["pseudo_feature"]
+        # torch.Tensor, (B, C_voxel, D, H, W), final voxel backbone 导出的固定 voxel_final 特征图
+        voxel_final = voxel_output_dict["voxel_features"]["voxel_final"]
+        # dict[str, torch.Tensor], C voxel center 对应的 local/world/centered-world 坐标字典
+        candidate_coords = build_anchor_coordinates(
+            anchor_voxel_zyx=outputs["candidate_voxel_zyx"],
+            anchor_batch_index=outputs["candidate_batch_index"],
+            box_origin_world=point_batch["box_origin_world"],
+            voxel_size_world=point_batch["voxel_size_world"],
+            box_shape_zyx=point_batch["box_shape_zyx"],
+        )
+        # torch.Tensor, (sumC, 3), C voxel center 的 centered-world 坐标
+        candidate_coord_centered_world = candidate_coords["anchor_coord_centered_world"]
+        # torch.Tensor, (sumP, C_voxel), P 来源 voxel center 采样得到的 voxel_final 特征
+        P_voxel_backbone_feat = self._gather_voxel_feature_at_zyx(
+            voxel_feat=voxel_final,
+            voxel_zyx=outputs["anchor_voxel_zyx"],
+            point_batch_index=outputs["anchor_batch_index"],
+        )
+        # torch.Tensor, (sumC, C_voxel), C 来源 voxel center 采样得到的 voxel_final 特征
+        C_voxel_backbone_feat = self._gather_voxel_feature_at_zyx(
+            voxel_feat=voxel_final,
+            voxel_zyx=outputs["candidate_voxel_zyx"],
+            point_batch_index=outputs["candidate_batch_index"],
+        )
+        # torch.Tensor, (sumC, C_logits), 默认复用 candidate_set_builder 产出的 detached candidate logits
+        voxel_logits_C = outputs["candidate_logits"]
+        if not bool(getattr(self.sparse_refine_head, "detach_voxel_logits", True)):
+            # torch.Tensor, (B, C_logits, D, H, W), final voxel backbone 输出的带梯度 ligand logits
+            source_logits = voxel_output_dict["voxel_logits_ligand"]
+            # torch.Tensor, (sumC, 3), 唯一 C 的 voxel z/y/x 坐标
+            voxel_zyx = outputs["candidate_voxel_zyx"]
+            voxel_logits_C = source_logits[
+                outputs["candidate_batch_index"],
+                :,
+                voxel_zyx[:, 0],
+                voxel_zyx[:, 1],
+                voxel_zyx[:, 2],
+            ]
+        # dict[str, torch.Tensor], 每个 C 的 P 邻居索引、距离、相对坐标与有效掩码
+        neighbor_outputs = self.anchor_to_candidate(
+            candidate_coord_centered_world=candidate_coord_centered_world,
+            candidate_batch_index=outputs["candidate_batch_index"],
+            candidate_class=outputs["candidate_class"],
+            anchor_coord_centered_world=outputs["anchor_coord_centered_world"],
+            anchor_batch_index=outputs["anchor_batch_index"],
+            anchor_class=outputs["anchor_class"],
+        )
+        # dict[str, torch.Tensor], 稀疏消息有效掩码与 C 上 refined logits
+        refine_outputs = self.sparse_refine_head(
+            voxel_logits=voxel_logits_C,
+            C_voxel_backbone_feat=C_voxel_backbone_feat,
+            P_point_backbone_feat=P_point_backbone_feat,
+            P_atom_head_feat=P_atom_head_feat,
+            P_voxel_backbone_feat=P_voxel_backbone_feat,
+            anchor_class=outputs["anchor_class"],
+            **neighbor_outputs,
+        )
+        outputs.update(neighbor_outputs)
+        outputs.update(refine_outputs)
+
     def forward(self, batch: dict[str, Any]) -> dict[str, Any]:
         """
         执行 Stage1 前向, P anchor 准备点固定在最后一轮 recycle。
@@ -1076,8 +1234,8 @@ class VolumePointStage1Model(nn.Module):
 
             if is_final_recycle:
                 if pseudo_layout is not None:
-                    # real_batch 用来提供真实原子的位置与监督信息
-                    # real_point_output_dict 用来提供真实原子的特征等中间结果
+                    # dict[str, Any], 仅包含真实原子监督字段的 real-only batch
+                    # dict[str, Any], 仅包含真实原子 point backbone 中间输出的结果字典
                     real_batch, _real_point_feat, _real_point_state, real_point_output_dict = extract_real_point_output(
                         mixed_batch=point_batch,
                         fused_point_feat=point_output_dict["point_feat"],
@@ -1109,6 +1267,12 @@ class VolumePointStage1Model(nn.Module):
                 }
 
         self._run_atom_head(outputs, atom_head_batch=last_atom_head_batch, pseudo_layout=last_pseudo_layout)
+        self._run_sparse_refine_head(
+            outputs,
+            voxel_output_dict=outputs["voxel_outputs"],
+            point_batch=last_atom_head_batch,
+            pseudo_layout=last_pseudo_layout,
+        )
         outputs["recycle_passes_used"] = recycle_steps
         return outputs
 

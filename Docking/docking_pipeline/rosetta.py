@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 import subprocess
 import time
 from pathlib import Path
@@ -215,7 +216,7 @@ def run_rosetta_job(paths: ServerPaths, job: DockingJob, map_path: Path, resolut
     stderr_log = log_dir / f"dock_{job.site.site_id}_{job.receptor.name}_{job.ligand.label}.stderr.log"
     command = rosetta_command(paths, job, map_path, resolution, options)
     start = time.time()
-    process = subprocess.run(command, cwd=job.output_dir.parents[2], text=True, capture_output=True)
+    process = subprocess.run(command, cwd=job.output_dir, text=True, capture_output=True)
     seconds = time.time() - start
     stdout_log.write_text(process.stdout, encoding="utf-8", errors="replace")
     stderr_log.write_text(process.stderr, encoding="utf-8", errors="replace")
@@ -235,6 +236,35 @@ def run_rosetta_job(paths: ServerPaths, job: DockingJob, map_path: Path, resolut
         score_rows=score_rows,
         decoy_summary=decoy_summary,
     )
+
+
+def run_rosetta_jobs(
+    paths: ServerPaths,
+    jobs: list[DockingJob],
+    map_path: Path,
+    resolution: float,
+    options: RosettaOptions,
+    rosetta_jobs: int,
+) -> list[DockingResult]:
+    """
+    在一个样本内并行执行相互独立的 Rosetta docking jobs。
+
+    输入参数:
+        - paths: ServerPaths, 服务器路径配置
+        - jobs: list[DockingJob], 已准备好输入且输出路径互不冲突的 Rosetta jobs
+        - map_path: Path, 当前样本真实 EMDB map
+        - resolution: float, 当前样本 map 分辨率
+        - options: RosettaOptions, Rosetta 参数
+        - rosetta_jobs: int, 同一样本内允许同时运行的 Rosetta 子进程数; 应不超过申请 CPU 数
+
+    输出:
+        - results: list[DockingResult], 与 `jobs` 输入顺序一致的执行结果
+    """
+    if rosetta_jobs <= 1 or len(jobs) <= 1:
+        return [run_rosetta_job(paths, job, map_path, resolution, options) for job in jobs]
+    max_workers = min(rosetta_jobs, len(jobs))
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        return list(executor.map(lambda job: run_rosetta_job(paths, job, map_path, resolution, options), jobs))
 
 
 def _pdb_coords(lines: list[str]) -> np.ndarray:

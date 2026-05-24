@@ -25,7 +25,7 @@ from .rosetta import (
     build_docking_job,
     make_complex_pdb,
     run_molfile_to_params,
-    run_rosetta_job,
+    run_rosetta_jobs,
     translate_ligand_to_site,
     write_galiganddock_xml,
 )
@@ -71,6 +71,7 @@ def run_sample(
     use_virtual_nodes: bool,
     dry_run: bool,
     max_sites_per_sample: int | None = None,
+    rosetta_jobs: int = 1,
 ) -> dict[str, object]:
     """
     运行一个样本的可审计 docking pipeline。
@@ -85,6 +86,7 @@ def run_sample(
         - use_virtual_nodes: bool, 是否使用虚拟节点 assignment
         - dry_run: bool, 是否只生成输入和审计, 不执行 Rosetta
         - max_sites_per_sample: int 或 None, 每个样本最多进入 docking 的 site 数; None 表示不截断
+        - rosetta_jobs: int, 样本内部并行运行的 Rosetta 子进程数; 应不超过该任务申请的 CPU 数
 
     输出:
         - summary: dict[str, object], 包含样本、输出目录、job 数、成功数、后处理和匹配摘要
@@ -144,10 +146,11 @@ def run_sample(
                 make_complex_pdb(receptor.pdb_path, translated, job.complex_pdb)
                 jobs.append(job)
 
-    results = [] if dry_run else [
-        run_rosetta_job(paths, job, Path(meta["map_path"]), resolution, rosetta_options)
-        for job in jobs
-    ]
+    results = (
+        []
+        if dry_run
+        else run_rosetta_jobs(paths, jobs, Path(meta["map_path"]), resolution, rosetta_options, rosetta_jobs)
+    )
     shape_scores = _shape_scores(postprocess.label, origin, voxel_size, selected_sites, ligands)
     assignments = [] if dry_run else _assign(results, shape_scores, matching_options, use_virtual_nodes)
     summary = _sample_summary(

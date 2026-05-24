@@ -1,0 +1,9 @@
+# @package _global_
+# ============================================================
+# P -> C 邻居搜索关闭配置
+# 此文件写入 cfg.model.backbone.anchor_to_candidate_cfg=null。
+#   → VolumePointStage1Model.__init__: 不构造 anchor_to_candidate 模块。
+# ============================================================
+model:
+  backbone:
+    anchor_to_candidate_cfg: null  # null, 关闭 P -> C 稀疏消息边构造

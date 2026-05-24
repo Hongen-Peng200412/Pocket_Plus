@@ -2,7 +2,7 @@
 # ============================================================
 # P anchor sampler: weighted_fps
 # 此文件写入 cfg.model.backbone.anchor_sampler_cfg。
-# 从候选 C 中按 BOX/类别采样 P anchors, 类别与预算来自 model/task preset。
+# 从已唯一化的候选 C 中按 BOX/路由类别采样 P anchors, 类别与预算来自 model/task preset。
 #   → VolumePointStage1Model.__init__: instantiate(anchor_sampler_cfg) 构造 SparseAnchorSampler。
 #   → VolumePointStage1Model._prepare_pseudo_batch(): anchor_sampler(candidate_outputs, batch) 生成 P 坐标与 metadata。
 #   → SparseAnchorSampler._sample_weighted_fps_one_group(): 按 min_dist * prob**weight_power 串行采样。
@@ -13,10 +13,9 @@ model:
       # _target_: str, P anchor 采样器类全称; Hydra 据此实例化 nn.Module
       _target_: src.model.sparse_refine.anchor_sampler.SparseAnchorSampler
       mode: weighted_fps                                                          # str, 概率加权 FPS
-      candidate_class_ids: ${model.backbone.sparse_refine_task.candidate_class_ids}       # list[int], 候选前景类别 ID; 必须与 candidate_set_cfg 一致
-      max_anchors_per_class: ${model.backbone.sparse_refine_task.max_anchors_per_class} # list[int], 每 BOX/类别 P anchor 上限
+      candidate_class_ids: ${sparse_refine_task.candidate_class_ids}       # list[int], 候选前景类别 ID; 必须与 candidate_set_cfg 一致
+      max_anchors_per_class: ${sparse_refine_task.max_anchors_per_class} # list[int], 每 BOX/类别 P anchor 上限
       weight_power: 1.0          # float, 概率权重指数; 0 表示只按距离项执行 FPS
       chunk_size: 8192           # int, 距离更新 chunk 大小; 避免构造 C×P 全矩阵
       nms_radius_voxel: 2        # int, topk_nms 局部最大池化半径; weighted_fps 主路径不使用
       random_start: false        # bool, unweighted_fps 的起点随机开关; weighted_fps 主路径不使用
-      deduplicate_candidates: false # bool, P 层是否先按同 BOX/voxel 去重 C; false 允许同 voxel 多类别分别生成 P

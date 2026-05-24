@@ -1,0 +1,9 @@
+# @package _global_
+# ============================================================
+# C refined logits head 关闭配置
+# 此文件写入 cfg.model.backbone.sparse_refine_head_cfg=null。
+#   → VolumePointStage1Model.__init__: 不构造 sparse_refine_head。
+# ============================================================
+model:
+  backbone:
+    sparse_refine_head_cfg: null  # null, 关闭 P 消息聚合与 C refined logits 输出

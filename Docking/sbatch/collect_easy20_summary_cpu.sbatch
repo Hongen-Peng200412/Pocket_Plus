@@ -6,7 +6,7 @@
 #SBATCH -J CollectE20
 #SBATCH -N 1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=2
+#SBATCH --cpus-per-task=1
 
 RUN_ID="${RUN_ID:?RUN_ID is required}"
 MODE="${MODE:?MODE is required: oracle or realistic}"

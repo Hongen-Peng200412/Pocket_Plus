@@ -29,7 +29,7 @@ from docking_pipeline.rosetta import (
     build_docking_job,
     make_complex_pdb,
     run_molfile_to_params,
-    run_rosetta_job,
+    run_rosetta_jobs,
     translate_ligand_to_site,
     write_galiganddock_xml,
 )
@@ -58,6 +58,7 @@ def main() -> None:
     parser.add_argument("--offset-seeds", type=int, default=3, help="每个半径的偏移 seed 数")
     parser.add_argument("--nstruct", type=int, default=5, help="每个 Rosetta job 的 decoy 数")
     parser.add_argument("--jobs", type=int, default=1, help="样本级 joblib 并发数")
+    parser.add_argument("--rosetta-jobs", type=int, default=1, help="每个样本内部同时运行的 Rosetta 子进程数")
     parser.add_argument("--receptors", default="true_receptor,cryoatom_receptor", help="逗号分隔 receptor 来源")
     parser.add_argument("--shard-id", help="array 分片 ID; 设置后只写 shard summary, 避免并发覆盖总表")
     parser.add_argument("--plain-assignment", action="store_true", help="Hungarian 任务使用普通矩形匹配, 默认使用虚拟节点")
@@ -80,6 +81,7 @@ def main() -> None:
         "offset_seeds": args.offset_seeds,
         "nstruct": args.nstruct,
         "jobs": args.jobs,
+        "rosetta_jobs": args.rosetta_jobs,
         "receptors": receptor_names,
         "dry_run": args.dry_run,
         "plain_assignment": args.plain_assignment,
@@ -111,6 +113,7 @@ def main() -> None:
             "receptor_names": receptor_names,
             "use_virtual_nodes": not args.plain_assignment,
             "dry_run": args.dry_run,
+            "rosetta_jobs": args.rosetta_jobs,
         }
         for sample_id in sample_ids
     ]
@@ -128,6 +131,8 @@ def main() -> None:
     summary_name = "batch_summary.json" if not args.shard_id else f"{args.shard_id}_summary.json"
     write_json(tables_dir / summary_name, batch_summary)
     print(json.dumps(batch_summary, ensure_ascii=False, indent=2))
+    if batch_summary["num_failed"] > 0:
+        raise SystemExit(1)
 
 
 def run_one(payload: dict[str, Any]) -> dict[str, Any]:
@@ -164,6 +169,7 @@ def run_oracle_sample(
     receptor_names: list[str],
     use_virtual_nodes: bool,
     dry_run: bool,
+    rosetta_jobs: int,
 ) -> dict[str, Any]:
     """
     运行单样本四类 oracle/easy docking 实验。
@@ -180,6 +186,7 @@ def run_oracle_sample(
         - receptor_names: list[str], receptor 来源白名单
         - use_virtual_nodes: bool, Hungarian 任务是否使用虚拟节点
         - dry_run: bool, 是否只生成输入
+        - rosetta_jobs: int, 样本内部同时运行的 Rosetta 子进程数
 
     输出:
         - summary: dict[str, Any], 样本级汇总
@@ -198,10 +205,10 @@ def run_oracle_sample(
         write_json(sample_dir / "audit" / "summary.json", summary)
         return summary
 
-    variant_summaries: list[dict[str, Any]] = []
+    prepared_variants: list[dict[str, Any]] = []
     for variant in variants:
-        variant_summaries.append(
-            run_variant(
+        prepared_variants.append(
+            prepare_variant(
                 pdb_id,
                 paths,
                 meta,
@@ -210,12 +217,24 @@ def run_oracle_sample(
                 ligands,
                 resolution,
                 rosetta_options,
-                matching_options,
                 receptor_names,
-                use_virtual_nodes,
-                dry_run,
             )
         )
+    all_jobs = [job for prepared in prepared_variants for job in prepared["jobs"]]
+    all_results = (
+        []
+        if dry_run
+        else run_rosetta_jobs(paths, all_jobs, Path(meta["map_path"]), resolution, rosetta_options, rosetta_jobs)
+    )
+    variant_summaries: list[dict[str, Any]] = []
+    result_index = 0
+    for prepared in prepared_variants:
+        num_jobs = len(prepared["jobs"])
+        results = [] if dry_run else all_results[result_index : result_index + num_jobs]
+        variant_summaries.append(
+            summarize_variant(prepared, results, matching_options, use_virtual_nodes, dry_run)
+        )
+        result_index += num_jobs
     summary = {
         "pdb_id": pdb_id,
         "status": "ok",
@@ -236,7 +255,7 @@ def run_oracle_sample(
     return summary
 
 
-def run_variant(
+def prepare_variant(
     pdb_id: str,
     paths: ServerPaths,
     meta: dict[str, Any],
@@ -245,19 +264,17 @@ def run_variant(
     ligands: list[LigandCandidate],
     resolution: float,
     rosetta_options: RosettaOptions,
-    matching_options: MatchingOptions,
     receptor_names: list[str],
-    use_virtual_nodes: bool,
-    dry_run: bool,
 ) -> dict[str, Any]:
     """
-    运行一个 task/variant 的 Rosetta job 矩阵。
+    准备一个 task/variant 的输入与 Rosetta job 矩阵。
 
     输入参数:
         - variant: dict[str, Any], 包含 task、variant_id、sites、mode 等字段
+        - receptor_names: list[str], 当前 variant 启用的 receptor 来源
 
     输出:
-        - summary: dict[str, Any], variant 级摘要
+        - prepared: dict[str, Any], 包含 `variant_dir`、原 `variant` 与该 variant 的 `jobs`
     """
     variant_dir = sample_dir / "variants" / str(variant["task"]) / str(variant["variant_id"])
     for sub in ("audit", "inputs/ligands", "inputs/true_receptor", "inputs/cryoatom_receptor", "inputs/complexes", "params", "xml", "logs", "outputs"):
@@ -282,7 +299,32 @@ def run_variant(
                 job = build_docking_job(pdb_id, site, ligand, receptor, variant_dir)
                 make_complex_pdb(receptor.pdb_path, translated, job.complex_pdb)
                 jobs.append(job)
-    results = [] if dry_run else [run_rosetta_job(paths, job, Path(meta["map_path"]), resolution, rosetta_options) for job in jobs]
+    return {"variant": variant, "variant_dir": variant_dir, "jobs": jobs}
+
+
+def summarize_variant(
+    prepared: dict[str, Any],
+    results: list[DockingResult],
+    matching_options: MatchingOptions,
+    use_virtual_nodes: bool,
+    dry_run: bool,
+) -> dict[str, Any]:
+    """
+    对已执行完成的 variant 结果做 assignment 与审计落盘。
+
+    输入参数:
+        - prepared: dict[str, Any], `prepare_variant` 返回的 variant 与 job 路径信息
+        - results: list[DockingResult], 当前 variant 的 Rosetta 结果
+        - matching_options: MatchingOptions, assignment 参数
+        - use_virtual_nodes: bool, Hungarian 任务是否使用虚拟节点
+        - dry_run: bool, 是否只生成输入
+
+    输出:
+        - summary: dict[str, Any], variant 级摘要
+    """
+    variant = prepared["variant"]
+    variant_dir = prepared["variant_dir"]
+    jobs = prepared["jobs"]
     assignments = [] if dry_run or variant["mode"] == "identity" else assign_variant(results, matching_options, use_virtual_nodes)
     summary = {
         "task": variant["task"],

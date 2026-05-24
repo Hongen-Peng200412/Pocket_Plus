@@ -134,10 +134,6 @@ realistic 输出：
 - 2026-05-23：最终 collector `283282` 的样本结果读取 `samples/*/audit/summary.json`，因此同一个样本的覆盖输出只计一次；失败验证 `283182` 留下的 shard summary 只增加审计字段 `num_shards`，不会把 `7v19` 重复算入 jobs、流程跑通率或后续评价表。
 - 2026-05-24T12:02+08:00：oracle 并行覆盖与 collector 均已完成。`283183` (`7v19`, 24 CPU) wall time 为 `10:29:41`，`283281` (`7ut7`, 16 CPU) wall time 为 `04:50:59`，`283282` 已写出完整 easy20 `tables/batch_summary.json`。
 - 2026-05-24T12:02+08:00：realistic `281985` 已完整完成 12/20 个样本、636/636 个 Rosetta jobs 流程跑通；尚有 8 个串行样本未完成，collector `281986` 仍等待依赖。
-- 2026-05-24T13:25+08:00：新增 oracle 专用严格 evaluator 并完成修复前即时评价 job `284650`；它按真实 site occurrence 判断 Hungarian 是否选对，并将真实 pair pose 上限与严格选中 pose 指标分开。
-- 2026-05-24T13:25+08:00：诊断确认 `6bk8` 的 true receptor 输入含 `1175` 个 `UNK` 原子，Rosetta 无法为 `pdb_UNK` 计算 RamaPrePro；过滤 `UNK` 的 smoke job `284651` 为 `2/2` 跑通。已提交原 run 内 `6bk8` 全量覆盖 `284663`、重汇总 `284664`、最终严格评价 `284665`。
-- 2026-05-24T13:24+08:00：realistic 状态刷新时 `6bk8` 已完成，`8vcj` 接近尾部，因此只覆盖六个明显长尾样本：`8bly/8ut3/8wis/8ca3/7z7s/8xh9`，对应新 jobs `284652..284657`，新 collector 为 `284658`。
-- 2026-05-24T13:27+08:00：运行健康度复查：oracle `284663` 在 `00:06:38` wall time 累计 `00:56:12` CPU、stderr 为空；六个 realistic 覆盖 jobs 均仍 RUNNING 且 stderr 为空，realistic 当前保留/完成的样本 summary 数为 `13/20`。
 
 ## 结果与分析
 
@@ -315,39 +311,3 @@ realistic 当前仍按每样本 1 CPU 串行运行。通过样本准备阶段已
 | `8xh9` | 2160 | 161 | 1999 | 183.8 小时 | 216.9 小时 |
 
 由于这些样本并行运行但各自串行处理内部 jobs，总完成时间由 `8ca3` 主导：在不改变运行方式的前提下，从本次检查起仍约需 `186` 小时（P75，约 7.8 天）到 `220` 小时（P90，约 9.2 天）。因此 realistic 的下一项调度动作应是评估如何将未完成尾部迁移到已经在 oracle 中验证有效的样本内并行执行方式，而不是静候串行 collector。
-
-### 2026-05-24 修复前严格评价诊断信号
-
-为不等待 `6bk8` 修复而延迟科研判断，已对修复前的完整 oracle 产物运行专用严格 evaluator。该表只作为即时诊断基线；最终结果应读取 `284665` 在 `6bk8` 覆盖后的输出。
-
-| 指标 | 修复前即时结果 | 定义 |
-| --- | ---: | --- |
-| 流程跑通率 | 5739 / 5800 = 98.95% | Rosetta job 是否有可解析输出 |
-| 真实 pair pose RMSD <= 2 Å | 5 / 2200 = 0.23% | 不考虑 Hungarian 是否选中，只查看真实 site-ligand pair 且 RMSD 可靠的 pose |
-| 真实 pair pose RMSD <= 5 Å | 449 / 2200 = 20.41% | 同上，阈值改为 5 Å |
-| 严格选中 pose RMSD <= 2 Å | 5 / 2240 = 0.22% | identity 固定真实 ligand；Hungarian 必须选对 occurrence 且 pose RMSD 合格 |
-| 严格选中 pose RMSD <= 5 Å | 319 / 2240 = 14.24% | 同上，阈值改为 5 Å |
-| Hungarian occurrence accuracy | 562 / 1120 = 50.18% | 所选 `(site, ligand occurrence)` 是否等于该真实 site 对应 ligand |
-| 真实 pair top-1 | 42.95% | 真实 ligand 在同一 site 的候选 cost 排名是否第一 |
-| 真实 pair top-3 | 80.27% | 真实 ligand 是否进入 cost 最低前三 |
-
-这个结果直接否定了“只要真实中心足够好，当前下游就已经基本成功”的乐观假设：即使 identity 已知，5 Å 以内的真实 pair pose 也只有约五分之一；而 Hungarian 选择又将严格 5 Å 成功进一步压低到约七分之一。下一轮优化至少需要同时研究 Rosetta pose 质量和 matching cost，而不能只调前置网络中心。
-
-### `6bk8` 局部修复与 realistic 迁移动作
-
-`6bk8` 的主要可修故障不是一个抽象的随机崩溃：true receptor 转换文件带入了 `UNK` polymer residue，而 Rosetta 当前 scorefunction 没有该 residue 的主链打分表。代码现已在 receptor 转换时排除 `UNK` 并在跳过发生时断开主链。smoke 验证通过后，`284663 -> 284664 -> 284665` 将自动生成覆盖后的权威 oracle summary 与最终严格评价。
-
-realistic 的六个长尾覆盖任务采用样本内并行，其 CPU 分配为：
-
-| 样本 | 新 job | CPU / `rosetta_jobs` |
-| --- | ---: | ---: |
-| `8bly` | `284652` | 4 |
-| `8ut3` | `284653` | 9 |
-| `8wis` | `284654` | 11 |
-| `8ca3` | `284655` | 14 |
-| `7z7s` | `284656` | 13 |
-| `8xh9` | `284657` | 14 |
-
-六项共申请 65 CPU，保留 `8vcj` 的 1 CPU 原任务，并为 `6bk8` 24 CPU 覆盖和 evaluation 留出边界内资源。早期监视中，`284653` 在约 5 分钟墙钟内累计 CPU 约 38 分钟，`284654` 约 46 分钟，说明 realistic 迁移也实际调用了样本内部并行执行层。
-
-截至 2026-05-24 13:27+08:00，这一迁移仍保持健康：`284653/284654` 在 `00:12:50` 墙钟时累计 CPU 分别为 `01:42:00/01:58:02`，且六个覆盖任务没有非空 stderr。Oracle `6bk8` 覆盖同样已表现出实际多核活动，但其最终流程跑通率和严格 RMSD 必须等 `284664/284665` 完成后填写；本节仅记录执行反馈，不替代最终结论。

@@ -22,6 +22,8 @@ defaults:
   - model/sparse_refine/candidate_set: none    # sparse candidate set C(默认关闭)
   - model/sparse_refine/anchor_sampler: none   # sparse P anchor sampler(默认关闭)
   - model/sparse_refine/density_cube: none     # P anchor density cube encoder(默认关闭)
+  - model/sparse_refine/anchor_to_candidate: none  # P -> C KNN 消息边(默认关闭)
+  - model/sparse_refine/sparse_refine_head: none   # C refined logits head(默认关闭)
   - model/sparse_refine/anchor_class_conditioning: none  # P 来源类别条件化(默认关闭)
   - model/embed_head: passthrough              # embed head(默认透传)
 

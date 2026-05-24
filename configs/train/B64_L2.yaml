@@ -1,5 +1,0 @@
-defaults:
-  - B36_L2
-  - _self_
-
-global_batch_size: 64

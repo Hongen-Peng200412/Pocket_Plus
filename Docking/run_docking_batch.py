@@ -27,6 +27,7 @@ def main() -> None:
     parser.add_argument("--sample-list", help="逗号分隔样本 ID, 或包含样本 ID 的文本文件; 不填则自动发现")
     parser.add_argument("--max-samples", type=int, help="只运行前 N 个样本, 用于小规模验证")
     parser.add_argument("--jobs", type=int, default=1, help="joblib 样本级并发数; 建议不超过 sbatch CPU 核数")
+    parser.add_argument("--rosetta-jobs", type=int, default=1, help="每个样本内部同时运行的 Rosetta 子进程数")
     parser.add_argument("--nstruct", type=int, default=2, help="每个 Rosetta job 生成的 decoy 数")
     parser.add_argument("--min-voxels", type=int, default=30, help="instance 最小体素数过滤阈值")
     parser.add_argument("--max-sites-per-sample", type=int, help="每个样本最多进入 docking 的高置信 site 数")
@@ -70,6 +71,7 @@ def main() -> None:
         "sample_count": len(sample_ids),
         "nstruct": args.nstruct,
         "jobs": args.jobs,
+        "rosetta_jobs": args.rosetta_jobs,
         "dry_run": args.dry_run,
         "plain_assignment": args.plain_assignment,
         "shard_id": args.shard_id,
@@ -91,6 +93,7 @@ def main() -> None:
                 "use_virtual_nodes": not args.plain_assignment,
                 "dry_run": args.dry_run,
                 "max_sites_per_sample": args.max_sites_per_sample,
+                "rosetta_jobs": args.rosetta_jobs,
             }
             for pdb_id in sample_ids
         ],
@@ -109,6 +112,8 @@ def main() -> None:
     summary_name = "batch_summary.json" if not args.shard_id else f"{args.shard_id}_summary.json"
     write_json(tables_dir / summary_name, batch_summary)
     print(f"写入批处理汇总: {tables_dir / summary_name}")
+    if batch_summary["num_failed"] > 0:
+        raise SystemExit(1)
 
 
 def run_one(payload: dict[str, Any]) -> dict[str, Any]:

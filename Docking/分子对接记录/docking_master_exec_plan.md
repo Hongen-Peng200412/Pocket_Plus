@@ -31,6 +31,23 @@ This ExecPlan is a living document. The sections `Progress`, `Surprises & Discov
 - [x] (2026-05-21 00:55+08:00) 在本地 evaluation 代码中补齐前置 center Hungarian precision/recall，保留原 loose hit 口径，并通过 `python -m compileall Docking` 与合成样例验证。
 - [x] (2026-05-21) 用户指定下一大轮方向：统计两套 easy20，并在 `easy20_by_nk` 上做四类 oracle docking，在 `easy20_by_instance_f1` 上做 realistic docking。
 - [x] (2026-05-21) 新建 `oracle_easy20_exec_plan.md` 与 `oracle_easy20_experiment.md`，实现 easy20 prescan、oracle runner 和三张 CPU sbatch 脚本。
+- [x] (2026-05-23) 发现旧 oracle array 每个 task 申请 8 CPU 但 Rosetta 实际基本串行单核运行；已建立逐 job 时间预算并把该问题记录为需修复的性能 bug。
+- [x] (2026-05-23) 实现通用样本内部 Rosetta 并行执行层，oracle 与 realistic 均可通过 `--rosetta-jobs` 对所有独立 ligand-site-receptor jobs 并发运行；并发日志目录已隔离。
+- [x] (2026-05-23) 首次 `7v19` 24 核覆盖 job `283182` 暴露旧 partial 参数文件不可直接覆盖与样本失败未传递 Slurm 退出码两项恢复问题；已修复批处理退出码逻辑。
+- [x] (2026-05-23) 清理已授权覆盖的 `7v19` 单一样本旧输出后重提 24 核全量覆盖 job `283183`；该 job 已越过原参数准备冲突并在运行。
+- [x] (2026-05-23) `283183` 的首轮监视已看到 wall `1:37` 对应累计 CPU `17:28`（约 `10.8x`），证明样本内部并行实际生效。
+- [x] (2026-05-23) `283183` 在 wall `6:26` 对应累计 CPU `2:12:50`（约 `20.6x`），无 stderr 或样本错误且节点内存余量充足；据此取消旧 `7ut7` 串行 task 与旧 collector，提交 16 核覆盖 job `283281` 与最终 easy20 collector `283282`。
+- [x] (2026-05-23) 输出层验收完成：`283183` 已写出首批 24 个 scorefile 且约 `21.7x` CPU/墙钟，`283281` 启动后约 `9.5x` CPU/墙钟；样本内部并行可作为后续 oracle/realistic 调度主线。
+- [x] (2026-05-24 12:02+08:00) oracle 长尾覆盖与最终汇总结束：`283183`（`7v19`, 24 CPU）完成于 `10:29:41`，`283281`（`7ut7`, 16 CPU）完成于 `04:50:59`，`283282` 已生成完整 easy20 `batch_summary.json`。
+- [x] (2026-05-24 12:02+08:00) 读取完整 oracle 汇总：20/20 样本有 summary，5800 个 Rosetta jobs 中 5739 个流程跑通；61 个失败全部集中于 `6bk8`。400 个 assignment 均记录 `solver=dp_virtual`；当前表尚未计算 RMSD。
+- [x] (2026-05-24 12:02+08:00) 检查 realistic `281985/281986`：12/20 样本完整完成且 636/636 jobs 流程跑通，8 个 1-CPU 串行长尾仍运行；按串行 P75/P90，决定收尾的尾部仍约需 186/220 小时。
+- [x] (2026-05-24 13:05+08:00) 用户授权增量严格评价、realistic 尾部同 run 覆盖，以及 `6bk8` 若能短时修复则在原 oracle run 下覆盖重跑并自动刷新最终质量指标。
+- [x] (2026-05-24 13:18+08:00) 新增 oracle 专用严格 evaluator 与 sbatch 入口；修复 receptor 转换对 `UNK` polymer residue 的处理；新增 realistic 单样本内部并行 sbatch 入口并使用固定同步脚本同步。
+- [x] (2026-05-24 13:25+08:00) 当前 oracle 初始严格评价 job `284650` 完成：严格选中 pose RMSD `<=2/3/5 Å` 为 `5/67/319`（分母 2240），Hungarian occurrence 级匹配为 `562/1120`；该结果含修复前 `6bk8`，用于即时诊断而非最终表。
+- [x] (2026-05-24 13:25+08:00) `6bk8` 修复 smoke job `284651` 完成：过滤 `UNK` 后原稳定失败的 `true_center_identity + true_receptor` 路径为 `2/2` jobs 流程跑通；已提交权威覆盖链 `284663 -> 284664 -> 284665`。
+- [x] (2026-05-24 13:24+08:00) realistic 已完成的 `6bk8` 与接近完成的 `8vcj` 保持不动；仅覆盖 6 个仍明显长尾样本，提交 `284652..284657` 与新 collector `284658`，并观测到新任务确实使用样本内多核。
+- [x] (2026-05-24 13:27+08:00) heartbeat 复查运行健康度：`284663` 在墙钟 `00:06:38` 时累计 CPU `00:56:12` 且 stderr 为空；六个 realistic 覆盖任务与保留的 `8vcj` 均仍运行、覆盖任务 stderr 为空，realistic 当前已有 `13/20` 个样本 summary。
+- [ ] (2026-05-24) 等待 `284663/284664/284665` 与 `284652..284658` 反馈；将最终 oracle 严格结果写入 `oracle_easy20_readable.md`，并对 realistic 完整产物运行同口径评价。
 - [ ] 后续需要同步 `evaluation_cpu.sbatch` 到服务器；若 `268268` 仍用 48 CPU，evaluation/feature/ML sbatch 任务最多再用 48 CPU，总 CPU 不超过 96。
 
 ## Surprises & Discoveries
@@ -70,6 +87,39 @@ This ExecPlan is a living document. The sections `Progress`, `Surprises & Discov
 
 - Observation: 当前 Rosetta 初始中心语义适合做 true-center / offset-center oracle 实验。
   Evidence: `Docking/docking_pipeline/rosetta.py` 的 `translate_ligand_to_site()` 把 ligand PDB 的原子坐标均值平移到 `site.center_world_xyz`。
+
+- Observation: CPU 资源申请必须与 runner 的真实并行层绑定，不能仅靠 Slurm 申请更多核数。
+  Evidence: 旧 oracle task 的 `TotalCPU` 约等于 wall time，而非申请的 8 倍；新实现新增 `run_rosetta_jobs(..., rosetta_jobs)` 并让 oracle/realistic 入口显式传入并行数。
+
+- Observation: 长尾覆盖重跑需要显式处理 partial 输出幂等性和批处理退出码。
+  Evidence: `7v19` 验证 job `283182` 因已有 params 文件在准备阶段失败，stdout 已写 `num_failed=1` 但 Slurm 仍显示 `COMPLETED ExitCode=0:0`；两个 batch 入口现已改为失败摘要写完后返回非零。
+
+- Observation: 公共样本内部并行执行层已从代码承诺变为真实服务器证据。
+  Evidence: 清理并重提的 `7v19` job `283183` 在 wall time `1:37` 时已有累计 CPU `17:28`，而旧 8 核任务累计 CPU 约等于 wall time；说明 Rosetta 子进程并发确实工作。
+
+- Observation: 样本内部并行已经使完整 `easy20` oracle 能够收尾，但该完成仅表示产物完整与 Rosetta job 大多跑通。
+  Evidence: `283183` 完成于 `10:29:41`，`283281` 完成于 `04:50:59`，collector `283282` 完成；最终 `batch_summary.json` 为 `num_samples=20`、`num_jobs=5800`、`num_success=5739`、`num_failed=0`、`num_skipped=0`。该 summary 不含 pose RMSD 指标。
+
+- Observation: 完整 oracle 的 Rosetta job 失败高度集中，当前首先应作为结构兼容性缺陷排查，而非总体 docking 结论。
+  Evidence: 61 个失败均属于 `6bk8`，其中 true receptor 为 60/2900 个失败、cryoatom receptor 为 1/2900 个失败；代表性 stderr 报 `Stub::from_four_points()` 无法从重合点构造向量，继而触发 zero-length normalized vector 内部错误。
+
+- Observation: `runtime_budget_v1` 仍是并行改造前 18 个完整样本的串行单核基线，不应直接用新并行覆盖产物覆写为同一统计总体。
+  Evidence: 当前表记录 `completed_sample_count=18`、成功 job P75/P90 为 `331.1/390.6 s`；最终新增的 `7ut7` 与 `7v19` 是 16/24 CPU 样本内并行输出，其单 job wall time 与串行基线不是同一执行条件。
+
+- Observation: realistic 的 1-CPU 修复消除了空申请 CPU，却没有消除样本级串行长尾。
+  Evidence: `281985` 已完成 12/20 样本且 636/636 jobs 流程跑通；仍运行的 `8ca3`、`8xh9`、`7z7s` 分别剩余约 2027、1999、1804 个串行 Rosetta jobs，按串行 P75/P90 预算，最慢尾部仍需约 `186/220` 小时。
+
+- Observation: `6bk8` 的主失败机制已经从怀疑归因变为可复现且可修的 receptor 转换缺陷。
+  Evidence: 旧 `true_receptor` PDB 中含 `1175` 个 `UNK` 原子，`cryoatom_receptor` 不含 `UNK`；61 个失败中 60 个发生在 `true_receptor`，stderr 明确报 `No mainchain score table for residue type pdb_UNK exists`。过滤 `UNK` 后 smoke job `284651` 的原失败路径 `2/2` 跑通。
+
+- Observation: oracle 初始严格评价已证明“给真实中心”仍不足以产生高质量 pose。
+  Evidence: `284650` 读取修复前 oracle 完整表并输出：真实 pair 已运行时可靠 RMSD `<=2/3/5 Å` 为 `5/73/449`（可靠分母 2200）；严格选中后 `<=2/3/5 Å` 为 `5/67/319`（全体分母 2240）；Hungarian exact occurrence accuracy 为 `562/1120 = 50.18%`。
+
+- Observation: realistic 尾部迁移后，多核能力在真实流程上也获得了立即证据。
+  Evidence: `284653` 在墙钟约 `5:10` 时累计 CPU `38:09`，`284654` 为 `45:58`，明显高于串行 `1x`；迁移仅覆盖 `8bly, 8ut3, 8wis, 8ca3, 7z7s, 8xh9` 六个未完成长尾样本。
+
+- Observation: 修复覆盖链和 realistic 迁移在首次 heartbeat 时保持健康运行，尚未出现需要改变实验定义的新故障。
+  Evidence: `284663` 墙钟 `00:06:38`、累计 CPU `00:56:12`，约 `8.5x` 活跃 CPU/墙钟且 stderr 为 0 字节；`284652..284657` 墙钟均为 `00:12:50`，其中 `284653/284654` 累计 CPU 已为 `01:42:00/01:58:02`，各 stderr 均为空。realistic 已存在 13 个完成样本 summary，collector 仍正确等待剩余任务。
 
 ## Decision Log
 
@@ -113,6 +163,22 @@ This ExecPlan is a living document. The sections `Progress`, `Surprises & Discov
   Rationale: oracle 实验需要 GT center 和 GT ligand identity，是诊断/上限分析；realistic 实验应继续走真实预测 site pipeline，避免可部署流程与 oracle 流程混淆。
   Date/Author: 2026-05-21 / 用户与 Codex
 
+- Decision: 样本内部 Rosetta 并行是 runner 公共能力，不按 identity/Hungarian 或 oracle/realistic 各自实现；CPU 推荐以 `ceil(计划 jobs / 40)` 为简单口径，资源宽裕时可参考 `/30`，且总申请不超过 96 核。
+  Rationale: 每个 Rosetta 子进程都对应独立 ligand-site-receptor docking job；公共并行层让后续实验可以复用同一种资源估算与调度方法，同时避免为每个实验类型维护不同性能实现。
+  Date/Author: 2026-05-23 / 用户与 Codex
+
+- Decision: 暂不把完整 oracle 的并行覆盖结果混入 `runtime_budget_v1` 的串行单 job 分位数；后续时间预算必须显式区分串行基线与样本内并行策略。
+  Rationale: 把不同并行策略下的 per-job wall time 合成一个 P75/P90，会使 AI agent 无法可靠回答“给定 CPU 配置需要多久”。当前串行表仍可用于估算未迁移的 realistic 尾部，并行任务则应记录样本 wall time、分配核数与实际加速。
+  Date/Author: 2026-05-24 / Codex
+
+- Decision: oracle 严格 evaluation 独立实现并显式分离 `truth_pair_pose` 与 `strict_selected_pose`；最终用户结论文档只记录 `6bk8` 修复覆盖后的最终版本。
+  Rationale: oracle 的 task/variant 结构自带真实 site occurrence，旧 realistic evaluator 的 label-only rank 口径会高估匹配质量；同时用户指定 `oracle_easy20_readable.md` 只用于最终任务定义、配置、数据和结论。
+  Date/Author: 2026-05-24 / 用户与 Codex
+
+- Decision: realistic 尾部不全量撤销正在跑的结果，只替换仍显著长尾的六个样本，并为 oracle `6bk8` 24 CPU 覆盖预留资源。
+  Rationale: 状态检查时 realistic 的 `6bk8` 已完成，`8vcj` 仅剩很短尾部；覆盖它们只会丢掉有效进展。六个替换任务合计申请 65 CPU，叠加保留任务和 oracle 覆盖仍不超过 96 CPU。
+  Date/Author: 2026-05-24 / Codex
+
 ## Outcomes & Retrospective
 
 当前处于总控计划落盘阶段。下一步要把已有 docking 计划的术语修正为“流程跑通”，并新建 evaluation 与 ML scoring 子计划。真正的阶段性成果应是：在 `268268` 全部完成之前，已经能对已有样本输出前置 center hit、RMSD、rank/top k/top k% 和分层统计表。
@@ -124,6 +190,22 @@ This ExecPlan is a living document. The sections `Progress`, `Surprises & Discov
 2026-05-21 更新：完成一次本地口径复核和文档推进。`best_summary.json` 的 `avg_instance_*` 不应再被称为 center hit；已新增 `docking_metrics_readable.md` 定义所有关键指标的分母、分子、阈值和 caveat。随后用用户补充的密码完成服务器只读检查：`268268` 仍在运行，补跑 run 已完成 10/13 个样本，合并后 full80 top1 当前 77/80 样本有 summary、已完成样本 Rosetta job 1886/1950 跑通。下一步应等 `268268` 收尾或下一次 heartbeat 继续检查，而不是现在提交新的重型任务。
 
 2026-05-21 00:55+08:00 更新：本轮服务器 SSH 被本地沙箱 socket 权限拦截，因此 `268268` 状态没有新确认。为避免空转，已在本地实现前置 center Hungarian precision/recall；下一次服务器可访问时，应同步 Docking 后重跑 evaluation，把 loose hit 与 Hungarian precision/recall 同时写入 summary。
+
+2026-05-23 更新：easy20 实验暴露了调度性能缺陷：旧 array 为样本申请多核但内部 Rosetta 仍串行，长尾因此被人为放大。现已把样本内所有独立 Rosetta jobs 抽象为公共并行队列，并将 `7v19` 从“准备丢弃的长尾”改为“24 核真实性能验证及 easy20 恢复入口”。若观测证实并行生效，后续所有新 oracle/realistic 实验都将按 job 数建议分配 `rosetta_jobs`，而评估指标仍严格与流程跑通分离。
+
+2026-05-23 21:47+08:00 再更新：`7v19` 的首次验证提交先暴露了恢复路径缺陷，而不是性能结论：原 partial 参数文件导致全量覆盖在 Rosetta 运行前停止，并且样本失败曾未反映为 Slurm 失败。现已修复失败退出码，接下来仅清空用户授权覆盖的 `7v19` 输出再重提，继续获得并行是否有效的直接反馈。
+
+2026-05-23 21:52+08:00 再更新：新的 `7v19` 覆盖 job `283183` 已在清空该单一样本输出后启动并越过参数准备阶段；目前仍是执行中反馈，下一判断点是确认它在 24 核分配下真正并发运行 Rosetta jobs，再决定是否对 `7ut7` 采用同一路线。
+
+2026-05-23 21:56+08:00 再更新：`283183` 已提供约 `20.6x` CPU/墙钟并行证据且未出现新的错误或内存压力，因此并行执行层已进入主线。旧 `7ut7` 串行 task 与会过早汇总的 collector 已取消，新的 `7ut7` 16 核覆盖 job `283281` 与最终 easy20 汇总 `283282` 已提交。下一阶段不再围绕“是否剔除长尾样本”讨论，而是等待完整结果后用真实 evaluation 衡量 docking 质量。
+
+2026-05-23 22:02+08:00 再更新：`7v19` 已产生首批正常 scorefile，排除了“只有 CPU 活跃但输出路径损坏”的担忧；`7ut7` 同一执行模式也已实际使用多核。当前 oracle 覆盖完成时间由 `7v19` 主导，保守预计从其提交起约 `6-10` 小时完成，随后自动汇总 full easy20。该结果只证明性能与流程写出改善，仍必须等待 assignment/RMSD evaluation 才能评价科学质量。
+
+2026-05-24 12:02+08:00 更新：样本内部并行已让 oracle 恢复完整 easy20 并收尾。`7v19` 的 24 CPU 覆盖实际用时 `10:29:41`，`7ut7` 的 16 CPU 覆盖实际用时 `04:50:59`，最终 collector 已输出 20 样本、5800 jobs 的总表；其中 5739 jobs 流程跑通（98.95%），61 个失败全部来自 `6bk8` 的 Rosetta 几何内部错误。当前 400 个 assignment 仅确认使用 `dp_virtual`，尚无 assignment correctness 或 RMSD，因此不能称为真正对接成功。realistic 新 run 仍有 8 个串行尾部，按现有 P75/P90 预算最慢仍约需 `186/220` 小时；下一步应优先决定是否用已经验证有效的样本内并行替换这些尾部，并为 oracle 输出启动严格 evaluation。
+
+2026-05-24 13:25+08:00 更新：本轮已经从“等待结果”转为“用结果推动修复”。`6bk8` 的 true receptor 中含 Rosetta 无法打分的 `UNK` polymer residue，过滤后最小 smoke `284651` 成功，因此已启动 24 CPU 权威覆盖并串接最终 collector/evaluation。与此同时，新的 oracle 严格 evaluator 已在修复前结果上给出即时诊断：严格 RMSD `<=2 Å` 仅 `0.22%`、`<=5 Å` 为 `14.24%`，Hungarian exact occurrence accuracy 为 `50.18%`，这表明下游 pose 和 scoring/matching 都需继续优化。realistic 的六个真正长尾样本已切换到多核覆盖并获得 CPU 利用证据；最终 oracle 数据产出后将写入用户指定的 `oracle_easy20_readable.md`。
+
+2026-05-24 13:27+08:00 更新：首次自动复查确认这两条执行线没有在迁移后立刻失效。Oracle 的 `6bk8` 覆盖已表现出多核实际占用且无 stderr，最终 collector/evaluation 仍在依赖队列；realistic 当前 `13/20` 个样本已有 summary，六个覆盖任务均持续多核运行且无错误流。当前仍应等待最终严格指标与完整 realistic 汇总，而不是把健康运行直接解释为 pose 成功。
 
 ## Context and Orientation
 
@@ -166,6 +248,8 @@ This ExecPlan is a living document. The sections `Progress`, `Surprises & Discov
 第六步，同步和服务器运行。只能使用固定同步脚本。若 `268268` 仍在运行且占用 48 CPU，evaluation/feature job 最高再用 48 CPU。若 docking job 已完成，evaluation 可用最多 96 CPU。只取消 Codex 自己提交的任务，绝不能取消用户提交的任务。
 
 第七步，持续更新总控和子计划。每个 milestone 完成时，总控计划记录状态，子计划记录具体发现、命令、输出表和失败归因。最终报告中必须把“流程跑通率”和“真实对接成功率”分开。
+
+2026-05-23 调度修订：后续运行先计算样本的计划 Rosetta job 数。普通短样本可以使用 1 核 array；需要缩短长尾时，样本内并行通过 `--rosetta-jobs` 显式启用，推荐 CPU 为 `ceil(jobs / 40)`，资源宽裕时可用 `ceil(jobs / 30)` 作更积极预算。该推荐不替代服务器总计不超过 96 核与仅取消 Codex-owned job 的硬边界。
 
 ## Concrete Steps
 

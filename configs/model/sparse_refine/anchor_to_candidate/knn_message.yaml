@@ -1,0 +1,16 @@
+# @package _global_
+# ============================================================
+# P -> C 同路由类别 KNN 消息边配置
+# 此文件写入 cfg.model.backbone.anchor_to_candidate_cfg。
+#   → VolumePointStage1Model.__init__: instantiate(anchor_to_candidate_cfg)。
+#   → VolumePointStage1Model._run_sparse_refine_head(): 构造供 SparseRefineHead 聚合的邻居边。
+# ============================================================
+model:
+  backbone:
+    anchor_to_candidate_cfg:
+      # _target_: str, P -> C 邻居搜索模块类全称; Hydra 据此实例化 nn.Module
+      _target_: src.model.sparse_refine.interpolation.AnchorToCandidateKnnSearch
+      mode: knn_message       # str, 只构造 KNN 消息边，不在本模块聚合特征; 首版唯一合法值
+      num_neighbors: 3        # int, 每个 C 最多连接的 P 数量; 邻居不足时只使用实际 P 数
+      same_class_only: true   # bool, 必须为 true; 只连接同 BOX 且同随机路由类别的 P
+      chunk_size: 8192        # int, C 侧分块大小; 避免构造全局 sumC x sumP 距离矩阵

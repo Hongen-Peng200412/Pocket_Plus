@@ -1,0 +1,37 @@
+# @package _global_
+# ============================================================
+# C 上的 P 消息聚合与 refined ligand logits head
+# 此文件写入 cfg.model.backbone.sparse_refine_head_cfg。
+#   → VolumePointStage1Model.__init__: 注入通道数、logit_dim 与 candidate_class_ids 后实例化。
+#   → VolumePointStage1Model._run_sparse_refine_head(): 在 final atom head 后消费 P/C 特征。
+# ============================================================
+model:
+  backbone:
+    _recursive_: false              # bool, 让 VolumePointStage1Model 接收原始子配置并注入实际通道数后再实例化 head
+    sparse_refine_head_cfg:
+      # _target_: str, sparse head 类全称; Hydra 不递归实例化该节点，由 Stage1 注入通道维度后再实例化
+      _target_: src.model.sparse_refine.sparse_refine_head.SparseRefineHead
+      mode: residual                  # str, direct|residual; residual 在原 voxel logits 上学习增量
+      detach_voxel_logits: true       # bool, true 时 residual base 不向原 voxel ligand head 回传梯度
+      edge_weight_activation: sigmoid # str, learnable edge gate 激活; 首版唯一合法值
+      distance_weight:
+        mode: softmax_negative_squared_distance  # str, 有效邻居内按负平方距离 softmax 归一化
+        temperature: 1.0                         # float, 距离 softmax 温度，必须 > 0
+      message_dim: 128                # int, P -> C 聚合消息通道数
+      edge_hidden_dim: 128            # int, edge gate MLP 隐藏通道数
+      candidate_class_embedding_dim: 16 # int, 启用路由类别 embedding 时的通道数
+      hidden_dim: 128                 # int, C 输出 MLP 隐藏通道数
+      num_layers: 2                   # int, C 输出 MLP 线性层数
+      zero_init_residual: true        # bool, residual 增量末层零初始化，使初值接近 base logits
+
+      # inputs: dict[str,bool], 每项控制一个输入源是否进入 SparseRefineHead
+      #   → SparseRefineHead.__init__: 依据开关确定 P content / edge / final head 输入维度
+      #   → SparseRefineHead.forward(): 只拼接启用的张量，缺失时 fail-fast
+      inputs:
+        use_voxel_logits: true                # bool, 将 C 原始 logits 输入 head；residual 模式必须开启
+        use_C_voxel_backbone_feat: true       # bool, 将 C 位置固定 `voxel_final` 特征用于 edge 与 final head
+        use_P_point_backbone_feat: true       # bool, 将 P 的 final `point_feat` 用于消息内容
+        use_P_atom_head_feat: true            # bool, 将 P 的 `pseudo_feature` 用于消息内容
+        use_P_voxel_backbone_feat: true       # bool, 将 P 位置固定 `voxel_final` 特征用于 edge
+        use_relative_coords: true             # bool, 将 centered-world 坐标中的 `C-P` 向量用于 edge
+        use_candidate_class_embedding: false  # bool, 随机路由类别 embedding；主方案默认关闭

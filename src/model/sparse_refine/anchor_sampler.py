@@ -22,60 +22,6 @@ def _sort_by_prob_desc(prob: torch.Tensor) -> torch.Tensor:
     return torch.argsort(prob, dim=0, descending=True)
 
 
-def _deduplicate_candidates_by_voxel(
-    candidate_voxel_zyx: torch.Tensor,
-    candidate_batch_index: torch.Tensor,
-    candidate_prob: torch.Tensor,
-) -> torch.Tensor:
-    """
-    对同一 BOX 内同一 voxel 的候选记录做 P 层去重。
-
-    输入参数:
-        - candidate_voxel_zyx: torch.Tensor, (sumC, 3), 候选 voxel 坐标, 轴顺序 z/y/x
-        - candidate_batch_index: torch.Tensor, (sumC,), 候选所属 BOX 索引
-        - candidate_prob: torch.Tensor, (sumC,), 候选概率
-
-    输出:
-        - kept_candidate_index: torch.Tensor, (sumC_unique,), 保留的原始 C 行号, 按原始行号升序排列
-    """
-    # int, 候选总数
-    num_candidates = int(candidate_prob.shape[0])
-    if num_candidates == 0:
-        return torch.empty((0,), device=candidate_prob.device, dtype=torch.long)
-
-    # torch.Tensor, (sumC,), 原始 C 行号
-    candidate_index = torch.arange(num_candidates, device=candidate_prob.device, dtype=torch.long)
-    # torch.Tensor, (sumC, 4), 当前 batch 内的 voxel key
-    key = torch.stack(
-        (
-            candidate_batch_index.to(dtype=torch.long),
-            candidate_voxel_zyx[:, 0].to(dtype=torch.long),
-            candidate_voxel_zyx[:, 1].to(dtype=torch.long),
-            candidate_voxel_zyx[:, 2].to(dtype=torch.long),
-        ),
-        dim=1,
-    )
-    # torch.Tensor, (sumC,), 每条候选对应的 unique key 位置
-    inverse = torch.unique(key, dim=0, return_inverse=True)[1]
-    # int, unique voxel key 数量
-    num_unique = int(inverse.max().item()) + 1
-    # torch.Tensor, (sumC_unique,), 每个 key 的最高候选概率
-    max_prob_by_key = candidate_prob.new_full((num_unique,), -torch.inf)
-    max_prob_by_key.scatter_reduce_(0, inverse, candidate_prob, reduce="amax", include_self=True)
-    # torch.Tensor, (sumC,), True 表示该候选达到所属 key 的最高概率
-    best_prob_mask = candidate_prob == max_prob_by_key.index_select(0, inverse)
-    # torch.Tensor, (sumC,), 非最高概率候选用大行号占位
-    candidate_index_or_large = torch.where(
-        best_prob_mask,
-        candidate_index,
-        torch.full_like(candidate_index, num_candidates),
-    )
-    # torch.Tensor, (sumC_unique,), 每个 key 最高概率候选中最小原始行号
-    kept_candidate_index = torch.full((num_unique,), num_candidates, device=candidate_prob.device, dtype=torch.long)
-    kept_candidate_index.scatter_reduce_(0, inverse, candidate_index_or_large, reduce="amin", include_self=True)
-    return kept_candidate_index.index_select(0, torch.argsort(kept_candidate_index, stable=True))
-
-
 def build_anchor_coordinates(
     anchor_voxel_zyx: torch.Tensor,
     anchor_batch_index: torch.Tensor,
@@ -134,7 +80,6 @@ class SparseAnchorSampler(nn.Module):
         chunk_size: int,
         nms_radius_voxel: int,
         random_start: bool,
-        deduplicate_candidates: bool = False,
     ) -> None:
         """
         从 sparse candidate voxel set C 中采样少量 P anchors。
@@ -147,14 +92,13 @@ class SparseAnchorSampler(nn.Module):
             - chunk_size: int, weighted_fps 距离更新分块大小, 建议值 8192
             - nms_radius_voxel: int, topk_nms 局部最大池化半径, 建议值 2
             - random_start: bool, torch_cluster.fps 是否随机起点, 建议值 False
-            - deduplicate_candidates: bool, 是否在 P 层按同 BOX/voxel 去重, 默认 False
 
         前向输入:
             - candidate_outputs: dict[str, torch.Tensor], 03 阶段 C 输出字段
                 - candidate_voxel_zyx: torch.Tensor, (sumC, 3), 候选 voxel 坐标, 轴顺序 z/y/x
                 - candidate_batch_index: torch.Tensor, (sumC,), 候选所属 BOX 索引
-                - candidate_class: torch.Tensor, (sumC,), 候选前景类别 ID
-                - candidate_prob: torch.Tensor, (sumC,), 候选概率
+                - candidate_class: torch.Tensor, (sumC,), 唯一候选 voxel 的随机路由类别 ID
+                - candidate_prob: torch.Tensor, (sumC,), 路由类别对应概率
             - batch: dict[str, Any], collate 后 batch, 提供 BOX 坐标信息
                 - box_origin_world: torch.Tensor, (B, 3), BOX 原点世界坐标, 轴顺序 x/y/z
                 - voxel_size_world: torch.Tensor, (B, 3), voxel 尺寸, 轴顺序 x/y/z
@@ -200,9 +144,7 @@ class SparseAnchorSampler(nn.Module):
         self.chunk_size = int(chunk_size)
         self.nms_radius_voxel = int(nms_radius_voxel)
         self.random_start = bool(random_start)
-        self.deduplicate_candidates = bool(deduplicate_candidates)
 
-    # 加权 FPS, 但是不建议用, 看起来需要消耗太多时间
     def _sample_weighted_fps_one_group(
         self,
         candidate_index: torch.Tensor,
@@ -358,8 +300,8 @@ class SparseAnchorSampler(nn.Module):
             - candidate_outputs: dict[str, torch.Tensor], C 输出字段
                 - candidate_voxel_zyx: torch.Tensor, (sumC, 3), 候选 voxel 坐标, 轴顺序 z/y/x
                 - candidate_batch_index: torch.Tensor, (sumC,), 候选所属 BOX 索引
-                - candidate_class: torch.Tensor, (sumC,), 候选前景类别 ID
-                - candidate_prob: torch.Tensor, (sumC,), 候选概率
+                - candidate_class: torch.Tensor, (sumC,), 唯一候选 voxel 的类别 ID(若冲突,则随机/路由)
+                - candidate_prob: torch.Tensor, (sumC,), 路由类别对应概率
             - batch: dict[str, Any], collate 后 batch, 提供 BOX 坐标信息
                 - box_origin_world: torch.Tensor, (B, 3), BOX 原点世界坐标, 轴顺序 x/y/z
                 - voxel_size_world: torch.Tensor, (B, 3), voxel 尺寸, 轴顺序 x/y/z
@@ -397,15 +339,16 @@ class SparseAnchorSampler(nn.Module):
         # int, 候选类别数量
         num_classes = len(self.candidate_class_ids)
 
-        if self.deduplicate_candidates:
-            # torch.Tensor, (sumC_unique,), P 层去重后保留的原始 C 行号
-            kept_index = _deduplicate_candidates_by_voxel(candidate_voxel_zyx, candidate_batch_index, candidate_prob)
-        else:
-            # torch.Tensor, (sumC_unique,)=(sumC,), 未去重时保留全部原始 C 行号
-            kept_index = torch.arange(int(candidate_prob.shape[0]), device=candidate_prob.device, dtype=torch.long)
-        # torch.Tensor, (sumC_unique,), P 层输入候选所属 BOX 索引
+        # torch.Tensor, (sumC,), C 已由 builder 按物理 voxel 唯一化，sampler 仅做采样
+        kept_index = torch.arange(int(candidate_prob.shape[0]), device=candidate_prob.device, dtype=torch.long)
+
+        # 删掉了以下逻辑, 因为输入的 C 本身就不重复了, 原逻辑保证 sumC_unique =sum_C
+        # # torch.Tensor, (sumC_unique,), P 层去重后保留的原始 C 行号
+        # kept_index = _deduplicate_candidates_by_voxel(candidate_voxel_zyx, candidate_batch_index, candidate_prob)
+
+        # torch.Tensor, (sumC_unique,)=(sumC,), P 层输入候选所属 BOX 索引
         kept_batch_index = candidate_batch_index.index_select(0, kept_index)
-        # torch.Tensor, (sumC_unique,), P 层输入候选类别 ID
+        # torch.Tensor, (sumC,), P 层输入候选路由类别 ID
         kept_class = candidate_class.index_select(0, kept_index)
 
         # torch.Tensor, (K,), 配置候选类别 ID

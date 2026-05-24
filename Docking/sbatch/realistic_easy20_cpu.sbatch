@@ -6,14 +6,15 @@
 #SBATCH -J RealE20
 #SBATCH -N 1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=8
-#SBATCH --array=0-19%12
+#SBATCH --cpus-per-task=1
+#SBATCH --array=0-19%96
 
 RUN_ID="${RUN_ID:-20260521_realistic_easy20_instancef1_nstruct5_v1}"
 PRESCAN_RUN_ID="${PRESCAN_RUN_ID:-20260521_easy20_prescan_v1}"
 SAMPLE_LIST="${SAMPLE_LIST:-/home/penghongen/分子对接尝试/easy20_prescans/${PRESCAN_RUN_ID}/easy20_by_instance_f1.txt}"
 NSTRUCT="${NSTRUCT:-5}"
 JOBS="${JOBS:-1}"
+ROSETTA_JOBS="${ROSETTA_JOBS:-${SLURM_CPUS_PER_TASK:-1}}"
 
 cd /home/penghongen/My_Project/Pocket_Plus
 source /home/penghongen/anaconda3/bin/activate Pocket_Plus_centos7_cu121_allgpu
@@ -37,6 +38,7 @@ python Docking/run_docking_batch.py \
   --sample-list "${SAMPLE_ID}" \
   --nstruct "${NSTRUCT}" \
   --jobs "${JOBS}" \
+  --rosetta-jobs "${ROSETTA_JOBS}" \
   --shard-id "${SHARD_ID}" \
   --min-voxels 1 \
   --merge-min-voxel-distance 1000000000 \

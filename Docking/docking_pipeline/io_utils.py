@@ -13,6 +13,7 @@ from .records import InferenceSite, LigandCandidate
 STANDALONE_METAL_CCD = {"MG", "MN", "ZN", "CA", "NA", "K", "FE", "CU", "CO", "NI", "CD", "HG", "CL", "BR", "IOD"}
 MOL2_METAL_TYPES = {"FE", "MG", "MN", "ZN", "CA", "NA", "K", "CU", "CO", "NI", "CD", "HG", "MO", "W", "V"}
 ROSETTA_NAME_DIGITS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+ROSETTA_UNSUPPORTED_POLYMER_RESIDUES = {"UNK"}
 
 
 def read_json(path: Path) -> Any:
@@ -234,10 +235,15 @@ def cif_to_receptor_pdb(cif_path: Path, pdb_path: Path) -> int:
 
     输出:
         - atom_count: int, 写出的 ATOM 数量
+
+    注意:
+        - `UNK` polymer residue 无 Rosetta `RamaPrePro` 主链参数，必须从 receptor 输入排除。
+        - 若排除发生在链内部，在下一条保留记录前写入 `TER`，避免跨越缺失残基建立假主链。
     """
     lines: list[str] = []
     serial = 1
     last_chain: str | None = None
+    chain_was_broken = False
     with cif_path.open(encoding="utf-8", errors="replace") as handle:
         for line in handle:
             if not line.startswith(("ATOM", "HETATM")):
@@ -253,9 +259,13 @@ def cif_to_receptor_pdb(cif_path: Path, pdb_path: Path) -> int:
             resseq = int(parts[8])
             x, y, z = (float(parts[10]), float(parts[11]), float(parts[12]))
             occ, bfac = (float(parts[13]), float(parts[14]))
-            if last_chain is not None and chain != last_chain:
+            if resn in ROSETTA_UNSUPPORTED_POLYMER_RESIDUES:
+                chain_was_broken = True
+                continue
+            if last_chain is not None and (chain != last_chain or chain_was_broken):
                 lines.append("TER")
             last_chain = chain
+            chain_was_broken = False
             atom_name = f" {atom[:4]:<3}" if len(element) == 1 and len(atom) < 4 else f"{atom[:4]:>4}"
             altloc = " " if alt in {".", "?"} else alt[0]
             lines.append(

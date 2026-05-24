@@ -28,11 +28,11 @@ class SparseCandidateSetBuilder(nn.Module):
         - output: dict[str, torch.Tensor], sparse candidate set C 字段字典
             - "candidate_voxel_zyx": torch.Tensor, (sumC, 3), 候选 voxel 离散索引, 轴顺序 z/y/x
             - "candidate_batch_index": torch.Tensor, (sumC,), 每个候选行所属 BOX 的 batch 索引
-            - "candidate_class": torch.Tensor, (sumC,), 每个候选体素的前景类别 ID
-            - "candidate_prob": torch.Tensor, (sumC,), 每个候选体素对应类别的概率
+            - "candidate_class": torch.Tensor, (sumC,), 唯一候选 voxel 的随机路由类别 ID
+            - "candidate_prob": torch.Tensor, (sumC,), 路由类别在该 voxel 的候选概率
             - "candidate_logits": torch.Tensor, (sumC, C_logits), 每个候选体素所在 voxel 的 ligand logits
-            - "candidate_counts": torch.Tensor, (B,), 每个 BOX 的实际 C 的数目(候选体素数目)
-            - "candidate_counts_by_class": torch.Tensor, (B, K), 每个 BOX/候选类 的实际 C 的数目(候选体素数目)
+            - "candidate_counts": torch.Tensor, (B,), 每个 BOX 合并后的唯一 C 数目
+            - "candidate_counts_by_class": torch.Tensor, (B, K), 每个 BOX/路由类合并后的实际 C 数目
             - "candidate_p_sampling_by_class": torch.Tensor, (B, K), 每个 BOX/候选类 实际使用的候选截断概率
             - "candidate_target_counts_by_class": torch.Tensor, (B, K), 每个 BOX/候选类 原本打算的选取体素数目(不被最大值限制前)
     """
@@ -175,6 +175,58 @@ class SparseCandidateSetBuilder(nn.Module):
             "candidate_target_counts_by_class": torch.zeros((batch_size, num_candidate_classes), device=device, dtype=torch.long),
         }
 
+    @staticmethod
+    def _route_unique_voxels(
+        candidate_voxel_zyx: torch.Tensor,
+        candidate_batch_index: torch.Tensor,
+        spatial_shape_zyx: torch.Size,
+    ) -> torch.Tensor:
+        """
+        按物理 voxel 唯一化候选，并对类别冲突执行均匀随机路由。
+
+        输入参数:
+            - candidate_voxel_zyx: torch.Tensor, (sumR, 3), 按类别提名得到的 provisional voxel 坐标
+            - candidate_batch_index: torch.Tensor, (sumR,), provisional 行所属 BOX 索引
+            - spatial_shape_zyx: torch.Size, (D,H,W), voxel 网格空间形状
+
+        输出:
+            - routed_index: torch.Tensor, (sumC,), 唯一 C 对应的 provisional 行号(取值 0~sumR-1)，保持原始提名顺序
+        """
+        num_rows = int(candidate_batch_index.shape[0])
+        if num_rows == 0:
+            return candidate_batch_index.new_empty((0,))
+        depth, height, width = (int(value) for value in spatial_shape_zyx)
+        # torch.Tensor, (sumR,), 同 BOX 同 voxel 共用的线性 key
+        key = (
+            candidate_batch_index * (depth * height * width)
+            + candidate_voxel_zyx[:, 0] * (height * width)
+            + candidate_voxel_zyx[:, 1] * width
+            + candidate_voxel_zyx[:, 2]
+        )
+        # torch.Tensor, (sumR,), 每条 provisional 行所属的物理 voxel 分组位置
+        # out[0]: 去重后的唯一值（unique values）
+        # out[1]: inverse indices，形状与 key 相同，表示 key 中每个元素对应 unique 里的哪个位置
+        inverse = torch.unique(key, sorted=True, return_inverse=True)[1]
+        # torch.Tensor, (sumR,), 按物理 voxel 分组后的 provisional 行号
+        sorted_row_index = torch.argsort(inverse, stable=True)
+        # torch.Tensor, (sumR,), 排序后每行所属分组位置
+        sorted_inverse = inverse.index_select(0, sorted_row_index)
+        # torch.Tensor[bool], (sumR,), True 表示一个物理 voxel 分组的首行
+        group_start_mask = torch.ones((num_rows,), device=key.device, dtype=torch.bool)
+        group_start_mask[1:] = sorted_inverse[1:] != sorted_inverse[:-1]
+        # torch.Tensor, (sumC,), 每个唯一物理 voxel 在 sorted_row_index 中的起点
+        group_start = group_start_mask.nonzero(as_tuple=False).reshape(-1)
+        # torch.Tensor, (sumC,), 每个唯一物理 voxel 的 provisional 行数
+        group_end = torch.cat((group_start[1:], group_start.new_tensor([num_rows])))
+        group_count = group_end - group_start
+        # torch.Tensor, (sumC,), 每个冲突组内均匀随机选中的相对位置
+        random_offset = torch.floor(
+            torch.rand(group_count.shape, device=key.device, dtype=torch.float32) * group_count.to(dtype=torch.float32)
+        ).to(dtype=torch.long)
+        # torch.Tensor, (sumC,), 随机路由后保留的 provisional 原始行号
+        routed_index = sorted_row_index.index_select(0, group_start + random_offset)
+        return routed_index.index_select(0, torch.argsort(routed_index, stable=True))
+
     def forward(
         self,
         voxel_logits_ligand: torch.Tensor,
@@ -197,11 +249,11 @@ class SparseCandidateSetBuilder(nn.Module):
             - output: dict[str, torch.Tensor], sparse candidate set C 字段字典
                 - "candidate_voxel_zyx": torch.Tensor, (sumC, 3), 候选 voxel 离散索引, 轴顺序 z/y/x
                 - "candidate_batch_index": torch.Tensor, (sumC,), 每个候选行所属 BOX 的 batch 索引
-                - "candidate_class": torch.Tensor, (sumC,), 每个候选体素的前景类别 ID
-                - "candidate_prob": torch.Tensor, (sumC,), 每个候选体素对应类别的概率
-                - "candidate_logits": torch.Tensor, (sumC, C_logits), 每个候选体素所在 voxel 的 ligand logits
-                - "candidate_counts": torch.Tensor, (B,), 每个 BOX 的实际 C 的数目(候选体素数目)
-                - "candidate_counts_by_class": torch.Tensor, (B, K), 每个 BOX/候选类 的实际 C 的数目(候选体素数目)
+                - "candidate_class": torch.Tensor, (sumC,), 唯一候选 voxel 的随机路由类别 ID
+                - "candidate_prob": torch.Tensor, (sumC,), 路由类别在该 voxel 的候选概率
+                - "candidate_logits": torch.Tensor, (sumC, C_logits), 每个候选体素所在 voxel 的 ligand logits, 内部会 detach
+                - "candidate_counts": torch.Tensor, (B,), 每个 BOX 合并后的唯一 C 数目
+                - "candidate_counts_by_class": torch.Tensor, (B, K), 每个 BOX/路由类合并后的实际 C 数目
                 - "candidate_p_sampling_by_class": torch.Tensor, (B, K), 每个 BOX/候选类 实际使用的候选截断概率
                 - "candidate_target_counts_by_class": torch.Tensor, (B, K), 每个 BOX/候选类 原本打算的选取体素数目(不被最大值限制前)
         """
@@ -253,23 +305,33 @@ class SparseCandidateSetBuilder(nn.Module):
                 for class_pos, class_id in enumerate(self.candidate_class_ids):
                     # torch.Tensor, (N_valid,), 当前 BOX/类别的有效体素概率
                     prob_valid = prob_by_class[batch_idx, class_pos].reshape(-1).index_select(dim=0, index=valid_flat_index)
+                    # int, 当前候选类别的行数上限
                     max_count = int(self.max_candidate_voxels_per_class[class_pos])
                     if use_fixed_warmup:
+                        # int, warmup 期望保留的候选行数, 同时受 max_count 与有效体素数约束
                         target_count = min(int(self.warmup_topc_per_class[class_pos]), max_count, int(prob_valid.numel()))
+                        # torch.Tensor, (target_count,), warmup topk 选中的局部有效体素下标
                         selected_order = torch.topk(prob_valid, k=target_count).indices if target_count > 0 else torch.empty((0,), device=logits.device, dtype=torch.long)
                         output["candidate_target_counts_by_class"][batch_idx, class_pos] = int(self.warmup_topc_per_class[class_pos])
                     elif self.selection_mode == "adaptive_threshold":
+                        # int, 当前 BOX/类别超过 best-F1 阈值的有效体素数
                         n_best_box = int((prob_valid > p_best[class_pos]).sum().item())
+                        # int, 按扩张倍数得到的目标提名数, 尚未受 max_count 限制
                         target_before_cap = int(torch.ceil(prob_valid.new_tensor(n_best_box * self.adaptive_expand_factor[class_pos])).item())
+                        # int, adaptive_threshold 实际保留的候选行数
                         target_count = min(target_before_cap, max_count, int(prob_valid.numel()))
+                        # torch.Tensor, (target_count,), adaptive topk 选中的局部有效体素下标
                         selected_order = torch.topk(prob_valid, k=target_count).indices if target_count > 0 else torch.empty((0,), device=logits.device, dtype=torch.long)
                         output["candidate_target_counts_by_class"][batch_idx, class_pos] = target_before_cap
-                    else:
-                        # torch.Tensor, (M,), recorded_threshold 下超过全局阈值的局部有效体素位置
+                    elif self.selection_mode == "recorded_threshold":
+                        # torch.Tensor, (M_threshold,), recorded_threshold 下超过全局阈值的局部有效体素下标
                         threshold_selected = (prob_valid > p_sampling[class_pos]).nonzero(as_tuple=False).reshape(-1)
+                        # int, recorded_threshold 命中的原始候选行数, 尚未受 max_count 限制
                         target_before_cap = int(threshold_selected.numel())
                         if target_before_cap > max_count:
+                            # torch.Tensor, (max_count,), 阈值命中集合内部按概率 topk 的局部下标
                             local_top = torch.topk(prob_valid.index_select(dim=0, index=threshold_selected), k=max_count).indices
+                            # torch.Tensor, (max_count,), 实际保留的局部有效体素下标
                             selected_order = threshold_selected.index_select(dim=0, index=local_top)
                         else:
                             selected_order = threshold_selected
@@ -278,32 +340,65 @@ class SparseCandidateSetBuilder(nn.Module):
 
                     if selected_order.numel() == 0:
                         continue
-                    # torch.Tensor, (M,), 选中候选在全体 voxel 展平空间中的线性索引
+                    # torch.Tensor, (M_keep,), 选中候选在全体 voxel 展平空间中的线性下标
                     selected_flat_index = valid_flat_index.index_select(dim=0, index=selected_order)
-                    # torch.Tensor, (M, 3), 选中候选 voxel z/y/x 索引
+                    # torch.Tensor, (M_keep, 3), 选中候选的 voxel z/y/x 坐标
                     selected_zyx = valid_zyx.index_select(dim=0, index=selected_order)
-                    # torch.Tensor, (M,), 选中候选概率
+                    # torch.Tensor, (M_keep,), 选中候选的路由类别概率
                     selected_prob = prob_valid.index_select(dim=0, index=selected_order)
-                    # torch.Tensor, (M,C), 选中候选原始 logits
+                    # torch.Tensor, (M_keep, C_logits), 选中候选所在 voxel 的完整原始 logits
                     selected_logits = logits_flat.index_select(dim=1, index=selected_flat_index).transpose(0, 1).contiguous()
                     if use_fixed_warmup or self.selection_mode == "adaptive_threshold":
-                        # float, 当前 BOX/类别实际 topk 截断概率
+                        # torch.Tensor, (), 当前 BOX/类别实际 topk 截断概率
                         cutoff_prob = selected_prob.min() if selected_prob.numel() > 0 else torch.tensor(float("nan"), device=logits.device, dtype=logits.dtype)
                         output["candidate_p_sampling_by_class"][batch_idx, class_pos] = cutoff_prob
 
+                    # list[torch.Tensor], provisional 候选的 voxel z/y/x 坐标分块
                     candidate_voxel_parts.append(selected_zyx.long())
+                    # list[torch.Tensor], provisional 候选的 batch 索引分块
                     candidate_batch_parts.append(torch.full((int(selected_zyx.shape[0]),), batch_idx, device=logits.device, dtype=torch.long))
+                    # list[torch.Tensor], provisional 候选的路由类别 ID 分块
                     candidate_class_parts.append(torch.full((int(selected_zyx.shape[0]),), int(class_id), device=logits.device, dtype=torch.long))
+                    # list[torch.Tensor], provisional 候选的路由类别概率分块
                     candidate_prob_parts.append(selected_prob.to(dtype=logits.dtype))
+                    # list[torch.Tensor], provisional 候选所在 voxel 的完整 logits 分块
                     candidate_logits_parts.append(selected_logits.to(dtype=logits.dtype))
-                    output["candidate_counts"][batch_idx] += int(selected_zyx.shape[0])
-                    output["candidate_counts_by_class"][batch_idx, class_pos] = int(selected_zyx.shape[0])
-
             if len(candidate_voxel_parts) == 0:
                 return output
-            output["candidate_voxel_zyx"] = torch.cat(candidate_voxel_parts, dim=0)
-            output["candidate_batch_index"] = torch.cat(candidate_batch_parts, dim=0)
-            output["candidate_class"] = torch.cat(candidate_class_parts, dim=0)
-            output["candidate_prob"] = torch.cat(candidate_prob_parts, dim=0).detach()
-            output["candidate_logits"] = torch.cat(candidate_logits_parts, dim=0).detach()
+            # torch.Tensor, (sumR, 3), 各类别独立提名后的 provisional voxel z/y/x 坐标
+            provisional_voxel_zyx = torch.cat(candidate_voxel_parts, dim=0)
+            # torch.Tensor, (sumR,), provisional 候选所属 BOX 索引
+            provisional_batch_index = torch.cat(candidate_batch_parts, dim=0)
+            # torch.Tensor, (sumR,), provisional 候选对应的提名类别 ID
+            provisional_class = torch.cat(candidate_class_parts, dim=0)
+            # torch.Tensor, (sumR,), provisional 候选对应的提名概率
+            provisional_prob = torch.cat(candidate_prob_parts, dim=0)
+            # torch.Tensor, (sumR, C_logits), provisional 候选所在 voxel 的完整原始 logits
+            provisional_logits = torch.cat(candidate_logits_parts, dim=0)
+            # torch.Tensor, (sumC,), 按物理 voxel 唯一化并随机路由后保留的 provisional 行号
+            routed_index = self._route_unique_voxels(
+                candidate_voxel_zyx=provisional_voxel_zyx,
+                candidate_batch_index=provisional_batch_index,
+                spatial_shape_zyx=logits.shape[2:],
+            )
+            # torch.Tensor, (sumC, 3), 唯一 C 的 voxel z/y/x 坐标
+            output["candidate_voxel_zyx"] = provisional_voxel_zyx.index_select(0, routed_index)
+            # torch.Tensor, (sumC,), 唯一 C 所属 BOX 索引
+            output["candidate_batch_index"] = provisional_batch_index.index_select(0, routed_index)
+            # torch.Tensor, (sumC,), 唯一 C 的随机路由类别 ID
+            output["candidate_class"] = provisional_class.index_select(0, routed_index)
+            # torch.Tensor, (sumC,), 唯一 C 的路由类别概率
+            output["candidate_prob"] = provisional_prob.index_select(0, routed_index).detach()
+            # torch.Tensor, (sumC, C_logits), 唯一 C 所在 voxel 的完整原始 logits
+            output["candidate_logits"] = provisional_logits.index_select(0, routed_index).detach()
+            # torch.Tensor, (B,), 每个 BOX 的唯一 C 数量
+            output["candidate_counts"] = torch.bincount(output["candidate_batch_index"], minlength=batch_size).to(dtype=torch.long)
+            for class_pos, class_id in enumerate(self.candidate_class_ids):
+                # torch.Tensor, (sumC,), True 表示该唯一 C 的路由类别命中当前配置类别
+                routed_class_mask = output["candidate_class"] == int(class_id)
+                if bool(routed_class_mask.any()):
+                    output["candidate_counts_by_class"][:, class_pos] = torch.bincount(
+                        output["candidate_batch_index"][routed_class_mask],
+                        minlength=batch_size,
+                    ).to(dtype=torch.long)
             return output
