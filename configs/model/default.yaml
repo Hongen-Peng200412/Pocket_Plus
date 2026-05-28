@@ -26,20 +26,6 @@ backbone:
   prior_probs: null  # list[float]|null, 多通道 softmax 类别先验概率向量; 长度必须等于 atom_logit_dim 且总和为 1
                      # → VolumePointStage1Model.__init__: atom_logit_head bias 初始化为 log(prior_probs)
 
-  # --- Typed point real/pseudo 分参 ---
-  typed_point_cfg:
-    enabled: true                       # bool, 全局 typed point 开关; false 时所有 use_separate_* 为 false
-    separate_qkv: true                  # bool, QKV real/pseudo 分参
-    separate_attn_proj: true            # bool, attention 输出投影 real/pseudo 分参
-    separate_ffn: true                  # bool, Block FFN real/pseudo 分参
-    separate_cpe: true                  # bool, CPE 同类子图 real/pseudo 分参
-    separate_embedding: true            # bool, PointConvEmbedding 同类子图 real/pseudo 分参
-    separate_pooling_proj: true         # bool, SerializedPooling projection path real/pseudo 分参
-    separate_unpooling_proj: true       # bool, SerializedUnpooling projection path real/pseudo 分参
-    separate_fusion: true               # bool, voxel-to-point fusion MLP real/pseudo 分参
-    separate_point_input_proj: true     # bool, point backbone input projection real/pseudo 分参
-    separate_atom_token_proj: true      # bool, atom head token projection real/pseudo 分参
-
   # --- 在线 pdb_feature ---
   # 仅在 embed_head 未启用时生效; embed_head 启用时 forward() 的 elif 结构自动跳过
   online_pdb_feature: false           # bool, 是否在线 scatter raw atom_feat 到体素网格
@@ -59,4 +45,10 @@ monitor_mode: max                  # str, 主指标方向, 取值 max/min
                                    # → configs/train/B40_L3.yaml: scheduler.mode=${model.monitor_mode}
 voxel_ligand_pr_auc_thresholds: 1024  # int | null, binned ligand PR-AUC 阈值数; 训练期默认 1024, 最终评估可显式覆盖为 4096
 val_metric_device_policy: auto        # str, 验证 AP 更新设备策略; auto=非 binned 走 CPU 省显存, binned 走 GPU 加速阈值扫描
+
+# --- Sparse refine loss 默认关闭 ---
+# 下列字段由 VoxelPointStage1Wrapper.__init__ 保存并在 _compute_total_loss() 中消费。
+ligand_sparse_refine_loss: null        # nn.Module|null, C 级 sparse refine loss; null 表示不计算 refined logits 监督
+ligand_sparse_refine_loss_weight: 0.0  # float, schedule 关闭时的 sparse refine loss 权重
+ligand_sparse_refine_loss_schedule: null # dict|null, 独立 linear warmup 配置; null 表示直接使用 ligand_sparse_refine_loss_weight
 compile: false                     # bool, torch.compile

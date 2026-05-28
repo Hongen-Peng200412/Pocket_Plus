@@ -17,6 +17,7 @@ defaults:
   - model/fusion: default                      # 融合逻辑
   - model/atom_head: default                   # atom head
   - model/pseudo_atom: none                    # 伪原子(默认关闭)
+  - model/typed_point: "on"                      # typed point real/pseudo 分参(默认开启)
   - model/task: binary                         # 模型任务 preset: binary(sigmoid) / tri(softmax)
   - model/sparse_refine: default               # sparse refine 总入口
   - model/sparse_refine/candidate_set: none    # sparse candidate set C(默认关闭)
@@ -36,7 +37,7 @@ defaults:
   - output: standard
 
   # --- 训练超参数 ---
-  - train: B64_L2
+  - train: B40_L3
 
   - _self_
 

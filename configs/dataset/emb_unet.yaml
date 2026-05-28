@@ -15,7 +15,7 @@
 # ============================================================
 _target_: src.datasets.box_point_dataset.BoxPointDataset
 
-name: nuet
+name: emb_unet
 
 # --- 数据根目录路径 (允许 train/val 分别指定) ---
 all_data_path: "/storage/penghongen/Pocket_classic/v2_raw4_10A"
@@ -65,7 +65,7 @@ split_val: [
 
 
 
-atom_buffer_radius: 0.0  # A为单位
+atom_buffer_radius: 8.0  # A为单位
 cache_size: 128  
 valid_crop_margin: 0     # 体素为单位
 enable_random_rotation: true

@@ -50,6 +50,7 @@ from .serialization import encode
 from src.model.typed_point import (
     apply_type_aware_tensor_module,
     make_typed_linear_norm_act,
+    merge_type_aware_tensor_outputs,
     split_mask_state,
     validate_pseudo_mask,
 )
@@ -1436,11 +1437,11 @@ class Block(PointModule):
             )
         if not has_real:
             return self.cpe_pseudo.forward_subset(point, pseudo_mask, type_name="pseudo")
-        # torch.Tensor, (N_all, C), mixed 顺序 CPE delta
-        delta = point.feat.new_empty(point.feat.shape)
-        delta[~pseudo_mask] = self.cpe_real.forward_subset(point, ~pseudo_mask, type_name="real")
-        delta[pseudo_mask] = self.cpe_pseudo.forward_subset(point, pseudo_mask, type_name="pseudo")
-        return delta
+        # torch.Tensor, (N_real, C), real 同类子图 CPE delta
+        real_delta = self.cpe_real.forward_subset(point, ~pseudo_mask, type_name="real")
+        # torch.Tensor, (N_pseudo, C), pseudo 同类子图 CPE delta
+        pseudo_delta = self.cpe_pseudo.forward_subset(point, pseudo_mask, type_name="pseudo")
+        return merge_type_aware_tensor_outputs(real_delta, pseudo_delta, pseudo_mask)
 
     def _run_ffn(self, feat: torch.Tensor, pseudo_mask: torch.Tensor | None) -> torch.Tensor:
         """
@@ -2116,11 +2117,11 @@ class Embedding(PointModule):
         if not has_real:
             point.feat = self._pointconv_embed_pseudo.forward_subset(point, pseudo_mask)
             return point
-        # torch.Tensor, (N_all, C_embed), 按 mixed 顺序恢复的 typed embedding 特征
-        embed_feat = point.feat.new_empty((int(point.feat.shape[0]), self.embed_channels))
-        embed_feat[~pseudo_mask] = self._pointconv_embed_real.forward_subset(point, ~pseudo_mask)
-        embed_feat[pseudo_mask] = self._pointconv_embed_pseudo.forward_subset(point, pseudo_mask)
-        point.feat = embed_feat
+        # torch.Tensor, (N_real, C_embed), real 同类子图 embedding 特征
+        real_embed_feat = self._pointconv_embed_real.forward_subset(point, ~pseudo_mask)
+        # torch.Tensor, (N_pseudo, C_embed), pseudo 同类子图 embedding 特征
+        pseudo_embed_feat = self._pointconv_embed_pseudo.forward_subset(point, pseudo_mask)
+        point.feat = merge_type_aware_tensor_outputs(real_embed_feat, pseudo_embed_feat, pseudo_mask)
         return point
 
 

@@ -98,7 +98,7 @@ def build_box_point_numpy_sample(
             - "atom_label":              np.ndarray, (N,), int64, 选中原子的标签(经 class_mapping)
             - "atom_is_in_core_box":     np.ndarray, (N,), bool, 标记选中原子是否处于 BOX core 区域
             - "atom_valid_mask":         np.ndarray, (N,), bool, 标记选中原子是否参与损失监督
-            - "_selected_idx":           np.ndarray, (N,), int64, 选中原子在全局数组中的索引(推断侧用于获取全局索引; 训练侧可忽略)
+            - "atom_global_indices":     np.ndarray, (N,), int64, 选中原子在当前结构全局原子数组中的索引, 与 atom_coord_world 一一对应
 
         注意: "ligand_dist_map" 不在本函数输出范围内, 它由调用侧
         (BoxPointDataset.__getitem__) 在本函数返回后按需追加。
@@ -111,6 +111,7 @@ def build_box_point_numpy_sample(
         box_shape_zyx=box_shape_zyx,
         buffer_radius=atom_buffer_radius,
     )
+    # 统一弃用旧的 `_selected_idx` 命名, 这里的 selected_idx 会作为正式字段 `atom_global_indices` 返回。
     # np.ndarray, (N_selected,), int64
     selected_idx = selected["selected_idx"]
     # np.ndarray, (N_selected,), bool
@@ -174,8 +175,8 @@ def build_box_point_numpy_sample(
         "atom_label": atom_label,
         "atom_is_in_core_box": atom_is_in_core_box,
         "atom_valid_mask": atom_valid_mask,
-        # 推断侧使用; 训练侧可忽略
-        "_selected_idx": selected_idx,
+        # 当前 BOX 选中原子在全局原子数组中的索引, 训练/推断两侧统一使用
+        "atom_global_indices": selected_idx,
     }
 
 
@@ -195,6 +196,7 @@ _TENSOR_DTYPE_MAP: dict[str, torch.dtype] = {
     "atom_label": torch.int64,
     "atom_is_in_core_box": torch.bool,
     "atom_valid_mask": torch.bool,
+    "atom_global_indices": torch.int64,
     # 可选字段: 由 BoxPointDataset.__getitem__ 追加, 仅在配置了 ligand_dist_BOX 时存在
     "ligand_dist_map": torch.float32,
 }
@@ -218,6 +220,6 @@ def to_torch_sample(sample_dict: dict[str, Any]) -> dict[str, Any]:
         if key in _TENSOR_DTYPE_MAP:
             result[key] = torch.tensor(value, dtype=_TENSOR_DTYPE_MAP[key])
         else:
-            # 元信息(str/int/bool)和推断专用字段(如 _selected_idx)原样保留
+            # 元信息(str/int/bool 等)原样保留
             result[key] = value
     return result

@@ -12,8 +12,8 @@ model:
     candidate_set_cfg:
       # _target_: str, C 候选生成器类全称; Hydra 据此实例化 nn.Module
       _target_: src.model.sparse_refine.candidate_set.SparseCandidateSetBuilder
-      selection_mode: recorded_threshold  # str, 候选选择模式; 按照验证集记录的 p_sampling_by_class 确定候选体素
-      candidate_class_ids: ${sparse_refine_task.candidate_class_ids}                       # list[int], 候选前景类别 ID; 三分类 preset 为 [1, 2]
+      selection_mode: adaptive_threshold  # str, 候选选择模式; 按照验证集记录的 p_sampling_by_class 确定候选体素
+      candidate_class_ids: ${sparse_refine_task.candidate_class_ids}                       # list[int], 候选前景类别 ID; 二分类 preset 为 [1]
       warmup_topc_per_class: ${sparse_refine_task.warmup_topc_per_class}                   # list[int], warmup 阶段每个 BOX/类别的固定 top-C 上限
       adaptive_expand_factor: ${sparse_refine_task.adaptive_expand_factor}                 # list[float], adaptive_threshold 下 best-F1 正例数扩张倍数
       max_candidate_voxels_per_class: ${sparse_refine_task.max_candidate_voxels_per_class} # list[int], 每个 BOX/类别候选 C 行数硬上限

@@ -169,6 +169,36 @@ def split_mask_state(
     return validated_mask, has_real, has_pseudo
 
 
+def merge_type_aware_tensor_outputs(
+    real_y: torch.Tensor,
+    pseudo_y: torch.Tensor,
+    pseudo_mask: torch.Tensor,
+) -> torch.Tensor:
+    """
+    将 real/pseudo 子集输出按 mixed 顺序恢复，并保留分支计算产生的精度。
+
+    输入参数:
+        - real_y: torch.Tensor, (N_real, ...), real 分支输出特征
+        - pseudo_y: torch.Tensor, (N_pseudo, ...), pseudo 分支输出特征
+        - pseudo_mask: torch.Tensor, (N_real + N_pseudo,), bool, True 表示 P anchor
+
+    输出:
+        - y: torch.Tensor, (N_real + N_pseudo, ...), 按原 mixed 顺序排列的输出特征；
+          dtype 为两条分支输出 dtype 的提升结果
+    """
+    # torch.dtype, AMP 下由两类分支输出提升得到的恢复精度
+    output_dtype = torch.promote_types(real_y.dtype, pseudo_y.dtype)
+    # torch.Tensor, (N_all, ...), mixed 顺序下的 typed 输出
+    y = torch.empty(
+        (int(pseudo_mask.shape[0]),) + tuple(real_y.shape[1:]),
+        dtype=output_dtype,
+        device=real_y.device,
+    )
+    y[~pseudo_mask] = real_y.to(dtype=output_dtype)
+    y[pseudo_mask] = pseudo_y.to(dtype=output_dtype)
+    return y
+
+
 def apply_type_aware_tensor_module(
     x: torch.Tensor,
     pseudo_mask: torch.Tensor | None,
@@ -207,11 +237,7 @@ def apply_type_aware_tensor_module(
     real_y = real_module(real_x)
     # torch.Tensor, (N_pseudo, C_out), pseudo 分支输出特征
     pseudo_y = pseudo_module(pseudo_x)
-    # torch.Tensor, (N_all, C_out), 按原 mixed 顺序恢复的输出特征
-    y = x.new_empty((int(x.shape[0]), int(real_y.shape[1])))
-    y[~pseudo_mask] = real_y
-    y[pseudo_mask] = pseudo_y
-    return y
+    return merge_type_aware_tensor_outputs(real_y, pseudo_y, pseudo_mask)
 
 
 def make_typed_linear_norm_act(

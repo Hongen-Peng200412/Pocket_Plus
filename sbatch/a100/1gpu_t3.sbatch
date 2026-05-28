@@ -50,7 +50,7 @@ write_custom_run_cmd_hook() {
     local TARGET_FILE="$1"
     cat << EOF > "${TARGET_FILE}"
 #!/bin/bash
-python /home/penghongen/My_Project/Pocket_Plus/src/train.py "+experiment=MINI_sparse_refine001"
+python /home/penghongen/My_Project/Pocket_Plus/src/train.py "+experiment=MINI_sparse_refine005"
 EOF
 }
 # ============================================================

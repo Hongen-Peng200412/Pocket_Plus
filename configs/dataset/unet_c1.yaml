@@ -28,7 +28,7 @@ density_channel_config:
   clip_percentile: [0.001, 0.999]
   fit_mask_percentile: 0.003
   enabled_channels:
-    - "all"
+    - "exp_clipnorm_nopost"
 
 
 

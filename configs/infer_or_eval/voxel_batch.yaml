@@ -59,7 +59,8 @@ output_heads: ["ligand"]    # list[str], 需要从模型输出中提取并合并
 filter_strength: "basic"      # str, 候选过滤强度档位; basic 仅做基础阈值+连通域过滤, advanced 继续叠加响应分数过滤
 threshold: 0.5                # float, ligand 概率二值化阈值
 min_component_voxels: 10      # int, 连通域最小体素数
-connectivity_policy: "7_none" # str, 两阶段连通域邻接策略; 形如 first_second, 例如 7_none
+connectivity_policy: "7_none" # str, 初始连通域邻接策略; 当前只使用 first_second 的第一段
+merge_dist: 0.0               # float, 初步 instance 中心世界坐标合并阈值; <=0.0 表示跳过合并
 sigma_nearby: 1.0             # float, advanced 模式下 ligand 邻域平滑 sigma
 kernel_nearby: 3              # int, advanced 模式下 ligand 邻域平滑核大小
 sigma_response: 1.0           # float, advanced 模式下 receptor response 平滑 sigma

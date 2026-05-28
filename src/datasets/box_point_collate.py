@@ -36,6 +36,7 @@ _ATOM_CONCAT_FIELDS = (
     "atom_label",
     "atom_is_in_core_box",
     "atom_valid_mask",
+    "atom_global_indices",
 )
 
 

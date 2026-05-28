@@ -26,16 +26,16 @@ model:
       enc_depths: [2, 2, 2, 2, 2]   # list[int], 编码器每层 Block 数
       enc_channels: [64, 128, 128, 256, 512]
       enc_num_head: [2, 4, 8, 16, 32]
-      enc_patch_size: [1024, 256, 128, 72, 64]
+      enc_patch_size: [512, 256, 128, 72, 64]
       dec_depths: [2, 2, 2, 2, 6]   # list[int], 解码器; dec4=0 跳过最低分辨率(旧版兼容)
       dec_channels: [48, 96, 128, 256, 512]
       dec_num_head: [4, 4, 8, 16, 32]
-      dec_patch_size: [1024, 256, 128, 72, 64]
+      dec_patch_size: [512, 256, 128, 72, 64]
 
       # --- 嵌入层 ---
-      embedding_kernel_size: 5       # int, legacy 字段; pointconv embedding 不消费该值
+      embedding_kernel_size: 4       # int, legacy 字段; pointconv embedding 不消费该值
       embedding_impl: pointconv      # str, embedding 实现方式, 只支持 "pointconv"
-      embedding_receptive_field: 5.0 # float, pointconv 感受野(Å)
+      embedding_receptive_field: 4.0 # float, pointconv 感受野(Å)
       pointconv_embed_max_neighbors: 256
 
       # --- CPE ---

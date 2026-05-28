@@ -1,6 +1,6 @@
 # @package _global_
 # ============================================================
-# 实验: 模型上, 只用单纯的unet(embed head、点云分支、atom head、伪原子全部关闭); 数据上, 模型只吃密度信息(不吃来自蛋白受体的特征)
+# 实验: 模型上, 只用单纯的unet(embed head、点云分支、atom head、伪原子全部关闭); 数据上, 模型只吃一个通道的密度图本身
 # ============================================================
 # 搭配 plus.yaml embed head + unfused_embed 数据集:
 #   voxel_backbone 看到 EMDB + embed 49ch + occupancy 2ch
@@ -19,16 +19,16 @@ defaults:
   - override /model/fusion: none                 # 融合: 4 层级全融合
   - override /model/atom_head: none            # Atom Head: 4 层
   - override /model/pseudo_atom: none            # 伪原子
-  - override /model/typed_point: "on"               # typed point real/pseudo 分参
+  - override /model/typed_point: "on"              # typed point real/pseudo 分参
   - override /model/embed_head: passthrough               # 完全没有
   - override /loss: unet                  # 损失
-  - override /dataset: unet               # 数据集: 无离线 pdb_feature, embed head 在线生成
+  - override /dataset: unet_c1               # 数据集: 无离线 pdb_feature, embed head 在线生成
   - override /train: B40_L3                        # 训练: H200 参数
 
 
 # --- 实验标识 ---
-name: unet000
-tag: "unet000"
+name: unet_c1
+tag: "unet_c1"
 experiment_group: "unet000"              # str, run_dir 父文件夹名称
 project_name: PV_unet000                 # wandb 的项目名称
 

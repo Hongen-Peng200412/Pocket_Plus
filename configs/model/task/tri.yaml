@@ -26,6 +26,6 @@ model:
 sparse_refine_task:
   candidate_class_ids: [1, 2]                    # list[int], 前景候选类别 ID; 顺序与所有 per-class 参数一致
   warmup_topc_per_class: [1000, 25000]           # list[int], warmup 阶段每个 BOX/类别直接 top-k 进入候选 C 的上限
-  adaptive_expand_factor: [10.0, 10.0]           # list[float], adaptive_threshold 下相对 best-F1 正例数的候选扩张倍数
+  adaptive_expand_factor: [7.0, 7.0]           # list[float], adaptive_threshold 下相对 best-F1 正例数的候选扩张倍数
   max_candidate_voxels_per_class: [1000, 25000]  # list[int], 每个 BOX/类别候选 C 行数硬上限
   max_anchors_per_class: [128, 1024]             # list[int], 每个 BOX/类别 P anchor 采样上限

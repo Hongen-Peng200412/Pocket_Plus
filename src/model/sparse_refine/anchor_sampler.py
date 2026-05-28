@@ -232,8 +232,9 @@ class SparseAnchorSampler(nn.Module):
         # float, FPS 采样比例
         ratio = min(1.0, float(max_count) / float(group_size))
         # torch.Tensor, (P_raw,), FPS 返回的局部下标
+        # 兼容不同 torch_cluster 版本对首参命名(`src`/`x`)的差异, 这里使用位置参数传坐标。
         fps_index = torch_cluster.fps(
-            x=voxel_xyz_float,
+            voxel_xyz_float,
             batch=None,
             ratio=ratio,
             random_start=self.random_start,

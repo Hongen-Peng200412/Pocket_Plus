@@ -1,0 +1,98 @@
+# @package _global_
+# ============================================================
+# 二分类 sparse refine 四路损失配置
+# 此文件通过 experiment defaults 覆盖 cfg.model.* 下的 loss 字段。
+#   → train.py: hydra.utils.instantiate(cfg.model, optimizer=..., scheduler=...)
+#   → VoxelPointStage1Wrapper.__init__: instantiate(atom/voxel/sparse refine loss)
+# ============================================================
+
+model:
+  # --- atom loss: 受体原子二分类辅助监督 ---
+  atom_loss:
+    _target_: src.modules.losses.AdaptiveClassificationCompositeLoss
+    num_classes: 2
+    sigma: 2.0
+    hard_label_threshold: null
+    focal_gamma: 2.0
+    focal_alpha: [0.5, 0.5]
+    focal_alpha_neg: 0.5
+    focal_alpha_pos: 0.5
+    focal_eps: 1.0e-6
+    tversky_alpha: 0.5
+    tversky_beta: 0.5
+    tversky_smooth: 1.0
+    w_focal: 0.7
+    w_tversky: 0.3
+    w_mse: 0.0
+    focal_soft_negative_suppression: false
+    tversky_soft_target: false
+  atom_loss_weight: 0.1
+
+  # --- voxel auxiliary loss: 体素二分类辅助监督 ---
+  voxel_aux_loss:
+    _target_: src.modules.losses.AdaptiveClassificationCompositeLoss
+    num_classes: 2
+    sigma: 2.0
+    hard_label_threshold: null
+    focal_gamma: 2.0
+    focal_alpha: [0.5, 0.5]
+    focal_alpha_neg: 0.5
+    focal_alpha_pos: 0.5
+    focal_eps: 1.0e-6
+    tversky_alpha: 0.5
+    tversky_beta: 0.5
+    tversky_smooth: 1.0
+    w_focal: 0.7
+    w_tversky: 0.3
+    w_mse: 0.0
+    focal_soft_negative_suppression: false
+    tversky_soft_target: false
+  voxel_aux_loss_weight: 0.1
+
+  # --- voxel ligand loss: refine 前 dense ligand 监督 ---
+  voxel_ligand_loss:
+    _target_: src.modules.losses.AdaptiveClassificationCompositeLoss
+    num_classes: 2
+    sigma: 2.0
+    hard_label_threshold: 1.7
+    focal_gamma: 2.0
+    focal_alpha: [0.5, 0.5]
+    focal_alpha_neg: 0.5
+    focal_alpha_pos: 0.5
+    focal_eps: 1.0e-6
+    tversky_alpha: 0.5
+    tversky_beta: 0.5
+    tversky_smooth: 1.0
+    w_focal: 0.7
+    w_tversky: 0.3
+    w_mse: 0.0
+    focal_soft_negative_suppression: false
+    tversky_soft_target: false
+  voxel_ligand_loss_weight: 1.0
+
+  # --- ligand sparse refine loss: C 级 refined logits 监督 ---
+  ligand_sparse_refine_loss:
+    _target_: src.modules.losses.AdaptiveClassificationCompositeLoss
+    num_classes: 2
+    sigma: 2.0
+    hard_label_threshold: 1.7
+    focal_gamma: 2.0
+    focal_alpha: [0.5, 0.5]
+    focal_alpha_neg: 0.5
+    focal_alpha_pos: 0.5
+    focal_eps: 1.0e-6
+    tversky_alpha: 0.5
+    tversky_beta: 0.5
+    tversky_smooth: 1.0
+    w_focal: 0.7
+    w_tversky: 0.3
+    w_mse: 0.0
+    focal_soft_negative_suppression: false
+    tversky_soft_target: false
+  ligand_sparse_refine_loss_weight: 1.2
+  ligand_sparse_refine_loss_schedule:
+    mode: linear_warmup
+    start_weight: 0.0
+    final_weight: ${model.ligand_sparse_refine_loss_weight}
+    warmup_steps: null
+    warmup_ratio: 0.2

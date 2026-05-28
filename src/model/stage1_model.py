@@ -33,7 +33,6 @@ Stage1 体素-点云联合模型的清理后主流程。
         - 这意味着 p_best_by_class 决定“每个 BOX 估计应有多少个 best-F1 体素”, adaptive_expand_factor 决定在这个数量上扩张多少倍, 而真正入选的是该 BOX 内 topk 概率最大的体素。
     - recorded_threshold 是 builder 支持的另一种模式:
         - 它直接使用 wrapper 缓存的 p_sampling_by_class 做按阈值筛选, 仅在超过 max_candidate_voxels_per_class 时再回退为局部 topk 截断。
-        - 当前 tri/binary 配置默认不用这一路径, 但 selection_mode 切到 recorded_threshold 后会改为该行为。
 
 forward 输入的 batch 关键字段契约:
     - voxel_grid: torch.Tensor, (B, C_in, D, H, W), floating, voxel backbone 输入密度/特征体。

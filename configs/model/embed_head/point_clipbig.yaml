@@ -22,15 +22,15 @@ model:
       _target_: src.model.stage1_embed_head.Stage1EmbedHead
       atom_feature_dim: 49         # int, 原子原始特征维度
       embed_hidden_dim: 128         # int, 共享 trunk 隐藏通道数
-      embed_voxel_out_channels: 49 # int, scatter 到体素网格后的通道数
+      embed_voxel_out_channels: 0 # int, scatter 到体素网格后的通道数
                                     # 改为 49 可触发 identity shortcut (省一个 Linear(49,49))
       embed_point_out_channels: 64 # int, 输出给点分支的通道数
       num_trunk_blocks: 0          # int, 共享 trunk block 数 (0=跳过 trunk)
-      num_voxel_blocks: 2          # int, 体素分支 block 数
-      num_point_blocks: 2          # int, 点分支 block 数
+      num_voxel_blocks: 0          # int, 体素分支 block 数
+      num_point_blocks: 3          # int, 点分支 block 数
       trunk_buffer_radii: []
-      voxel_buffer_radii: [0.0, 0.0]
-      point_buffer_radii: [0.0, 0.0]
+      voxel_buffer_radii: []
+      point_buffer_radii: [8.0, 4.0, 0.0]
       num_heads: 4
       patch_size: 256
       serialization_orders: ["z", "z-trans", "hilbert", "hilbert-trans"]
@@ -61,9 +61,9 @@ model:
       embed_voxel_gate_enabled: false     # bool, voxel gate 是否可学习
 
       # --- 可选改进开关 ---
-      add_occupancy_channels: true       # bool, 是否添加 occupancy 通道: 加到最后的 grid 上(送入 voxel_backbone)
-      use_soft_splatting: true           # bool, 是否使用 soft splatting
-      use_centroid_encoding: true        # bool, 是否使用 centroid-aware 偏移编码: 在生产 embed_voxel_out_channels 时拼接到原始特征上
+      add_occupancy_channels: false      # bool, point-only 不生成体素网格，因此关闭 occupancy 通道
+      use_soft_splatting: false          # bool, point-only 不执行 per-atom -> voxel scatter
+      use_centroid_encoding: false       # bool, centroid-aware 编码要求 embed_voxel_out_channels > 0
 
     # embed head 启用时, 点分支 atom_feature_dim = embed_point_out_channels
     point_backbone:

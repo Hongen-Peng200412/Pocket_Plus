@@ -577,7 +577,7 @@ def split_volume_to_boxes(
                 - "instance_id": int, 固定为 0
                 - "is_center_box": bool, 固定为 False
             - 3. 推断专用 sidecar 字段:
-                - "global_atom_indices": np.ndarray, (N_box,), int64, 当前 BOX 选中原子在全局原子数组中的索引
+                - "atom_global_indices": torch.Tensor, (N_box,), int64, 当前 BOX 选中原子在全局原子数组中的索引
                 - "box_position_zyx": tuple[int, int, int], 当前 BOX 在整图中的滑窗起始坐标(z0, y0, x0)
     """
     exp_raw = np.asarray(exp_raw, dtype=np.float32)
@@ -661,8 +661,7 @@ def split_volume_to_boxes(
             class_mapping=None,
         )
 
-        # np.ndarray, (N_selected,), int64, 当前 BOX 选中的全局原子索引
-        selected_idx = sample_dict.pop("_selected_idx")
+        # build_box_point_numpy_sample 已经产出 atom_global_indices, 这里仅做 tensor 化。
         sample_dict = to_torch_sample(sample_dict)
 
         sample_dict["sample_name"] = f"infer_box_{box_idx}"
@@ -670,7 +669,6 @@ def split_volume_to_boxes(
         sample_dict["class_name"] = "infer"
         sample_dict["instance_id"] = 0
         sample_dict["is_center_box"] = False
-        sample_dict["global_atom_indices"] = selected_idx.copy()
         sample_dict["box_position_zyx"] = (z0, y0, x0)
         return sample_dict
 
@@ -753,28 +751,13 @@ def prepare_batched_boxes(
             box_meta_list.append({
                 "box_position_zyx": box_dict.pop("box_position_zyx"),
             })
-        # list[list[int]]
-        per_box_global_indices = [box_dict.pop("global_atom_indices") for box_dict in group]
-
         # dict[str, Any], box_point_collate 需要标准字段
         batch_dict = box_point_collate(group)
-        total_atoms = int(batch_dict["atom_counts"].sum().item())
-        if total_atoms > 0:
-            batch_dict["atom_global_indices"] = torch.cat(
-                [
-                    torch.as_tensor(idx, dtype=torch.long)
-                    for idx in per_box_global_indices
-                ],
-                dim=0,
-            )
-        else:
-            batch_dict["atom_global_indices"] = torch.empty((0,), dtype=torch.long)
         batch_dict = move_batch_to_device(batch_dict, device)
         batch_dict["_box_meta"] = box_meta_list
 
         # 恢复 box_dicts 中的元信息 (避免破坏原始列表)
         for i, box_dict in enumerate(group):
-            box_dict["global_atom_indices"] = per_box_global_indices[i]
             box_dict["box_position_zyx"] = box_meta_list[i]["box_position_zyx"]
 
         yield batch_dict
