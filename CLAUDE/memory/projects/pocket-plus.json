@@ -9,6 +9,11 @@
       "date": "2026-05-29",
       "summary": "Stage1 wrapper refactor first phase: topk candidate mode, helper module skeletons, restored wrapper entrypoint, receptor log rename, and focused tests passing; full CPC diagnostics and end-to-end smoke remain open.",
       "handoff": "CLAUDE/memory/handoffs/2026-05-29-stage1-wrapper-refactor-current-state.md"
+    },
+    {
+      "date": "2026-05-29",
+      "summary": "Stage1 wrapper thin-coordinator continuation: new coordinator tests, wrapper entrypoint restored as thin coordinator, diagnostics buffer registration centralized, and focused refactor suite passing; old private-API tests still need migration.",
+      "handoff": "CLAUDE/memory/handoffs/2026-05-29-stage1-wrapper-thin-coordinator-current-state.md"
     }
   ],
   "blockers": [],

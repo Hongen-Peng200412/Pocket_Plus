@@ -7,6 +7,8 @@ from typing import Any
 
 import lightning as pl
 import torch
+import csv
+import json
 
 
 _ALLOWED_SCOPES = {"global", "by_source_folder"}
@@ -90,20 +92,6 @@ def log_scalar_payload(
         )
 
 
-def _is_wandb_logger(logger: Any) -> bool:
-    """
-    判断 logger 是否暴露 W&B experiment 接口: experiment = getattr(logger, "experiment", None)
-
-    输入参数:
-        - logger: Any, Lightning logger 或 logger collection
-
-    输出:
-        - is_wandb: bool, True 表示可按 W&B table 路径记录曲线
-    """
-    experiment = getattr(logger, "experiment", None)
-    return experiment is not None and hasattr(experiment, "log")
-
-
 def log_wandb_curves(
     *,
     module: pl.LightningModule,
@@ -112,17 +100,30 @@ def log_wandb_curves(
     every_n: int,
 ) -> None:
     """
-    在 global zero 上记录 W&B 曲线 payload。
+    在 global zero 上记录 W&B 曲线。
 
     输入参数:
         - module: pl.LightningModule, 当前 wrapper 模块
-        - curves: Mapping[str, Any], 曲线名到 CurvePayload 的映射
+        - curves: Mapping[str, Any], 曲线名到 class CurvePayload 的映射
         - validation_index: int, 当前 validation 序号, 从 0 或 1 开始由调用方约定
         - every_n: int, 每隔多少次 validation 上传一次
 
     输出:
         - None, logger 非 W&B 或非 global zero 时 no-op
     """
+    def _is_wandb_logger(logger: Any) -> bool:
+        """
+        判断 logger 是否暴露 W&B experiment 接口: experiment = getattr(logger, "experiment", None)
+
+        输入参数:
+            - logger: Any, Lightning logger 或 logger collection
+
+        输出:
+            - is_wandb: bool, True 表示可按 W&B table 路径记录曲线
+        """
+        experiment = getattr(logger, "experiment", None)
+        return experiment is not None and hasattr(experiment, "log")
+
     trainer = getattr(module, "trainer", None)
     if trainer is not None and not bool(getattr(trainer, "is_global_zero", True)):
         return
@@ -152,14 +153,11 @@ def write_validation_artifacts(
         - output_subdir: str, validation artifact 子目录名
         - epoch: int, 当前 epoch index
         - global_step: int, 当前 global step
-        - payload: Any, CpcDiagnosticsPayload 或等价对象
+        - payload: Any, class CpcDiagnosticsPayload 或等价对象
 
     输出:
         - None, 在 run_dir 下写 summary/warnings/curves 文件
     """
-    import csv
-    import json
-
     # Path, 当前 epoch 的 diagnostics 输出目录
     epoch_dir = run_dir / output_subdir / f"epoch_{int(epoch):06d}"
     # Path, 曲线 CSV 输出目录
