@@ -13,7 +13,7 @@ import json
 
 _ALLOWED_SCOPES = {"global", "by_source_folder"}
 
-
+# --------------------------------- 构造验证日志 key: panel /(subpanel)/ scope / source_folder / metric_leaf ------------------------------------
 def build_metric_key(
     *,
     panel: str,
@@ -62,6 +62,7 @@ def build_metric_key(
     return "/".join(parts)
 
 
+# -------------------------------------------- 记录标量形式的 payload --------------------------------------------
 def log_scalar_payload(
     *,
     module: pl.LightningModule,
@@ -92,6 +93,7 @@ def log_scalar_payload(
         )
 
 
+# -------------------------------------------- 记录曲线(对应"表格",如单次PRAUC)形式的 payload --------------------------------------------
 def log_wandb_curves(
     *,
     module: pl.LightningModule,
@@ -137,6 +139,7 @@ def log_wandb_curves(
         experiment.log({key: asdict(curve) if hasattr(curve, "__dataclass_fields__") else curve})
 
 
+# -------------------------------------------- 写检查纪要(artifact) --------------------------------------------
 def write_validation_artifacts(
     *,
     run_dir: Path,
