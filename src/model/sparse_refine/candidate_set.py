@@ -14,8 +14,8 @@ class SparseCandidateSetBuilder(nn.Module):
         - candidate_class_ids: Sequence[int], (K,), 候选前景类别 ID; 单通道 sigmoid 只允许 [1]
         - warmup_topc_per_class: Sequence[int], (K,), warmup 阶段每个 BOX/类别固定 topc
         - adaptive_expand_factor: Sequence[float], (K,), adaptive_threshold 阶段相对 best-F1 体素数的扩张倍数
-        - max_candidate_voxels_per_class: Sequence[int], (K,), 每个 BOX/类别候选行上限
-        - selection_mode: str, 候选选择模式, 取值 adaptive_threshold 或 recorded_threshold
+        - max_candidate_voxels_per_class: Sequence[int], (K,), 每个 BOX/类别候选行上限; 正式 topk 模式也作为 top-k 请求数
+        - selection_mode: str, 候选选择模式, 取值 adaptive_threshold、recorded_threshold 或 topk
 
     forward 输入:
         - voxel_logits_ligand: torch.Tensor, (B,1,D,H,W) 或 (B,C,D,H,W), ligand head logits
@@ -35,6 +35,10 @@ class SparseCandidateSetBuilder(nn.Module):
             - "candidate_counts_by_class": torch.Tensor, (B, K), 每个 BOX/路由类合并后的实际 C 数目
             - "candidate_p_sampling_by_class": torch.Tensor, (B, K), 每个 BOX/候选类 实际使用的候选截断概率
             - "candidate_target_counts_by_class": torch.Tensor, (B, K), 每个 BOX/候选类 原本打算的选取体素数目(不被最大值限制前)
+
+    说明:
+        - `warmup_topc_per_class` 是 warmup fixed top-C 配置名, 保持历史字段名。
+        - 正式 `selection_mode="topk"` 使用 `max_candidate_voxels_per_class` 作为每 BOX/类别 top-k 请求数。
     """
 
     def __init__(
@@ -66,8 +70,8 @@ class SparseCandidateSetBuilder(nn.Module):
             raise ValueError("adaptive_expand_factor 每项必须 > 0。")
         if any(max_count < 0 for max_count in max_per_class):
             raise ValueError("max_candidate_voxels_per_class 每项必须 >= 0。")
-        if selection_mode not in {"adaptive_threshold", "recorded_threshold"}:
-            raise ValueError("selection_mode 只允许 adaptive_threshold 或 recorded_threshold。")
+        if selection_mode not in {"adaptive_threshold", "recorded_threshold", "topk"}:
+            raise ValueError("selection_mode 只允许 adaptive_threshold、recorded_threshold 或 topk。")
 
         self.candidate_class_ids = class_ids
         self.warmup_topc_per_class = warmup_topc
@@ -337,6 +341,14 @@ class SparseCandidateSetBuilder(nn.Module):
                             selected_order = threshold_selected
                         output["candidate_target_counts_by_class"][batch_idx, class_pos] = target_before_cap
                         output["candidate_p_sampling_by_class"][batch_idx, class_pos] = p_sampling[class_pos]
+                    elif self.selection_mode == "topk":
+                        # int, topk 模式请求的候选行数, 直接使用每类 C 行数硬上限
+                        target_before_cap = max_count
+                        # int, topk 模式实际保留的候选行数
+                        target_count = min(target_before_cap, int(prob_valid.numel()))
+                        # torch.Tensor, (target_count,), topk 选中的局部有效体素下标
+                        selected_order = torch.topk(prob_valid, k=target_count).indices if target_count > 0 else torch.empty((0,), device=logits.device, dtype=torch.long)
+                        output["candidate_target_counts_by_class"][batch_idx, class_pos] = target_before_cap
 
                     if selected_order.numel() == 0:
                         continue
@@ -348,7 +360,7 @@ class SparseCandidateSetBuilder(nn.Module):
                     selected_prob = prob_valid.index_select(dim=0, index=selected_order)
                     # torch.Tensor, (M_keep, C_logits), 选中候选所在 voxel 的完整原始 logits
                     selected_logits = logits_flat.index_select(dim=1, index=selected_flat_index).transpose(0, 1).contiguous()
-                    if use_fixed_warmup or self.selection_mode == "adaptive_threshold":
+                    if use_fixed_warmup or self.selection_mode in {"adaptive_threshold", "topk"}:
                         # torch.Tensor, (), 当前 BOX/类别实际 topk 截断概率
                         cutoff_prob = selected_prob.min() if selected_prob.numel() > 0 else torch.tensor(float("nan"), device=logits.device, dtype=logits.dtype)
                         output["candidate_p_sampling_by_class"][batch_idx, class_pos] = cutoff_prob

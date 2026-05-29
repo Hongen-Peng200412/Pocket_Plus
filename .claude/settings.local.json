@@ -9,5 +9,27 @@
       "*"
     ]
   },
+  "hooks": {
+    "WorktreeCreate": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "powershell -NoProfile -ExecutionPolicy Bypass -File \"C:\\Users\\15919\\OneDrive\\My_Project\\Pocket_Plus\\scripts\\claude-worktree-create.ps1\""
+          }
+        ]
+      }
+    ],
+    "WorktreeRemove": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "powershell -NoProfile -ExecutionPolicy Bypass -File \"C:\\Users\\15919\\OneDrive\\My_Project\\Pocket_Plus\\scripts\\claude-worktree-remove.ps1\""
+          }
+        ]
+      }
+    ]
+  },
   "defaultMode": "bypassPermissions"
 }

@@ -36,11 +36,32 @@ function Get-WorktreeStatus([string]$Path) {
     if (-not (Test-Path -LiteralPath $Path)) {
         return @()
     }
-    $status = git -C $Path status --porcelain 2>$null
+    $status = @(& git -C $Path status --porcelain 2>$null)
     if ($LASTEXITCODE -ne 0) {
         return @("__GIT_STATUS_FAILED__")
     }
     return @($status)
+}
+
+function Test-BrokenGitWorktreeDir([string]$Path) {
+    $gitFile = Join-Path $Path ".git"
+    if (-not (Test-Path -LiteralPath $gitFile -PathType Leaf)) {
+        return $false
+    }
+    $gitText = Get-Content -LiteralPath $gitFile -Raw -ErrorAction SilentlyContinue
+    if ($gitText -notmatch 'gitdir:\s*(.+)') {
+        return $false
+    }
+    $gitDir = $Matches[1].Trim().Replace("/", "\")
+    if (-not [System.IO.Path]::IsPathRooted($gitDir)) {
+        $gitDir = Join-Path $Path $gitDir
+    }
+    foreach ($required in @("gitdir", "HEAD", "commondir")) {
+        if (-not (Test-Path -LiteralPath (Join-Path $gitDir $required))) {
+            return $true
+        }
+    }
+    return $false
 }
 
 function Test-OnlyClaudeLocalChanges([string[]]$StatusLines) {
@@ -149,6 +170,11 @@ if (Test-Path -LiteralPath $ClaudeWorktreeRoot) {
     foreach ($dir in Get-ChildItem -LiteralPath $ClaudeWorktreeRoot -Force -Directory) {
         $dirPath = Get-FullPath $dir.FullName
         if ($registered -contains $dirPath) {
+            continue
+        }
+        if (Test-BrokenGitWorktreeDir $dirPath) {
+            Write-Host "Remove broken half-created Claude worktree dir: $dirPath"
+            Remove-DirectorySafe $dirPath $ClaudeWorktreeRoot
             continue
         }
         $status = Get-WorktreeStatus $dirPath

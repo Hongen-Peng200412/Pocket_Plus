@@ -45,6 +45,17 @@ monitor_mode: max                  # str, 主指标方向, 取值 max/min
                                    # → configs/train/B40_L3.yaml: scheduler.mode=${model.monitor_mode}
 voxel_ligand_pr_auc_thresholds: 1024  # int | null, binned ligand PR-AUC 阈值数; 训练期默认 1024, 最终评估可显式覆盖为 4096
 val_metric_device_policy: auto        # str, 验证 AP 更新设备策略; auto=非 binned 走 CPU 省显存, binned 走 GPU 加速阈值扫描
+class_names: ${dataset.class_names}    # list[str], task class 名; 必须与 dataset.class_names 和 logits 通道顺序一致
+validation_diagnostics:
+  enabled: true
+  source_folder_breakdown: true
+  source_folder_names: ${dataset.class_folder_names}
+  source_folder_meta_key: class_name
+  num_bins: ${model.voxel_ligand_pr_auc_thresholds}
+  write_local_artifacts: true
+  log_wandb_curves: true
+  wandb_curve_every_n_validation: 1
+  output_subdir: validation_diagnostics
 
 # --- Sparse refine loss 默认关闭 ---
 # 下列字段由 VoxelPointStage1Wrapper.__init__ 保存并在 _compute_total_loss() 中消费。

@@ -4,7 +4,13 @@
   "goals": [
     "Maintain a reusable CLAUDE workspace for planning, memory, and session continuity in this repository."
   ],
-  "progress": [],
+  "progress": [
+    {
+      "date": "2026-05-29",
+      "summary": "Stage1 wrapper refactor first phase: topk candidate mode, helper module skeletons, restored wrapper entrypoint, receptor log rename, and focused tests passing; full CPC diagnostics and end-to-end smoke remain open.",
+      "handoff": "CLAUDE/memory/handoffs/2026-05-29-stage1-wrapper-refactor-current-state.md"
+    }
+  ],
   "blockers": [],
   "failures": []
 }
