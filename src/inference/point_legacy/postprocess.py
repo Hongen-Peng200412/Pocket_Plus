@@ -121,7 +121,7 @@ def merge_box_atom_results(
 
     输入参数:
         - box_results: list[dict], 每项包含一个 BOX 的原子级预测结果
-            - "global_atom_indices": np.ndarray, (N_box,), int64, 该 BOX 内原子的全局索引
+            - "atom_global_indices": np.ndarray, (N_box,), int64, 该 BOX 内原子的全局索引
             - "atom_logits": np.ndarray, (N_box,) 或 (N_box, 1), float32, 原始 logits
             - "atom_is_in_core": np.ndarray, (N_box,), bool, 是否在 core BOX 内
             - "atom_coord_local_voxel": np.ndarray, (N_box, 3), float32, 连续 voxel 坐标
@@ -153,7 +153,7 @@ def merge_box_atom_results(
 
     for box_res in box_results:
         # np.ndarray, (N_box,), int64, 当前 BOX 的原子全局索引
-        indices = np.asarray(box_res["global_atom_indices"], dtype=np.int64)
+        indices = np.asarray(box_res["atom_global_indices"], dtype=np.int64)
         # np.ndarray, (N_box,) 或 (N_box, 1), float64, 当前 BOX 的原始 logits
         logits = np.asarray(box_res["atom_logits"], dtype=np.float64)
         if logits.ndim == 2 and logits.shape[1] == 1:

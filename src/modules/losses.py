@@ -442,110 +442,110 @@ class BinaryTverskyLoss(nn.Module):
         return 1.0 - tversky_index
 
 
-# ============================================================
-# FocalTverskyCombinedLoss
-# Focal Loss + Tversky Loss 的加权和，接口与 BinaryFocalLossWithAlpha 完全一致
-# ============================================================
-class FocalTverskyCombinedLoss(nn.Module):
-    """
-    Focal Loss + Tversky Loss 加权求和的联合损失。
+# # ============================================================
+# # FocalTverskyCombinedLoss
+# # Focal Loss + Tversky Loss 的加权和，接口与 BinaryFocalLossWithAlpha 完全一致
+# # ============================================================
+# class FocalTverskyCombinedLoss(nn.Module):
+#     """
+#     Focal Loss + Tversky Loss 加权求和的联合损失。
 
-    输入参数:
-        - focal_weight: float, Focal 损失权重, 建议值 1.0
-        - dice_weight: float, Tversky 损失权重, 建议值 1.0
-        - tversky_alpha: float, Tversky FP 惩罚系数, 建议值 0.5
-        - tversky_beta: float, Tversky FN 惩罚系数, 建议值 0.5
-        - tversky_smooth: float, Tversky 平滑项, 建议值 1.0
-        - (其余参数透传给 BinaryFocalLossWithAlpha):
-            - gamma: float, Focal 聚焦参数
-            - ignore_index: int | None
-            - eps: float
-            - scale: float
-            - alpha_tune: list[float] | None
-            - use_adaptive_alpha: bool
-            - from_logits: bool, 建议值 True
-            - flatten_count: float
+#     输入参数:
+#         - focal_weight: float, Focal 损失权重, 建议值 1.0
+#         - dice_weight: float, Tversky 损失权重, 建议值 1.0
+#         - tversky_alpha: float, Tversky FP 惩罚系数, 建议值 0.5
+#         - tversky_beta: float, Tversky FN 惩罚系数, 建议值 0.5
+#         - tversky_smooth: float, Tversky 平滑项, 建议值 1.0
+#         - (其余参数透传给 BinaryFocalLossWithAlpha):
+#             - gamma: float, Focal 聚焦参数
+#             - ignore_index: int | None
+#             - eps: float
+#             - scale: float
+#             - alpha_tune: list[float] | None
+#             - use_adaptive_alpha: bool
+#             - from_logits: bool, 建议值 True
+#             - flatten_count: float
 
-    前向输入:
-        - logits: torch.Tensor, (N, 1, ...)
-        - target: torch.Tensor, (N, ...)
-        - reduction: str, "mean" 传递给 Focal；Tversky 强制全局 mean
-        - hardmask: torch.Tensor | None
+#     前向输入:
+#         - logits: torch.Tensor, (N, 1, ...)
+#         - target: torch.Tensor, (N, ...)
+#         - reduction: str, "mean" 传递给 Focal；Tversky 强制全局 mean
+#         - hardmask: torch.Tensor | None
 
-    前向输出:
-        - loss: torch.Tensor, 标量
-    """
+#     前向输出:
+#         - loss: torch.Tensor, 标量
+#     """
 
-    def __init__(
-        self,
-        focal_weight: float,
-        dice_weight: float,
-        tversky_alpha: float,
-        tversky_beta: float,
-        tversky_smooth: float,
-        gamma: float,
-        ignore_index,
-        eps: float,
-        scale: float,
-        alpha_tune,
-        use_adaptive_alpha: bool,
-        from_logits: bool = True,
-        flatten_count: float = 1.0,
-    ) -> None:
-        super().__init__()
-        # float, 标量, Focal 损失权重
-        self.focal_weight = float(focal_weight)
-        # float, 标量, Tversky 损失权重
-        self.dice_weight = float(dice_weight)
+#     def __init__(
+#         self,
+#         focal_weight: float,
+#         dice_weight: float,
+#         tversky_alpha: float,
+#         tversky_beta: float,
+#         tversky_smooth: float,
+#         gamma: float,
+#         ignore_index,
+#         eps: float,
+#         scale: float,
+#         alpha_tune,
+#         use_adaptive_alpha: bool,
+#         from_logits: bool = True,
+#         flatten_count: float = 1.0,
+#     ) -> None:
+#         super().__init__()
+#         # float, 标量, Focal 损失权重
+#         self.focal_weight = float(focal_weight)
+#         # float, 标量, Tversky 损失权重
+#         self.dice_weight = float(dice_weight)
 
-        # BinaryFocalLossWithAlpha, Focal 损失子模块
-        self.focal_loss = BinaryFocalLossWithAlpha(
-            from_logits=from_logits,
-            gamma=gamma,
-            ignore_index=ignore_index,
-            eps=eps,
-            flatten_count=flatten_count,
-            alpha_tune=alpha_tune,
-            use_adaptive_alpha=use_adaptive_alpha,
-            scale=scale,
-        )
-        # BinaryTverskyLoss, Tversky 损失子模块（α=β=0.5 时等价于 Dice）
-        self.tversky_loss = BinaryTverskyLoss(
-            alpha=tversky_alpha,
-            beta=tversky_beta,
-            smooth=tversky_smooth,
-            from_logits=from_logits,
-        )
+#         # BinaryFocalLossWithAlpha, Focal 损失子模块
+#         self.focal_loss = BinaryFocalLossWithAlpha(
+#             from_logits=from_logits,
+#             gamma=gamma,
+#             ignore_index=ignore_index,
+#             eps=eps,
+#             flatten_count=flatten_count,
+#             alpha_tune=alpha_tune,
+#             use_adaptive_alpha=use_adaptive_alpha,
+#             scale=scale,
+#         )
+#         # BinaryTverskyLoss, Tversky 损失子模块（α=β=0.5 时等价于 Dice）
+#         self.tversky_loss = BinaryTverskyLoss(
+#             alpha=tversky_alpha,
+#             beta=tversky_beta,
+#             smooth=tversky_smooth,
+#             from_logits=from_logits,
+#         )
 
-    def forward(
-        self,
-        logits: torch.Tensor,
-        target: torch.Tensor,
-        reduction: str = "mean",
-        hardmask: torch.Tensor | None = None,
-        **kwargs,
-    ) -> torch.Tensor:
-        """
-        前向计算 Focal + Tversky 联合损失。
+#     def forward(
+#         self,
+#         logits: torch.Tensor,
+#         target: torch.Tensor,
+#         reduction: str = "mean",
+#         hardmask: torch.Tensor | None = None,
+#         **kwargs,
+#     ) -> torch.Tensor:
+#         """
+#         前向计算 Focal + Tversky 联合损失。
 
-        输入参数:
-            - logits: torch.Tensor, (N, 1, ...) 或 (N, 1)
-            - target: torch.Tensor, (N, ...) 或 (N,)
-            - reduction: str, 传递给 Focal 子模块；Tversky 固定为全局 mean
-            - hardmask: torch.Tensor | None
+#         输入参数:
+#             - logits: torch.Tensor, (N, 1, ...) 或 (N, 1)
+#             - target: torch.Tensor, (N, ...) 或 (N,)
+#             - reduction: str, 传递给 Focal 子模块；Tversky 固定为全局 mean
+#             - hardmask: torch.Tensor | None
 
-        输出:
-            - loss: torch.Tensor, 标量，等于 focal_weight·focal + dice_weight·tversky
-        """
-        # torch.Tensor, 标量, Focal 损失值
-        focal = self.focal_loss(
-            logits, target, reduction=reduction, hardmask=hardmask, **kwargs
-        )
-        # torch.Tensor, 标量, Tversky 损失值（强制全局 mean）
-        tversky = self.tversky_loss(
-            logits, target, reduction="mean", hardmask=hardmask
-        )
-        return self.focal_weight * focal + self.dice_weight * tversky
+#         输出:
+#             - loss: torch.Tensor, 标量，等于 focal_weight·focal + dice_weight·tversky
+#         """
+#         # torch.Tensor, 标量, Focal 损失值
+#         focal = self.focal_loss(
+#             logits, target, reduction=reduction, hardmask=hardmask, **kwargs
+#         )
+#         # torch.Tensor, 标量, Tversky 损失值（强制全局 mean）
+#         tversky = self.tversky_loss(
+#             logits, target, reduction="mean", hardmask=hardmask
+#         )
+#         return self.focal_weight * focal + self.dice_weight * tversky
 
 
 # ============================================================
@@ -664,6 +664,38 @@ class UnifiedCompositeLoss(nn.Module):
         if x.ndim == ref_ndim + 1 and x.shape[1] == 1:
             return x.squeeze(1)
         return x
+
+    def target_from_ligand_dist_map(
+        self,
+        ligand_dist_map: torch.Tensor,
+        logit_dim: int,
+        device: torch.device,
+        dtype: torch.dtype,
+    ) -> torch.Tensor:
+        """
+        从二分类 ligand 距离图生成硬标签。
+
+        输入参数:
+            - ligand_dist_map: torch.Tensor, (B,D,H,W) 或 (B,1,D,H,W), ligand 距离监督图
+            - logit_dim: int, 当前 logits 通道数, UnifiedCompositeLoss 只允许 1
+            - device: torch.device, 输出 target 所在设备
+            - dtype: torch.dtype, 距离图计算 dtype
+
+        输出:
+            - target: torch.Tensor, (B,D,H,W), 二分类 0/1 硬标签
+        """
+        if int(logit_dim) != 1:
+            raise ValueError("UnifiedCompositeLoss 只支持单通道二分类 ligand target。")
+        if self.hard_label_threshold is None:
+            raise ValueError("ligand 距离监督需要 hard_label_threshold。")
+        dist = ligand_dist_map.to(device=device, dtype=dtype)
+        if dist.ndim == 5 and dist.shape[1] == 1:
+            dist = dist.squeeze(1)
+        elif dist.ndim == 5:
+            raise ValueError(f"二分类 ligand_dist_map 只允许单通道，实际 shape={tuple(dist.shape)}")
+        elif dist.ndim != 4:
+            raise ValueError(f"ligand_dist_map 期望为 (B,D,H,W) 或 (B,1,D,H,W)，实际 {tuple(dist.shape)}")
+        return (dist < self.hard_label_threshold).long()
 
     def forward(
         self,
@@ -796,7 +828,7 @@ class UnifiedCompositeLoss(nn.Module):
         # torch.Tensor, (*,), float32, masked 预测概率
         masked_prob = prob * mask_float
         # torch.Tensor, (*,), float32, masked 目标
-        tversky_target = y_soft if self.tversky_soft_target and y_soft is not None else hard_float
+        tversky_target = y_soft if (self.tversky_soft_target and y_soft is not None) else hard_float
         
         masked_target = tversky_target * mask_float
 
@@ -872,7 +904,7 @@ class AdaptiveClassificationCompositeLoss(nn.Module):
         w_tversky: float,
         w_mse: float = 0.0,
         sigma: float = 2.0,
-        focal_alpha_neg: float = 0.5,
+        focal_alpha_neg: float = 0.5,   # 事实上弃置, 改为由 focal_alpha 控制正负损失项
         focal_alpha_pos: float = 0.5,
         focal_soft_negative_suppression: bool = False,
         tversky_soft_target: bool = False,
@@ -931,35 +963,66 @@ class AdaptiveClassificationCompositeLoss(nn.Module):
             effective_mask = effective_mask & (self._squeeze_channel_mask(hardmask.to(device=target.device), target.ndim) != 0)
         return effective_mask
 
+    def target_from_ligand_dist_map(
+        self,
+        ligand_dist_map: torch.Tensor,
+        logit_dim: int,
+        device: torch.device,
+        dtype: torch.dtype,
+    ) -> torch.Tensor:
+        """
+        从 ligand 距离图生成 dense hard-label target。
+
+        输入参数:
+            - ligand_dist_map: torch.Tensor, 二分类 (B,D,H,W)/(B,1,D,H,W) 或多分类 (B,C,D,H,W), ligand 距离监督图
+            - logit_dim: int, 当前 logits 通道数; 二分类为 1, 多分类为类别数
+            - device: torch.device, 输出 target 所在设备
+            - dtype: torch.dtype, 距离图计算 dtype
+
+        输出:
+            - target: torch.Tensor, (B,D,H,W), 类别 ID 硬标签; 二分类取值 0/1, 多分类取值 0..C-1
+        """
+        if self.hard_label_threshold is None:
+            raise ValueError("ligand 距离监督需要 hard_label_threshold。")
+        dist = ligand_dist_map.to(device=device, dtype=dtype)
+        logit_dim = int(logit_dim)
+        if logit_dim == 1:
+            if dist.ndim == 5 and dist.shape[1] == 1:
+                dist = dist.squeeze(1)
+            elif dist.ndim == 5:
+                raise ValueError(f"二分类 ligand_dist_map 只允许单通道，实际 shape={tuple(dist.shape)}")
+            elif dist.ndim != 4:
+                raise ValueError(f"二分类 ligand_dist_map 期望为 (B,D,H,W) 或 (B,1,D,H,W)，实际 {tuple(dist.shape)}")
+            return (dist < self.hard_label_threshold).long()
+        if logit_dim != self.num_classes:
+            raise ValueError(f"logit_dim={logit_dim} 必须等于 num_classes={self.num_classes}。")
+        if dist.ndim != 5 or int(dist.shape[1]) != logit_dim:
+            raise ValueError(f"多分类 ligand_dist_map 期望为 (B,{logit_dim},D,H,W)，实际 {tuple(dist.shape)}")
+        # torch.Tensor, (B,C-1,D,H,W), 前景类别距离图, 不包含背景占位通道
+        foreground_dist = dist[:, 1:]
+        # min_dist/min_index: torch.Tensor, (B,D,H,W), 最近前景距离与局部类别下标
+        min_dist, min_index = foreground_dist.min(dim=1)
+        # torch.Tensor, (B,D,H,W), 最近前景类别 ID, 取值 1..C-1
+        target = min_index.long() + 1
+        return torch.where(min_dist < self.hard_label_threshold, target, torch.zeros_like(target))
+
     def _target_from_multiclass_dist(self, ligand_dist_map: torch.Tensor, logits: torch.Tensor) -> torch.Tensor:
         """
         从多分类 ligand 距离图生成类别 ID 硬标签。
 
         输入参数:
-            - ligand_dist_map: torch.Tensor, (B, C, D, H, W), 每类 ligand 距离图; 通道 0 为背景占位
-            - logits: torch.Tensor, (B, C, D, H, W), 当前 head 输出 logits, 只用于校验形状和对齐设备
+            - ligand_dist_map: torch.Tensor, (B,C,D,H,W), 每类 ligand 距离图; 通道 0 为背景占位
+            - logits: torch.Tensor, (B,C,D,H,W), 当前 head 输出 logits, 只用于校验形状和对齐设备
 
         输出:
-            - target: torch.Tensor, (B, D, H, W), 由距离阈值得到的类别 ID; 0 为背景, 1..C-1 为前景类别
+            - target: torch.Tensor, (B,D,H,W), 由距离阈值得到的类别 ID; 0 为背景, 1..C-1 为前景类别
         """
-        if self.hard_label_threshold is None:
-            raise ValueError("多分类 ligand 距离监督需要 hard_label_threshold")
-        # torch.Tensor, (B, C, D, H, W), 与 logits 对齐 dtype/device 后的距离图
-        dist = ligand_dist_map.to(device=logits.device, dtype=logits.dtype)
-        if dist.ndim != logits.ndim or dist.shape[1] != logits.shape[1]:
-            raise ValueError(
-                f"多分类 ligand_dist_map 期望形状与 logits 同为 (B,C,...), 实际 logits={tuple(logits.shape)}, dist={tuple(dist.shape)}"
-            )
-        # torch.Tensor, (B, C-1, D, H, W), 前景类别距离图, 不包含背景占位通道
-        foreground_dist = dist[:, 1:]
-        # min_dist: torch.Tensor, (B, D, H, W), 最近前景类别距离
-        # min_index: torch.Tensor, (B, D, H, W), 最近前景类别在 foreground_dist 内的 0 基索引
-        min_dist, min_index = foreground_dist.min(dim=1)
-        # torch.Tensor, (B, D, H, W), 最近前景类别 ID, 取值范围 1..C-1
-        target = min_index.long() + 1
-        # torch.Tensor, (B, D, H, W), 超过距离阈值的位置改为背景 0
-        target = torch.where(min_dist < self.hard_label_threshold, target, torch.zeros_like(target))
-        return target
+        return self.target_from_ligand_dist_map(
+            ligand_dist_map=ligand_dist_map,
+            logit_dim=int(logits.shape[1]),
+            device=logits.device,
+            dtype=logits.dtype,
+        )
 
     def forward(
         self,
@@ -1021,6 +1084,8 @@ class AdaptiveClassificationCompositeLoss(nn.Module):
         expected_shape = (logits.shape[0], *logits.shape[2:])
         if tuple(hard_label.shape) != tuple(expected_shape):
             raise ValueError(f"target shape={tuple(hard_label.shape)} 与 logits 空间 shape={expected_shape} 不一致")
+        if hard_label.numel() == 0:
+            return logits.new_tensor(0.0)
         if hard_label.min() < 0 or hard_label.max() >= self.num_classes:
             raise ValueError("多分类 target 中存在超出类别范围的值")
 

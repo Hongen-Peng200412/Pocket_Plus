@@ -300,6 +300,7 @@ def evaluate_loaded_cached_sample_with_postprocess(
         score_minus=float(postprocess_params["score_minus"]),
         voxel_score_min=float(postprocess_params["voxel_score_min"]),
         instance_score_min=float(postprocess_params["instance_score_min"]),
+        merge_dist=float(postprocess_params["merge_dist"]),
     )
     voxel_metrics = evaluate_voxel_mask(result.binary_mask_filtered, data.gt_ligand_mask)
     instance_metrics = evaluate_instance_mask(

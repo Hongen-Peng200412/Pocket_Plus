@@ -15,7 +15,7 @@
 # ============================================================
 _target_: src.datasets.box_point_dataset.BoxPointDataset
 
-name: unet_c1
+name: unet_c2
 
 # --- 数据根目录路径 (允许 train/val 分别指定) ---
 all_data_path: "/storage/penghongen/Pocket_classic/v2_raw4_10A"
@@ -29,6 +29,7 @@ density_channel_config:
   fit_mask_percentile: 0.003
   enabled_channels:
     - "exp_clipnorm_nopost"
+    - "diff_clipnorm_nopost"
 
 
 

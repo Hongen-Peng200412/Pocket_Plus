@@ -954,6 +954,7 @@ def _postprocess_params_from_cfg(cfg_dict: dict[str, Any]) -> dict[str, Any]:
             - "score_minus": float, 负向响应减分项
             - "voxel_score_min": float, 候选体素级分数阈值
             - "instance_score_min": float, 候选实例级分数阈值
+            - "merge_dist": float, 初步 instance 中心世界坐标合并阈值
     """
     params = {
         "threshold": float(_get_cfg(cfg_dict, "threshold", True)),
@@ -968,6 +969,7 @@ def _postprocess_params_from_cfg(cfg_dict: dict[str, Any]) -> dict[str, Any]:
         "score_minus": float(_get_cfg(cfg_dict, "score_minus", True)),
         "voxel_score_min": float(_get_cfg(cfg_dict, "voxel_score_min", True)),
         "instance_score_min": float(_get_cfg(cfg_dict, "instance_score_min", True)),
+        "merge_dist": float(_get_cfg(cfg_dict, "merge_dist", True)),
     }
     by_class = _get_cfg(cfg_dict, "postprocess_by_class", False)
     if by_class is not None:
@@ -1022,6 +1024,7 @@ def _postprocess_one_probability_map(
         score_minus=float(post_params["score_minus"]),
         voxel_score_min=float(post_params["voxel_score_min"]),
         instance_score_min=float(post_params["instance_score_min"]),
+        merge_dist=float(post_params["merge_dist"]),
     )
 
 

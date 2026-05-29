@@ -152,6 +152,99 @@ def _gaussian_filter_with_kernel(
     return ndimage.gaussian_filter(data, sigma=float(sigma), mode="reflect", truncate=truncate).astype(np.float32)
 
 
+# 按中心距离合并近邻 instance
+def _merge_instances_by_center_distance(
+    instance_label: np.ndarray,
+    origin: np.ndarray,
+    voxel_size: np.ndarray,
+    merge_dist: float,
+) -> np.ndarray:
+    """
+    按 instance 中心世界坐标距离合并近邻 instance, 并重新编号为连续正 id。
+
+    输入参数:
+        - instance_label: np.ndarray, (D,H,W), int32, instance 标签; 0 为背景, 正 id 从 1 开始连续
+        - origin: np.ndarray, (3,), 世界坐标原点(x,y,z)
+        - voxel_size: np.ndarray, (3,), 体素大小(x,y,z)
+        - merge_dist: float, 中心世界坐标合并阈值; 调用方保证 > 0.0
+
+    输出:
+        - merged_label: np.ndarray, (D,H,W), int32, 合并后正 id 从 1 开始连续的标签
+    """
+    # np.ndarray, (D,H,W), int32, 输入 instance 标签副本视图; 0 为背景
+    label = np.asarray(instance_label, dtype=np.int32)
+    # np.ndarray, (D,H,W), bool, 预测 instance 正区域掩码
+    positive_mask = label > 0
+    if not bool(positive_mask.any()):
+        return np.zeros_like(label, dtype=np.int32)
+
+    # tuple[np.ndarray, np.ndarray, np.ndarray], 每项形状 (N,), 正区域体素坐标(z,y,x)
+    coords_zyx = np.nonzero(positive_mask)
+    # np.ndarray, (N,), int64, 每个正区域体素对应的原始 instance id
+    labels = label[positive_mask].astype(np.int64, copy=False)
+    # int, 当前标签图中最大的正 instance id
+    max_label = int(labels.max())
+    # np.ndarray, (max_label+1,), int64, 每个原始 instance id 的体素数
+    counts = np.bincount(labels, minlength=max_label + 1)
+    # np.ndarray, (K,), int64, 当前保留的原始 instance id, 按 id 升序排列
+    instance_ids = np.flatnonzero(counts > 0)
+    instance_ids = instance_ids[instance_ids > 0]
+    if instance_ids.shape[0] <= 1:
+        return label.astype(np.int32, copy=True)
+
+    # list[np.ndarray], 长度 3, 每项形状 (max_label+1,), 每个 instance 在 z/y/x 轴的坐标总和
+    coord_sum = [np.bincount(labels, weights=coords_zyx[axis], minlength=max_label + 1) for axis in range(3)]
+    # np.ndarray, (K,3), float64, 每个 instance 的中心体素坐标(z,y,x)
+    centers_zyx = np.stack([coord_sum[axis][instance_ids] / counts[instance_ids] for axis in range(3)], axis=1)
+    # np.ndarray, (3,), float64, 世界坐标原点(x,y,z)
+    origin_float = np.asarray(origin, dtype=np.float64).reshape(3)
+    # np.ndarray, (3,), float64, 体素大小(x,y,z)
+    voxel_size_float = np.asarray(voxel_size, dtype=np.float64).reshape(3)
+    # np.ndarray, (K,3), float64, 每个 instance 的中心世界坐标(x,y,z)
+    centers_world_xyz = np.column_stack(
+        (
+            origin_float[0] + (centers_zyx[:, 2] + 0.5) * voxel_size_float[0],
+            origin_float[1] + (centers_zyx[:, 1] + 0.5) * voxel_size_float[1],
+            origin_float[2] + (centers_zyx[:, 0] + 0.5) * voxel_size_float[2],
+        )
+    )
+    # np.ndarray, (K,), int32, union-find 父节点索引
+    parent = np.arange(instance_ids.shape[0], dtype=np.int32)
+
+    def find(local_index: int) -> int:
+        while int(parent[local_index]) != int(local_index):
+            parent[local_index] = parent[int(parent[local_index])]
+            local_index = int(parent[local_index])
+        return int(local_index)
+
+    def union(left_index: int, right_index: int) -> None:
+        left_root = find(left_index)
+        right_root = find(right_index)
+        if left_root != right_root:
+            parent[right_root] = left_root
+
+    # float, 中心世界坐标距离阈值的平方
+    merge_dist2 = float(merge_dist) * float(merge_dist)
+    for left_index in range(instance_ids.shape[0] - 1):
+        # np.ndarray, (K-left_index-1,), float64, 当前 instance 到后续 instance 的中心距离平方
+        dist2 = np.sum((centers_world_xyz[left_index + 1:] - centers_world_xyz[left_index]) ** 2, axis=1)
+        # np.ndarray, (M,), int64, 与当前 instance 距离小于阈值的后续局部偏移
+        close_offsets = np.flatnonzero(dist2 < merge_dist2)
+        for offset in close_offsets:
+            union(left_index, left_index + 1 + int(offset))
+
+    # dict[int,int], union-find 根节点到新连续 instance id 的映射
+    root_to_new_id: dict[int, int] = {}
+    # np.ndarray, (max_label+1,), int32, 原始 instance id 到合并后连续 id 的映射表
+    new_ids = np.zeros(max_label + 1, dtype=np.int32)
+    for local_index, instance_id in enumerate(instance_ids):
+        root = find(int(local_index))
+        if root not in root_to_new_id:
+            root_to_new_id[root] = len(root_to_new_id) + 1
+        new_ids[int(instance_id)] = root_to_new_id[root]
+    return new_ids[label]
+
+
 
 
 
@@ -177,6 +270,7 @@ def postprocess_ligand_probability_map(
     score_minus: float,
     voxel_score_min: float,
     instance_score_min: float,
+    merge_dist: float,
 ) -> VoxelPostprocessResult:
     """
     对单张 ligand 概率图执行 voxel-only 后处理。
@@ -206,6 +300,7 @@ def postprocess_ligand_probability_map(
 
         - voxel_score_min: float, advanced 低分体素删除阈值
         - instance_score_min: float, advanced 低均分 instance 删除阈值
+        - merge_dist: float, 初步 instance 中心世界坐标合并阈值; <=0.0 表示跳过合并
 
     输出:
         - result: VoxelPostprocessResult, 后处理结果对象
@@ -222,23 +317,26 @@ def postprocess_ligand_probability_map(
     if receptor_pred is not None and np.asarray(receptor_pred).shape != prob_map.shape:
         raise ValueError(f"receptor_pred.shape={np.asarray(receptor_pred).shape} 与 ligand_pred.shape={prob_map.shape} 不一致")
 
-    first_conn, second_conn = parse_connectivity_policy(connectivity_policy)
+    first_conn, _ = parse_connectivity_policy(connectivity_policy)
     # np.ndarray, (D,H,W), bool, 初始阈值掩码
     binary_mask_raw = prob_map >= float(threshold)
     # np.ndarray, (D,H,W), int32, 初始连通域标签
     instance_label_raw = _label_connected_components(binary_mask_raw, first_conn)
+    # np.ndarray, (D,H,W), int32, 去除小连通域后的初步 instance 标签
+    base_label = _filter_small_components(instance_label_raw, min_component_voxels)
+    if float(merge_dist) > 0.0:
+        base_label = _merge_instances_by_center_distance(base_label, origin, voxel_size, float(merge_dist))
 
     if filter_strength == "basic":
-        filtered_label = _filter_small_components(instance_label_raw, min_component_voxels)
         score_map = prob_map.astype(np.float32, copy=True)
-        candidates = _build_candidates(filtered_label, score_map, origin, voxel_size)
+        candidates = _build_candidates(base_label, score_map, origin, voxel_size)
         return VoxelPostprocessResult(
             prob_map=prob_map,
             score_map=score_map,
             binary_mask_raw=binary_mask_raw,
             instance_label_raw=instance_label_raw,
-            binary_mask_filtered=filtered_label > 0,
-            instance_label_filtered=filtered_label,
+            binary_mask_filtered=base_label > 0,
+            instance_label_filtered=base_label,
             candidates=candidates,
         )
 
@@ -261,12 +359,10 @@ def postprocess_ligand_probability_map(
     score_map = score_map.astype(np.float32, copy=False)
 
     # np.ndarray, (D,H,W), bool, advanced 体素级过滤掩码
-    score_mask = binary_mask_raw & (score_map >= float(voxel_score_min))
-    if second_conn == "none":
-        # np.ndarray, (D,H,W), int32, 沿用第一次连通域但去掉低分体素
-        score_instance_label = np.where(score_mask, instance_label_raw, 0).astype(np.int32)
-    else:
-        score_instance_label = _label_connected_components(score_mask, second_conn)
+    score_mask = base_label > 0
+    score_mask &= score_map >= float(voxel_score_min)
+    # np.ndarray, (D,H,W), int32, 沿用初步 instance 标签但去掉低分体素
+    score_instance_label = np.where(score_mask, base_label, 0).astype(np.int32)
     filtered_label = _filter_instances_by_score(
         instance_label=score_instance_label,
         score_map=score_map,

@@ -57,6 +57,7 @@ from src.inference.get_pred import load_model, load_training_config
 from src.inference.main.voxel_pipeline import run_voxel_param_search
 
 ADVANCED_SEARCH_PARAM_NAMES = [
+    "merge_dist",
     "sigma_nearby",
     "kernel_nearby",
     "sigma_response",
@@ -111,9 +112,11 @@ def build_stage1_cfg(base_cfg: dict[str, Any], run_root: str) -> dict[str, Any]:
     stage_cfg["output_root"] = _stage_output_root(run_root, "stage1_threshold_only")
     stage_cfg["filter_strength"] = "basic"
     stage_cfg["threshold"] = 0.0
-    stage_cfg["min_component_voxels"] = 5 
+    stage_cfg["min_component_voxels"] = 15
     stage_cfg["connectivity_policy"] = "7_none"
+    stage_cfg["merge_dist"] = 0.0
     stage_cfg["search_strategy"] = "grid"
+    stage_cfg["vis_enable"] = False
     stage_cfg["search_space"] = {
         "threshold": {"type": "float", "min": 0.05, "max": 1.0, "step": 0.01},
     }
@@ -160,9 +163,11 @@ def build_stage2_cfg(base_cfg: dict[str, Any], run_root: str, best_threshold: fl
     stage_cfg = copy.deepcopy(base_cfg)
     stage_cfg["output_root"] = _stage_output_root(run_root, "stage2_threshold_component_policy")
     stage_cfg["filter_strength"] = "basic"
-    stage_cfg["min_component_voxels"] = 5
+    stage_cfg["min_component_voxels"] = 15
     stage_cfg["connectivity_policy"] = "7_none"
+    stage_cfg["merge_dist"] = 5.0
     stage_cfg["search_strategy"] = "grid"
+    stage_cfg["vis_enable"] = True
     if isinstance(best_threshold, dict):
         if len(best_threshold) == 0:
             raise ValueError("best_threshold by_class 映射不能为空")
