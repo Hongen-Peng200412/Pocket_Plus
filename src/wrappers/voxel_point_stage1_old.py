@@ -38,11 +38,14 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
         atom_loss: nn.Module | None = None,
         voxel_aux_loss: nn.Module | None = None,
         voxel_ligand_loss: nn.Module | None = None,
+        ligand_sparse_refine_loss: nn.Module | None = None,
         optimizer: Optional[Dict[str, Any]] = None,
         scheduler: Optional[Dict[str, Any]] = None,
         atom_loss_weight: float = 1.0,
         voxel_aux_loss_weight: float = 0.0,
         voxel_ligand_loss_weight: float = 0.0,
+        ligand_sparse_refine_loss_weight: float = 0.0,
+        ligand_sparse_refine_loss_schedule: dict[str, Any] | None = None,
         monitor_metric: str = "val/atom_pr_auc",
         voxel_ligand_pr_auc_thresholds: Optional[int] = 1024,
         val_metric_device_policy: str = "auto",
@@ -55,7 +58,7 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
     ) -> None:
         super().__init__()
         # 将除 nn.Module 以外的超参数保存到 self.hparams，方便日志和检查点恢复
-        self.save_hyperparameters(ignore=["backbone", "atom_loss", "voxel_aux_loss", "voxel_ligand_loss"])
+        self.save_hyperparameters(ignore=["backbone", "atom_loss", "voxel_aux_loss", "voxel_ligand_loss", "ligand_sparse_refine_loss"])
 
         # nn.Module, 体素+点融合主干网络（VolumePointStage1Model）
         self.backbone = backbone if isinstance(backbone, nn.Module) else instantiate(backbone)
@@ -77,12 +80,21 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
             if (voxel_ligand_loss is None or isinstance(voxel_ligand_loss, nn.Module))
             else instantiate(voxel_ligand_loss)
         )
+        # AdaptiveClassificationCompositeLoss | None, C 级 sparse refine 损失函数; 为 None 时不参与梯度
+        self.ligand_sparse_refine_loss = (
+            ligand_sparse_refine_loss
+            if (ligand_sparse_refine_loss is None or isinstance(ligand_sparse_refine_loss, nn.Module))
+            else instantiate(ligand_sparse_refine_loss)
+        )
+        if self.ligand_sparse_refine_loss is not None and not isinstance(self.ligand_sparse_refine_loss, AdaptiveClassificationCompositeLoss):
+            raise TypeError("ligand_sparse_refine_loss 必须为 AdaptiveClassificationCompositeLoss。")
 
         if compile:
             self.backbone = torch.compile(self.backbone)
 
         # tuple[int, ...] | None, sparse candidate builder 配置的候选类别 ID
         self._sparse_candidate_class_ids: tuple[int, ...] | None = self._resolve_sparse_candidate_class_ids()
+        self._validate_ligand_sparse_refine_loss_config()
         # torch.Tensor | None, (K,), best-F1 阈值缓存; builder 未启用时为 None
         self._cached_voxel_ligand_p_best_by_class: torch.Tensor | None = self._init_candidate_threshold_cache(
             initial_p_best_by_class,
@@ -94,7 +106,7 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
             "initial_p_sampling_by_class",
         )
         # torch.Tensor | None, (K,), 每类 best-F1 这个值本身的缓存; builder 未启用时为 None
-        self._cached_voxel_ligand_best_f1_by_class: torch.Tensor | None = (
+        self._cached_voxel_ligand_best_f1_before_refine_by_class: torch.Tensor | None = (
             None if self._sparse_candidate_class_ids is None else torch.full((len(self._sparse_candidate_class_ids),), float("nan"), dtype=torch.float32)
         )
         self._candidate_warmup_steps = 0
@@ -146,6 +158,28 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
                 torch.zeros((len(self._sparse_candidate_class_ids), int(voxel_ligand_pr_auc_thresholds)), dtype=torch.long),
                 persistent=False,
             )
+            if self.ligand_sparse_refine_loss is not None:
+                # torch.Tensor, (K,num_bins), C 内正例 score histogram
+                self.register_buffer(
+                    "_ligand_sparse_refine_pos_hist_by_class",
+                    torch.zeros((len(self._sparse_candidate_class_ids), int(voxel_ligand_pr_auc_thresholds)), dtype=torch.long),
+                    persistent=False,
+                )
+                # torch.Tensor, (K,num_bins), C 内负例 score histogram
+                self.register_buffer(
+                    "_ligand_sparse_refine_neg_hist_by_class",
+                    torch.zeros((len(self._sparse_candidate_class_ids), int(voxel_ligand_pr_auc_thresholds)), dtype=torch.long),
+                    persistent=False,
+                )
+                # torch.Tensor, (K,), dense valid GT 正例数
+                self.register_buffer(
+                    "_ligand_sparse_refine_total_gt_pos_by_class",
+                    torch.zeros((len(self._sparse_candidate_class_ids),), dtype=torch.long),
+                    persistent=False,
+                )
+                self.register_buffer("_ligand_sparse_refine_candidate_count_total", torch.zeros((), dtype=torch.long), persistent=False)
+                self.register_buffer("_ligand_sparse_refine_anchor_count_total", torch.zeros((), dtype=torch.long), persistent=False)
+                self.register_buffer("_ligand_sparse_refine_box_count_total", torch.zeros((), dtype=torch.long), persistent=False)
         else:
             self._voxel_ligand_threshold_bin_count = None
             self._voxel_ligand_threshold_grid = None
@@ -194,6 +228,26 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
             if invalid_ids:
                 raise ValueError(f"candidate_class_ids={tuple(class_ids)} 与 voxel_ligand_loss.num_classes={num_classes} 不匹配。")
         return tuple(int(class_id) for class_id in class_ids)
+
+    def _validate_ligand_sparse_refine_loss_config(self) -> None:
+        """
+        校验 sparse refine loss 与 candidate class 配置是否一致。
+
+        输出:
+            - None, 配置不一致时 fail-fast
+        """
+        if self.ligand_sparse_refine_loss is None:
+            return
+        if self._sparse_candidate_class_ids is None:
+            raise ValueError("ligand_sparse_refine_loss 启用时必须同时启用 sparse candidate builder。")
+        num_classes = int(self.ligand_sparse_refine_loss.num_classes)
+        if num_classes <= 2:
+            if self._sparse_candidate_class_ids != (1,):
+                raise ValueError("二分类 ligand_sparse_refine_loss 只允许 candidate_class_ids=(1,)。")
+            return
+        invalid_ids = [class_id for class_id in self._sparse_candidate_class_ids if class_id <= 0 or class_id >= num_classes]
+        if invalid_ids:
+            raise ValueError(f"candidate_class_ids={self._sparse_candidate_class_ids} 与 ligand_sparse_refine_loss.num_classes={num_classes} 不匹配。")
 
     def _init_candidate_threshold_cache(
         self,
@@ -366,6 +420,22 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
         self._voxel_ligand_pos_hist_by_class.zero_()
         self._voxel_ligand_neg_hist_by_class.zero_()
 
+    def _reset_ligand_sparse_refine_metric_buffers(self) -> None:
+        """
+        清空 sparse refine validation metric buffers。
+
+        输出:
+            - None, 原地清零 C 级 histogram、dense GT 计数与 C/P/BOX 数量累计
+        """
+        if self.ligand_sparse_refine_loss is None:
+            return
+        self._ligand_sparse_refine_pos_hist_by_class.zero_()
+        self._ligand_sparse_refine_neg_hist_by_class.zero_()
+        self._ligand_sparse_refine_total_gt_pos_by_class.zero_()
+        self._ligand_sparse_refine_candidate_count_total.zero_()
+        self._ligand_sparse_refine_anchor_count_total.zero_()
+        self._ligand_sparse_refine_box_count_total.zero_()
+
     def _update_voxel_ligand_best_f1_stats(
         self,
         logits: torch.Tensor,
@@ -385,9 +455,6 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
         """
         if self._sparse_candidate_class_ids is None:
             return
-        hard_label_threshold = getattr(self.voxel_ligand_loss, "hard_label_threshold", None)
-        if hard_label_threshold is None:
-            raise ValueError("candidate threshold stats 启用时 voxel_ligand_loss.hard_label_threshold 不能为 None。")
         if valid_mask.ndim == 5 and valid_mask.shape[1] == 1:
             mask = valid_mask.squeeze(1).bool()
         elif valid_mask.ndim == 4:
@@ -395,7 +462,12 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
         else:
             raise ValueError(f"voxel_valid_mask 期望为 (B,D,H,W) 或 (B,1,D,H,W)，实际 {tuple(valid_mask.shape)}")
         # torch.Tensor, (B,D,H,W), 多分类类别 ID 或二分类 0/1 标签
-        target = self._ligand_target_from_dist(ligand_dist_map, float(hard_label_threshold)).to(device=logits.device)
+        target = self._ligand_target_from_dist(
+            ligand_dist_map=ligand_dist_map,
+            logit_dim=int(logits.shape[1]),
+            device=logits.device,
+            dtype=logits.dtype,
+        )
         mask = mask.to(device=logits.device)
         if logits.shape[1] == 1:
             if self._sparse_candidate_class_ids != (1,):
@@ -519,38 +591,42 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
             - None, 原地更新 metric_obj 状态
         """
         device = self._resolve_metric_update_device(metric_name, preds.device)
-        preds = preds.to(device, non_blocking=True)
-        targets = targets.to(device, non_blocking=True)
+        # GPU -> CPU 的异步拷贝不能立刻交给 CPU metric 读取，否则标签可能仍是未就绪内容。
+        non_blocking = device.type != "cpu"
+        preds = preds.to(device, non_blocking=non_blocking)
+        targets = targets.to(device, non_blocking=non_blocking)
         if self._val_metric_devices.get(metric_name) != device:
             metric_obj.to(device)
             self._val_metric_devices[metric_name] = device
         metric_obj.update(preds, targets)
 
-    @staticmethod
-    def _ligand_target_from_dist(ligand_dist_map: torch.Tensor, hard_label_threshold: float) -> torch.Tensor:
+    def _ligand_target_from_dist(
+        self,
+        ligand_dist_map: torch.Tensor,
+        logit_dim: int,
+        device: torch.device,
+        dtype: torch.dtype,
+    ) -> torch.Tensor:
         """
-        从 ligand 距离图生成验证指标使用的硬标签。
+        从 voxel ligand loss 配置生成验证指标使用的硬标签。
 
         输入参数:
-            - ligand_dist_map: torch.Tensor, (B, D, H, W) 或 (B, C, D, H, W), ligand 距离监督图
-            - hard_label_threshold: float, ligand 距离阈值
+            - ligand_dist_map: torch.Tensor, 二分类 (B,D,H,W)/(B,1,D,H,W) 或多分类 (B,C,D,H,W), ligand 距离监督图
+            - logit_dim: int, 当前 logits 通道数; 二分类为 1, 多分类为类别数
+            - device: torch.device, 输出 target 所在设备
+            - dtype: torch.dtype, 距离图计算 dtype
 
         输出:
-            - target: torch.Tensor, (B, D, H, W), 二分类 0/1 标签或多分类类别 ID 标签
+            - target: torch.Tensor, (B,D,H,W), 二分类 0/1 标签或多分类类别 ID 标签
         """
-        if ligand_dist_map.ndim == 4:
-            # torch.Tensor, (B, D, H, W), 二分类距离阈值标签, 取值 0/1
-            return (ligand_dist_map < float(hard_label_threshold)).long()
-        if ligand_dist_map.ndim != 5:
-            raise ValueError(f"ligand_dist_map 期望为 (B,D,H,W) 或 (B,C,D,H,W)，实际 {tuple(ligand_dist_map.shape)}")
-        # torch.Tensor, (B, C-1, D, H, W), 前景类别距离图, 排除背景通道
-        foreground_dist = ligand_dist_map[:, 1:]
-        # min_dist: torch.Tensor, (B, D, H, W), 最近前景类别距离
-        # min_index: torch.Tensor, (B, D, H, W), 最近前景类别在 foreground_dist 中的 0 基索引
-        min_dist, min_index = foreground_dist.min(dim=1)
-        # torch.Tensor, (B, D, H, W), 最近前景类别 ID, 取值范围 1..C-1
-        target = min_index.long() + 1
-        return torch.where(min_dist < float(hard_label_threshold), target, torch.zeros_like(target))
+        if self.voxel_ligand_loss is None or not hasattr(self.voxel_ligand_loss, "target_from_ligand_dist_map"):
+            raise TypeError("voxel_ligand_loss 必须支持 target_from_ligand_dist_map() 才能更新 ligand 指标。")
+        return self.voxel_ligand_loss.target_from_ligand_dist_map(
+            ligand_dist_map=ligand_dist_map,
+            logit_dim=logit_dim,
+            device=device,
+            dtype=dtype,
+        )
 
     def _update_binary_or_multiclass_ap(
         self,
@@ -718,6 +794,77 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
             )
         return self._loss_output_to_tensor(loss_out)
 
+    @staticmethod
+    def _normalize_voxel_valid_mask(
+        voxel_valid_mask: torch.Tensor,
+        spatial_shape_zyx: tuple[int, int, int],
+    ) -> torch.Tensor:
+        """
+        将 voxel_valid_mask 规范化为 `(B,D,H,W)` bool 掩码。
+
+        输入参数:
+            - voxel_valid_mask: torch.Tensor, (B,D,H,W) 或 (B,1,D,H,W), 有效体素掩码
+            - spatial_shape_zyx: tuple[int,int,int], 期望空间形状 `(D,H,W)`
+
+        输出:
+            - mask: torch.Tensor, (B,D,H,W), bool 有效体素掩码
+        """
+        if voxel_valid_mask.ndim == 5 and voxel_valid_mask.shape[1] == 1:
+            mask = voxel_valid_mask.squeeze(1).bool()
+        elif voxel_valid_mask.ndim == 4:
+            mask = voxel_valid_mask.bool()
+        else:
+            raise ValueError(f"voxel_valid_mask 期望为 (B,D,H,W) 或 (B,1,D,H,W)，实际 {tuple(voxel_valid_mask.shape)}")
+        if tuple(mask.shape[-3:]) != tuple(int(value) for value in spatial_shape_zyx):
+            raise ValueError(f"voxel_valid_mask 空间形状 {tuple(mask.shape[-3:])} 与 dense target {spatial_shape_zyx} 不一致。")
+        return mask
+
+    def _sample_ligand_refine_supervision(
+        self,
+        outputs: dict[str, Any],
+        batch: dict[str, Any],
+    ) -> dict[str, torch.Tensor]:
+        """
+        从 dense ligand 距离图采样 C 级 sparse refine 监督。
+
+        输入参数:
+            - outputs: dict[str, Any], backbone 输出, 包含 ligand_refine_logits_C/candidate_batch_index/candidate_voxel_zyx
+            - batch: dict[str, Any], 当前 batch, 包含 ligand_dist_map/voxel_valid_mask
+
+        输出:
+            - supervision: dict[str, torch.Tensor], dense target/mask 与 C 级 target/mask
+        """
+        logits_C = outputs["ligand_refine_logits_C"]
+        logit_dim = int(logits_C.shape[1])
+        # torch.Tensor, (B,D,H,W), dense hard-label target
+        dense_target = self.ligand_sparse_refine_loss.target_from_ligand_dist_map(
+            ligand_dist_map=batch["ligand_dist_map"],
+            logit_dim=logit_dim,
+            device=logits_C.device,
+            dtype=logits_C.dtype,
+        )
+        # torch.Tensor, (B,D,H,W), dense valid mask
+        dense_valid_mask = self._normalize_voxel_valid_mask(
+            batch["voxel_valid_mask"],
+            spatial_shape_zyx=tuple(int(value) for value in dense_target.shape[-3:]),
+        ).to(device=logits_C.device)
+        # torch.Tensor, (sumC,), 每个 C 所属 BOX 索引
+        idx_b = outputs["candidate_batch_index"].to(device=logits_C.device, dtype=torch.long)
+        # torch.Tensor, (sumC,3), 每个 C 的 z/y/x 离散坐标
+        idx_zyx = outputs["candidate_voxel_zyx"].to(device=logits_C.device, dtype=torch.long)
+        # torch.Tensor, (sumC,), C 上 hard-label target
+        target_C = dense_target[idx_b, idx_zyx[:, 0], idx_zyx[:, 1], idx_zyx[:, 2]]
+        # torch.Tensor, (sumC,), C 上 valid mask
+        valid_C = dense_valid_mask[idx_b, idx_zyx[:, 0], idx_zyx[:, 1], idx_zyx[:, 2]]
+        supervision = {
+            "ligand_dense_target": dense_target,
+            "ligand_dense_valid_mask": dense_valid_mask,
+            "ligand_refine_target_C": target_C,
+            "ligand_refine_valid_mask_C": valid_C,
+        }
+        outputs.update(supervision)
+        return supervision
+
     def _compute_voxel_ligand_loss(
         self,
         outputs: dict[str, Any],
@@ -768,6 +915,83 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
             )
         return loss
 
+    def _resolve_ligand_sparse_refine_loss_warmup_steps(self) -> int:
+        """
+        解析 sparse refine loss 独立 linear warmup 步数。
+
+        输出:
+            - warmup_steps: int, sparse refine loss 从 start_weight 到 final_weight 的步数
+        """
+        sched_cfg = self.hparams.ligand_sparse_refine_loss_schedule
+        if sched_cfg is None:
+            return 0
+        if str(sched_cfg["mode"]) != "linear_warmup":
+            raise ValueError("ligand_sparse_refine_loss_schedule.mode 只支持 linear_warmup。")
+        warmup_steps = sched_cfg["warmup_steps"]
+        if warmup_steps is not None:
+            warmup_steps = int(warmup_steps)
+            if warmup_steps < 0:
+                raise ValueError("ligand_sparse_refine_loss_schedule.warmup_steps 必须 >= 0。")
+            return warmup_steps
+        warmup_ratio = float(sched_cfg["warmup_ratio"])
+        if not (0.0 <= warmup_ratio < 1.0):
+            raise ValueError("ligand_sparse_refine_loss_schedule.warmup_ratio 必须在 [0,1) 内。")
+        total_steps = getattr(self.trainer, "estimated_stepping_batches", None)
+        if total_steps is None or int(total_steps) <= 0:
+            raise RuntimeError("ligand_sparse_refine_loss_schedule 需要 trainer.estimated_stepping_batches 为正数。")
+        return int(round(int(total_steps) * warmup_ratio))
+
+    def _ligand_sparse_refine_loss_effective_weight(self) -> torch.Tensor:
+        """
+        计算当前 global_step 下 sparse refine loss 的有效权重。
+
+        输出:
+            - weight: torch.Tensor, (), 当前 step 使用的 loss 权重
+        """
+        sched_cfg = self.hparams.ligand_sparse_refine_loss_schedule
+        if sched_cfg is None:
+            return torch.tensor(float(self.hparams.ligand_sparse_refine_loss_weight), device=self.device, dtype=torch.float32)
+        start_weight = float(sched_cfg["start_weight"])
+        final_weight = float(sched_cfg["final_weight"])
+        warmup_steps = self._resolve_ligand_sparse_refine_loss_warmup_steps()
+        if warmup_steps == 0:
+            return torch.tensor(final_weight, device=self.device, dtype=torch.float32)
+        try:
+            trainer = self.trainer
+        except RuntimeError:
+            trainer = None
+        global_step = int(getattr(trainer, "global_step", self.global_step)) if trainer is not None else int(self.global_step)
+        progress = min(max(float(global_step) / float(warmup_steps), 0.0), 1.0)
+        weight = start_weight + progress * (final_weight - start_weight)
+        return torch.tensor(weight, device=self.device, dtype=torch.float32)
+
+    def _compute_ligand_sparse_refine_loss(
+        self,
+        outputs: dict[str, Any],
+        batch: dict[str, Any],
+    ) -> torch.Tensor | None:
+        """
+        计算 C 级 sparse refine loss。
+
+        输入参数:
+            - outputs: dict[str, Any], backbone 输出, 可包含 ligand_refine_logits_C
+            - batch: dict[str, Any], 当前 batch, 包含 ligand_dist_map 与 voxel_valid_mask
+
+        输出:
+            - loss: torch.Tensor | None, (), C 级 sparse refine loss; 未启用或无 logits 时为 None
+        """
+        if self.ligand_sparse_refine_loss is None:
+            return None
+        if outputs.get("ligand_refine_logits_C") is None:
+            return None
+        supervision = self._sample_ligand_refine_supervision(outputs=outputs, batch=batch)
+        loss_out = self.ligand_sparse_refine_loss(
+            logits=outputs["ligand_refine_logits_C"],
+            target=supervision["ligand_refine_target_C"],
+            hardmask=supervision["ligand_refine_valid_mask_C"],
+        )
+        return self._loss_output_to_tensor(loss_out)
+
     def _compute_total_loss(
         self,
         outputs: dict[str, Any],
@@ -805,6 +1029,14 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
         if voxel_ligand_loss is not None:
             total_loss = total_loss + float(self.hparams.voxel_ligand_loss_weight) * voxel_ligand_loss
             loss_dict["voxel_ligand_loss"] = voxel_ligand_loss
+
+        # torch.Tensor | None, 标量, C 级 sparse refine 损失
+        ligand_sparse_refine_loss = self._compute_ligand_sparse_refine_loss(outputs=outputs, batch=batch)
+        if ligand_sparse_refine_loss is not None:
+            effective_weight = self._ligand_sparse_refine_loss_effective_weight()
+            total_loss = total_loss + effective_weight * ligand_sparse_refine_loss
+            loss_dict["ligand_sparse_refine_loss"] = ligand_sparse_refine_loss
+            loss_dict["ligand_sparse_refine_loss_weight_effective"] = effective_weight
 
         loss_dict["total_loss"] = total_loss
         return total_loss, loss_dict
@@ -886,6 +1118,50 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
             binary_metric_name="val/voxel_aux_pr_auc",
         )
 
+    def _update_val_ligand_sparse_refine_metric(self, outputs: dict[str, Any], batch: dict[str, Any]) -> None:
+        """
+        用当前 batch 的 C 级 refined logits 更新 sparse refine 验证指标。
+
+        输入参数:
+            - outputs: dict[str, Any], backbone 输出, 包含 ligand_refine_logits_C 与 C/P 计数字段
+            - batch: dict[str, Any], 当前 batch, 包含 ligand_dist_map 与 voxel_valid_mask
+
+        输出:
+            - None, 原地累加 sparse refine histogram 与数量计数
+        """
+        if self.ligand_sparse_refine_loss is None:
+            return
+        if outputs.get("ligand_refine_logits_C") is None:
+            return
+        supervision = self._sample_ligand_refine_supervision(outputs=outputs, batch=batch)
+        logits_C = outputs["ligand_refine_logits_C"]
+        valid_C = supervision["ligand_refine_valid_mask_C"].bool()
+        target_C = supervision["ligand_refine_target_C"].long()
+        dense_valid = supervision["ligand_dense_valid_mask"].bool()
+        dense_target = supervision["ligand_dense_target"].long()
+        num_bins = int(self._voxel_ligand_threshold_bin_count)
+        for class_pos, class_id in enumerate(self._sparse_candidate_class_ids):
+            if logits_C.shape[1] == 1:
+                score_C = torch.sigmoid(logits_C[:, 0]).detach().float()
+            else:
+                score_C = torch.softmax(logits_C, dim=1)[:, int(class_id)].detach().float()
+            # torch.Tensor, (M,), 有效 C 上当前类分数
+            score_valid = score_C[valid_C]
+            # torch.Tensor, (M,), 有效 C 上 hard-label target
+            target_valid = target_C[valid_C]
+            # torch.Tensor, (M,), True 表示有效 C 是当前前景类正例
+            positive_C = target_valid == int(class_id)
+            if score_valid.numel() > 0:
+                bin_idx = torch.floor(score_valid.clamp(0.0, 1.0) * num_bins).long().clamp(max=num_bins - 1)
+                pos_hist = torch.bincount(bin_idx[positive_C], minlength=num_bins).to(device=self.device, dtype=torch.long)
+                neg_hist = torch.bincount(bin_idx[~positive_C], minlength=num_bins).to(device=self.device, dtype=torch.long)
+                self._ligand_sparse_refine_pos_hist_by_class[class_pos] += pos_hist
+                self._ligand_sparse_refine_neg_hist_by_class[class_pos] += neg_hist
+            self._ligand_sparse_refine_total_gt_pos_by_class[class_pos] += ((dense_valid) & (dense_target == int(class_id))).sum().to(device=self.device, dtype=torch.long)
+        self._ligand_sparse_refine_candidate_count_total += outputs["candidate_counts"].sum().to(device=self.device, dtype=torch.long)
+        self._ligand_sparse_refine_anchor_count_total += outputs["anchor_counts"].sum().to(device=self.device, dtype=torch.long)
+        self._ligand_sparse_refine_box_count_total += torch.tensor(int(dense_target.shape[0]), device=self.device, dtype=torch.long)
+
     def _update_val_voxel_ligand_metric(self, outputs: dict[str, Any], batch: dict[str, Any]) -> None:
         """
         用当前 batch 的体素 ligand 预测更新验证指标。
@@ -906,9 +1182,13 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
         if ligand_dist_map is None:
             return
 
-        hard_label_threshold = getattr(self.voxel_ligand_loss, "hard_label_threshold", None)
-        if hard_label_threshold is not None:
-            voxel_target = self._ligand_target_from_dist(ligand_dist_map, float(hard_label_threshold))
+        if getattr(self.voxel_ligand_loss, "hard_label_threshold", None) is not None:
+            voxel_target = self._ligand_target_from_dist(
+                ligand_dist_map=ligand_dist_map,
+                logit_dim=int(voxel_logits_ligand.shape[1]),
+                device=voxel_logits_ligand.device,
+                dtype=voxel_logits_ligand.dtype,
+            )
         else:
             voxel_target = batch["voxel_label"]
         mask = batch["voxel_valid_mask"].squeeze(1).bool()
@@ -978,6 +1258,23 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
                 on_epoch=True,
                 sync_dist=True,
             )
+        if "ligand_sparse_refine_loss" in loss_dict:
+            self.log(
+                "train/ligand_sparse_refine_loss",
+                loss_dict["ligand_sparse_refine_loss"],
+                prog_bar=False,
+                on_step=True,
+                on_epoch=True,
+                sync_dist=True,
+            )
+            self.log(
+                "train/ligand_sparse_refine_loss_weight_effective",
+                loss_dict["ligand_sparse_refine_loss_weight_effective"],
+                prog_bar=False,
+                on_step=True,
+                on_epoch=True,
+                sync_dist=True,
+            )
         # 记录当前 step 实际使用的 recycle 轮数
         self.log(
             "train/recycle_passes",
@@ -1008,6 +1305,7 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
         self._update_val_atom_metric(outputs=outputs, batch=batch_dict)
         self._update_val_voxel_aux_metric(outputs=outputs, batch=batch_dict)
         self._update_val_voxel_ligand_metric(outputs=outputs, batch=batch_dict)
+        self._update_val_ligand_sparse_refine_metric(outputs=outputs, batch=batch_dict)
 
         # 记录总损失
         self.log("val/loss", total_loss, prog_bar=True, on_step=False, on_epoch=True, sync_dist=True)
@@ -1036,6 +1334,23 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
             self.log(
                 "val/voxel_ligand_loss",
                 loss_dict["voxel_ligand_loss"],
+                prog_bar=False,
+                on_step=False,
+                on_epoch=True,
+                sync_dist=True,
+            )
+        if "ligand_sparse_refine_loss" in loss_dict:
+            self.log(
+                "val/ligand_sparse_refine_loss",
+                loss_dict["ligand_sparse_refine_loss"],
+                prog_bar=False,
+                on_step=False,
+                on_epoch=True,
+                sync_dist=True,
+            )
+            self.log(
+                "val/ligand_sparse_refine_loss_weight_effective",
+                loss_dict["ligand_sparse_refine_loss_weight_effective"],
                 prog_bar=False,
                 on_step=False,
                 on_epoch=True,
@@ -1094,21 +1409,30 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
             sync_dist=True,
         )
 
-    def _compute_log_reset_metric_safe(self, metric_obj, metric_name: str) -> torch.Tensor:
+    def _compute_log_reset_metric_safe(self, metric_obj, metric_name: str) -> torch.Tensor | None:
         """
-        对空样本验证轮次安全地计算、日志记录并重置单个 metric。
+        有有效 update 时计算、日志记录并重置单个 metric。
 
         输入参数:
             - metric_obj: BinaryAveragePrecision, torchmetrics 指标对象
             - metric_name: str, 日志中使用的指标名, 如 "val/atom_pr_auc"
 
         输出:
-            - score_gpu: torch.Tensor, (), 当前 rank 上计算得到的指标值
+            - score_gpu: torch.Tensor | None, (), 当前 rank 上计算得到的指标值; 无 update 时为 None
         """
-        # int, 当前验证轮次内该 metric 收到的有效 update 次数
         local_updates = int(self._val_metric_update_counts.get(metric_name, 0))
+        update_count = torch.tensor(float(local_updates), device=self.device, dtype=torch.float32)
+        try:
+            trainer = self.trainer
+        except RuntimeError:
+            trainer = None
+        if trainer is not None and int(getattr(trainer, "world_size", 1)) > 1:
+            update_count = self.all_gather(update_count).sum()
+        if update_count <= 0:
+            metric_obj.reset()
+            self._val_metric_update_counts[metric_name] = 0
+            return None
         if local_updates <= 0:
-            # torch.Tensor, (), 空样本验证轮次的安全指标值
             score_gpu = torch.tensor(0.0, device=self.device, dtype=torch.float32)
         else:
             prev_to_sync = getattr(metric_obj, "_to_sync", True)
@@ -1118,8 +1442,8 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
                 score_local = metric_obj.compute()
             finally:
                 metric_obj._to_sync = prev_to_sync
+            # torch.Tensor, (), 当前 rank 指标值
             score_gpu = score_local.to(self.device)
-
         metric_obj.reset()
         self._val_metric_update_counts[metric_name] = 0
         self.log(
@@ -1151,8 +1475,18 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
                 metric_obj = getattr(self, f"val_{prefix}_ap_{class_name}")
                 # int, 当前验证轮次内该逐类 AP 收到的有效 update 次数
                 local_updates = int(self._val_metric_update_counts.get(metric_name, 0))
+                update_count = torch.tensor(float(local_updates), device=self.device, dtype=torch.float32)
+                try:
+                    trainer = self.trainer
+                except RuntimeError:
+                    trainer = None
+                if trainer is not None and int(getattr(trainer, "world_size", 1)) > 1:
+                    update_count = self.all_gather(update_count).sum()
+                if update_count <= 0:
+                    metric_obj.reset()
+                    self._val_metric_update_counts[metric_name] = 0
+                    continue
                 if local_updates <= 0:
-                    # torch.Tensor, (), 当前类别无有效样本时的安全 AP
                     score_gpu = torch.tensor(0.0, device=self.device, dtype=torch.float32)
                 else:
                     prev_to_sync = getattr(metric_obj, "_to_sync", True)
@@ -1161,7 +1495,7 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
                         score_gpu = metric_obj.compute().to(self.device)
                     finally:
                         metric_obj._to_sync = prev_to_sync
-                    class_scores.append(score_gpu)
+                class_scores.append(score_gpu)
                 metric_obj.reset()
                 self._val_metric_update_counts[metric_name] = 0
                 computed_metrics[metric_name] = score_gpu
@@ -1174,8 +1508,10 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
                     sync_dist=True,
                 )
             macro_name = f"val/{prefix}_macro_ap"
-            macro_score = torch.stack(class_scores).mean() if len(class_scores) > 0 else torch.tensor(0.0, device=self.device)
             self._val_metric_update_counts[macro_name] = 0
+            if len(class_scores) == 0:
+                continue
+            macro_score = torch.stack(class_scores).mean()
             computed_metrics[macro_name] = macro_score
             self.log(
                 macro_name,
@@ -1229,9 +1565,12 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
             else self._cached_voxel_ligand_p_sampling_by_class.to(device=self.device).clone()
         )
         # torch.Tensor, (K,), 本轮计算得到的 best-F1 分数候选; 无旧缓存时先填 NaN
-        new_best_f1 = self._cached_voxel_ligand_best_f1_by_class.clone().to(device=self.device)
+        new_best_f1 = self._cached_voxel_ligand_best_f1_before_refine_by_class.clone().to(device=self.device)
         all_hist = pos_hist + neg_hist
         threshold_grid = self._voxel_ligand_threshold_grid.to(device=self.device)
+        if pos_hist.sum() <= 0:
+            self._reset_voxel_ligand_threshold_histograms()
+            raise RuntimeError("validation loop 内所有 candidate class 均无 voxel ligand GT 正例。")
         metrics: dict[str, torch.Tensor] = {}
         updated_class_positions: list[int] = []
         for class_pos, class_id in enumerate(self._sparse_candidate_class_ids):
@@ -1256,13 +1595,13 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
             class_name = self._class_names[class_id] if class_id < len(self._class_names) else f"class_{class_id}"
             metrics[f"val/voxel_ligand_p_best_by_class_{class_name}"] = new_p_best[class_pos]
             metrics[f"val/voxel_ligand_p_sampling_by_class_{class_name}"] = new_p_sampling[class_pos]
-            metrics[f"val/voxel_ligand_best_f1_by_class_{class_name}"] = new_best_f1[class_pos]
+            metrics[f"val/voxel_ligand_best_f1_before_refine_{class_name}"] = new_best_f1[class_pos]
         if len(updated_class_positions) > 0:
             updated_index = torch.as_tensor(updated_class_positions, device=self.device, dtype=torch.long)
-            metrics["val/voxel_ligand_macro_best_f1_by_class"] = new_best_f1.index_select(0, updated_index).mean()
+            metrics["val/voxel_ligand_best_f1_before_refine_macro"] = new_best_f1.index_select(0, updated_index).mean()
         self._cached_voxel_ligand_p_best_by_class = new_p_best.detach().cpu()
         self._cached_voxel_ligand_p_sampling_by_class = new_p_sampling.detach().cpu()
-        self._cached_voxel_ligand_best_f1_by_class = new_best_f1.detach().cpu()
+        self._cached_voxel_ligand_best_f1_before_refine_by_class = new_best_f1.detach().cpu()
         self._sync_sparse_candidate_runtime_to_backbone()
         if trainer is not None:
             for metric_name, metric_value in metrics.items():
@@ -1279,9 +1618,87 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
                 "[CandidateThreshold] "
                 f"p_best_by_class={self._cached_voxel_ligand_p_best_by_class.tolist()}, "
                 f"p_sampling_by_class={self._cached_voxel_ligand_p_sampling_by_class.tolist()}, "
-                f"best_f1_by_class={self._cached_voxel_ligand_best_f1_by_class.tolist()}"
+                f"best_f1_by_class={self._cached_voxel_ligand_best_f1_before_refine_by_class.tolist()}"
             )
         self._reset_voxel_ligand_threshold_histograms()
+        return metrics
+
+    def _compute_log_reset_ligand_sparse_refine_metrics(self) -> dict[str, torch.Tensor]:
+        """
+        计算、记录并重置 sparse refine best-F1、candidate recall 与 C/P 数量指标。
+
+        输出:
+            - metrics: dict[str, torch.Tensor], 当前 validation end 现场计算出的 sparse refine 指标
+        """
+        if self.ligand_sparse_refine_loss is None:
+            return {}
+        try:
+            trainer = self.trainer
+        except RuntimeError:
+            trainer = None
+        if trainer is not None and (bool(getattr(trainer, "sanity_checking", False)) or self._is_tuning_trainer(trainer)):
+            self._reset_ligand_sparse_refine_metric_buffers()
+            return {}
+        # torch.Tensor, (K,num_bins), 当前 rank 本地 C 内正例 histogram
+        pos_hist = self._ligand_sparse_refine_pos_hist_by_class.detach().to(device=self.device, dtype=torch.float32)
+        # torch.Tensor, (K,num_bins), 当前 rank 本地 C 内负例 histogram
+        neg_hist = self._ligand_sparse_refine_neg_hist_by_class.detach().to(device=self.device, dtype=torch.float32)
+        # torch.Tensor, (K,), 当前 rank 本地 dense GT 正例数
+        total_gt_pos = self._ligand_sparse_refine_total_gt_pos_by_class.detach().to(device=self.device, dtype=torch.float32)
+        # torch.Tensor, (3,), 当前 rank 本地 C/P/BOX 数量
+        count_totals = torch.stack(
+            (
+                self._ligand_sparse_refine_candidate_count_total.detach(),
+                self._ligand_sparse_refine_anchor_count_total.detach(),
+                self._ligand_sparse_refine_box_count_total.detach(),
+            )
+        ).to(device=self.device, dtype=torch.float32)
+        if trainer is not None and int(getattr(trainer, "world_size", 1)) > 1:
+            pos_hist = self.all_gather(pos_hist).sum(dim=0)
+            neg_hist = self.all_gather(neg_hist).sum(dim=0)
+            total_gt_pos = self.all_gather(total_gt_pos).sum(dim=0)
+            count_totals = self.all_gather(count_totals).sum(dim=0)
+        if total_gt_pos.sum() <= 0:
+            self._reset_ligand_sparse_refine_metric_buffers()
+            raise RuntimeError("validation loop 内所有 candidate class 均无 sparse refine GT 正例。")
+        tp_at_threshold = torch.cumsum(pos_hist.flip(-1), dim=-1).flip(-1)
+        fp_at_threshold = torch.cumsum(neg_hist.flip(-1), dim=-1).flip(-1)
+        fn_at_threshold = total_gt_pos[:, None] - tp_at_threshold
+        denominator = 2.0 * tp_at_threshold + fp_at_threshold + fn_at_threshold
+        f1_by_threshold = torch.where(
+            denominator > 0.0,
+            2.0 * tp_at_threshold / denominator,
+            torch.zeros_like(denominator),
+        )
+        metrics: dict[str, torch.Tensor] = {}
+        best_f1_values: list[torch.Tensor] = []
+        recall_values: list[torch.Tensor] = []
+        for class_pos, class_id in enumerate(self._sparse_candidate_class_ids):
+            if total_gt_pos[class_pos] <= 0:
+                continue
+            best_f1 = torch.max(f1_by_threshold[class_pos])
+            candidate_recall = pos_hist[class_pos].sum() / total_gt_pos[class_pos]
+            class_name = self._class_names[class_id] if class_id < len(self._class_names) else f"class_{class_id}"
+            metrics[f"val/ligand_sparse_refine_best_f1_{class_name}"] = best_f1
+            metrics[f"val/candidate_recall_{class_name}"] = candidate_recall
+            best_f1_values.append(best_f1)
+            recall_values.append(candidate_recall)
+        metrics["val/ligand_sparse_refine_best_f1_macro"] = torch.stack(best_f1_values).mean()
+        metrics["val/candidate_recall_macro"] = torch.stack(recall_values).mean()
+        if count_totals[2] > 0:
+            metrics["val/num_candidate_voxels"] = count_totals[0] / count_totals[2]
+            metrics["val/num_anchor_points"] = count_totals[1] / count_totals[2]
+        if trainer is not None:
+            for metric_name, metric_value in metrics.items():
+                self.log(
+                    metric_name,
+                    metric_value.to(device=self.device),
+                    prog_bar=(metric_name == self.hparams.monitor_metric),
+                    on_step=False,
+                    on_epoch=True,
+                    sync_dist=True,
+                )
+        self._reset_ligand_sparse_refine_metric_buffers()
         return metrics
 
     def _sync_metric_for_scheduler(self, metric_value: torch.Tensor) -> torch.Tensor:
@@ -1336,12 +1753,13 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
 
     def on_validation_epoch_start(self) -> None:
         """
-        验证 epoch 开始时清空 candidate threshold histogram。
+        验证 epoch 开始时清空 candidate threshold histogram 与 sparse refine metric buffers。
 
         输出:
-            - None, 原地清空本轮 histogram 状态
+            - None, 原地清空本轮 validation metric 状态
         """
         self._reset_voxel_ligand_threshold_histograms()
+        self._reset_ligand_sparse_refine_metric_buffers()
 
     def on_validation_epoch_end(self) -> None:
         """
@@ -1356,22 +1774,29 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
         # dict[str, torch.Tensor], 当前 validation end 已计算出的指标集合
         computed_metrics: dict[str, torch.Tensor] = {}
         if hasattr(self, "val_atom_pr_auc"):
-            computed_metrics["val/atom_pr_auc"] = self._compute_log_reset_metric_safe(
+            metric_value = self._compute_log_reset_metric_safe(
                 self.val_atom_pr_auc,
                 "val/atom_pr_auc",
             )
+            if metric_value is not None:
+                computed_metrics["val/atom_pr_auc"] = metric_value
         if hasattr(self, "val_voxel_aux_pr_auc"):
-            computed_metrics["val/voxel_aux_pr_auc"] = self._compute_log_reset_metric_safe(
+            metric_value = self._compute_log_reset_metric_safe(
                 self.val_voxel_aux_pr_auc,
                 "val/voxel_aux_pr_auc",
             )
+            if metric_value is not None:
+                computed_metrics["val/voxel_aux_pr_auc"] = metric_value
         if hasattr(self, "val_voxel_ligand_pr_auc"):
-            computed_metrics["val/voxel_ligand_pr_auc"] = self._compute_log_reset_metric_safe(
+            metric_value = self._compute_log_reset_metric_safe(
                 self.val_voxel_ligand_pr_auc,
                 "val/voxel_ligand_pr_auc",
             )
+            if metric_value is not None:
+                computed_metrics["val/voxel_ligand_pr_auc"] = metric_value
         computed_metrics.update(self._compute_log_reset_multiclass_metrics())
         computed_metrics.update(self._compute_log_update_voxel_ligand_best_f1_thresholds())
+        computed_metrics.update(self._compute_log_reset_ligand_sparse_refine_metrics())
         self._step_warmup_plateau_scheduler(computed_metrics)
 
     def on_save_checkpoint(self, checkpoint: dict[str, Any]) -> None:
@@ -1410,14 +1835,14 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
                 return
             checkpoint["voxel_ligand_p_best_by_class"] = p_best_tensor
             checkpoint["voxel_ligand_p_sampling_by_class"] = p_sampling_tensor
-            if self._cached_voxel_ligand_best_f1_by_class is not None:
+            if self._cached_voxel_ligand_best_f1_before_refine_by_class is not None:
                 # torch.Tensor, (K,), 待写入 checkpoint 的 best-F1 分数 cache
                 best_f1_tensor = self._normalize_candidate_checkpoint_tensor(
-                    self._cached_voxel_ligand_best_f1_by_class,
-                    "voxel_ligand_best_f1_by_class",
+                    self._cached_voxel_ligand_best_f1_before_refine_by_class,
+                    "voxel_ligand_best_f1_before_refine_by_class",
                 )
                 if bool(torch.isfinite(best_f1_tensor).all()):
-                    checkpoint["voxel_ligand_best_f1_by_class"] = best_f1_tensor
+                    checkpoint["voxel_ligand_best_f1_before_refine_by_class"] = best_f1_tensor
 
     def on_load_checkpoint(self, checkpoint: dict[str, Any]) -> None:
         """
@@ -1446,10 +1871,10 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
                     checkpoint["voxel_ligand_p_sampling_by_class"],
                     "voxel_ligand_p_sampling_by_class",
                 )
-            if "voxel_ligand_best_f1_by_class" in checkpoint:
-                self._cached_voxel_ligand_best_f1_by_class = self._load_candidate_checkpoint_finite_tensor(
-                    checkpoint["voxel_ligand_best_f1_by_class"],
-                    "voxel_ligand_best_f1_by_class",
+            if "voxel_ligand_best_f1_before_refine_by_class" in checkpoint:
+                self._cached_voxel_ligand_best_f1_before_refine_by_class = self._load_candidate_checkpoint_finite_tensor(
+                    checkpoint["voxel_ligand_best_f1_before_refine_by_class"],
+                    "voxel_ligand_best_f1_before_refine_by_class",
                 )
             self._sync_sparse_candidate_runtime_to_backbone()
         if "warmup_plateau_reduce_on_plateau_state" in checkpoint:
