@@ -9,7 +9,7 @@ from torch import nn
 
 from src.modules.losses import AdaptiveClassificationCompositeLoss, UnifiedCompositeLoss
 
-
+# -------------------------------------------- 工具 --------------------------------------------
 @dataclass(frozen=True)
 class LossTerm:
     """
@@ -26,7 +26,6 @@ class LossTerm:
     value: torch.Tensor
     weight: float
     logged_value: torch.Tensor
-
 
 def loss_output_to_tensor(loss_out: torch.Tensor | Mapping[str, Any]) -> torch.Tensor:
     """
@@ -47,6 +46,10 @@ def loss_output_to_tensor(loss_out: torch.Tensor | Mapping[str, Any]) -> torch.T
     raise KeyError("loss module output mapping must contain 'loss' or 'total_loss'.")
 
 
+
+
+# -------------------------------------------- 四个实际损失的计算 --------------------------------------------
+# 点————结合位点
 def compute_atom_loss_term(
     *,
     outputs: Mapping[str, Any],
@@ -93,7 +96,7 @@ def compute_atom_loss_term(
     value = loss_output_to_tensor(loss_out)
     return LossTerm(name="atom", value=value, weight=float(weight), logged_value=value.detach())
 
-
+# 体素————受体区域
 def compute_receptor_loss_term(
     *,
     outputs: Mapping[str, Any],
@@ -137,7 +140,7 @@ def compute_receptor_loss_term(
     value = loss_output_to_tensor(loss_out)
     return LossTerm(name="receptor", value=value, weight=float(weight), logged_value=value.detach())
 
-
+# 体素————ligand区域
 def compute_voxel_ligand_loss_term(
     *,
     outputs: Mapping[str, Any],
@@ -182,7 +185,7 @@ def compute_voxel_ligand_loss_term(
     value = loss_output_to_tensor(loss_out)
     return LossTerm(name="voxel_ligand", value=value, weight=float(weight), logged_value=value.detach())
 
-
+# refine loss
 def compute_sparse_refine_loss_term(
     *,
     logits_C: torch.Tensor,
