@@ -27,36 +27,6 @@ from src.wrappers.voxel_point_stage1_scheduler import configure_stage1_optimizer
 
 
 class VoxelPointStage1Wrapper(pl.LightningModule):
-    """
-    Stage1 体素+点融合模型的 Lightning thin coordinator。
-
-    输入参数:
-        - backbone: nn.Module 或 Hydra 配置, Stage1 主干网络
-        - name: str, 模型配置名, 作为 Hydra 元信息保存
-        - atom_loss: nn.Module | None, 原子级监督损失
-        - voxel_aux_loss: nn.Module | None, receptor 对外语义的体素辅助监督损失
-        - voxel_ligand_loss: nn.Module | None, dense ligand 体素监督损失
-        - ligand_sparse_refine_loss: nn.Module | None, C 级 sparse refine 监督损失
-        - optimizer: Any, Hydra optimizer 配置、callable 或 None
-        - scheduler: Any, Hydra scheduler 配置、callable 或 None
-        - atom_loss_weight: float, atom loss 静态权重
-        - voxel_aux_loss_weight: float, receptor loss 静态权重
-        - voxel_ligand_loss_weight: float, voxel ligand loss 静态权重
-        - ligand_sparse_refine_loss_weight: float, sparse refine loss 最终权重
-        - ligand_sparse_refine_loss_schedule: Mapping[str, Any] | None, sparse refine loss 独立 warmup 配置
-        - monitor_metric: str, scheduler/checkpoint 监控指标 key
-        - monitor_mode: str, scheduler/checkpoint 监控方向, 由 train.py 同步消费
-        - voxel_ligand_pr_auc_thresholds: int | None, dense ligand AP 阈值配置
-        - val_metric_device_policy: str, validation metric 设备策略, 允许 auto/cpu/gpu
-        - initial_p_best_by_class: Sequence[float] | None, (K,), candidate best-F1 初始阈值
-        - initial_p_sampling_by_class: Sequence[float] | None, (K,), candidate sampling 初始阈值
-        - class_names: Sequence[str], (C,), task class 名, 必须显式传入
-        - validation_diagnostics: Mapping[str, Any], CPC diagnostics 配置
-        - interval: str, Lightning scheduler interval
-        - frequency: int, Lightning scheduler frequency
-        - compile: bool, 是否 torch.compile backbone
-    """
-
     def __init__(
         self,
         backbone: nn.Module,
@@ -84,6 +54,44 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
         frequency: int = 1,
         compile: bool = False,
     ) -> None:
+        """
+        Stage1 体素+点融合模型的 Lightning thin coordinator。
+
+        输入参数:
+            - 基本
+                - backbone: nn.Module 或 Hydra 配置, Stage1 主干网络
+                - name: str, 模型配置名, 作为 Hydra 元信息保存
+                - class_names: Sequence[str], (C,), task class 名, 必须显式传入
+                - validation_diagnostics: Mapping[str, Any], CPC diagnostics 配置
+
+            - 损失
+                - atom_loss: nn.Module | None, 原子级监督损失
+                - voxel_aux_loss: nn.Module | None, receptor 对外语义的体素辅助监督损失
+                - voxel_ligand_loss: nn.Module | None, dense ligand 体素监督损失
+                - ligand_sparse_refine_loss: nn.Module | None, C 级 sparse refine 监督损失
+                - atom_loss_weight: float, atom loss 静态权重
+                - voxel_aux_loss_weight: float, receptor loss 静态权重
+                - voxel_ligand_loss_weight: float, voxel ligand loss 静态权重
+                - ligand_sparse_refine_loss_weight: float, sparse refine loss 最终权重
+
+            - 优化器和调度器
+                - optimizer: Any, Hydra optimizer 配置、callable 或 None
+                - scheduler: Any, Hydra scheduler 配置、callable 或 None
+                - ligand_sparse_refine_loss_schedule: Mapping[str, Any] | None, sparse refine loss 独立 warmup 配置
+                - interval: str, Lightning scheduler interval
+                - frequency: int, Lightning scheduler frequency
+
+            - 性能度量
+                - monitor_metric: str, scheduler/checkpoint 监控指标 key
+                - monitor_mode: str, scheduler/checkpoint 监控方向, 由 train.py 同步消费
+                - voxel_ligand_pr_auc_thresholds: int | None, dense ligand AP 阈值配置(默认1024)
+
+            - other
+                - val_metric_device_policy: str, validation metric 设备策略, 允许 auto/cpu/gpu
+                - initial_p_best_by_class: Sequence[float] | None, (K,), candidate best-F1 初始阈值
+                - initial_p_sampling_by_class: Sequence[float] | None, (K,), candidate sampling 初始阈值
+                - compile: bool, 是否 torch.compile backbone
+        """
         super().__init__()
         if class_names is None:
             raise ValueError("VoxelPointStage1Wrapper 必须显式传入 class_names。")
@@ -114,7 +122,8 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
         # torch.Tensor | None, (K,), runtime sampling threshold cache
         self._cached_voxel_ligand_p_sampling_by_class = self._init_candidate_threshold_cache(initial_p_sampling_by_class, "initial_p_sampling_by_class")
         # torch.Tensor | None, (K,), runtime best-F1 score cache
-        self._cached_voxel_ligand_best_f1_before_refine_by_class = None if self._sparse_candidate_class_ids is None else torch.full((len(self._sparse_candidate_class_ids),), float("nan"), dtype=torch.float32)
+        self._cached_voxel_ligand_best_f1_before_refine_by_class = None if self._sparse_candidate_class_ids is None   else torch.full((len(self._sparse_candidate_class_ids),), float("nan"), dtype=torch.float32)
+
         # int, candidate fixed-topk warmup step 数
         self._candidate_warmup_steps = 0
         # int, validation epoch end 序号
@@ -133,6 +142,7 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
         self.cpc_diagnostics = self._build_cpc_diagnostics(diagnostics_cfg, voxel_ligand_pr_auc_thresholds)
         self._sync_sparse_candidate_runtime_to_backbone()
 
+    # ------------------------------------------------ 启动函数 -----------------------------------------------
     def _unwrap_backbone(self) -> nn.Module:
         """
         返回未被 torch.compile 包装的 backbone。
@@ -141,56 +151,6 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
             - backbone: nn.Module, 原始 Stage1 backbone
         """
         return getattr(self.backbone, "_orig_mod", self.backbone)
-
-    def _build_metric_branch_specs(self, voxel_ligand_pr_auc_thresholds: int | None) -> tuple[MetricBranchSpec, ...]:
-        """
-        构造常规 validation AP/PRAUC 分支配置。
-
-        输入参数:
-            - voxel_ligand_pr_auc_thresholds: int | None, dense ligand AP 阈值配置
-
-        输出:
-            - specs: tuple[MetricBranchSpec, ...], 可启用 metric 分支配置
-        """
-        return (
-            MetricBranchSpec("atom", self.atom_loss is not None, int(getattr(self.atom_loss, "num_classes", 2)), self.class_names, None),
-            MetricBranchSpec("receptor", self.voxel_aux_loss is not None, int(getattr(self.voxel_aux_loss, "num_classes", 2)), self.class_names, None),
-            MetricBranchSpec("voxel_ligand", self.voxel_ligand_loss is not None, int(getattr(self.voxel_ligand_loss, "num_classes", 2)), self.class_names, voxel_ligand_pr_auc_thresholds),
-        )
-
-    def _build_cpc_diagnostics(self, diagnostics_cfg: Mapping[str, Any], voxel_ligand_pr_auc_thresholds: int | None) -> CpcValidationDiagnostics:
-        """
-        构造 CPC diagnostics manager。
-
-        输入参数:
-            - diagnostics_cfg: Mapping[str, Any], CPC diagnostics 配置
-            - voxel_ligand_pr_auc_thresholds: int | None, fallback 到配置 num_bins 的阈值数量
-
-        输出:
-            - diagnostics: CpcValidationDiagnostics, validation diagnostics manager
-        """
-        # nn.Module | None, backbone 内部 sparse candidate builder
-        candidate_builder = getattr(self._unwrap_backbone(), "candidate_set_builder", None)
-        # tuple[int, ...], (K,), diagnostics 使用的候选前景类 id
-        candidate_class_ids = self._sparse_candidate_class_ids or (1,)
-        # tuple[float, ...], (K,), adaptive threshold 扩张倍数
-        adaptive_expand_factor = tuple(getattr(candidate_builder, "adaptive_expand_factor", tuple(1.0 for _ in candidate_class_ids)))
-        # tuple[int, ...], (K,), 每 BOX/类候选 C 上限
-        max_candidate_voxels_per_class = tuple(getattr(candidate_builder, "max_candidate_voxels_per_class", tuple(0 for _ in candidate_class_ids)))
-        return CpcValidationDiagnostics(
-            config=CpcDiagnosticsConfig(
-                enabled=bool(diagnostics_cfg.get("enabled", True)),
-                num_bins=int(diagnostics_cfg.get("num_bins", voxel_ligand_pr_auc_thresholds or 1024)),
-                write_local_artifacts=bool(diagnostics_cfg.get("write_local_artifacts", True)),
-                log_wandb_curves=bool(diagnostics_cfg.get("log_wandb_curves", True)),
-                wandb_curve_every_n_validation=int(diagnostics_cfg.get("wandb_curve_every_n_validation", 1)),
-                output_subdir=str(diagnostics_cfg.get("output_subdir", "validation_diagnostics")),
-            ),
-            class_names=self.class_names,
-            candidate_class_ids=candidate_class_ids,
-            adaptive_expand_factor=adaptive_expand_factor,
-            max_candidate_voxels_per_class=max_candidate_voxels_per_class,
-        )
 
     def _resolve_sparse_candidate_class_ids(self) -> tuple[int, ...] | None:
         """
@@ -245,6 +205,85 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
         if not bool(torch.isfinite(cache).all()):
             raise ValueError(f"{value_name} 不能包含 NaN/Inf。")
         return cache
+
+    def _build_metric_branch_specs(self, voxel_ligand_pr_auc_thresholds: int | None) -> tuple[MetricBranchSpec, ...]:
+        """
+        构造常规 validation AP/PRAUC 分支配置。
+
+        输入参数:
+            - voxel_ligand_pr_auc_thresholds: int | None, dense ligand AP 阈值配置
+
+        输出:
+            - specs: tuple[MetricBranchSpec, ...], 可启用 metric 分支配置
+        """
+        return (
+            MetricBranchSpec("atom", self.atom_loss is not None, int(getattr(self.atom_loss, "num_classes", 2)), self.class_names, None),
+            MetricBranchSpec("receptor", self.voxel_aux_loss is not None, int(getattr(self.voxel_aux_loss, "num_classes", 2)), self.class_names, None),
+            MetricBranchSpec("voxel_ligand", self.voxel_ligand_loss is not None, int(getattr(self.voxel_ligand_loss, "num_classes", 2)), self.class_names, voxel_ligand_pr_auc_thresholds),
+        )
+
+    def _build_cpc_diagnostics(self, diagnostics_cfg: Mapping[str, Any], voxel_ligand_pr_auc_thresholds: int | None) -> CpcValidationDiagnostics:
+        """
+        构造 CPC diagnostics manager。
+
+        输入参数:
+            - diagnostics_cfg: Mapping[str, Any], CPC diagnostics 配置
+            - voxel_ligand_pr_auc_thresholds: int | None, fallback 到配置 num_bins 的阈值数量
+
+        输出:
+            - diagnostics: CpcValidationDiagnostics, validation diagnostics manager
+        """
+        # nn.Module | None, backbone 内部 sparse candidate builder
+        candidate_builder = getattr(self._unwrap_backbone(), "candidate_set_builder", None)
+        # tuple[int, ...], (K,), diagnostics 使用的候选前景类 id
+        candidate_class_ids = self._sparse_candidate_class_ids or (1,)
+        # tuple[float, ...], (K,), adaptive threshold 扩张倍数
+        adaptive_expand_factor = tuple(getattr(candidate_builder, "adaptive_expand_factor", tuple(1.0 for _ in candidate_class_ids)))
+        # tuple[int, ...], (K,), 每 BOX/类候选 C 上限
+        max_candidate_voxels_per_class = tuple(getattr(candidate_builder, "max_candidate_voxels_per_class", tuple(0 for _ in candidate_class_ids)))
+        return CpcValidationDiagnostics(
+            config=CpcDiagnosticsConfig(
+                enabled=bool(diagnostics_cfg.get("enabled", True)),
+                num_bins=int(diagnostics_cfg.get("num_bins", voxel_ligand_pr_auc_thresholds or 1024)),
+                write_local_artifacts=bool(diagnostics_cfg.get("write_local_artifacts", True)),
+                log_wandb_curves=bool(diagnostics_cfg.get("log_wandb_curves", True)),
+                wandb_curve_every_n_validation=int(diagnostics_cfg.get("wandb_curve_every_n_validation", 1)),
+                output_subdir=str(diagnostics_cfg.get("output_subdir", "validation_diagnostics")),
+            ),
+            class_names=self.class_names,
+            candidate_class_ids=candidate_class_ids,
+            adaptive_expand_factor=adaptive_expand_factor,
+            max_candidate_voxels_per_class=max_candidate_voxels_per_class,
+        )
+
+
+
+    def configure_optimizers(self) -> Any:
+        """
+        配置 optimizer 与 scheduler。
+
+        输出:
+            - config: Any, Lightning configure_optimizers 返回值
+        """
+        # Any, Lightning optimizer/scheduler 配置返回值
+        config, warmup_steps, plateau_scheduler, pending_state = configure_stage1_optimizers(
+            module=self,
+            optimizer_config=self.hparams.optimizer,
+            scheduler_config=self.hparams.scheduler,
+            interval=str(self.hparams.interval),
+            frequency=int(self.hparams.frequency),
+            monitor_metric=str(self.hparams.monitor_metric),
+            pending_warmup_plateau_state=self._pending_warmup_plateau_state,
+        )
+        # int, candidate fixed-topk warmup step 数
+        self._candidate_warmup_steps = int(warmup_steps)
+        self._warmup_plateau_scheduler = plateau_scheduler
+        self._pending_warmup_plateau_state = pending_state
+        self._sync_sparse_candidate_runtime_to_backbone()
+        return config
+
+
+
 
     @staticmethod
     def _extract_batch(batch: Any) -> dict[str, Any]:
@@ -878,26 +917,4 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
         if "warmup_plateau_reduce_on_plateau_state" in checkpoint:
             self._pending_warmup_plateau_state = checkpoint["warmup_plateau_reduce_on_plateau_state"]
 
-    def configure_optimizers(self) -> Any:
-        """
-        配置 optimizer 与 scheduler。
 
-        输出:
-            - config: Any, Lightning configure_optimizers 返回值
-        """
-        # Any, Lightning optimizer/scheduler 配置返回值
-        config, warmup_steps, plateau_scheduler, pending_state = configure_stage1_optimizers(
-            module=self,
-            optimizer_config=self.hparams.optimizer,
-            scheduler_config=self.hparams.scheduler,
-            interval=str(self.hparams.interval),
-            frequency=int(self.hparams.frequency),
-            monitor_metric=str(self.hparams.monitor_metric),
-            pending_warmup_plateau_state=self._pending_warmup_plateau_state,
-        )
-        # int, candidate fixed-topk warmup step 数
-        self._candidate_warmup_steps = int(warmup_steps)
-        self._warmup_plateau_scheduler = plateau_scheduler
-        self._pending_warmup_plateau_state = pending_state
-        self._sync_sparse_candidate_runtime_to_backbone()
-        return config

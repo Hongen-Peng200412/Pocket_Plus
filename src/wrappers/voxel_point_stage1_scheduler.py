@@ -110,6 +110,13 @@ def build_warmup_plateau_scheduler(
     return scheduler
 
 
+
+
+
+
+
+
+
 def configure_stage1_optimizers(
     *,
     module: pl.LightningModule,
@@ -134,7 +141,7 @@ def configure_stage1_optimizers(
 
     输出:
         - config: Any, Lightning configure_optimizers 返回值
-        - candidate_warmup_steps: int, candidate builder warmup step 数
+        - candidate_warmup_steps: int, candidate builder (关于C)的 warmup step 数
         - warmup_plateau_scheduler: WarmupThenReduceLROnPlateau | None, 手动 plateau scheduler
         - pending_warmup_plateau_state: Mapping[str, Any] | None, 消费后剩余的暂存状态
     """

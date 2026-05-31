@@ -595,8 +595,9 @@ class CpcValidationDiagnostics(nn.Module):
 
 
 
-    # --------------------------------------- 工具函数 -------------------------------------
-    # 从 histogram 算 F1
+
+    # ---------------------------------------------------- 计算 --------------------------------------------------
+    # 用于 val_uncapped. 从 score histogram 计算并记录 best-F1 、best_F1、best_tp、p_sampling 等等
     def _best_f1_scalars_from_hist(
         self,
         *,
@@ -607,7 +608,7 @@ class CpcValidationDiagnostics(nn.Module):
         task_class_name: str,
     ) -> tuple[dict[str, torch.Tensor], tuple[DiagnosticsWarning, ...]]:
         """
-        用于 val_uncapped. 从 score histogram 计算 best-F1 、best_F1、best_tp 等等
+        用于 val_uncapped. 从 score histogram 计算并记录 best-F1 、best_F1、best_tp 等等
 
         调用时机:
             - validation step 过程中先累积 uncapped_best_pos_hist / uncapped_best_neg_hist
@@ -624,9 +625,9 @@ class CpcValidationDiagnostics(nn.Module):
             - scalars: dict[str, torch.Tensor], best 面板标量, 包含 best-F1 、best_F1、best_tp 等等
             - warnings: tuple[DiagnosticsWarning, ...], 无正例等统计 warning
         """
-        # torch.Tensor, (T,), tp[i] = pos_hist[i:]
+        # torch.Tensor, (T,), tp[i] = pos_hist[i:]之和
         tp = torch.cumsum(pos_hist.flip(0), dim=0).flip(0).to(dtype=torch.float32)
-        # torch.Tensor, (T,), fp[i] = neg_hist[i:]
+        # torch.Tensor, (T,), fp[i] = neg_hist[i:]之和
         fp = torch.cumsum(neg_hist.flip(0), dim=0).flip(0).to(dtype=torch.float32)
         # torch.Tensor, (), 当前统计空间 GT 正例总数
         num_gt = pos_hist.sum().to(dtype=torch.float32)
@@ -687,8 +688,7 @@ class CpcValidationDiagnostics(nn.Module):
         }, ()
 
 
-
-
+    # 用于 val_uncapped/sampling, 计算并记录 sampling_F1、sampling_precision、sampling_tp 等等
     def _sampling_scalars_for_class(
         self,
         *,
@@ -697,11 +697,10 @@ class CpcValidationDiagnostics(nn.Module):
         fp: torch.Tensor,
         fn: torch.Tensor,
         num_gt: torch.Tensor,
-        target_count: torch.Tensor,
-        boundary_hist: torch.Tensor,
+        target_count: torch.Tensor
     ) -> dict[str, torch.Tensor]:
         """
-        构造 val_uncapped/sampling/global/_* 的所有标量, 包含 sampling_F1、sampling_precision、sampling_tp 等等
+        用于 val_uncapped/sampling, 计算并记录 sampling_F1、sampling_precision、sampling_tp 等等
 
         输入参数:
             - task_class_name: str, task class 名
@@ -744,6 +743,8 @@ class CpcValidationDiagnostics(nn.Module):
         }
         return scalars
 
+
+    # 用于 val_capped, 计算并记录 F1、precision 等等
     def _capped_scalars_for_class(
         self,
         *,
@@ -756,7 +757,7 @@ class CpcValidationDiagnostics(nn.Module):
         box_count: torch.Tensor,
     ) -> dict[str, torch.Tensor]:
         """
-        构造 val_capped/global 标量。
+        用于 val_capped, 计算并记录 F1、precision 等等
 
         输入参数:
             - task_class_name: str, task class 名
@@ -789,7 +790,6 @@ class CpcValidationDiagnostics(nn.Module):
             "num_classes": len(self.class_names),
             "task_class_name": task_class_name,
         }
-        # torch.Tensor, (), 每 BOX 平均值分母
         box_count_f = box_count.to(dtype=torch.float32).clamp_min(1.0)
         return {
             build_metric_key(metric="F1", **base_kwargs): f1,
@@ -802,6 +802,9 @@ class CpcValidationDiagnostics(nn.Module):
             build_metric_key(metric="num_P", **base_kwargs): num_P.to(dtype=torch.float32) / box_count_f,
         }
 
+
+    # 用于 val_unrefined 或 val_refined, 从 C 的 score histogram 计算并记录 local(C内的)版本的: p(截断概率概率)、F1、precison 等
+    # 顺便计算前两者对应的 unrefined_score 或 refined_score, 从 C 的 score histogram 和 dense_gt 计算并记录 global(全局的)F1、precision 等(截断概率仍然使用 p )
     def _C_panel_scalars_from_hist(
         self,
         *,
@@ -813,7 +816,8 @@ class CpcValidationDiagnostics(nn.Module):
         task_class_name: str,
     ) -> tuple[dict[str, torch.Tensor], dict[str, torch.Tensor]]:
         """
-        从 C 级 histogram 构造 local 面板与 val_score 端到端标量。
+        - 用于 val_unrefined 或 val_refined, 从 C 的 score histogram 计算并记录 local(C内的)版本的: p(截断概率概率)、F1、precison 等
+        - 顺便计算前两者对应的 unrefined_score 或 refined_score, 从 C 的 score histogram 和 dense_gt 计算并记录 global(全局的)F1、precision 等(截断概率仍然使用 p )
 
         输入参数:
             - panel: str, val_unrefined 或 val_refined
@@ -827,12 +831,13 @@ class CpcValidationDiagnostics(nn.Module):
             - local_scalars: dict[str, torch.Tensor], C 内 local 标量
             - score_scalars: dict[str, torch.Tensor], val_score 端到端标量
         """
-        # torch.Tensor, (T,), 从高阈值到低阈值累积的 C 内 TP
+        # torch.Tensor, (T,), tp[i] = pos_hist[i:]之和
         tp = torch.cumsum(pos_hist.flip(0), dim=0).flip(0).to(dtype=torch.float32)
-        # torch.Tensor, (T,), 从高阈值到低阈值累积的 C 内 FP
+        # torch.Tensor, (T,), fp[i] = neg_hist[i:]之和
         fp = torch.cumsum(neg_hist.flip(0), dim=0).flip(0).to(dtype=torch.float32)
         # torch.Tensor, (), C 内 GT 正例总数
         num_gt_in_C = pos_hist.sum().to(dtype=torch.float32)
+
         if float(num_gt_in_C.item()) <= 0.0:
             # torch.Tensor, (), C 内无正例时的占位 NaN
             nan = pos_hist.new_tensor(float("nan"), dtype=torch.float32)
@@ -841,6 +846,7 @@ class CpcValidationDiagnostics(nn.Module):
             local_key = build_metric_key(panel=panel, subpanel=None, scope="global", metric="F1", num_classes=len(self.class_names), task_class_name=task_class_name)
             score_key = build_metric_key(panel="val_score", subpanel=None, scope="global", metric=f"{score_prefix}_F1", num_classes=len(self.class_names), task_class_name=task_class_name)
             return {local_key: nan}, {score_key: score_f1}
+
         # torch.Tensor, (T,), C 内 local FN
         local_fn = num_gt_in_C - tp
         # torch.Tensor, (T,), C 内 precision
@@ -849,6 +855,7 @@ class CpcValidationDiagnostics(nn.Module):
         local_recall = tp / num_gt_in_C.clamp_min(1.0)
         # torch.Tensor, (T,), C 内 local F1
         local_f1 = 2.0 * precision * local_recall / (precision + local_recall).clamp_min(1.0e-12)
+
         # int, C 内 local F1 最佳阈值 bin index
         best_idx = int(torch.argmax(local_f1).item())
         # torch.Tensor, (), dense 全空间 GT 正例总数
@@ -887,6 +894,7 @@ class CpcValidationDiagnostics(nn.Module):
         }
 
 
+    # 总计算
     def compute_payload(self, *, sync_fn: Callable[[torch.Tensor], torch.Tensor]) -> CpcDiagnosticsPayload:
         """
         同步并计算当前 epoch diagnostics payload。
@@ -897,22 +905,22 @@ class CpcValidationDiagnostics(nn.Module):
         输出:
             - payload: CpcDiagnosticsPayload, 标量、曲线、warning 与本地表格 payload
         """
-        # torch.Tensor, (K,T), 全局正例 histogram
-        pos_hist = sync_fn(self.uncapped_best_pos_hist.clone())
-        # torch.Tensor, (K,T), 全局负例 histogram
-        neg_hist = sync_fn(self.uncapped_best_neg_hist.clone())
-        # torch.Tensor, (K,), 全局 sampling TP
-        sampling_tp = sync_fn(self.uncapped_sampling_tp.clone())
-        # torch.Tensor, (K,), 全局 sampling FP
-        sampling_fp = sync_fn(self.uncapped_sampling_fp.clone())
-        # torch.Tensor, (K,), 全局 sampling FN
-        sampling_fn = sync_fn(self.uncapped_sampling_fn.clone())
-        # torch.Tensor, (K,), 全局 dense GT 正例数
-        sampling_num_gt = sync_fn(self.uncapped_sampling_num_gt.clone())
-        # torch.Tensor, (K,), 全局 sampling cap 前目标候选数
-        sampling_target_count = sync_fn(self.uncapped_sampling_target_count.clone())
-        # torch.Tensor, (K,T), 全局 sampling boundary histogram
-        sampling_boundary_hist = sync_fn(self.uncapped_sampling_boundary_hist.clone())
+        # torch.Tensor, (K,T), 全局 uncapped_best 正例的 score histogram
+        uncapped_best_pos_hist = sync_fn(self.uncapped_best_pos_hist.clone())
+        # torch.Tensor, (K,T), 全局 uncapped_best 负例的 score histogram
+        uncapped_best_neg_hist = sync_fn(self.uncapped_best_neg_hist.clone())
+        # torch.Tensor, (K,), 全局 uncapped_sampling TP
+        uncapped_sampling_tp = sync_fn(self.uncapped_sampling_tp.clone())
+        # torch.Tensor, (K,), 全局 uncapped_sampling FP
+        uncapped_sampling_fp = sync_fn(self.uncapped_sampling_fp.clone())
+        # torch.Tensor, (K,), 全局 uncapped_sampling FN
+        uncapped_sampling_fn = sync_fn(self.uncapped_sampling_fn.clone())
+        # torch.Tensor, (K,), 全局 uncapped_sampling dense GT 正例数
+        uncapped_sampling_num_gt = sync_fn(self.uncapped_sampling_num_gt.clone())
+        # torch.Tensor, (K,), 全局 uncapped_sampling cap 前目标候选数
+        uncapped_sampling_target_count = sync_fn(self.uncapped_sampling_target_count.clone())
+        # torch.Tensor, (K,T), 全局 uncapped_sampling boundary histogram
+        uncapped_sampling_boundary_hist = sync_fn(self.uncapped_sampling_boundary_hist.clone())
         # torch.Tensor, (K,), 全局 capped TP
         capped_tp = sync_fn(self.capped_tp.clone())
         # torch.Tensor, (K,), 全局 capped FP
@@ -947,8 +955,8 @@ class CpcValidationDiagnostics(nn.Module):
             # str, 当前 candidate class 对应的 task class 名
             class_name = self.class_names[int(class_id)]
             class_scalars, class_warnings = self._best_f1_scalars_from_hist(
-                pos_hist=pos_hist[class_pos],
-                neg_hist=neg_hist[class_pos],
+                pos_hist=uncapped_best_pos_hist[class_pos],
+                neg_hist=uncapped_best_neg_hist[class_pos],
                 class_pos=class_pos,
                 scope="global",
                 task_class_name=class_name,
@@ -958,12 +966,11 @@ class CpcValidationDiagnostics(nn.Module):
             scalars.update(
                 self._sampling_scalars_for_class(
                     task_class_name=class_name,
-                    tp=sampling_tp[class_pos],
-                    fp=sampling_fp[class_pos],
-                    fn=sampling_fn[class_pos],
-                    num_gt=sampling_num_gt[class_pos],
-                    target_count=sampling_target_count[class_pos],
-                    boundary_hist=sampling_boundary_hist[class_pos],
+                    tp=uncapped_sampling_tp[class_pos],
+                    fp=uncapped_sampling_fp[class_pos],
+                    fn=uncapped_sampling_fn[class_pos],
+                    num_gt=uncapped_sampling_num_gt[class_pos],
+                    target_count=uncapped_sampling_target_count[class_pos]
                 )
             )
             scalars.update(
@@ -998,11 +1005,17 @@ class CpcValidationDiagnostics(nn.Module):
             scalars.update(unrefined_score)
             scalars.update(refined_score)
         histograms = {
-            "uncapped_sampling_boundary_hist": self._histogram_payload(sampling_boundary_hist),
+            "uncapped_sampling_boundary_hist": self._histogram_payload(uncapped_sampling_boundary_hist),
             "capped_routed_prob_hist": self._histogram_payload(capped_routed_prob_hist),
         }
         return CpcDiagnosticsPayload(scalars=scalars, curves={}, warnings=tuple(warnings), histograms=histograms)
 
+
+
+
+
+
+    # ---------------------------------------------------- 工具函数 --------------------------------------------------
     def _histogram_payload(self, hist: torch.Tensor) -> CurvePayload:
         """
         将按 candidate class 分桶的 histogram 转成 CSV 友好的表格 payload。

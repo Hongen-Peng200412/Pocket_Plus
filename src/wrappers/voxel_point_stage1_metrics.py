@@ -31,6 +31,7 @@ class MetricBranchSpec:
     thresholds: int | Sequence[float] | None
 
 
+# 管理 Stage1 常规 validation AP/PRAUC 指标(只是 AP 或 PRAUC 哦)
 class ValidationMetricManager(nn.Module):
     """
     管理 Stage1 常规 validation AP/PRAUC 指标。
@@ -39,11 +40,11 @@ class ValidationMetricManager(nn.Module):
         - branches: Sequence[MetricBranchSpec], 可启用的 metric 分支配置列表
         - metric_device_policy: str, 指标状态设备策略; 允许 auto/cpu/gpu
 
-    前向输入:
-        - 本类不实现 forward; wrapper 在 validation_step 调用 update_branch
-
-    前向输出:
-        - 本类不产生 forward 输出; compute_payload 返回日志标量
+    内部重要方法：
+        - _register_branch_metrics: 为一个分支注册 TorchMetrics 对象, 也就是创建 BinaryAveragePrecision(...)
+        - update_branch: 用一个 batch 更新指定分支 AP/PRAUC 指标
+        - compute_payload: 计算当前 epoch 的常规 validation 的PRAUC指标的 payload(dict[str, torch.Tensor])
+        - reset: 重置所有 TorchMetrics 状态
     """
 
     def __init__(self, *, branches: Sequence[MetricBranchSpec], metric_device_policy: str) -> None:
