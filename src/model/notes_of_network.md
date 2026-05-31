@@ -2,120 +2,247 @@
 
 若从本文直接进入项目，请先回到根目录 `CLAUDE.md` 阅读总指针、权威层级和 agent 工作规约；本文只是训练/模型链路中的子说明。
 
-本文只做阅读路径和检查点，不试图复述完整实现。修改模型、训练 wrapper、loss、dataset 或配置时，请以实际代码、Hydra 配置、checkpoint 中保存的配置和真实 batch 为准。
+本文只做当前 Stage1 网络、wrapper 和验证诊断的阅读路径与检查点，不替代代码阅读。字段、shape、路径、类别语义和 mask 语义以实际代码、Hydra 配置、checkpoint 中保存的配置和真实 batch 为准。如果本文与实现冲突，把冲突当作潜在 bug 或待更新文档处理。
 
-如果本文与实现冲突，把冲突当作潜在 bug 或待更新文档处理，不要用本文覆盖代码判断。
+## 1. 推荐阅读顺序
 
-## 1. 先读哪些入口
-
-建议按下面顺序建立上下文：
+建议先从运行入口和配置确定当前实验实际启用了哪些分支，再进入模型实现：
 
 1. `src/train.py`
-   - 看 Hydra 如何实例化 DataModule、Wrapper、Trainer、logger 和 checkpoint。
-2. `configs/model/*`
-   - 看 wrapper、model、head、backbone、loss 相关配置实际指向哪些类。
-3. `configs/dataset/*`
-   - 看训练/验证数据根目录、split、类别配置、字段开关和增强配置。
+   - 看 Hydra 如何实例化 DataModule、`VoxelPointStage1Wrapper`、Trainer、logger、checkpoint。
+2. `configs/model/default.yaml` 与当前 `configs/experiment/*.yaml`
+   - 看 wrapper、backbone、loss、optimizer/scheduler、`class_names`、`validation_diagnostics` 和 `monitor_metric` 的实际配置。
+3. `configs/dataset/*` 与当前实验 dataset 配置
+   - 看数据根目录、split、类别名、source folder 名、字段开关和增强配置。
 4. `src/datasets/box_point_dataset.py`
-   - 看单样本从哪些 `.npz` 文件读取字段。
+   - 看单个 BOX 从哪些 `.npz` / metadata 字段读取 atom、voxel、label 和 ligand 距离图。
 5. `src/datasets/box_point_collate.py`
-   - 看单样本字段如何变成 batch 字段。
+   - 看单样本字段如何变成 batch 字段，尤其是 atom padding/offset、voxel mask、metadata list。
 6. `src/wrappers/voxel_point_stage1.py`
-   - 看训练/验证 step 如何调用模型、取输出、算 loss、记 metric。
-7. `src/model/stage1_model.py`
-   - 看 batch 中哪些字段真正进入模型。
-8. `src/model/stage1_embed_head.py`
-   - 看输入特征如何嵌入，尤其是 atom/voxel/pseudo atom 相关字段。
-9. `src/model/stage1_voxel_backbone.py`
-   - 看体素分支输入、输出 shape 和语义。
-10. `src/model/stage1_point_backbone.py`
-    - 看点云分支输入、输出 shape 和语义。
-11. `src/model/pseudo_atoms.py`
-    - 看 pseudo atom 的生成、更新和回收机制。
+   - 当前正式 LightningModule。先读 `training_step()`、`validation_step()`、`on_validation_epoch_end()`，按运行时间顺序理解 forward、loss、metric、CPC diagnostics、candidate threshold cache。
+7. `src/wrappers/voxel_point_stage1_losses.py`
+   - 看 atom / receptor / dense ligand / sparse refine 各 loss term 的输入字段。
+8. `src/wrappers/voxel_point_stage1_metrics.py`
+   - 看常规 AP/PRAUC 分支、二分类/多分类 key 规则和 metric 设备策略。
+9. `src/wrappers/voxel_point_stage1_diagnostics.py`
+   - 看 dense -> C -> refined 的 CPC 验证统计、global-only 指标和 DDP all-reduce 约束。
+10. `src/model/stage1_model.py`
+    - 看 `VolumePointStage1Model.forward()` 如何串起 embed head、voxel backbone、point backbone、pseudo atoms 和 sparse refine。
+11. `src/model/stage1_embed_head.py`
+    - 看真实 atom 如何进入预编码和可选 voxel scatter/embed grid。
+12. `src/model/stage1_voxel_backbone.py`
+    - 看 dense voxel 分支输入输出，尤其 `voxel_logits_aux` 与 `voxel_logits_ligand`。
+13. `src/model/stage1_point_backbone.py`
+    - 看真实点 / pseudo 点混合后的 point backbone 输出。
+14. `src/model/pseudo_atoms.py`
+    - 看 mixed point layout、pseudo atom 注入、real/pseudo 输出拆分。
+15. `src/model/sparse_refine/`
+    - 看候选 C 生成、P anchor 采样、density cube 编码、P-to-C 邻接和 sparse refine head。
 
-## 2. 训练数据链路检查点
+`src/wrappers/voxel_point_stage1_old.py` 只作为旧行为对照，不是当前正式入口。不要按旧 wrapper 私有 metric API 设计新调用。
 
-训练链路通常跨越以下说明文件和代码：
+## 2. 当前 wrapper 职责边界
 
-- `Make_Data/notes_of_dataset.md`
-  - 点云级 PDB 解析、候选 ligand、atom/residue/graph/label 落盘说明。
-- `Bundle_of_Maps/simulated_map/notes_of_dataset.md`
-  - 模拟 receptor map 的来源、用途和训练/推理差异。
-- `processedPDB_EMDB_binder/notes_of_dataset.md`
-  - EMDB map、模拟 map、体素标签、ligand 距离图如何绑定并切成 BOX。
-- `src/datasets/box_point_dataset.py`
-  - 训练时真正读取哪些 BOX、点云和标签字段。
-- `src/datasets/box_point_collate.py`
-  - padding、mask、索引、shape 在 batch 维度上的实际规则。
+`VoxelPointStage1Wrapper` 现在是 thin coordinator：它保留 Lightning 生命周期和训练/验证时间顺序，大块逻辑拆到同目录 helper。
 
-字段名、shape、类别 ID、路径和 mask 语义都可能随代码变化。涉及这些内容时，优先抽样查看真实 `.npz` / `.json`，再核对 dataset 和 collate。
+主要职责：
 
-## 3. 模型与 wrapper 检查点
+- 实例化或接收 backbone 与 loss module。
+- 显式接收 `class_names`，未传入时 fail-fast。
+- 从 backbone 读取 sparse candidate class ids，并校验 sparse refine loss 与 candidate builder 是否匹配。
+- 维护 candidate threshold runtime cache：`p_best_by_class`、`p_sampling_by_class`、`best_f1_before_refine_by_class`。
+- 在训练和验证前同步 candidate runtime/cache 到 backbone。
+- 汇总 loss term 并记录 `train_loss/*`、`val_loss/*`。
+- 将常规 AP/PRAUC 交给 `ValidationMetricManager`。
+- 将 dense -> C -> refined CPC 诊断交给 `CpcValidationDiagnostics`。
+- 在 validation epoch end 写回 candidate threshold cache、记录 scalar、按 rank0 写 artifact / W&B curves、推进 warmup plateau scheduler。
+- checkpoint 中保留训练继续所需 candidate cache 和 warmup plateau state；validation metric/diagnostics 中间状态不应进入 checkpoint。
 
-读模型时建议从 wrapper 反推，不要只从 `stage1_model.py` 向下猜：
+对外日志使用 `receptor` 表达 receptor/auxiliary voxel 分支；内部模型 key 仍可能保留 `voxel_logits_aux`、`voxel_aux_head`、`voxel_aux_logit_dim`，不要为了日志名改动 checkpoint 兼容 key。
 
-- wrapper 实际传给模型的 batch 字段是什么。
-- wrapper 实际读取哪些模型输出。
-- loss 配置实际启用了哪些监督。
-- metric 统计使用的是 logits、probability、mask 还是后处理结果。
-- checkpoint 恢复时是否覆盖或携带了训练配置。
+## 3. Stage1 forward 主链路
 
-高风险字段包括但不限于：
+当前 `VolumePointStage1Model` 的核心时间顺序可以按下面读：
 
-- `emdb_exp`
-- `emdb_sim`
-- `voxel_label`
-- `ligand_dist_map`
-- `atom_pos`
-- `atom_feat`
-- `atom_label`
-- `atom_valid_mask`
-- `voxel_valid_mask`
-- `hardmask`
-- pseudo atom 相关字段
+1. `_run_embed_head_once(batch)`
+   - 只处理真实 atom，不让 P anchor/pseudo atom 进入 embed head。
+   - 可能裁剪 buffer atom，并同步更新 atom feature、坐标、offset、count、label、mask。
+   - 输出可选 `embed_point_feat` 和 `voxel_pdb_embed_grid`。
+2. `_build_voxel_input(batch, embed_output)`
+   - 以 `batch["voxel_grid"]` 为基础构造 dense voxel 输入。
+   - 如果 embed head 输出 `voxel_pdb_embed_grid`，在 channel 维拼接。
+   - 否则在启用 online PDB feature 时，把 atom feature scatter 到 voxel grid。
+3. recycle loop
+   - 每轮先跑 voxel backbone。
+   - 非最终轮通常跑 real-only point backbone，并更新或 detach recycle state。
+   - 最终轮才准备 pseudo batch。
+4. `_prepare_pseudo_batch(...)`
+   - 如果没有 candidate builder，返回 real-only point batch。
+   - 如果启用 candidate builder，从 `voxel_logits_ligand` 和 `voxel_valid_mask` 生成候选 C。
+   - 如果启用 anchor sampler，从 C 中采样 P anchor，抽取 density cube，编码为 `pseudo_feat`，并通过 `inject_pseudo_atoms()` 拼成 mixed point batch。
+5. `_run_point_backbone(...)`
+   - real-only 或 mixed `[real_i..., pseudo_i...]` point batch 进入 point backbone。
+   - mixed 模式下，real-only recycle state 会扩展出 pseudo slot。
+6. `_run_atom_head(...)`
+   - atom head 在最终 point feature 上输出 atom 监督字段。
+   - `atom_logits`、`atom_target`、`atom_valid_mask` 面向真实 atom；`atom_tokens` / `atom_hidden` 可能仍保留 mixed 信息。
+   - 如果存在 P anchor，会抽取 pseudo feature 供 sparse refine 使用。
+7. `_run_sparse_refine_head(...)`
+   - 可选 sparse refine 分支。
+   - 需要 P anchor、atom head 的 `pseudo_feature`、`anchor_to_candidate` 和 sparse refine head。
+   - 汇集 C/P 位置的 voxel feature，按 P-to-C 邻接聚合 P 消息，输出 `ligand_refine_logits_C`。
 
-不要假设字段一定存在；先看 dataset/collate，再看 model forward。
+## 4. 关键输入字段和 shape
 
-## 4. Shape、坐标与类别检查点
+常见 batch 字段包括：
 
-改动前必须核对：
+| 字段 | 常见 shape | 说明 |
+| --- | --- | --- |
+| `voxel_grid` | `(B, C_in, D, H, W)` | dense voxel 输入特征 |
+| `voxel_valid_mask` | `(B, D, H, W)` 或 `(B, 1, D, H, W)` | dense voxel 有效掩码 |
+| `voxel_label` | `(B, D, H, W)` | receptor/auxiliary 体素 hard-label |
+| `hardmask` | 常见 `(B, 1, D, H, W)` | receptor metric/loss 相关空间掩码 |
+| `ligand_dist_map` | `(B, D, H, W)`、`(B, 1, D, H, W)` 或多通道变体 | dense ligand target 的来源 |
+| `box_shape_zyx` | `(B, 3)` | 每个 BOX 的 z/y/x 空间形状 |
+| `box_origin_world` | `(B, 3)` | BOX 原点世界坐标，常按 x/y/z 解释 |
+| `voxel_size_world` | `(B, 3)` | voxel 物理尺寸，常按 x/y/z 解释 |
+| `atom_feat` | `(N, F_atom)` | atom 输入特征，mixed 后可含 pseudo slot |
+| `atom_coord_centered_world` | `(N, 3)` | 中心化世界坐标，通常 x/y/z |
+| `atom_coord_local_voxel` | `(N, 3)` | 连续 local voxel 坐标，通常 x/y/z |
+| `atom_coord_world` | `(N, 3)` | 世界坐标，通常 x/y/z |
+| `atom_batch_index` | `(N,)` | atom 所属 BOX index |
+| `atom_offsets` | `(B,)` | batch 内 atom 累计 end offset |
+| `atom_counts` | `(B,)` | 每个 BOX 的 atom 数 |
+| `atom_label` | `(N_real,)` | 真实 atom 监督标签；pseudo slot 不参与监督 |
+| `atom_valid_mask` | `(N_real,)` | 真实 atom 有效监督掩码 |
+| `class_name` | `list[str]`, 长度 B | 原始 source folder 名，不是 task class 名 |
 
-- 体素张量的维度顺序是 `(D, H, W)`、`(C, D, H, W)` 还是 batch 后的 `(B, C, D, H, W)`。
-- 点坐标使用的是物理坐标、voxel index，还是某种归一化/局部坐标。
-- batch 内 atom/pseudo atom 的 padding 和 mask 是否一致。
-- 二分类和多分类配置下 logits 维度、target 维度、loss 输入是否匹配。
-- 类别顺序来自配置、数据生成脚本还是代码常量。
-- `voxel_valid_mask`、`hardmask`、`atom_valid_mask` 是否在 loss 和 metric 中被同样解释。
+涉及字段 shape 时，不要只看本文。优先读 dataset/collate，然后抽样真实 batch。
 
-如果 shape 或类别配置有任何不确定，优先打印一个真实 batch，而不是补充猜测性文档。
+## 5. 坐标、索引和 mixed point 约定
 
-## 5. Loss 与配置检查点
+当前代码里需要特别区分：
 
-读 loss 时至少核对：
+- dense voxel tensor 统一按 `(B, C, D, H, W)` 读。
+- dense target/mask 常按 `(B, D, H, W)` 读，wrapper 会把 `(B, 1, D, H, W)` 的 valid mask squeeze 成 `(B, D, H, W)`。
+- voxel 整数索引通常使用 `zyx`，例如 `candidate_voxel_zyx`、`anchor_voxel_zyx`。
+- 世界坐标和点坐标通常使用 `xyz`。
+- local voxel 连续坐标通常使用 `xyz`，P anchor 的 local voxel 坐标按 voxel center 表示，即 `(x+0.5, y+0.5, z+0.5)`。
+- mixed point layout 必须按每个 BOX 分块保持 `[real_i..., pseudo_i...]`。
+- mixed batch 中常见辅助字段包括 `real_mask`、`pseudo_mask`、`pseudo_anchor_class`、`pseudo_anchor_voxel_zyx`、`pseudo_source_candidate_index`。
+- 从 mixed 输出回到真实 atom 监督时，需要通过 `extract_real_point_output()`、`extract_real_tensor_from_mixed()` 等工具拆分。
 
-- `configs/loss/*`
-- `configs/model/*`
-- `src/wrappers/voxel_point_stage1.py`
-- 模型输出 dict 的 key
-- batch target 字段
+## 6. 关键模型输出字段
 
-重点确认：
+常见 backbone 输出包括：
 
-- 哪些 loss 当前启用，哪些只是代码支持。
-- 每个 loss 的 target 来源。
-- 每个 loss 使用哪个 mask。
-- 二分类、多分类、类别加权、ignore index 等配置是否一致。
-- validation/test metric 是否与训练 loss 使用同一语义。
+| 字段 | 常见 shape | 说明 |
+| --- | --- | --- |
+| `atom_logits` | `(N_real, C_atom)` | 真实 atom 分类 logits |
+| `atom_target` | `(N_real,)` | 真实 atom 监督 target |
+| `atom_valid_mask` | `(N_real,)` | 真实 atom 有效监督掩码 |
+| `voxel_features` | `(B, C_feat, D, H, W)` | voxel backbone 中间/最终特征 |
+| `voxel_logits_aux` | `(B, C_aux, D, H, W)` | receptor/auxiliary dense logits |
+| `voxel_logits_ligand` | `(B, C_ligand, D, H, W)` | dense ligand logits |
+| `voxel_recycle_out` | 依实现而定 | voxel recycle state |
+| `point_feat` / `point_state` / `point_recycle_out` | 依 point backbone 而定 | point backbone 输出与 recycle state |
+| `candidate_batch_index` | `(sumC,)` | 每个 C 候选 voxel 所属 BOX |
+| `candidate_voxel_zyx` | `(sumC, 3)` | 每个 C 候选 voxel 的 z/y/x index |
+| `candidate_logits` | `(sumC, C_ligand)` | C 位置对应的 dense ligand logits |
+| `candidate_prob` | `(sumC,)` | 实际进入 C 的候选概率 |
+| `candidate_counts` | `(B,)` | 每个 BOX 实际 C 数 |
+| `candidate_counts_by_class` | `(B, K)` | 每个 BOX/候选类实际 C 数 |
+| `candidate_p_sampling_by_class` | `(B, K)` | 每个 BOX/候选类实际 sampling boundary 概率 |
+| `candidate_target_counts_by_class` | `(B, K)` | cap 前目标或命中候选数 |
+| `anchor_voxel_zyx` | `(sumP, 3)` | P anchor 的 z/y/x index |
+| `anchor_counts` | `(B,)` | 每个 BOX 的 P anchor 数 |
+| `pseudo_feature` | `(sumP, C_pseudo)` | P anchor 对应 pseudo atom feature |
+| `ligand_refine_logits_C` | `(sumC, C_ligand)` | sparse refine 后的 C 级 ligand logits |
 
-## 6. 修改前清单
+不是每个实验都会输出所有字段。UNet-only、未启用 candidate builder、未启用 sparse refine head 时，C/P/refine 字段可能不存在；当前 wrapper 会先检查核心 candidate 字段再更新对应 diagnostics。
 
-改网络、wrapper、dataset、collate、loss 或相关配置前，至少完成：
+## 7. Candidate C、Anchor P 与 sparse refine
 
-1. 定位当前实验实际使用的 Hydra 配置。
-2. 读 dataset/collate，确认 batch 字段和 shape。
-3. 读 wrapper，确认模型输出如何进入 loss/metric。
-4. 读 model/head/backbone，确认字段消费路径。
-5. 抽样检查真实 `.npz` / `.json` 或一个真实 batch。
-6. 如果改了字段、shape、类别或 mask，回头更新对应数据说明和本文。
+`sparse_refine` 子目录建议按以下顺序读：
 
-本文保持克制：只记录阅读路线和检查点。实现细节请直接看代码。
+1. `candidate_set.py`
+   - `SparseCandidateSetBuilder` 从 dense ligand logits 生成候选 C。
+   - 当前正式 selection mode 包括 `adaptive_threshold`、`recorded_threshold`、`topk`。
+   - `topk` 正式模式使用 `max_candidate_voxels_per_class` 作为每 BOX/类 top-k 请求数；不要新增或依赖单独的 `topk_per_class`。
+   - warmup fixed-topk 使用 `warmup_topc_per_class`，只在 wrapper 同步 runtime 允许时覆盖正式模式。
+2. `anchor_sampler.py`
+   - 从 C 中选 P anchor，常见策略包括 weighted FPS、unweighted FPS、topk NMS。
+3. `density_cube.py`
+   - 围绕 P anchor 抽取局部 raw density cube，并编码成 pseudo atom feature。
+4. `interpolation.py`
+   - 处理 dense voxel feature 与稀疏 C/P 位置之间的采样或插值。
+5. `sparse_refine_head.py`
+   - 用 P anchor 信息更新 C 级 ligand logits，输出 `ligand_refine_logits_C`。
+
+Wrapper 维护的 candidate cache 有两个语义：
+
+- `p_best_by_class`：来自 `val_uncapped/best` 的 dense best-F1 阈值。
+- `p_sampling_by_class`：来自 diagnostics 计算的 sampling 阈值，用于 recorded/adaptive 采样 runtime。
+
+sanity check 和 tuner 不应污染正式 cache；普通 fit validation 可以写回 cache，用于 warmup 后的正式 candidate sampling。
+
+## 8. Loss、metric 与 diagnostics 的分工
+
+当前 wrapper helper 分工如下：
+
+- `voxel_point_stage1_losses.py`
+  - 只计算 loss term，不构造 W&B key，不写日志。
+  - `compute_atom_loss_term()` 消费 atom logits/target/mask。
+  - `compute_receptor_loss_term()` 消费 `voxel_logits_aux`、`voxel_label`、`hardmask`/valid mask 相关字段。
+  - `compute_voxel_ligand_loss_term()` 消费 `voxel_logits_ligand` 与 `ligand_dist_map` 派生 target。
+  - `compute_sparse_refine_loss_term()` 消费 `ligand_refine_logits_C`、C 级 target 和 C 级 valid mask。
+- `voxel_point_stage1_metrics.py`
+  - 管理常规 validation AP/PRAUC。
+  - 二分类不输出 macro；多分类对前景类输出 suffix，必要时输出 macro。
+  - 保留 `val_metric_device_policy: auto | cpu | gpu` 语义。
+- `voxel_point_stage1_diagnostics.py`
+  - 管理 CPC 面板的 histogram/count buffer。
+  - 所有 buffer 固定形状，并通过 `persistent=False` 避免进入 checkpoint。
+  - DDP 下所有 rank 必须对称调用 all-reduce，不能因本地无正例提前跳过同步。
+- `voxel_point_stage1_logging.py`
+  - 构造统一 metric key，记录 scalar payload，rank0 写 artifact / W&B curves。
+- `voxel_point_stage1_scheduler.py`
+  - 构造 optimizer/scheduler，并处理 warmup-only / warmup-plateau 相关状态。
+
+## 9. CPC validation 指标怎么读
+
+当前 validation 里，dense ligand 分支和 sparse refine 分支按时间顺序更新以下面板：
+
+1. `val_uncapped/best`
+   - dense 全空间统计。
+   - 看 dense ligand 分支理论 best-F1、`p_best` 和 best-F1 cutoff 下的候选数量。
+2. `val_uncapped/sampling`
+   - dense 全空间统计，但按真实 per BOX/per class sampling boundary 聚合。
+   - 看当前 sampling 策略打算怎样切 C，输出 `p_sampling_*`、`sampling_F1`、`numC_sampling_target`、`numC_sampling_cutoff`。
+3. `val_capped`
+   - 实际进入 C 的候选统计。
+   - `recall` 看 C 是否覆盖 dense GT 正例，`num_C` / `num_P` 看候选和 anchor 规模。
+4. `val_unrefined`
+   - 只在 C 内，用 C 位置原始 dense logit 做 local 判别统计。
+   - `fn` 是 C 内 local FN，不包含 C 外漏掉的 dense GT。
+5. `val_refined`
+   - 只在 C 内，用 sparse refine 后的 `ligand_refine_logits_C` 做 local 判别统计。
+6. `val_score`
+   - 端到端分数。
+   - `refined_F1` / `unrefined_F1` 的 recall 分母使用 dense 全空间 GT；它和 `val_refined/global/F1` 的 local 语义不同。
+
+`batch["class_name"]` 是原始 source folder，例如 `metal_ion`、`peptide`、`nucleic`、`small_molecule`、`random_BOX`；它不是 task class。当前 wrapper diagnostics 不再按它生成分组指标，task class 才作为多分类 metric suffix。
+
+## 10. 修改前检查清单
+
+改 Stage1 网络、wrapper、dataset、collate、loss 或配置前，至少完成：
+
+1. 定位当前实验实际使用的 Hydra 配置和 checkpoint 配置。
+2. 读 dataset/collate，确认 batch 字段、shape、mask 和 metadata。
+3. 读 `src/wrappers/voxel_point_stage1.py`，确认模型输出如何进入 loss、metric、diagnostics 和 cache。
+4. 读 `src/model/stage1_model.py`，确认 batch 字段如何被 embed/voxel/point/pseudo/sparse refine 消费。
+5. 如果涉及 candidate C/P/refine，读 `src/model/sparse_refine/` 对应模块。
+6. 抽样检查真实 `.npz` / `.json` 或一个真实 batch。
+7. 如果改字段、shape、类别、mask 或日志 key，回头更新对应数据说明、配置说明和本文。
+
+本文保持克制：只记录阅读路线和检查点。实现细节请直接看当前代码。

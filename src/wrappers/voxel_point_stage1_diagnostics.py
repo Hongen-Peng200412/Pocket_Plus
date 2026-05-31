@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from types import MappingProxyType
 
 import torch
 from torch import nn
@@ -10,67 +9,6 @@ from torch import nn
 from src.wrappers.voxel_point_stage1_logging import build_metric_key
 
 
-# ------------------------------------------------------ 工具类 --------------------------------------------------------
-# 把 source folder 索引化
-@dataclass(frozen=True)
-class SourceFolderRegistry:
-    """
-    原始 source folder 名到固定 index 的注册表。
-
-    输入参数:
-        - names: tuple[str, ...], (S,), 允许的 source folder 名列表
-        - name_to_idx: Mapping[str, int], source folder 名到静态 index 的映射
-    """
-
-    names: tuple[str, ...]
-    name_to_idx: Mapping[str, int]
-
-    @classmethod
-    def from_names(cls, names: Sequence[str]) -> "SourceFolderRegistry":
-        """
-        从配置中的 source folder 名构造注册表。
-
-        输入参数:
-            - names: Sequence[str], (S,), 配置允许的 source folder 名
-
-        输出:
-            - registry: SourceFolderRegistry, 固定顺序 source folder 注册表
-        """
-        source_names = tuple(str(name) for name in names)
-        if len(source_names) == 0:
-            raise ValueError("source_folder_names 不能为空。")
-        if len(set(source_names)) != len(source_names):
-            raise ValueError(f"source_folder_names 存在重复项: {source_names}")
-        return cls(names=source_names, name_to_idx=MappingProxyType({name: idx for idx, name in enumerate(source_names)}))
-
-    def encode_batch(self, class_names: Sequence[str], *, device: torch.device) -> torch.Tensor:
-        """
-        将 batch 中每个样本的 source folder 名转化为 class SourceFolderRegistry 的固定 index。
-
-        输入参数:
-            - class_names: Sequence[str], (B,), batch metadata 中的原始 source folder 名
-            - device: torch.device, 输出 index tensor 所在设备
-
-        输出:
-            - source_folder_idx: torch.Tensor, (B,), long, 每个 BOX 对应的 source folder index
-        """
-        encoded: list[int] = []
-        for batch_pos, name in enumerate(class_names):
-            source_name = str(name)
-            if source_name not in self.name_to_idx:
-                raise ValueError(
-                    "unknown source folder "
-                    f"{source_name!r} at batch position {batch_pos}; "
-                    f"allowed source folder names: {self.names}"
-                )
-            encoded.append(int(self.name_to_idx[source_name]))
-        return torch.as_tensor(encoded, device=device, dtype=torch.long)
-
-
-
-
-
-# ------------------------------------------------------ 对过程中产生的 payload、警告做打包 ------------------------------------------------------
 @dataclass(frozen=True)
 class CpcDiagnosticsConfig:
     """
@@ -78,7 +16,6 @@ class CpcDiagnosticsConfig:
 
     输入参数:
         - enabled: bool, 是否启用 diagnostics
-        - source_folder_breakdown: bool, 是否输出 by_source_folder 指标
         - num_bins: int, score histogram 阈值 bin 数
         - write_local_artifacts: bool, 是否写本地 artifact
         - log_wandb_curves: bool, 是否上传 W&B 曲线
@@ -87,13 +24,16 @@ class CpcDiagnosticsConfig:
     """
 
     enabled: bool
-    source_folder_breakdown: bool
     num_bins: int
     write_local_artifacts: bool
     log_wandb_curves: bool
     wandb_curve_every_n_validation: int
     output_subdir: str
 
+
+
+
+# ------------------------------------------------------ 对过程中产生的 payload、警告做打包 ------------------------------------------------------
 @dataclass(frozen=True)
 class CurvePayload:
     """
@@ -101,7 +41,7 @@ class CurvePayload:
 
     输入参数:
         - columns: tuple[str, ...], (M,), 表格列名(一个元素代表一个表格, 如"threshold")
-        - rows: tuple[tuple[float, ...], ...], (N,M), 表格行数据
+        - rows: tuple[tuple[object, ...], ...], (N,M), 表格行数据
     如：
         CurvePayload(
             columns=("threshold", "precision", "recall", "f1"),
@@ -113,7 +53,7 @@ class CurvePayload:
         )
     """
     columns: tuple[str, ...]
-    rows: tuple[tuple[float, ...], ...]
+    rows: tuple[tuple[object, ...], ...]
 
 @dataclass(frozen=True)
 class DiagnosticsWarning:
@@ -124,14 +64,12 @@ class DiagnosticsWarning:
         - code: str, 稳定 warning 代码
         - message: str, 人类可读说明
         - scope: str, warning 所属作用域
-        - source_folder: str | None, source folder 名; global warning 为 None
         - task_class_name: str | None, task class 名; 非 class-specific warning 为 None
     """
 
     code: str
     message: str
     scope: str
-    source_folder: str | None
     task_class_name: str | None
 
 
@@ -145,13 +83,13 @@ class CpcDiagnosticsPayload:
         - scalars: dict[str, torch.Tensor], 标量日志 payload
         - curves: dict[str, CurvePayload], W&B 曲线 payload
         - warnings: tuple[DiagnosticsWarning, ...], warning 列表
-        - local_tables: dict[str, CurvePayload], 本地 artifact 表格 payload
+        - histograms: dict[str, CurvePayload], 本地 histogram artifact payload
     """
 
     scalars: dict[str, torch.Tensor]
     curves: dict[str, CurvePayload]
     warnings: tuple[DiagnosticsWarning, ...]
-    local_tables: dict[str, CurvePayload]
+    histograms: dict[str, CurvePayload]
 
 
 
@@ -167,9 +105,8 @@ class CpcValidationDiagnostics(nn.Module):
 
     输入参数:
         - config: class CpcDiagnosticsConfig, diagnostics 行为配置
-        - class_names: Sequence[str], (C,), task class 名
-        - candidate_class_ids: Sequence[int], (K,), 候选前景 task class id, 必须 = adaptive_expand_factor = max_candidate_voxels_per_class
-        - source_folders: class SourceFolderRegistry, source folder 注册表
+        - class_names: Sequence[str], (C,), 就是 ${dataset.class_names}(二分类时是 class_names: [background, foreground])
+        - candidate_class_ids: Sequence[int], (K,), 候选前景 task class id, 必须 = adaptive_expand_factor = max_candidate_voxels_per_class(二分类时是 sparse_refine_task: candidate_class_ids: [1]), K <= C - 1 ———— 在目前的代码和配置中总是 = 且去除C的背景后顺序对应
         - adaptive_expand_factor: Sequence[float], (K,), adaptive threshold 扩张倍数
         - max_candidate_voxels_per_class: Sequence[int], (K,), 每 BOX/类候选 C 上限
     """
@@ -180,7 +117,6 @@ class CpcValidationDiagnostics(nn.Module):
         config: CpcDiagnosticsConfig,
         class_names: Sequence[str],
         candidate_class_ids: Sequence[int],
-        source_folders: SourceFolderRegistry,
         adaptive_expand_factor: Sequence[float],
         max_candidate_voxels_per_class: Sequence[int],
     ) -> None:
@@ -188,10 +124,13 @@ class CpcValidationDiagnostics(nn.Module):
         if int(config.num_bins) <= 0:
             raise ValueError("CpcDiagnosticsConfig.num_bins 必须 > 0。")
         self.config = config
+        # tuple[str, ...], (C,), task class 名
         self.class_names = tuple(str(name) for name in class_names)
+        # tuple[int, ...], (K,), 候选前景 task class id
         self.candidate_class_ids = tuple(int(class_id) for class_id in candidate_class_ids)
-        self.source_folders = source_folders
+        # tuple[float, ...], (K,), adaptive_threshold 模式下 best-F1 命中数扩张倍数
         self.adaptive_expand_factor = tuple(float(value) for value in adaptive_expand_factor)
+        # tuple[int, ...], (K,), 每 BOX/候选类最多进入 C 的 voxel 数
         self.max_candidate_voxels_per_class = tuple(int(value) for value in max_candidate_voxels_per_class)
         if not (
             len(self.candidate_class_ids)
@@ -201,13 +140,10 @@ class CpcValidationDiagnostics(nn.Module):
             raise ValueError("candidate_class_ids、adaptive_expand_factor、max_candidate_voxels_per_class 长度必须一致。")
         # int, 候选前景类别数 K
         num_candidate_classes = len(self.candidate_class_ids)
-        # int, source folder 数 S
-        num_source_folders = len(self.source_folders.names)
         # int, score histogram bin 数 T
         num_bins = int(config.num_bins)
         self._register_stat_buffers(
             num_candidate_classes=num_candidate_classes,
-            num_source_folders=num_source_folders,
             num_bins=num_bins,
         )
 
@@ -215,7 +151,6 @@ class CpcValidationDiagnostics(nn.Module):
         self,
         *,
         num_candidate_classes: int,
-        num_source_folders: int,
         num_bins: int,
     ) -> None:
         """
@@ -223,7 +158,6 @@ class CpcValidationDiagnostics(nn.Module):
 
         输入参数:
             - num_candidate_classes: int, K, candidate 前景类别数
-            - num_source_folders: int, S, source folder 分组数
             - num_bins: int, T, score histogram bin 数
 
         输出:
@@ -231,31 +165,38 @@ class CpcValidationDiagnostics(nn.Module):
         """
         # dict[str, tuple[tuple[int, ...], torch.dtype, str]], buffer 名到形状、dtype、语义说明的映射
         buffer_specs = {
-            "threshold_grid": ((num_bins,), torch.float32, "score histogram 的 bin lower-edge 阈值网格"),
+            "threshold_grid": ((num_bins,), torch.float32, "各个 bin 的左边界, 取值范围 [0,1). 永远是等差数列(作为常量)"),
 
-            "uncapped_best_pos_hist": ((num_candidate_classes, num_bins), torch.long, "dense 全空间 best 面板正例 score histogram"),
-            "uncapped_best_neg_hist": ((num_candidate_classes, num_bins), torch.long, "dense 全空间 best 面板负例 score histogram"),
-            "uncapped_best_pos_hist_by_source": ((num_source_folders, num_candidate_classes, num_bins), torch.long, "按 source folder 分组的 best 正例 histogram"),
-            "uncapped_best_neg_hist_by_source": ((num_source_folders, num_candidate_classes, num_bins), torch.long, "按 source folder 分组的 best 负例 histogram"),
+            "uncapped_best_pos_hist": ((num_candidate_classes, num_bins), torch.long, "dense 全空间 valid voxel 中, 每个候选类各概率 bin 里的 GT 正例数"),
+            "uncapped_best_neg_hist": ((num_candidate_classes, num_bins), torch.long, "dense 全空间 valid voxel 中, 每个候选类各概率 bin 里的 GT 负例数"),
 
-            "capped_tp": ((num_candidate_classes,), torch.long, "实际进入 C 的 GT 正例数"),
-            "capped_fp": ((num_candidate_classes,), torch.long, "实际进入 C 的 GT 负例数"),
-            "capped_fn": ((num_candidate_classes,), torch.long, "dense GT 正例中未进入 C 的数量"),
-            "capped_num_C": ((), torch.long, "validation 内实际 C 总数"),
-            "capped_num_P": ((), torch.long, "validation 内实际 P/anchor 总数"),
-            "capped_box_count": ((), torch.long, "validation 内参与 capped 统计的 BOX 数"),
+            "uncapped_sampling_tp": ((num_candidate_classes,), torch.long, "uncapped 状态的 C 在 dense 全空间命中的 GT 正例数"),
+            "uncapped_sampling_fp": ((num_candidate_classes,), torch.long, "uncapped 状态的 C 在 dense 全空间误选的 GT 负例数"),
+            "uncapped_sampling_fn": ((num_candidate_classes,), torch.long, "uncapped 状态的 C 在 dense 全空间漏掉的 GT 正例数"),
+            "uncapped_sampling_num_gt": ((num_candidate_classes,), torch.long, "dense 全空间 valid voxel 中, 每个候选类的 GT 正例总数"),
+            "uncapped_sampling_target_count": ((num_candidate_classes,), torch.long, "sampling 策略在 cap 前计划选入 C 的候选 voxel 数, 就是 output[candidate_target_counts_by_class] "),
+            "uncapped_sampling_boundary_hist": ((num_candidate_classes, num_bins), torch.long, "对于 BOXs 来说, 它们实际的 sampling cutoff 概率截断阈值落入各概率 bin 的次数"),
 
-            "unrefined_pos_hist": ((num_candidate_classes, num_bins), torch.long, "C 内 dense candidate logits 正例 score histogram"),
-            "unrefined_neg_hist": ((num_candidate_classes, num_bins), torch.long, "C 内 dense candidate logits 负例 score histogram"),
-            "unrefined_dense_gt": ((num_candidate_classes,), torch.long, "unrefined 端到端 score 使用的 dense GT 正例数"),
+            "capped_tp": ((num_candidate_classes,), torch.long, "实际进入候选集 C 的 GT 正例数"),
+            "capped_fp": ((num_candidate_classes,), torch.long, "实际进入候选集 C 的 GT 负例数"),
+            "capped_fn": ((num_candidate_classes,), torch.long, "dense 全空间 GT 正例中没有进入候选集 C 的数量"),
+            "capped_num_C": ((), torch.long, "validation 内实际进入候选集 C 的 voxel 总数"),
+            "capped_num_P": ((), torch.long, "validation 内实际生成的 P anchor 总数"),
+            "capped_box_count": ((), torch.long, "validation 内参与 capped 统计的 BOX 总数"),
+            "capped_routed_prob_hist": ((num_candidate_classes, num_bins), torch.long, "候选集 C 内, 按照路由(routed)类别(而不是 GT 类别)统计的 candidate_prob 概率分布；它纳入全部 C 且不按 GT 正负例拆分，因此二分类时也不等价于 unrefined_pos_hist"),
 
-            "refined_pos_hist": ((num_candidate_classes, num_bins), torch.long, "C 内 refined logits 正例 score histogram"),
-            "refined_neg_hist": ((num_candidate_classes, num_bins), torch.long, "C 内 refined logits 负例 score histogram"),
-            "refined_dense_gt": ((num_candidate_classes,), torch.long, "refined 端到端 score 使用的 dense GT 正例数"),
+            "unrefined_pos_hist": ((num_candidate_classes, num_bins), torch.long, "候选集 C 内, refine 前各概率 bin 里的 GT 正例数"),
+            "unrefined_neg_hist": ((num_candidate_classes, num_bins), torch.long, "候选集 C 内, refine 前各概率 bin 里的 GT 负例数"),
+            "unrefined_dense_gt": ((num_candidate_classes,), torch.long, "计算 unrefined 端到端 recall 时使用的 dense 全空间 GT 正例总数"),
+
+            "refined_pos_hist": ((num_candidate_classes, num_bins), torch.long, "候选集 C 内, refine 后各概率 bin 里的 GT 正例数"),
+            "refined_neg_hist": ((num_candidate_classes, num_bins), torch.long, "候选集 C 内, refine 后各概率 bin 里的 GT 负例数"),
+            "refined_dense_gt": ((num_candidate_classes,), torch.long, "计算 refined 端到端 recall 时使用的 dense 全空间 GT 正例总数"),
         }
         self._stat_buffer_descriptions: dict[str, str] = {}
         for name, (shape, dtype, description) in buffer_specs.items():
             self._stat_buffer_descriptions[name] = description
+            # torch.Tensor, shape, 当前统计 buffer 的初始值
             if name == "threshold_grid":
                 buffer = torch.arange(num_bins, dtype=torch.float32) / float(num_bins)
             else:
@@ -277,13 +218,16 @@ class CpcValidationDiagnostics(nn.Module):
             else:
                 buffer.zero_()
 
+
+
+
+    # ---------------------------------------- 更新 uncapped_best_* ----------------------------------------
     def update_uncapped_best(
         self,
         *,
         logits: torch.Tensor,
         target: torch.Tensor,
         valid_mask: torch.Tensor,
-        source_folder_idx: torch.Tensor,
         allow_cache_update: bool,
     ) -> None:
         """
@@ -293,20 +237,21 @@ class CpcValidationDiagnostics(nn.Module):
             - logits: torch.Tensor, (B,C,D,H,W), dense ligand logits
             - target: torch.Tensor, (B,D,H,W), dense hard-label target
             - valid_mask: torch.Tensor, (B,D,H,W), dense 有效统计掩码
-            - source_folder_idx: torch.Tensor, (B,), source folder index
             - allow_cache_update: bool, 当前 validation 是否允许后续写 cache; 本函数只保留调用契约
 
         输出:
-            - None, 原地累积 histogram
+            - None, 原地累积 self.uncapped_best_pos_hist 和 self.uncapped_best_neg_hist
         """
         del allow_cache_update
         if logits.shape[1] == 1:
-            # torch.Tensor, (B,1,D,H,W), sigmoid 前景概率
+            # torch.Tensor, (B,1,D,H,W), sigmoid 后的候选前景概率
             prob_by_class = torch.sigmoid(logits[:, :1]).detach().float()
         else:
-            # torch.Tensor, (B,C,D,H,W), softmax 类别概率
+            # torch.Tensor, (B,C,D,H,W), softmax 后的 task class 概率
             prob = torch.softmax(logits, dim=1).detach().float()
+            # torch.Tensor, (K,), long, candidate class 在 dense logits 通道中的 index
             class_index = torch.as_tensor(self.candidate_class_ids, device=logits.device, dtype=torch.long)
+            # torch.Tensor, (B,K,D,H,W), 仅保留候选前景类的概率
             prob_by_class = prob.index_select(dim=1, index=class_index)
         # torch.Tensor, (B,D,H,W), bool, dense 有效统计掩码
         valid = valid_mask.bool()
@@ -320,7 +265,6 @@ class CpcValidationDiagnostics(nn.Module):
                 positive=positive,
                 valid=valid,
                 class_pos=class_pos,
-                source_folder_idx=source_folder_idx,
             )
 
     def _accumulate_hist_by_class(
@@ -330,27 +274,24 @@ class CpcValidationDiagnostics(nn.Module):
         positive: torch.Tensor,
         valid: torch.Tensor,
         class_pos: int,
-        source_folder_idx: torch.Tensor,
     ) -> None:
         """
-        按 class 与 source folder 累积 score histogram。
+        按 candidate class 累积 score histogram。
 
         输入参数:
             - score: torch.Tensor, (B,D,H,W), 当前类别概率
             - positive: torch.Tensor, (B,D,H,W), 当前类别正例掩码
             - valid: torch.Tensor, (B,D,H,W), 有效统计掩码
-            - class_pos: int, candidate class 在 K 维中的位置
-            - source_folder_idx: torch.Tensor, (B,), source folder index
-
+            - class_pos: int, candidate class 在 "K" 中的位置(0,1,..K-1)
         输出:
-            - None, 原地累积 best histogram
+            - None, 原地累积 self.uncapped_best_pos_hist 和 self.uncapped_best_neg_hist
         """
         num_bins = int(self.threshold_grid.numel())
-        # torch.Tensor, (B,D,H,W), 有效位置 score
+        # torch.Tensor, (M,), valid=True 的 voxel score, M 为有效 voxel 数
         score_valid = score[valid].clamp(0.0, 1.0)
-        # torch.Tensor, (M,), 有效位置 bin index
+        # torch.Tensor, (M,), 每个有效 voxel 所属的概率 bin index
         bin_idx = torch.floor(score_valid * num_bins).long().clamp(max=num_bins - 1)
-        # torch.Tensor, (M,), 有效位置正例标记
+        # torch.Tensor, (M,), 每个有效 voxel 是否为当前候选类 GT 正例
         positive_valid = positive[valid]
         self.uncapped_best_pos_hist[class_pos] += torch.bincount(bin_idx[positive_valid], minlength=num_bins).to(
             device=self.uncapped_best_pos_hist.device,
@@ -360,33 +301,102 @@ class CpcValidationDiagnostics(nn.Module):
             device=self.uncapped_best_neg_hist.device,
             dtype=torch.long,
         )
-        for source_idx in range(len(self.source_folders.names)):
-            # torch.Tensor, (B,), 当前 source folder 的 BOX 掩码
-            box_mask = source_folder_idx == int(source_idx)
-            if not bool(box_mask.any()):
-                continue
-            # torch.Tensor, (B,D,H,W), 当前 source folder 的有效位置掩码
-            source_valid = valid & box_mask.view(-1, 1, 1, 1)
-            score_source = score[source_valid].clamp(0.0, 1.0)
-            bin_source = torch.floor(score_source * num_bins).long().clamp(max=num_bins - 1)
-            positive_source = positive[source_valid]
-            self.uncapped_best_pos_hist_by_source[source_idx, class_pos] += torch.bincount(
-                bin_source[positive_source], minlength=num_bins
-            ).to(device=self.uncapped_best_pos_hist_by_source.device, dtype=torch.long)
-            self.uncapped_best_neg_hist_by_source[source_idx, class_pos] += torch.bincount(
-                bin_source[~positive_source], minlength=num_bins
-            ).to(device=self.uncapped_best_neg_hist_by_source.device, dtype=torch.long)
 
-    def update_uncapped_sampling(self, **_: object) -> None:
-        """预留 sampling diagnostics 更新接口。"""
 
+
+    # ---------------------------------------- 更新 uncapped_sampling_* ----------------------------------------
+    def update_uncapped_sampling(
+        self,
+        *,
+        logits: torch.Tensor,
+        target: torch.Tensor,
+        valid_mask: torch.Tensor,
+        candidate_outputs: Mapping[str, torch.Tensor],
+        selection_mode: str,
+        use_fixed_warmup: bool,
+    ) -> None:
+        """
+        更新真实 sampling 边界在 dense 空间中的覆盖统计。
+
+        输入参数:
+            - logits: torch.Tensor, (B,C,D,H,W), dense ligand logits
+            - target: torch.Tensor, (B,D,H,W), dense hard-label target
+            - valid_mask: torch.Tensor, (B,D,H,W), dense 有效统计掩码
+            - candidate_outputs: Mapping[str, torch.Tensor], candidate builder(SparseCandidateSetBuilder) 输出
+            - selection_mode: str, 当前正式 selection mode
+            - use_fixed_warmup: bool, 当前是否使用 warmup fixed topc
+
+        输出:
+            - None, 原地累积 sampling 统计: 
+                - uncapped_sampling_tp/fp/fn
+                - uncapped_sampling_num_gt, uncapped_sampling_target_count
+                - uncapped_sampling_boundary_hist
+        """
+        del selection_mode, use_fixed_warmup
+        required = ("candidate_p_sampling_by_class", "candidate_target_counts_by_class", "candidate_batch_index", "candidate_voxel_zyx")
+        if any(name not in candidate_outputs for name in required):
+            return
+        # torch.Tensor, (B,D,H,W), bool, dense 有效统计掩码
+        valid = valid_mask.bool().to(device=logits.device)
+        # torch.Tensor, (B,D,H,W), long, dense hard-label target
+        target_on_device = target.to(device=logits.device).long()
+        # torch.Tensor, (B,K), 每个 BOX/候选类实际 sampling cutoff 概率
+        boundary = candidate_outputs["candidate_p_sampling_by_class"].to(device=logits.device).detach().float()
+        # torch.Tensor, (B,K), 每个 BOX/候选类 cap 前目标候选数
+        target_counts = candidate_outputs["candidate_target_counts_by_class"].to(device=logits.device).detach().long()
+
+        # torch.Tensor, (sumC,), long, builder 最终输出候选所属 BOX index
+        candidate_batch_index = candidate_outputs["candidate_batch_index"].to(device=logits.device, dtype=torch.long)
+        # torch.Tensor, (sumC,3), long, builder 最终输出候选的 z/y/x index
+        candidate_voxel_zyx = candidate_outputs["candidate_voxel_zyx"].to(device=logits.device, dtype=torch.long)
+        # torch.Tensor, (sumC,), bool, 最终 C 行在 dense 空间中的有效统计掩码
+        valid_C = valid[candidate_batch_index, candidate_voxel_zyx[:, 0], candidate_voxel_zyx[:, 1], candidate_voxel_zyx[:, 2]]
+        # torch.Tensor, (sumC,), long, 最终 C 行对应的 dense hard-label target
+        target_C = target_on_device[candidate_batch_index, candidate_voxel_zyx[:, 0], candidate_voxel_zyx[:, 1], candidate_voxel_zyx[:, 2]]
+        # int, score histogram bin 数 T
+        num_bins = int(self.threshold_grid.numel())
+
+        for class_pos, class_id in enumerate(self.candidate_class_ids):
+            # torch.Tensor, (B,D,H,W), 当前候选类在 dense 空间中的 GT 正例掩码
+            positive_dense = (target_on_device == int(class_id)) & valid
+            self.uncapped_sampling_num_gt[class_pos] += positive_dense.sum().to(device=self.uncapped_sampling_num_gt.device, dtype=torch.long)
+            self.uncapped_sampling_target_count[class_pos] += target_counts[:, class_pos].sum().to(device=self.uncapped_sampling_target_count.device, dtype=torch.long)
+            # torch.Tensor, (B,), bool, 当前候选类存在有限 sampling boundary 的 BOX 掩码
+            finite_boundary = torch.isfinite(boundary[:, class_pos])
+            if bool(finite_boundary.any()):
+                # torch.Tensor, (M_b,), 当前候选类有效 sampling cutoff 概率
+                boundary_values = boundary[:, class_pos][finite_boundary].clamp(0.0, 1.0)
+                # torch.Tensor, (M_b,), sampling cutoff 对应的概率 bin index
+                boundary_bins = torch.floor(boundary_values * num_bins).long().clamp(max=num_bins - 1)
+                self.uncapped_sampling_boundary_hist[class_pos] += torch.bincount(boundary_bins, minlength=num_bins).to(
+                    device=self.uncapped_sampling_boundary_hist.device,
+                    dtype=torch.long,
+                )
+            for batch_idx in range(int(logits.shape[0])):
+                # torch.Tensor, (sumC,), bool, 当前 BOX 对应的 builder 最终 C 行掩码
+                sampled_C = (candidate_batch_index == batch_idx) & valid_C
+                # torch.Tensor, (sumC,), bool, 当前 BOX 的 C 行中命中当前 GT 类正例的掩码
+                positive_C = sampled_C & (target_C == int(class_id))
+                # torch.Tensor, (), sampling 命中的 GT 正例数
+                tp = positive_C.sum()
+                # torch.Tensor, (), sampling 误选的 GT 负例数
+                fp = (sampled_C & (target_C != int(class_id))).sum()
+                # torch.Tensor, (), sampling 漏掉的 GT 正例数
+                fn = positive_dense[batch_idx].sum() - tp
+                self.uncapped_sampling_tp[class_pos] += tp.to(device=self.uncapped_sampling_tp.device, dtype=torch.long)
+                self.uncapped_sampling_fp[class_pos] += fp.to(device=self.uncapped_sampling_fp.device, dtype=torch.long)
+                self.uncapped_sampling_fn[class_pos] += fn.to(device=self.uncapped_sampling_fn.device, dtype=torch.long)
+
+
+
+
+    # ---------------------------------------- 更新 capped_* ----------------------------------------
     def update_capped(
         self,
         *,
         target: torch.Tensor,
         valid_mask: torch.Tensor,
         candidate_outputs: Mapping[str, torch.Tensor],
-        source_folder_idx: torch.Tensor,
     ) -> None:
         """
         更新实际 C 覆盖统计。
@@ -395,18 +405,25 @@ class CpcValidationDiagnostics(nn.Module):
             - target: torch.Tensor, (B,D,H,W), dense hard-label target
             - valid_mask: torch.Tensor, (B,D,H,W), dense 有效统计掩码
             - candidate_outputs: Mapping[str, torch.Tensor], candidate builder 输出
-            - source_folder_idx: torch.Tensor, (B,), source folder index; 当前 global 统计不消费
 
         输出:
-            - None, 原地累积 C 覆盖计数
+            - None, 原地累积 C 覆盖计数:
+                - capped_tp/fp/fn
+                - capped_num_C, capped_num_P
+                - capped_box_count
         """
-        del source_folder_idx
+        # torch.Tensor, (sumC,), long, 每个候选 voxel 所属 BOX index
         idx_b = candidate_outputs["candidate_batch_index"].to(device=target.device, dtype=torch.long)
+        # torch.Tensor, (sumC,3), long, 每个候选 voxel 的 z/y/x index
         idx_zyx = candidate_outputs["candidate_voxel_zyx"].to(device=target.device, dtype=torch.long)
+        # torch.Tensor, (sumC,), bool, C 内有效统计掩码
         valid_C = valid_mask[idx_b, idx_zyx[:, 0], idx_zyx[:, 1], idx_zyx[:, 2]].bool()
+        # torch.Tensor, (sumC,), long, C 内 hard-label target
         target_C = target[idx_b, idx_zyx[:, 0], idx_zyx[:, 1], idx_zyx[:, 2]].long()
         for class_pos, class_id in enumerate(self.candidate_class_ids):
+            # torch.Tensor, (B,D,H,W), bool, 当前候选类 dense GT 正例掩码
             positive_dense = (target.long() == int(class_id)) & valid_mask.bool()
+            # torch.Tensor, (sumC,), bool, 当前候选类 C 内 GT 正例掩码
             positive_C = (target_C == int(class_id)) & valid_C
             self.capped_tp[class_pos] += positive_C.sum().to(device=self.capped_tp.device, dtype=torch.long)
             self.capped_fp[class_pos] += ((target_C != int(class_id)) & valid_C).sum().to(device=self.capped_fp.device, dtype=torch.long)
@@ -415,7 +432,42 @@ class CpcValidationDiagnostics(nn.Module):
         if "anchor_counts" in candidate_outputs:
             self.capped_num_P += candidate_outputs["anchor_counts"].sum().to(device=self.capped_num_P.device, dtype=torch.long)
         self.capped_box_count += torch.as_tensor(target.shape[0], device=self.capped_box_count.device, dtype=torch.long)
+        self._accumulate_capped_routed_prob_hist(candidate_outputs)
 
+    def _accumulate_capped_routed_prob_hist(self, candidate_outputs: Mapping[str, torch.Tensor]) -> None:
+        """
+        更新 capped_routed_prob_hist: (num_candidate_classes, num_bins), torch.long, "候选集 C 内, 按照路由(routed)类别(而不是 GT 类别)统计的 candidate_prob 概率分布
+
+        输入参数:
+            - candidate_outputs: Mapping[str, torch.Tensor], 包含 candidate_class 和 candidate_prob 的候选集输出
+
+        输出:
+            - None, 原地累积 self.capped_routed_prob_hist
+        """
+        if "candidate_class" not in candidate_outputs or "candidate_prob" not in candidate_outputs:
+            return
+        # torch.Tensor, (sumC,), long, 最终 C 行的 routed candidate class id
+        candidate_class = candidate_outputs["candidate_class"].to(device=self.capped_routed_prob_hist.device, dtype=torch.long)
+        # torch.Tensor, (sumC,), float, 最终 C 行的 routed candidate 概率
+        candidate_prob = candidate_outputs["candidate_prob"].to(device=self.capped_routed_prob_hist.device).detach().float().clamp(0.0, 1.0)
+        # int, histogram bin 数 T
+        num_bins = int(self.threshold_grid.numel())
+        for class_pos, class_id in enumerate(self.candidate_class_ids):
+            # torch.Tensor, (sumC,), bool, 当前 routed class 的最终 C 行掩码
+            class_mask = candidate_class == int(class_id)
+            if not bool(class_mask.any()):
+                continue
+            # torch.Tensor, (M_C,), 当前 routed class 的概率 bin index
+            bin_idx = torch.floor(candidate_prob[class_mask] * num_bins).long().clamp(max=num_bins - 1)
+            self.capped_routed_prob_hist[class_pos] += torch.bincount(bin_idx, minlength=num_bins).to(
+                device=self.capped_routed_prob_hist.device,
+                dtype=torch.long,
+            )
+
+
+
+
+    # ---------------------------------------- 更新 unrefined_* 与 refined_* ----------------------------------------
     def update_unrefined(
         self,
         *,
@@ -423,22 +475,22 @@ class CpcValidationDiagnostics(nn.Module):
         target_C: torch.Tensor,
         valid_C: torch.Tensor,
         dense_num_gt: torch.Tensor,
-        source_folder_idx: torch.Tensor,
     ) -> None:
         """
         更新 C 内 unrefined dense logit 判别统计。
 
         输入参数:
-            - candidate_outputs: Mapping[str, torch.Tensor], 包含 candidate_logits
+            - candidate_outputs: Mapping[str, torch.Tensor], 包含 candidate_logits: (sumC, C_logits), 每个候选体素的 ligand logits
             - target_C: torch.Tensor, (sumC,), C 级 hard-label target
             - valid_C: torch.Tensor, (sumC,), C 级有效掩码
-            - dense_num_gt: torch.Tensor, (B,), 每 BOX dense GT 正例数
-            - source_folder_idx: torch.Tensor, (B,), source folder index; 当前 global 统计不消费
+            - dense_num_gt: torch.Tensor, (B,K), 每 BOX/候选类 dense GT 正例数
 
         输出:
-            - None, 原地累积 C 内 histogram 与 dense GT 计数
+            - None, 原地累积 C 内 histogram 与 dense GT 计数:
+                - self.unrefined_pos_hist
+                - self.unrefined_neg_hist
+                - self.unrefined_dense_gt
         """
-        del source_folder_idx
         self._accumulate_C_score_hist(
             logits_C=candidate_outputs["candidate_logits"],
             target_C=target_C,
@@ -457,7 +509,6 @@ class CpcValidationDiagnostics(nn.Module):
         target_C: torch.Tensor,
         valid_C: torch.Tensor,
         dense_num_gt: torch.Tensor,
-        source_folder_idx: torch.Tensor,
     ) -> None:
         """
         更新 C 内 refined logit 判别统计。
@@ -467,13 +518,15 @@ class CpcValidationDiagnostics(nn.Module):
             - candidate_outputs: Mapping[str, torch.Tensor], candidate builder 输出; 当前仅保留接口一致性
             - target_C: torch.Tensor, (sumC,), C 级 hard-label target
             - valid_C: torch.Tensor, (sumC,), C 级有效掩码
-            - dense_num_gt: torch.Tensor, (B,), 每 BOX dense GT 正例数
-            - source_folder_idx: torch.Tensor, (B,), source folder index; 当前 global 统计不消费
+            - dense_num_gt: torch.Tensor, (B,K), 每 BOX/候选类 dense GT 正例数
 
         输出:
-            - None, 原地累积 C 内 histogram 与 dense GT 计数
+            - None, 原地累积 C 内 histogram 与 dense GT 计数:
+                - self.refined_pos_hist
+                - self.refined_neg_hist
+                - self.refined_dense_gt
         """
-        del candidate_outputs, source_folder_idx
+        del candidate_outputs
         self._accumulate_C_score_hist(
             logits_C=refined_logits_C,
             target_C=target_C,
@@ -496,122 +549,200 @@ class CpcValidationDiagnostics(nn.Module):
         dense_gt: torch.Tensor,
     ) -> None:
         """
-        累积 C 级 score histogram。
+        累积 C 级 score histogram————注意这里的 score 实际都是 prob。
 
         输入参数:
-            - logits_C: torch.Tensor, (sumC,C_logits), C 级 logits
+            - logits_C: torch.Tensor, (sumC, C_logits), C 级 logits
             - target_C: torch.Tensor, (sumC,), C 级 hard-label target
             - valid_C: torch.Tensor, (sumC,), C 级有效掩码
-            - dense_num_gt: torch.Tensor, (B,), dense GT 正例数
-            - pos_hist: torch.Tensor, (K,T), 正例 histogram buffer
+            - dense_num_gt: torch.Tensor, (B,K), dense GT 正例数
+            - pos_hist: torch.Tensor, (K,T), 正例 histogram buffer, T=num_bins
             - neg_hist: torch.Tensor, (K,T), 负例 histogram buffer
             - dense_gt: torch.Tensor, (K,), dense GT buffer
 
         输出:
             - None, 原地累积 buffer
         """
+        # int, score histogram bin 数 T
         num_bins = int(self.threshold_grid.numel())
+        # torch.Tensor, (sumC,), bool, C 内有效统计掩码
         valid = valid_C.bool()
         if logits_C.shape[1] == 1:
+            # torch.Tensor, (sumC,1), sigmoid 后的候选前景概率
             prob_by_class = torch.sigmoid(logits_C[:, :1]).detach().float()
         else:
+            # torch.Tensor, (sumC,C_logits), softmax 后的 task class 概率
             prob = torch.softmax(logits_C, dim=1).detach().float()
+            # torch.Tensor, (K,), long, candidate class 在 C 级 logits 通道中的 index
             class_index = torch.as_tensor(self.candidate_class_ids, device=logits_C.device, dtype=torch.long)
+            # torch.Tensor, (sumC,K), 仅保留候选前景类的概率
             prob_by_class = prob.index_select(dim=1, index=class_index)
         for class_pos, class_id in enumerate(self.candidate_class_ids):
+            # torch.Tensor, (M_C,), 当前候选类在有效 C 内的概率
             score = prob_by_class[:, class_pos][valid].clamp(0.0, 1.0)
+            # torch.Tensor, (M_C,), 当前候选类在有效 C 内的正例掩码
             positive = (target_C.long() == int(class_id))[valid]
+            # torch.Tensor, (M_C,), 当前候选类有效 C 概率 bin index
             bin_idx = torch.floor(score * num_bins).long().clamp(max=num_bins - 1)
             pos_hist[class_pos] += torch.bincount(bin_idx[positive], minlength=num_bins).to(device=pos_hist.device, dtype=torch.long)
             neg_hist[class_pos] += torch.bincount(bin_idx[~positive], minlength=num_bins).to(device=neg_hist.device, dtype=torch.long)
-            dense_gt[class_pos] += dense_num_gt.sum().to(device=dense_gt.device, dtype=torch.long)
+            # torch.Tensor, (), 当前 candidate class 在所有 BOX 中的 dense GT 正例数
+            class_dense_gt = dense_num_gt[:, class_pos].sum()
+            dense_gt[class_pos] += class_dense_gt.to(device=dense_gt.device, dtype=torch.long)
 
-    def compute_payload(self, *, sync_fn: Callable[[torch.Tensor], torch.Tensor]) -> CpcDiagnosticsPayload:
+
+
+
+
+
+    # --------------------------------------- 工具函数 -------------------------------------
+    # 从 histogram 算 F1
+    def _best_f1_scalars_from_hist(
+        self,
+        *,
+        pos_hist: torch.Tensor,
+        neg_hist: torch.Tensor,
+        class_pos: int,
+        scope: str,
+        task_class_name: str,
+    ) -> tuple[dict[str, torch.Tensor], tuple[DiagnosticsWarning, ...]]:
         """
-        同步并计算当前 epoch diagnostics payload。
+        用于 val_uncapped. 从 score histogram 计算 best-F1 、best_F1、best_tp 等等
+
+        调用时机:
+            - validation step 过程中先累积 uncapped_best_pos_hist / uncapped_best_neg_hist
+            - epoch 结束时 self.cpc_diagnostics.compute_payload(sync_fn=self._all_reduce_sum), 然后在每个 candidate class 上调用本函数
 
         输入参数:
-            - sync_fn: Callable[[torch.Tensor], torch.Tensor], DDP all-reduce sum 函数; 所有 rank 必须对称调用
+            - pos_hist: torch.Tensor, (T,), 正例 score histogram
+            - neg_hist: torch.Tensor, (T,), 负例 score histogram
+            - class_pos: int, candidate class 在 K 维中的位置
+            - scope: str, 当前只使用 global
+            - task_class_name: str, task class 名
 
         输出:
-            - payload: CpcDiagnosticsPayload, 标量、曲线、warning 与本地表格 payload
+            - scalars: dict[str, torch.Tensor], best 面板标量, 包含 best-F1 、best_F1、best_tp 等等
+            - warnings: tuple[DiagnosticsWarning, ...], 无正例等统计 warning
         """
-        # torch.Tensor, (K,T), 全局正例 histogram
-        pos_hist = sync_fn(self.uncapped_best_pos_hist.clone())
-        # torch.Tensor, (K,T), 全局负例 histogram
-        neg_hist = sync_fn(self.uncapped_best_neg_hist.clone())
-        # torch.Tensor, (S,K,T), source folder 正例 histogram
-        pos_hist_by_source = sync_fn(self.uncapped_best_pos_hist_by_source.clone())
-        # torch.Tensor, (S,K,T), source folder 负例 histogram
-        neg_hist_by_source = sync_fn(self.uncapped_best_neg_hist_by_source.clone())
-        capped_tp = sync_fn(self.capped_tp.clone())
-        capped_fp = sync_fn(self.capped_fp.clone())
-        capped_fn = sync_fn(self.capped_fn.clone())
-        capped_num_C = sync_fn(self.capped_num_C.clone())
-        capped_num_P = sync_fn(self.capped_num_P.clone())
-        capped_box_count = sync_fn(self.capped_box_count.clone())
-        unrefined_pos_hist = sync_fn(self.unrefined_pos_hist.clone())
-        unrefined_neg_hist = sync_fn(self.unrefined_neg_hist.clone())
-        unrefined_dense_gt = sync_fn(self.unrefined_dense_gt.clone())
-        refined_pos_hist = sync_fn(self.refined_pos_hist.clone())
-        refined_neg_hist = sync_fn(self.refined_neg_hist.clone())
-        refined_dense_gt = sync_fn(self.refined_dense_gt.clone())
-        scalars: dict[str, torch.Tensor] = {}
-        warnings: list[DiagnosticsWarning] = []
-        for class_pos, class_id in enumerate(self.candidate_class_ids):
-            class_name = self.class_names[int(class_id)]
-            class_scalars, class_warnings = self._best_f1_scalars_from_hist(
-                pos_hist=pos_hist[class_pos],
-                neg_hist=neg_hist[class_pos],
-                scope="global",
-                source_folder=None,
-                task_class_name=class_name,
+        # torch.Tensor, (T,), tp[i] = pos_hist[i:]
+        tp = torch.cumsum(pos_hist.flip(0), dim=0).flip(0).to(dtype=torch.float32)
+        # torch.Tensor, (T,), fp[i] = neg_hist[i:]
+        fp = torch.cumsum(neg_hist.flip(0), dim=0).flip(0).to(dtype=torch.float32)
+        # torch.Tensor, (), 当前统计空间 GT 正例总数
+        num_gt = pos_hist.sum().to(dtype=torch.float32)
+        if float(num_gt.item()) <= 0.0:
+            nan = pos_hist.new_tensor(float("nan"), dtype=torch.float32)
+            key = build_metric_key(
+                panel="val_uncapped",
+                subpanel="best",
+                scope=scope,
+                metric="best_F1",
+                num_classes=len(self.class_names),
+                task_class_name=task_class_name,
             )
-            scalars.update(class_scalars)
-            warnings.extend(class_warnings)
-            if self.config.source_folder_breakdown:
-                for source_idx, source_name in enumerate(self.source_folders.names):
-                    source_scalars, source_warnings = self._best_f1_scalars_from_hist(
-                        pos_hist=pos_hist_by_source[source_idx, class_pos],
-                        neg_hist=neg_hist_by_source[source_idx, class_pos],
-                        scope="by_source_folder",
-                        source_folder=source_name,
-                        task_class_name=class_name,
-                    )
-                    scalars.update(source_scalars)
-                    warnings.extend(source_warnings)
-            scalars.update(
-                self._capped_scalars_for_class(
-                    task_class_name=class_name,
-                    tp=capped_tp[class_pos],
-                    fp=capped_fp[class_pos],
-                    fn=capped_fn[class_pos],
-                    num_C=capped_num_C,
-                    num_P=capped_num_P,
-                    box_count=capped_box_count,
-                )
+            warning = DiagnosticsWarning(
+                code="no_positive_gt",
+                message="当前统计空间没有 GT 正例。",
+                scope=scope,
+                task_class_name=task_class_name,
             )
-            unrefined_local, unrefined_score = self._C_panel_scalars_from_hist(
-                panel="val_unrefined",
-                score_prefix="unrefined",
-                pos_hist=unrefined_pos_hist[class_pos],
-                neg_hist=unrefined_neg_hist[class_pos],
-                dense_gt=unrefined_dense_gt[class_pos],
-                task_class_name=class_name,
-            )
-            refined_local, refined_score = self._C_panel_scalars_from_hist(
-                panel="val_refined",
-                score_prefix="refined",
-                pos_hist=refined_pos_hist[class_pos],
-                neg_hist=refined_neg_hist[class_pos],
-                dense_gt=refined_dense_gt[class_pos],
-                task_class_name=class_name,
-            )
-            scalars.update(unrefined_local)
-            scalars.update(refined_local)
-            scalars.update(unrefined_score)
-            scalars.update(refined_score)
-        return CpcDiagnosticsPayload(scalars=scalars, curves={}, warnings=tuple(warnings), local_tables={})
+            return {key: nan}, (warning,)
+        fn = num_gt - tp
+        # torch.Tensor, (T,), precision[i] 代表选取第i个bin对应的概率进行截断时, 所得到的 precision
+        precision = tp / (tp + fp).clamp_min(1.0)
+        recall = tp / num_gt.clamp_min(1.0)
+        f1 = 2.0 * precision * recall / (precision + recall).clamp_min(1.0e-12)
+        best_idx = int(torch.argmax(f1).item())
+        # torch.Tensor, (), best-F1 命中数按 expand factor 放大后的目标候选数
+        sampling_target = torch.ceil((tp[best_idx] + fp[best_idx]) * float(self.adaptive_expand_factor[int(class_pos)]))
+        all_hist = pos_hist + neg_hist
+        # torch.Tensor, (T,), cumulative_all[i] 代表选中第 (num_bins-i) 个概率阈值进行截断时, 产生的候选体素数目
+        cumulative_all = torch.cumsum(all_hist.flip(0), dim=0)
+        if float(sampling_target.item()) <= 0.0:
+            sampling_idx = best_idx
+        elif bool(cumulative_all[-1] < sampling_target.to(device=cumulative_all.device, dtype=cumulative_all.dtype)):
+            sampling_idx = 0
+        else:
+            reversed_idx = int((cumulative_all >= sampling_target.to(device=cumulative_all.device, dtype=cumulative_all.dtype)).nonzero(as_tuple=False)[0].item())
+            sampling_idx = int(all_hist.numel() - 1 - reversed_idx)
+        base_kwargs = {
+            "panel": "val_uncapped",
+            "subpanel": "best",
+            "scope": scope,
+            "num_classes": len(self.class_names),
+            "task_class_name": task_class_name,
+        }
+        return {
+            build_metric_key(metric="p_best", **base_kwargs): self.threshold_grid[best_idx],
+            build_metric_key(metric="p_sampling", **base_kwargs): self.threshold_grid[sampling_idx],
+            build_metric_key(metric="best_F1", **base_kwargs): f1[best_idx],
+            build_metric_key(metric="best_precision", **base_kwargs): precision[best_idx],
+            build_metric_key(metric="best_recall", **base_kwargs): recall[best_idx],
+            build_metric_key(metric="best_tp", **base_kwargs): tp[best_idx],
+            build_metric_key(metric="best_fp", **base_kwargs): fp[best_idx],
+            build_metric_key(metric="best_fn", **base_kwargs): fn[best_idx],
+            build_metric_key(metric="num_gt", **base_kwargs): num_gt,
+            build_metric_key(metric="numC_p_best_cutoff", **base_kwargs): tp[best_idx] + fp[best_idx],
+            build_metric_key(metric="numC_p_sampling_target", **base_kwargs): sampling_target,
+        }, ()
+
+
+
+
+    def _sampling_scalars_for_class(
+        self,
+        *,
+        task_class_name: str,
+        tp: torch.Tensor,
+        fp: torch.Tensor,
+        fn: torch.Tensor,
+        num_gt: torch.Tensor,
+        target_count: torch.Tensor,
+        boundary_hist: torch.Tensor,
+    ) -> dict[str, torch.Tensor]:
+        """
+        构造 val_uncapped/sampling/global/_* 的所有标量, 包含 sampling_F1、sampling_precision、sampling_tp 等等
+
+        输入参数:
+            - task_class_name: str, task class 名
+            - tp/fp/fn: torch.Tensor, (), builder 最终 C 对 dense GT 的覆盖计数
+            - num_gt: torch.Tensor, (), dense GT 正例数
+            - target_count: torch.Tensor, (), sampling 策略 cap 前目标候选数
+            - boundary_hist: torch.Tensor, (T,), sampling 边界概率 histogram
+
+        输出:
+            - scalars: dict[str, torch.Tensor], sampling 面板标量, 包含 sampling_F1、sampling_precision、sampling_tp 等等
+        """
+        # torch.Tensor, (), sampling 统计的 TP 浮点值
+        tp_f = tp.to(dtype=torch.float32)
+        # torch.Tensor, (), sampling 统计的 FP 浮点值
+        fp_f = fp.to(dtype=torch.float32)
+        # torch.Tensor, (), sampling 统计的 FN 浮点值
+        fn_f = fn.to(dtype=torch.float32)
+        # torch.Tensor, (), sampling precision
+        precision = tp_f / (tp_f + fp_f).clamp_min(1.0)
+        # torch.Tensor, (), sampling recall
+        recall = tp_f / (tp_f + fn_f).clamp_min(1.0)
+        # torch.Tensor, (), sampling F1
+        f1 = 2.0 * precision * recall / (precision + recall).clamp_min(1.0e-12)
+        base_kwargs = {
+            "panel": "val_uncapped",
+            "subpanel": "sampling",
+            "scope": "global",
+            "num_classes": len(self.class_names),
+            "task_class_name": task_class_name,
+        }
+        scalars = {
+            build_metric_key(metric="sampling_F1", **base_kwargs): f1,
+            build_metric_key(metric="sampling_precision", **base_kwargs): precision,
+            build_metric_key(metric="sampling_recall", **base_kwargs): recall,
+            build_metric_key(metric="sampling_tp", **base_kwargs): tp_f,
+            build_metric_key(metric="sampling_fp", **base_kwargs): fp_f,
+            build_metric_key(metric="sampling_fn", **base_kwargs): fn_f,
+            build_metric_key(metric="num_gt", **base_kwargs): num_gt.to(dtype=torch.float32),
+            build_metric_key(metric="numC_sampling_target", **base_kwargs): target_count.to(dtype=torch.float32),
+        }
+        return scalars
 
     def _capped_scalars_for_class(
         self,
@@ -639,20 +770,26 @@ class CpcValidationDiagnostics(nn.Module):
         输出:
             - scalars: dict[str, torch.Tensor], val_capped/global 标量
         """
+        # torch.Tensor, (), capped 统计的 TP 浮点值
         tp_f = tp.to(dtype=torch.float32)
+        # torch.Tensor, (), capped 统计的 FP 浮点值
         fp_f = fp.to(dtype=torch.float32)
+        # torch.Tensor, (), capped 统计的 FN 浮点值
         fn_f = fn.to(dtype=torch.float32)
+        # torch.Tensor, (), capped precision
         precision = tp_f / (tp_f + fp_f).clamp_min(1.0)
+        # torch.Tensor, (), capped recall
         recall = tp_f / (tp_f + fn_f).clamp_min(1.0)
+        # torch.Tensor, (), capped F1
         f1 = 2.0 * precision * recall / (precision + recall).clamp_min(1.0e-12)
         base_kwargs = {
             "panel": "val_capped",
             "subpanel": None,
             "scope": "global",
-            "source_folder": None,
             "num_classes": len(self.class_names),
             "task_class_name": task_class_name,
         }
+        # torch.Tensor, (), 每 BOX 平均值分母
         box_count_f = box_count.to(dtype=torch.float32).clamp_min(1.0)
         return {
             build_metric_key(metric="F1", **base_kwargs): f1,
@@ -690,27 +827,40 @@ class CpcValidationDiagnostics(nn.Module):
             - local_scalars: dict[str, torch.Tensor], C 内 local 标量
             - score_scalars: dict[str, torch.Tensor], val_score 端到端标量
         """
+        # torch.Tensor, (T,), 从高阈值到低阈值累积的 C 内 TP
         tp = torch.cumsum(pos_hist.flip(0), dim=0).flip(0).to(dtype=torch.float32)
+        # torch.Tensor, (T,), 从高阈值到低阈值累积的 C 内 FP
         fp = torch.cumsum(neg_hist.flip(0), dim=0).flip(0).to(dtype=torch.float32)
+        # torch.Tensor, (), C 内 GT 正例总数
         num_gt_in_C = pos_hist.sum().to(dtype=torch.float32)
         if float(num_gt_in_C.item()) <= 0.0:
+            # torch.Tensor, (), C 内无正例时的占位 NaN
             nan = pos_hist.new_tensor(float("nan"), dtype=torch.float32)
-            local_key = build_metric_key(panel=panel, subpanel=None, scope="global", source_folder=None, metric="F1", num_classes=len(self.class_names), task_class_name=task_class_name)
-            score_key = build_metric_key(panel="val_score", subpanel=None, scope="global", source_folder=None, metric=f"{score_prefix}_F1", num_classes=len(self.class_names), task_class_name=task_class_name)
-            return {local_key: nan}, {score_key: nan}
+            # torch.Tensor, (), val_score 端到端 F1; dense 有正例但 C 完全漏检时记为 0.0
+            score_f1 = pos_hist.new_tensor(0.0, dtype=torch.float32) if float(dense_gt.item()) > 0.0 else nan
+            local_key = build_metric_key(panel=panel, subpanel=None, scope="global", metric="F1", num_classes=len(self.class_names), task_class_name=task_class_name)
+            score_key = build_metric_key(panel="val_score", subpanel=None, scope="global", metric=f"{score_prefix}_F1", num_classes=len(self.class_names), task_class_name=task_class_name)
+            return {local_key: nan}, {score_key: score_f1}
+        # torch.Tensor, (T,), C 内 local FN
         local_fn = num_gt_in_C - tp
+        # torch.Tensor, (T,), C 内 precision
         precision = tp / (tp + fp).clamp_min(1.0)
+        # torch.Tensor, (T,), C 内 local recall
         local_recall = tp / num_gt_in_C.clamp_min(1.0)
+        # torch.Tensor, (T,), C 内 local F1
         local_f1 = 2.0 * precision * local_recall / (precision + local_recall).clamp_min(1.0e-12)
+        # int, C 内 local F1 最佳阈值 bin index
         best_idx = int(torch.argmax(local_f1).item())
+        # torch.Tensor, (), dense 全空间 GT 正例总数
         dense_gt_f = dense_gt.to(dtype=torch.float32)
+        # torch.Tensor, (), 用 dense GT 作分母的端到端 recall
         e2e_recall = tp[best_idx] / dense_gt_f.clamp_min(1.0)
+        # torch.Tensor, (), 用 dense GT 作分母的端到端 F1
         e2e_f1 = 2.0 * precision[best_idx] * e2e_recall / (precision[best_idx] + e2e_recall).clamp_min(1.0e-12)
         local_kwargs = {
             "panel": panel,
             "subpanel": None,
             "scope": "global",
-            "source_folder": None,
             "num_classes": len(self.class_names),
             "task_class_name": task_class_name,
         }
@@ -718,7 +868,6 @@ class CpcValidationDiagnostics(nn.Module):
             "panel": "val_score",
             "subpanel": None,
             "scope": "global",
-            "source_folder": None,
             "num_classes": len(self.class_names),
             "task_class_name": task_class_name,
         }
@@ -737,75 +886,156 @@ class CpcValidationDiagnostics(nn.Module):
             build_metric_key(metric=f"{score_prefix}_recall", **score_kwargs): e2e_recall,
         }
 
-    def _best_f1_scalars_from_hist(
-        self,
-        *,
-        pos_hist: torch.Tensor,
-        neg_hist: torch.Tensor,
-        scope: str,
-        source_folder: str | None,
-        task_class_name: str,
-    ) -> tuple[dict[str, torch.Tensor], tuple[DiagnosticsWarning, ...]]:
+
+    def compute_payload(self, *, sync_fn: Callable[[torch.Tensor], torch.Tensor]) -> CpcDiagnosticsPayload:
         """
-        从 score histogram 计算 best-F1 标量。
+        同步并计算当前 epoch diagnostics payload。
 
         输入参数:
-            - pos_hist: torch.Tensor, (T,), 正例 score histogram
-            - neg_hist: torch.Tensor, (T,), 负例 score histogram
-            - scope: str, global 或 by_source_folder
-            - source_folder: str | None, source folder 名
-            - task_class_name: str, task class 名
+            - sync_fn: Callable[[torch.Tensor], torch.Tensor], DDP all-reduce sum 函数; 所有 rank 必须对称调用
 
         输出:
-            - scalars: dict[str, torch.Tensor], best 面板标量
-            - warnings: tuple[DiagnosticsWarning, ...], 无正例等统计 warning
+            - payload: CpcDiagnosticsPayload, 标量、曲线、warning 与本地表格 payload
         """
-        # torch.Tensor, (T,), 从高阈值到低阈值累积的 TP
-        tp = torch.cumsum(pos_hist.flip(0), dim=0).flip(0).to(dtype=torch.float32)
-        # torch.Tensor, (T,), 从高阈值到低阈值累积的 FP
-        fp = torch.cumsum(neg_hist.flip(0), dim=0).flip(0).to(dtype=torch.float32)
-        # torch.Tensor, (), 当前统计空间 GT 正例总数
-        num_gt = pos_hist.sum().to(dtype=torch.float32)
-        if float(num_gt.item()) <= 0.0:
-            nan = pos_hist.new_tensor(float("nan"), dtype=torch.float32)
-            key = build_metric_key(
-                panel="val_uncapped",
-                subpanel="best",
-                scope=scope,
-                source_folder=source_folder,
-                metric="best_F1",
-                num_classes=len(self.class_names),
-                task_class_name=task_class_name,
+        # torch.Tensor, (K,T), 全局正例 histogram
+        pos_hist = sync_fn(self.uncapped_best_pos_hist.clone())
+        # torch.Tensor, (K,T), 全局负例 histogram
+        neg_hist = sync_fn(self.uncapped_best_neg_hist.clone())
+        # torch.Tensor, (K,), 全局 sampling TP
+        sampling_tp = sync_fn(self.uncapped_sampling_tp.clone())
+        # torch.Tensor, (K,), 全局 sampling FP
+        sampling_fp = sync_fn(self.uncapped_sampling_fp.clone())
+        # torch.Tensor, (K,), 全局 sampling FN
+        sampling_fn = sync_fn(self.uncapped_sampling_fn.clone())
+        # torch.Tensor, (K,), 全局 dense GT 正例数
+        sampling_num_gt = sync_fn(self.uncapped_sampling_num_gt.clone())
+        # torch.Tensor, (K,), 全局 sampling cap 前目标候选数
+        sampling_target_count = sync_fn(self.uncapped_sampling_target_count.clone())
+        # torch.Tensor, (K,T), 全局 sampling boundary histogram
+        sampling_boundary_hist = sync_fn(self.uncapped_sampling_boundary_hist.clone())
+        # torch.Tensor, (K,), 全局 capped TP
+        capped_tp = sync_fn(self.capped_tp.clone())
+        # torch.Tensor, (K,), 全局 capped FP
+        capped_fp = sync_fn(self.capped_fp.clone())
+        # torch.Tensor, (K,), 全局 capped FN
+        capped_fn = sync_fn(self.capped_fn.clone())
+        # torch.Tensor, (), 全局 C 总数
+        capped_num_C = sync_fn(self.capped_num_C.clone())
+        # torch.Tensor, (), 全局 P anchor 总数
+        capped_num_P = sync_fn(self.capped_num_P.clone())
+        # torch.Tensor, (), 全局 capped 统计 BOX 数
+        capped_box_count = sync_fn(self.capped_box_count.clone())
+        # torch.Tensor, (K,T), 最终 C routed candidate 概率 histogram
+        capped_routed_prob_hist = sync_fn(self.capped_routed_prob_hist.clone())
+        # torch.Tensor, (K,T), 全局 unrefined C 内正例 histogram
+        unrefined_pos_hist = sync_fn(self.unrefined_pos_hist.clone())
+        # torch.Tensor, (K,T), 全局 unrefined C 内负例 histogram
+        unrefined_neg_hist = sync_fn(self.unrefined_neg_hist.clone())
+        # torch.Tensor, (K,), unrefined 端到端分数使用的 dense GT 正例数
+        unrefined_dense_gt = sync_fn(self.unrefined_dense_gt.clone())
+        # torch.Tensor, (K,T), 全局 refined C 内正例 histogram
+        refined_pos_hist = sync_fn(self.refined_pos_hist.clone())
+        # torch.Tensor, (K,T), 全局 refined C 内负例 histogram
+        refined_neg_hist = sync_fn(self.refined_neg_hist.clone())
+        # torch.Tensor, (K,), refined 端到端分数使用的 dense GT 正例数
+        refined_dense_gt = sync_fn(self.refined_dense_gt.clone())
+        # dict[str, torch.Tensor], Lightning scalar 日志 payload
+        scalars: dict[str, torch.Tensor] = {}
+        # list[DiagnosticsWarning], 当前 epoch 统计 warning
+        warnings: list[DiagnosticsWarning] = []
+        for class_pos, class_id in enumerate(self.candidate_class_ids):
+            # str, 当前 candidate class 对应的 task class 名
+            class_name = self.class_names[int(class_id)]
+            class_scalars, class_warnings = self._best_f1_scalars_from_hist(
+                pos_hist=pos_hist[class_pos],
+                neg_hist=neg_hist[class_pos],
+                class_pos=class_pos,
+                scope="global",
+                task_class_name=class_name,
             )
-            warning = DiagnosticsWarning(
-                code="no_positive_gt",
-                message="当前统计空间没有 GT 正例。",
-                scope=scope,
-                source_folder=source_folder,
-                task_class_name=task_class_name,
+            scalars.update(class_scalars)
+            warnings.extend(class_warnings)
+            scalars.update(
+                self._sampling_scalars_for_class(
+                    task_class_name=class_name,
+                    tp=sampling_tp[class_pos],
+                    fp=sampling_fp[class_pos],
+                    fn=sampling_fn[class_pos],
+                    num_gt=sampling_num_gt[class_pos],
+                    target_count=sampling_target_count[class_pos],
+                    boundary_hist=sampling_boundary_hist[class_pos],
+                )
             )
-            return {key: nan}, (warning,)
-        fn = num_gt - tp
-        precision = tp / (tp + fp).clamp_min(1.0)
-        recall = tp / num_gt.clamp_min(1.0)
-        f1 = 2.0 * precision * recall / (precision + recall).clamp_min(1.0e-12)
-        best_idx = int(torch.argmax(f1).item())
-        base_kwargs = {
-            "panel": "val_uncapped",
-            "subpanel": "best",
-            "scope": scope,
-            "source_folder": source_folder,
-            "num_classes": len(self.class_names),
-            "task_class_name": task_class_name,
+            scalars.update(
+                self._capped_scalars_for_class(
+                    task_class_name=class_name,
+                    tp=capped_tp[class_pos],
+                    fp=capped_fp[class_pos],
+                    fn=capped_fn[class_pos],
+                    num_C=capped_num_C,
+                    num_P=capped_num_P,
+                    box_count=capped_box_count,
+                )
+            )
+            unrefined_local, unrefined_score = self._C_panel_scalars_from_hist(
+                panel="val_unrefined",
+                score_prefix="unrefined",
+                pos_hist=unrefined_pos_hist[class_pos],
+                neg_hist=unrefined_neg_hist[class_pos],
+                dense_gt=unrefined_dense_gt[class_pos],
+                task_class_name=class_name,
+            )
+            refined_local, refined_score = self._C_panel_scalars_from_hist(
+                panel="val_refined",
+                score_prefix="refined",
+                pos_hist=refined_pos_hist[class_pos],
+                neg_hist=refined_neg_hist[class_pos],
+                dense_gt=refined_dense_gt[class_pos],
+                task_class_name=class_name,
+            )
+            scalars.update(unrefined_local)
+            scalars.update(refined_local)
+            scalars.update(unrefined_score)
+            scalars.update(refined_score)
+        histograms = {
+            "uncapped_sampling_boundary_hist": self._histogram_payload(sampling_boundary_hist),
+            "capped_routed_prob_hist": self._histogram_payload(capped_routed_prob_hist),
         }
-        return {
-            build_metric_key(metric="p_best", **base_kwargs): self.threshold_grid[best_idx],
-            build_metric_key(metric="best_F1", **base_kwargs): f1[best_idx],
-            build_metric_key(metric="best_precision", **base_kwargs): precision[best_idx],
-            build_metric_key(metric="best_recall", **base_kwargs): recall[best_idx],
-            build_metric_key(metric="best_tp", **base_kwargs): tp[best_idx],
-            build_metric_key(metric="best_fp", **base_kwargs): fp[best_idx],
-            build_metric_key(metric="best_fn", **base_kwargs): fn[best_idx],
-            build_metric_key(metric="num_gt", **base_kwargs): num_gt,
-            build_metric_key(metric="numC_p_best_cutoff", **base_kwargs): tp[best_idx] + fp[best_idx],
-        }, ()
+        return CpcDiagnosticsPayload(scalars=scalars, curves={}, warnings=tuple(warnings), histograms=histograms)
+
+    def _histogram_payload(self, hist: torch.Tensor) -> CurvePayload:
+        """
+        将按 candidate class 分桶的 histogram 转成 CSV 友好的表格 payload。
+
+        输入参数:
+            - hist: torch.Tensor, (K,T), 每个 candidate class 在每个概率 bin 中的计数
+
+        输出:
+            - payload: CurvePayload, columns 为 class/bin/count 结构的表格
+        """
+        # torch.Tensor, (K,T), CPU long histogram
+        hist_cpu = hist.detach().cpu().long()
+        # torch.Tensor, (T,), CPU float, bin 左边界
+        bin_left = self.threshold_grid.detach().cpu().float()
+        # float, 单个概率 bin 的宽度
+        bin_width = 1.0 / float(int(bin_left.numel()))
+        rows: list[tuple[object, ...]] = []
+        for class_pos, class_id in enumerate(self.candidate_class_ids):
+            # str, 当前 candidate class 的 task class 名
+            class_name = self.class_names[int(class_id)]
+            for bin_index, left in enumerate(bin_left):
+                rows.append(
+                    (
+                        class_name,
+                        int(class_pos),
+                        int(class_id),
+                        int(bin_index),
+                        float(left.item()),
+                        min(float(left.item()) + bin_width, 1.0),
+                        int(hist_cpu[class_pos, bin_index].item()),
+                    )
+                )
+        return CurvePayload(
+            columns=("class_name", "class_pos", "class_id", "bin_index", "bin_left", "bin_right", "count"),
+            rows=tuple(rows),
+        )

@@ -14,14 +14,14 @@ from src.wrappers.voxel_point_stage1_logging import build_metric_key
 @dataclass(frozen=True)
 class MetricBranchSpec:
     """
-    常规 validation AP/PRAUC 分支配置。
+    常规 validation AP(PRAUC的近似)/PRAUC 分支配置。
 
     输入参数:
         - name: str, 分支名; 使用 atom/receptor/voxel_ligand
         - enabled: bool, 是否启用该分支
         - num_classes: int, task 类别数; 2 表示二分类输出无 suffix 指标
         - class_names: tuple[str, ...], (num_classes,), task class 名
-        - thresholds: int | Sequence[float] | None, TorchMetrics AP 阈值配置
+        - thresholds: int | Sequence[float] | None, TorchMetrics AP 阈值配置(作为近似计算 AP 的 bin)
     """
 
     name: str
@@ -83,7 +83,7 @@ class ValidationMetricManager(nn.Module):
             - spec: MetricBranchSpec, 单个分支配置
 
         输出:
-            - None, 原地写入 self.metrics
+            - None, 原地写入 self.metrics: self.metrics[f"{spec.name}__class_{class_id}"] = BinaryAveragePrecision(...)
         """
         if spec.num_classes < 2:
             raise ValueError("MetricBranchSpec.num_classes 必须 >= 2。")
@@ -108,7 +108,6 @@ class ValidationMetricManager(nn.Module):
         logits: torch.Tensor,
         target: torch.Tensor,
         mask: torch.Tensor,
-        source_folder_idx: torch.Tensor | None = None,
     ) -> None:
         """
         用一个 batch 更新指定分支 AP/PRAUC 指标。
@@ -118,12 +117,10 @@ class ValidationMetricManager(nn.Module):
             - logits: torch.Tensor, (N,C) 或 (B,C,D,H,W), 当前分支 logits
             - target: torch.Tensor, 与 logits 空间维度兼容, hard-label target
             - mask: torch.Tensor, 与 target 同空间维度, True 表示参与统计
-            - source_folder_idx: torch.Tensor | None, (B,), 预留 source folder index; 当前 AP 不分组消费
 
         输出:
-            - None, 原地更新 TorchMetrics 状态
+            - None, 原地更新 TorchMetrics 状态: self.metrics[f"{branch_name}__binary"].update(preds, targets) 
         """
-        del source_folder_idx
         spec = self.branch_specs[branch_name]
         if mask.sum() <= 0:
             return
@@ -137,12 +134,12 @@ class ValidationMetricManager(nn.Module):
         target_flat = target.reshape(-1).long()
         # torch.Tensor, (N_all,), 展平有效统计掩码
         mask_flat = mask.reshape(-1).bool()
-        if spec.num_classes == 2 and logits_flat.shape[1] == 1:
+        if spec.num_classes == 2 and logits_flat.shape[1] == 1:   # 二分类
             # torch.Tensor, (M,), 有效位置 sigmoid 前景概率
             preds = torch.sigmoid(logits_flat[:, 0]).detach().float()[mask_flat]
             # torch.Tensor, (M,), 有效位置二分类标签
             targets = target_flat[mask_flat]
-            self.metrics[f"{branch_name}__binary"].update(preds, targets)
+            self.metrics[f"{branch_name}__binary"].update(preds, targets)  # BinaryAveragePrecision 对象
             return
 
         # torch.Tensor, (N_all,C), 多分类 softmax 概率
@@ -156,13 +153,14 @@ class ValidationMetricManager(nn.Module):
 
     def compute_payload(self) -> dict[str, torch.Tensor]:
         """
-        计算当前 epoch 的常规 validation 指标 payload。
+        计算当前 epoch 的常规 validation 的PRAUC指标的 payload。
 
         输出:
             - payload: dict[str, torch.Tensor], Lightning/W&B scalar key 到标量 tensor 的映射
         """
         payload: dict[str, torch.Tensor] = {}
         for spec in self.branch_specs.values():
+            # 二分类
             if spec.num_classes == 2:
                 key = build_metric_key(
                     panel="val_score",
@@ -170,11 +168,11 @@ class ValidationMetricManager(nn.Module):
                     num_classes=spec.num_classes,
                     scope="global",
                     subpanel=None,
-                    source_folder=None,
                     task_class_name=None,
                 )
                 payload[key] = self.metrics[f"{spec.name}__binary"].compute()
                 continue
+            # 多分类
             class_values: list[torch.Tensor] = []
             for class_id in range(1, spec.num_classes):
                 class_name = spec.class_names[class_id]
@@ -186,7 +184,6 @@ class ValidationMetricManager(nn.Module):
                     num_classes=spec.num_classes,
                     scope="global",
                     subpanel=None,
-                    source_folder=None,
                     task_class_name=class_name,
                 )
                 payload[key] = value
@@ -212,7 +209,7 @@ class ValidationMetricManager(nn.Module):
         keep_vars: bool = False,
     ) -> dict[str, torch.Tensor]:
         """
-        返回空 state_dict, 避免 validation metric 中间状态进入 checkpoint。
+        返回空 state_dict, 避免 validation metric 这个大变量写进 checkpoint: return {} if destination is None else destination
 
         输入参数:
             - args: object, nn.Module.state_dict 兼容位置参数

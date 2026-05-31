@@ -37,7 +37,7 @@ backbone:
 # warmup_plateau 使用 cfg.train.scheduler 的显式字段: warmup 固定按 step, plateau 固定在每次 validation end 后读取 monitor_metric。
 interval: "step"                   # str, Lightning-managed scheduler 更新间隔
 frequency: 1                       # int, Lightning-managed scheduler 更新频率
-monitor_metric: val/atom_pr_auc    # str, 主监控指标
+monitor_metric: val_score/global/atom_PRAUC    # str, 主监控指标
                                    # → train.py: ModelCheckpoint.monitor
                                    # → VoxelPointStage1Wrapper.on_validation_epoch_end(): warmup_plateau plateau 读取该指标
 monitor_mode: max                  # str, 主指标方向, 取值 max/min
@@ -48,9 +48,6 @@ val_metric_device_policy: auto        # str, 验证 AP 更新设备策略; auto=
 class_names: ${dataset.class_names}    # list[str], task class 名; 必须与 dataset.class_names 和 logits 通道顺序一致
 validation_diagnostics:
   enabled: true
-  source_folder_breakdown: true
-  source_folder_names: ${dataset.class_folder_names}
-  source_folder_meta_key: class_name
   num_bins: ${model.voxel_ligand_pr_auc_thresholds}
   write_local_artifacts: true
   log_wandb_curves: true

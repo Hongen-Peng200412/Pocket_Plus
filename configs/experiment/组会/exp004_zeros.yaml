@@ -47,7 +47,7 @@ model:
 
   # --- 监控指标 ---
   # UNet-only 无 atom PR-AUC, 改为监控 val/loss
-  monitor_metric: val/loss
+  monitor_metric: val_loss/global/total
 
 train:
   batch_size_tuning_safety_factor: 1.0

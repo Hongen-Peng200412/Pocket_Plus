@@ -14,8 +14,20 @@
       "date": "2026-05-29",
       "summary": "Stage1 wrapper thin-coordinator continuation: new coordinator tests, wrapper entrypoint restored as thin coordinator, diagnostics buffer registration centralized, and focused refactor suite passing; old private-API tests still need migration.",
       "handoff": "CLAUDE/memory/handoffs/2026-05-29-stage1-wrapper-thin-coordinator-current-state.md"
+    },
+    {
+      "date": "2026-05-30",
+      "summary": "Stage1 wrapper refactor local completion: sampling diagnostics, cache writeback split, old test migration, CPU/Gloo DDP logic test, monitor metric migration, and docs completed; train smoke blocked by missing dataset/fused config.",
+      "handoff": "CLAUDE/memory/handoffs/2026-05-30-stage1-wrapper-refactor-local-complete.md"
+    },
+    {
+      "date": "2026-05-30",
+      "summary": "Wrapper diagnostics/comment follow-up: adaptive p_sampling diagnostics now use the actual sampling target for threshold stats, key wrapper tensors received concise inline comments, and py_compile passed.",
+      "handoff": "CLAUDE/memory/handoffs/2026-05-30-wrapper-diagnostics-comments.md"
     }
   ],
-  "blockers": [],
+  "blockers": [
+    "Local train smoke for MINI_sparse_refine000 cannot start because Hydra cannot find dataset/fused; decide whether to restore that dataset config or point the experiment at an available dataset group."
+  ],
   "failures": []
 }

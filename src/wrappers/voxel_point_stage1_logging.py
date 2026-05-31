@@ -11,9 +11,9 @@ import csv
 import json
 
 
-_ALLOWED_SCOPES = {"global", "by_source_folder"}
+_ALLOWED_SCOPES = {"global"}
 
-# --------------------------------- 构造验证日志 key: panel /(subpanel)/ scope / source_folder / metric_leaf ------------------------------------
+# --------------------------------- 构造验证日志 key: panel /(subpanel)/ scope / metric_leaf ------------------------------------
 def build_metric_key(
     *,
     panel: str,
@@ -21,19 +21,17 @@ def build_metric_key(
     num_classes: int,
     scope: str,
     subpanel: str | None,
-    source_folder: str | None,
     task_class_name: str | None,
 ) -> str:
     """
-    构造验证日志 key: panel /(subpanel)/ scope / source_folder / metric_leaf
+    构造验证日志 key: panel /(subpanel)/ scope / metric_leaf
 
     输入参数:
         - panel: str, 顶层面板名, 如 val_score / val_uncapped / val_refined
-        - metric: str, 指标 leaf 名, 如 F1 / PRAUC / p_sampling_p50
+        - metric: str, 指标 leaf 名, 如 F1 / PRAUC / sampling_F1
         - num_classes: int, task 类别总数; 二分类时不追加 task class suffix
-        - scope: str, 指标作用域; 只允许 global / by_source_folder
+        - scope: str, 指标作用域; 只允许 global
         - subpanel: str | None, 子面板名; val_uncapped 使用 best/sampling
-        - source_folder: str | None, 原始 source folder 名; scope=by_source_folder 时必须传入
         - task_class_name: str | None, task class 名; num_classes>2 时追加到 metric suffix
 
     输出:
@@ -41,11 +39,6 @@ def build_metric_key(
     """
     if scope not in _ALLOWED_SCOPES:
         raise ValueError(f"scope 只允许 {_ALLOWED_SCOPES}, 实际 {scope!r}。")
-    if scope == "by_source_folder" and source_folder is None:
-        raise ValueError("scope=by_source_folder 时必须传入 source_folder。")
-    if scope == "global" and source_folder is not None:
-        raise ValueError("scope=global 时不应传入 source_folder。")
-
     # str, 多分类 task-class 后缀后的指标名
     metric_leaf = metric
     if num_classes > 2 and task_class_name is not None:
@@ -56,8 +49,6 @@ def build_metric_key(
     if subpanel is not None:
         parts.append(subpanel)
     parts.append(scope)
-    if scope == "by_source_folder":
-        parts.append(str(source_folder))
     parts.append(metric_leaf)
     return "/".join(parts)
 
@@ -173,6 +164,7 @@ def write_validation_artifacts(
     scalars = getattr(payload, "scalars", {})
     warnings = getattr(payload, "warnings", ())
     curves = getattr(payload, "curves", {})
+    histograms = getattr(payload, "histograms", {})
     # dict[str, Any], JSON summary 可序列化内容
     summary = {
         "epoch": int(epoch),
@@ -191,6 +183,16 @@ def write_validation_artifacts(
         rows = tuple(getattr(curve, "rows"))
         safe_name = key.replace("/", "__")
         with (curves_dir / f"{safe_name}.csv").open("w", newline="", encoding="utf-8") as handle:
+            writer = csv.writer(handle)
+            writer.writerow(columns)
+            writer.writerows(rows)
+    for key, histogram in histograms.items():
+        # tuple[str, ...], histogram CSV 列名
+        columns = tuple(getattr(histogram, "columns"))
+        # tuple[tuple[float, ...], ...], histogram 行
+        rows = tuple(getattr(histogram, "rows"))
+        safe_name = key.replace("/", "__")
+        with (histograms_dir / f"{safe_name}.csv").open("w", newline="", encoding="utf-8") as handle:
             writer = csv.writer(handle)
             writer.writerow(columns)
             writer.writerows(rows)

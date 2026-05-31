@@ -53,8 +53,10 @@ model:
       num_conv3d_ligand: 1           # int, ligand_head 中 Conv3d(3x3)+ReLU 的对数
 
   class_names: ${dataset.class_names}
-  monitor_metric: val/ligand_sparse_refine_best_f1_macro
+  monitor_metric: val_score/global/refined_F1
   monitor_mode: max
+  validation_diagnostics:
+    enabled: true
 
 # train:
 #   strict_global_batch_size: true

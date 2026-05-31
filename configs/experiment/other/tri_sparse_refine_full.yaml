@@ -35,5 +35,5 @@ dataset:
 # --- sparse refine 主监控指标 ---
 model:
   class_names: ${dataset.class_names}
-  monitor_metric: val/ligand_sparse_refine_best_f1_macro
+  monitor_metric: val_score/global/refined_F1_macro
   monitor_mode: max
