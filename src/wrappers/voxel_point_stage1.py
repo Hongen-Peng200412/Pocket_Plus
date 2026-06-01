@@ -142,6 +142,9 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
         self.cpc_diagnostics = self._build_cpc_diagnostics(diagnostics_cfg, voxel_ligand_pr_auc_thresholds)
         self._sync_sparse_candidate_runtime_to_backbone()
 
+
+
+
     # ------------------------------------------------ 启动函数 -----------------------------------------------
     def _unwrap_backbone(self) -> nn.Module:
         """
@@ -256,35 +259,62 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
             max_candidate_voxels_per_class=max_candidate_voxels_per_class,
         )
 
-
-
-    def configure_optimizers(self) -> Any:
+    def _sync_sparse_candidate_runtime_to_backbone(self) -> None:
         """
-        配置 optimizer 与 scheduler。
+        将 wrapper 中 candidate runtime/cache 同步给 backbone:
+        - 调用 backbone.set_sparse_candidate_runtime():
+            - 传入当前的 global_step; 
+            - 传入固定的 self._candidate_warmup_steps(通过钩子 def configure_optimizers 自动解析); 
+            - 传入 allow_warmup(它基本总是正的, 但会由backbone里面的 def _should_use_candidate_fixed_topk 进一步判别)
+        - 调用 backbone.set_sparse_candidate_thresholds():
+            - 用(这里的) self._cached_voxel_ligand_p_best_by_class 更新 backbone 的 self._candidate_p_best_by_class
+            - 用(这里的) self._cached_voxel_ligand_p_sampling_by_class 更新 backbone 的 self._candidate_p_sampling_by_class
+        """
+        if self._sparse_candidate_class_ids is None:
+            return
+        # nn.Module, 原始 Stage1 backbone
+        backbone = self._unwrap_backbone()
+        try:
+            trainer = self.trainer
+        except RuntimeError:
+            trainer = None
+        # int, 当前 Lightning global step
+        global_step = int(getattr(trainer, "global_step", self.global_step)) if trainer is not None else int(self.global_step)
+        # bool, 当前生命周期是否允许 candidate fixed-topk warmup
+        allow_warmup = False if trainer is None else (
+            bool(getattr(trainer, "sanity_checking", False))   # fit 开始前的 sanity check 阶段
+            or "fit" in str(getattr(getattr(trainer, "state", None), "fn", "")).lower()  # 正式训练阶段
+            or self._is_tuning_trainer(trainer)  # LR/batch-size tuner 探测阶段
+        )
+        if hasattr(backbone, "set_sparse_candidate_runtime"):
+            backbone.set_sparse_candidate_runtime(global_step=global_step, candidate_warmup_steps=int(self._candidate_warmup_steps), allow_warmup_fixed_topk=allow_warmup)
+        if hasattr(backbone, "set_sparse_candidate_thresholds"):
+            backbone.set_sparse_candidate_thresholds(p_best_by_class=self._cached_voxel_ligand_p_best_by_class, p_sampling_by_class=self._cached_voxel_ligand_p_sampling_by_class)
+
+    @staticmethod
+    def _is_tuning_trainer(trainer: Any) -> bool:
+        """
+        判断当前 trainer 是否处于 Lightning tuner 生命周期。
+
+        输入参数:
+            - trainer: Any, Lightning Trainer 或测试 stub
 
         输出:
-            - config: Any, Lightning configure_optimizers 返回值
+            - is_tuning: bool, True 表示 tuner 探测阶段
         """
-        # Any, Lightning optimizer/scheduler 配置返回值
-        config, warmup_steps, plateau_scheduler, pending_state = configure_stage1_optimizers(
-            module=self,
-            optimizer_config=self.hparams.optimizer,
-            scheduler_config=self.hparams.scheduler,
-            interval=str(self.hparams.interval),
-            frequency=int(self.hparams.frequency),
-            monitor_metric=str(self.hparams.monitor_metric),
-            pending_warmup_plateau_state=self._pending_warmup_plateau_state,
-        )
-        # int, candidate fixed-topk warmup step 数
-        self._candidate_warmup_steps = int(warmup_steps)
-        self._warmup_plateau_scheduler = plateau_scheduler
-        self._pending_warmup_plateau_state = pending_state
-        self._sync_sparse_candidate_runtime_to_backbone()
-        return config
+        state_fn = getattr(getattr(trainer, "state", None), "fn", None)
+        state_fn_name = str(getattr(state_fn, "value", state_fn)).lower()
+        return "tun" in state_fn_name
 
 
 
 
+
+
+
+
+
+    # ------------------------------------------ 第一类工具函数(浅显;非钩子) ------------------------------------------
     @staticmethod
     def _extract_batch(batch: Any) -> dict[str, Any]:
         """
@@ -356,7 +386,7 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
             - batch: dict[str, Any], 当前 batch, 包含 ligand_dist_map/voxel_valid_mask
 
         输出:
-            - supervision: dict[str, torch.Tensor], dense target/mask 与 C 级 target/mask
+            - supervision: dict[str, torch.Tensor], dense 级(全局) target/mask 与 C 级 target/mask
         """
         # torch.Tensor, (sumC,C_logits), C 级 refined logits
         logits_C = outputs["ligand_refine_logits_C"]
@@ -390,6 +420,28 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
         outputs.update(supervision)
         return supervision
 
+    def _resolve_sparse_refine_loss_warmup_steps(self, sched_cfg: Mapping[str, Any]) -> int:
+        """
+        解析 sparse refine loss 独立 warmup 步数。
+
+        输入参数:
+            - sched_cfg: Mapping[str, Any], ligand_sparse_refine_loss_schedule 配置, 包含 warmup_steps 或 warmup_ratio
+
+        输出:
+            - warmup_steps: int, 从 start_weight 线性过渡到 final_weight 的 optimizer step 数
+        """
+        warmup_steps = sched_cfg["warmup_steps"]
+        if warmup_steps is not None:
+            return int(warmup_steps)
+        try:
+            trainer = self.trainer
+        except RuntimeError:
+            trainer = None
+        total_steps = getattr(trainer, "estimated_stepping_batches", None) if trainer is not None else None
+        if total_steps is None or int(total_steps) <= 0:
+            raise RuntimeError("ligand_sparse_refine_loss_schedule 需要 trainer.estimated_stepping_batches 为正数。")
+        return int(round(int(total_steps) * float(sched_cfg["warmup_ratio"])))
+    
     def _compute_sparse_refine_loss_effective_weight(self) -> torch.Tensor:
         """
         计算当前 global_step 下 sparse refine loss 的有效权重。
@@ -419,28 +471,6 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
         progress = min(max(float(global_step) / float(warmup_steps), 0.0), 1.0)
         return torch.tensor(start_weight + progress * (final_weight - start_weight), device=self.device, dtype=torch.float32)
 
-    def _resolve_sparse_refine_loss_warmup_steps(self, sched_cfg: Mapping[str, Any]) -> int:
-        """
-        解析 sparse refine loss 独立 warmup 步数。
-
-        输入参数:
-            - sched_cfg: Mapping[str, Any], ligand_sparse_refine_loss_schedule 配置, 包含 warmup_steps 或 warmup_ratio
-
-        输出:
-            - warmup_steps: int, 从 start_weight 线性过渡到 final_weight 的 optimizer step 数
-        """
-        warmup_steps = sched_cfg["warmup_steps"]
-        if warmup_steps is not None:
-            return int(warmup_steps)
-        try:
-            trainer = self.trainer
-        except RuntimeError:
-            trainer = None
-        total_steps = getattr(trainer, "estimated_stepping_batches", None) if trainer is not None else None
-        if total_steps is None or int(total_steps) <= 0:
-            raise RuntimeError("ligand_sparse_refine_loss_schedule 需要 trainer.estimated_stepping_batches 为正数。")
-        return int(round(int(total_steps) * float(sched_cfg["warmup_ratio"])))
-
     def _compute_total_loss(self, outputs: dict[str, Any], batch: dict[str, Any]) -> tuple[torch.Tensor, list[LossTerm], dict[str, torch.Tensor]]:
         """
         汇总各监督分支 loss。
@@ -452,7 +482,7 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
         输出:
             - total_loss: torch.Tensor, (), 加权总损失
             - loss_terms: list[LossTerm], 各分支 loss term
-            - extra_logs: dict[str, torch.Tensor], 额外 loss 日志项
+            - extra_logs: dict[str, torch.Tensor], extra_logs["ligand_sparse_refine_weight_effective"] = logged_weight(当前sparse refine loss 的权重)
         """
         # torch.Tensor, (), 当前 batch 加权总损失
         total_loss = torch.tensor(0.0, device=self.device, dtype=torch.float32)
@@ -502,13 +532,49 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
             - extra_logs: Mapping[str, torch.Tensor], 额外 loss 日志项
 
         输出:
-            - None, 原地调用 self.log
+            - None, 用 self.log() 记录 total_loss 和所有的 loss_terms, 以及 extra_logs
         """
         self.log(f"{prefix}/global/total", total_loss, prog_bar=self.hparams.monitor_metric == f"{prefix}/global/total", on_step=prefix == "train_loss", on_epoch=True, sync_dist=True)
         for term in loss_terms:
             self.log(f"{prefix}/global/{term.name}", term.logged_value, prog_bar=False, on_step=prefix == "train_loss", on_epoch=True, sync_dist=True)
         for name, value in extra_logs.items():
             self.log(f"{prefix}/global/{name}", value, prog_bar=False, on_step=prefix == "train_loss", on_epoch=True, sync_dist=True)
+
+    ############################## 第一类钩子 ##############################
+    """   
+    这个文件里被框架自动调用的 hook, voxel_point_stage1.py 重写并被 fit() 自动驱动的有这几个：
+            方法	                   触发时机（由 Trainer 自动调用）
+     configure_optimizers	     fit 启动时调用一次，构造 optimizer/scheduler
+     on_load_checkpoint	         断点续训恢复时（在训练循环开始前）
+     training_step	             每个训练 batch 调用一次
+     on_validation_epoch_start	 每次进入 validation loop 前
+     validation_step	         每个 validation batch 调用一次
+     on_validation_epoch_end	 每次 validation loop 结束
+     on_save_checkpoint	         每次写 checkpoint 时
+    """
+    def configure_optimizers(self) -> Any:
+        """
+        配置 optimizer 与 scheduler。
+
+        输出:
+            - config: Any, Lightning configure_optimizers 返回值
+        """
+        # Any, Lightning optimizer/scheduler 配置返回值
+        config, warmup_steps, plateau_scheduler, pending_state = configure_stage1_optimizers(
+            module=self,
+            optimizer_config=self.hparams.optimizer,
+            scheduler_config=self.hparams.scheduler,
+            interval=str(self.hparams.interval),
+            frequency=int(self.hparams.frequency),
+            monitor_metric=str(self.hparams.monitor_metric),
+            pending_warmup_plateau_state=self._pending_warmup_plateau_state,
+        )
+        # int, candidate fixed-topk warmup step 数
+        self._candidate_warmup_steps = int(warmup_steps)
+        self._warmup_plateau_scheduler = plateau_scheduler
+        self._pending_warmup_plateau_state = pending_state
+        self._sync_sparse_candidate_runtime_to_backbone()
+        return config
 
     def training_step(self, batch: Any, batch_idx: int) -> torch.Tensor:
         """
@@ -534,6 +600,69 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
             self.log("train/runtime/recycle_passes", float(outputs["recycle_passes_used"]), prog_bar=False, on_step=True, on_epoch=False, sync_dist=True)
         return total_loss
 
+
+
+
+
+
+
+
+
+
+    # ------------------------------------------ 第二类工具函数(浅显;非钩子) ------------------------------------------
+    def _allow_validation_cache_update(self) -> bool:
+        """
+        判断当前 validation 是否允许写回 candidate threshold cache: 不在一开始的 sanity_checking 和 tuning 截断就可写
+
+        输出:
+            - allow_update: bool, True 表示普通 fit validation 可写 cache
+        """
+        try:
+            trainer = self.trainer
+        except RuntimeError:
+            return False
+        return trainer is not None and not bool(getattr(trainer, "sanity_checking", False)) and not self._is_tuning_trainer(trainer)
+
+    def _candidate_selection_mode(self) -> str:
+        """
+        返回当前 candidate builder selection mode(adaptive_threshold 等)
+
+        输出:
+            - selection_mode: str, candidate selection mode
+        """
+        # nn.Module | None, backbone 内部 sparse candidate builder
+        candidate_builder = getattr(self._unwrap_backbone(), "candidate_set_builder", None)
+        return str(getattr(candidate_builder, "selection_mode", "adaptive_threshold"))
+
+    def _using_candidate_warmup(self) -> bool:
+        """
+        判断当前 validation 是否处于 candidate warmup fixed-topk 阶段: int(self.global_step) < int(self._candidate_warmup_steps)
+        """
+        return int(self.global_step) < int(self._candidate_warmup_steps)
+
+    def _dense_num_gt_by_box(self, target: torch.Tensor, valid_mask: torch.Tensor) -> torch.Tensor:
+        """
+        统计每个 BOX 中 candidate class 的 dense GT 正例数。
+
+        输入参数:
+            - target: torch.Tensor, (B,D,H,W), hard-label target
+            - valid_mask: torch.Tensor, (B,D,H,W), 有效体素掩码
+
+        输出:
+            - dense_num_gt: torch.Tensor, (B,K), 每个 BOX/候选类的 GT 正例数
+        """
+        # tuple[int, ...], (K,), sparse refine 候选前景类 id
+        class_ids = self._sparse_candidate_class_ids or (1,)
+        # torch.Tensor, (B,D,H,W), bool, dense GT 有效掩码
+        valid = valid_mask.bool()
+        counts = []
+        for class_id in class_ids:
+            positive = (target.long() == int(class_id)) & valid
+            # append 内容: torch.Tensor, (B,), 当前候选类在每个 BOX 内的 dense GT 正例数
+            counts.append(positive.reshape(target.shape[0], -1).sum(dim=1))
+        return torch.stack(counts, dim=1)
+
+    ############################## 第二类钩子 ##############################
     def validation_step(self, batch: Any, batch_idx: int) -> torch.Tensor:
         """
         验证步: 按 dense -> C -> P -> refined 时间顺序编排 helper 更新。
@@ -583,112 +712,27 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
             if diagnostics_enabled and has_candidate_outputs and "ligand_refine_target_C" in outputs:
                 # torch.Tensor, (B,K), 每个 BOX/候选类的 dense GT 正例数
                 dense_num_gt = self._dense_num_gt_by_box(ligand_target, ligand_valid)
-                self.cpc_diagnostics.update_unrefined(candidate_outputs=candidate_outputs, target_C=outputs["ligand_refine_target_C"], valid_C=outputs["ligand_refine_valid_mask_C"], dense_num_gt=dense_num_gt)
+                self.cpc_diagnostics.update_unrefined(candidate_outputs=candidate_outputs, target_C=outputs["ligand_refine_target_C"], valid_C=outputs["ligand_refine_valid_mask_C"], dense_num_gt=dense_num_gt) # outputs["ligand_refine_valid_mask_C"] 就是由batch["voxel_valid_mask"] 导出的(见 def _sample_ligand_refine_supervision )
                 if "ligand_refine_logits_C" in outputs:
                     self.cpc_diagnostics.update_refined(refined_logits_C=outputs["ligand_refine_logits_C"], candidate_outputs=candidate_outputs, target_C=outputs["ligand_refine_target_C"], valid_C=outputs["ligand_refine_valid_mask_C"], dense_num_gt=dense_num_gt)
         self._log_loss_terms("val_loss", total_loss, loss_terms, extra_logs)
         return total_loss
 
-    def _dense_num_gt_by_box(self, target: torch.Tensor, valid_mask: torch.Tensor) -> torch.Tensor:
-        """
-        统计每个 BOX 中 candidate class 的 dense GT 正例数。
 
-        输入参数:
-            - target: torch.Tensor, (B,D,H,W), hard-label target
-            - valid_mask: torch.Tensor, (B,D,H,W), 有效体素掩码
 
-        输出:
-            - dense_num_gt: torch.Tensor, (B,K), 每个 BOX/候选类的 GT 正例数
-        """
-        # tuple[int, ...], (K,), sparse refine 候选前景类 id
-        class_ids = self._sparse_candidate_class_ids or (1,)
-        # torch.Tensor, (B,D,H,W), bool, dense GT 有效掩码
-        valid = valid_mask.bool()
-        counts = []
-        for class_id in class_ids:
-            # torch.Tensor, (B,), 当前候选类在每个 BOX 内的 dense GT 正例数
-            positive = (target.long() == int(class_id)) & valid
-            counts.append(positive.reshape(target.shape[0], -1).sum(dim=1))
-        return torch.stack(counts, dim=1)
 
-    def _candidate_selection_mode(self) -> str:
-        """
-        返回当前 candidate builder selection mode。
 
-        输出:
-            - selection_mode: str, candidate selection mode
-        """
-        # nn.Module | None, backbone 内部 sparse candidate builder
-        candidate_builder = getattr(self._unwrap_backbone(), "candidate_set_builder", None)
-        return str(getattr(candidate_builder, "selection_mode", "adaptive_threshold"))
 
-    def _using_candidate_warmup(self) -> bool:
-        """
-        判断当前 validation 是否处于 candidate warmup fixed-topk 阶段。
 
-        输出:
-            - using_warmup: bool, True 表示当前 global_step 小于 candidate warmup steps
-        """
-        return int(self.global_step) < int(self._candidate_warmup_steps)
 
-    def _allow_validation_cache_update(self) -> bool:
-        """
-        判断当前 validation 是否允许写回 candidate threshold cache。
 
-        输出:
-            - allow_update: bool, True 表示普通 fit validation 可写 cache
-        """
-        try:
-            trainer = self.trainer
-        except RuntimeError:
-            return False
-        return trainer is not None and not bool(getattr(trainer, "sanity_checking", False)) and not self._is_tuning_trainer(trainer)
 
-    @staticmethod
-    def _is_tuning_trainer(trainer: Any) -> bool:
-        """
-        判断当前 trainer 是否处于 Lightning tuner 生命周期。
 
-        输入参数:
-            - trainer: Any, Lightning Trainer 或测试 stub
-
-        输出:
-            - is_tuning: bool, True 表示 tuner 探测阶段
-        """
-        state_fn = getattr(getattr(trainer, "state", None), "fn", None)
-        state_fn_name = str(getattr(state_fn, "value", state_fn)).lower()
-        return "tun" in state_fn_name
-
-    def _sync_sparse_candidate_runtime_to_backbone(self) -> None:
-        """
-        将 wrapper 中 candidate runtime/cache 同步给 backbone。
-
-        输出:
-            - None, builder 未启用时 no-op
-        """
-        if self._sparse_candidate_class_ids is None:
-            return
-        # nn.Module, 原始 Stage1 backbone
-        backbone = self._unwrap_backbone()
-        try:
-            trainer = self.trainer
-        except RuntimeError:
-            trainer = None
-        # int, 当前 Lightning global step
-        global_step = int(getattr(trainer, "global_step", self.global_step)) if trainer is not None else int(self.global_step)
-        # bool, 当前生命周期是否允许 candidate fixed-topk warmup
-        allow_warmup = False if trainer is None else bool(getattr(trainer, "sanity_checking", False)) or "fit" in str(getattr(getattr(trainer, "state", None), "fn", "")).lower() or self._is_tuning_trainer(trainer)
-        if hasattr(backbone, "set_sparse_candidate_runtime"):
-            backbone.set_sparse_candidate_runtime(global_step=global_step, candidate_warmup_steps=int(self._candidate_warmup_steps), allow_warmup_fixed_topk=allow_warmup)
-        if hasattr(backbone, "set_sparse_candidate_thresholds"):
-            backbone.set_sparse_candidate_thresholds(p_best_by_class=self._cached_voxel_ligand_p_best_by_class, p_sampling_by_class=self._cached_voxel_ligand_p_sampling_by_class)
-
+    ############################## 第三类钩子 ##############################
     def on_validation_epoch_start(self) -> None:
         """
-        validation epoch 开始时重置 helper manager 状态。
-
-        输出:
-            - None, 原地 reset validation managers
+        validation epoch 开始时重置 helper manager 状态: self.cpc_diagnostics.reset() 以及 self.val_metrics.reset().
+        它在每一次 validation loop 开始前都会被调用，不是只在「epoch 末那一次验证」才用, 下同
         """
         self.val_metrics.reset()
         if self.cpc_diagnostics.config.enabled:
@@ -726,6 +770,24 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
             self.cpc_diagnostics.reset()
         self._step_warmup_plateau_scheduler(payload)
 
+    # ------------------------------------------ 第三类工具函数(浅显;非钩子) ------------------------------------------
+    def _all_reduce_sum(self, tensor: torch.Tensor) -> torch.Tensor:
+        """
+        对固定形状 tensor 执行 DDP sum 同步。
+
+        输入参数:
+            - tensor: torch.Tensor, 任意固定形状, 当前 rank 统计值
+
+        输出:
+            - reduced: torch.Tensor, 与输入同形状, all-reduce sum 后统计值
+        """
+        if not torch.distributed.is_available() or not torch.distributed.is_initialized():
+            return tensor
+        # torch.Tensor, 任意固定形状, 当前 rank 的本地统计副本
+        reduced = tensor.clone()
+        torch.distributed.all_reduce(reduced, op=torch.distributed.ReduceOp.SUM)
+        return reduced
+
     def _update_candidate_threshold_cache_from_payload(self, payload: Mapping[str, torch.Tensor]) -> None:
         """
         从 diagnostics payload 写回 candidate threshold cache。
@@ -733,8 +795,10 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
         输入参数:
             - payload: Mapping[str, torch.Tensor], validation epoch scalar payload
 
-        输出:
-            - None, 原地更新 runtime cache
+        原地更新 runtime cache(它们都是从 val_uncapped/best 里面直接拿的):
+            - self._cached_voxel_ligand_p_best_by_class
+            - self._cached_voxel_ligand_p_sampling_by_class
+            - self._cached_voxel_ligand_best_f1_before_refine_by_class
         """
         if self._sparse_candidate_class_ids is None or not self._allow_validation_cache_update():
             return
@@ -756,8 +820,12 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
             # str, 当前 candidate class 的 best_F1 scalar 写回键
             best_f1_key = f"val_uncapped/best/global/best_F1{suffix}"
             if p_best_key not in payload or p_sampling_key not in payload or best_f1_key not in payload:
-                # best 面板缺少阈值时保持旧 cache, 避免无正例 epoch 触发缺键异常
-                return
+                # 已过滤 sanity/tuning(见 _allow_validation_cache_update), 到此处必为正常 fit validation: 缺键意味着该候选类整轮验证没有 GT 正例, 直接 fail-fast
+                raise RuntimeError(
+                    f"candidate class {class_name!r} 在本次 fit validation 缺少 best 阈值 "
+                    f"({p_best_key}/{p_sampling_key}), 通常意味着该类整轮验证没有 GT 正例; "
+                    f"与'验证集每类都含正类'的前提冲突。"
+                )
             p_best_values.append(payload[p_best_key].detach().cpu().float())
             p_sampling_values.append(payload[p_sampling_key].detach().cpu().float())
             best_f1_values.append(payload[best_f1_key].detach().cpu().float())
@@ -773,23 +841,6 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
             self._cached_voxel_ligand_p_sampling_by_class = p_sampling
         if bool(torch.isfinite(best_f1).all()):
             self._cached_voxel_ligand_best_f1_before_refine_by_class = best_f1
-
-    def _all_reduce_sum(self, tensor: torch.Tensor) -> torch.Tensor:
-        """
-        对固定形状 tensor 执行 DDP sum 同步。
-
-        输入参数:
-            - tensor: torch.Tensor, 任意固定形状, 当前 rank 统计值
-
-        输出:
-            - reduced: torch.Tensor, 与输入同形状, all-reduce sum 后统计值
-        """
-        if not torch.distributed.is_available() or not torch.distributed.is_initialized():
-            return tensor
-        # torch.Tensor, 任意固定形状, 当前 rank 的本地统计副本
-        reduced = tensor.clone()
-        torch.distributed.all_reduce(reduced, op=torch.distributed.ReduceOp.SUM)
-        return reduced
 
     def _run_dir(self) -> Path:
         """
@@ -808,13 +859,10 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
 
     def _step_warmup_plateau_scheduler(self, computed_metrics: Mapping[str, torch.Tensor]) -> None:
         """
-        validation end 后推进手动 warmup_plateau scheduler。
+        validation end 后根据 self.hparams.monitor_metric 进行 warmup_plateau scheduler。
 
         输入参数:
             - computed_metrics: Mapping[str, torch.Tensor], 当前 validation scalar payload
-
-        输出:
-            - None, 未启用 warmup_plateau 时 no-op
         """
         if self._warmup_plateau_scheduler is None or self.trainer.sanity_checking:
             return
@@ -826,13 +874,23 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
         metric_value = computed_metrics[monitor_name].detach().to(self.device).float().reshape(())
         self._warmup_plateau_scheduler.step_plateau(metric_value, global_step=int(self.global_step))
 
+
+
+
+
+
+
+
+
+
+    # ------------------------------------------ 第四类工具函数(浅显;非钩子) ------------------------------------------
     def _normalize_candidate_checkpoint_tensor(self, value: Any, value_name: str) -> torch.Tensor:
         """
-        将 checkpoint 中的 candidate cache 规范化为 CPU float 向量。
+        将 checkpoint 中的 value 规范化为 CPU float 向量。
 
         输入参数:
             - value: Any, checkpoint 中读取的张量或可转张量对象
-            - value_name: str, 错误信息中的字段名
+            - value_name: str, 错误信息中的字段名, 仅用于提示
 
         输出:
             - tensor: torch.Tensor, (K,), CPU float candidate cache
@@ -845,7 +903,7 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
 
     def _load_candidate_checkpoint_finite_tensor(self, value: Any, value_name: str) -> torch.Tensor:
         """
-        从 checkpoint 读取并校验 finite candidate cache。
+        从 checkpoint 读取 value 并校验它是否有限(NaN/Inf则报错)。
 
         输入参数:
             - value: Any, checkpoint 中读取的张量或可转张量对象
@@ -859,6 +917,7 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
             raise ValueError(f"checkpoint 中的 {value_name} 不能包含 NaN/Inf。")
         return tensor
 
+    ############################## 第四类钩子 ##############################
     def on_save_checkpoint(self, checkpoint: dict[str, Any]) -> None:
         """
         保存训练继续所需 runtime state。
@@ -866,8 +925,10 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
         输入参数:
             - checkpoint: dict[str, Any], Lightning checkpoint 字典
 
-        输出:
-            - None, 原地写入 scheduler/candidate cache
+        原地写入:
+            - voxel_ligand_candidate_class_ids
+            - voxel_ligand_p_best_by_class; voxel_ligand_p_sampling_by_class
+            - voxel_ligand_best_f1_before_refine_by_class
         """
         if self._warmup_plateau_scheduler is not None:
             checkpoint["warmup_plateau_reduce_on_plateau_state"] = self._warmup_plateau_scheduler.state_dict()

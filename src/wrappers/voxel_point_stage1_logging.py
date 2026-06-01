@@ -62,7 +62,7 @@ def log_scalar_payload(
     sync_dist: bool,
 ) -> None:
     """
-    将标量 payload 写入 Lightning 日志: 把一个 epoch 里所有 step 的值做聚合，最后在 epoch 结束时记录(epoch级别，所以不会有 step-level 曲线)。
+    将标量 payload 写入 Lightning 日志: 把一个 epoch 里所有 step 的值做聚合，现在在 epoch 结束时记录(epoch级别，所以不会有 step-level 曲线)。
 
     输入参数:
         - module: pl.LightningModule, 当前 wrapper 模块
@@ -71,7 +71,7 @@ def log_scalar_payload(
         - sync_dist: bool, 是否由 Lightning 同步 DDP 标量
 
     输出:
-        - None, 原地调用 module.log
+        - None, 原地调用 module.log()
     """
     for key, value in payload.items():
         module.log(
