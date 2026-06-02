@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping, Sequence
 from typing import Any
 
@@ -11,7 +12,6 @@ class SparseRefineHead(nn.Module):
     def __init__(
         self,
         mode: str,
-        detach_voxel_logits: bool,
         edge_weight_activation: str,
         distance_weight: Mapping[str, Any],
         message_dim: int,
@@ -27,15 +27,15 @@ class SparseRefineHead(nn.Module):
         candidate_class_ids: Sequence[int],
         candidate_class_embedding_dim: int,
         zero_init_residual: bool,
+        enable_interface_norm: bool = False,
     ) -> None:
         """
         将 P anchor 内容沿稀疏邻居边聚合回唯一候选 C，并输出 refined ligand logits。
 
         输入参数:
             - mode: str, 输出模式，取值 `direct` 或 `residual`
-            - detach_voxel_logits: bool, 是否阻断 voxel ligand logits 到原分支的梯度
             - edge_weight_activation: str, edge gate 激活，首版只支持 `sigmoid`
-            - distance_weight: Mapping[str, Any], 距离权重配置，包含 mode 与 temperature
+            - distance_weight: Mapping[str, Any], 距离权重配置，包含 mode、temperature(初值，单位 Å²) 与 learnable(温度是否可学)
             - message_dim: int, P -> C 聚合消息通道数
             - edge_hidden_dim: int, edge gate MLP 隐藏通道数
             - hidden_dim: int, C 输出 MLP 隐藏通道数
@@ -49,6 +49,7 @@ class SparseRefineHead(nn.Module):
             - candidate_class_ids: Sequence[int], (K,), 可用路由类别 ID
             - candidate_class_embedding_dim: int, 类别 embedding 通道数；仅在 use_candidate_class_embedding=true 时使用
             - zero_init_residual: bool, residual 输出增量末层是否零初始化
+            - enable_interface_norm: bool, 是否对 P/edge 学习特征源在拼接前各自 LayerNorm；几何量、类别 embedding 与末层 head 的 C_voxel 不归一化
 
         前向输入:
             - voxel_logits: torch.Tensor | None, (sumC, logit_dim), C 位置原始 ligand logits
@@ -63,7 +64,9 @@ class SparseRefineHead(nn.Module):
             - candidate_neighbor_valid_mask: torch.Tensor, (sumC, K_nn), bool 有效邻居掩码
 
         前向输出:
-            - output: dict[str, torch.Tensor], 包含 C 消息有效掩码与 refined logits
+            - output: dict[str, torch.Tensor], 包含:
+                - "candidate_message_valid_mask": torch.Tensor, (sumC,), 是否至少有一个有效 P 邻居
+                - "ligand_refine_logits_C": torch.Tensor, (sumC, logit_dim), refined logits
         """
         super().__init__()
         if str(mode) not in {"direct", "residual"}:
@@ -73,17 +76,25 @@ class SparseRefineHead(nn.Module):
         distance_mode = str(distance_weight["mode"])
         if distance_mode != "softmax_negative_squared_distance":
             raise ValueError("distance_weight.mode 只支持 softmax_negative_squared_distance。")
-        temperature = float(distance_weight["temperature"])
-        if temperature <= 0.0:
+        # float, 距离 softmax 温度初值(单位 Å²); 数值越大邻居权重越平缓
+        temperature_init = float(distance_weight["temperature"])
+        if temperature_init <= 0.0:
             raise ValueError("distance_weight.temperature 必须 > 0。")
+        # bool, 温度是否作为可学习单标量参与训练; false 时固定为初值
+        distance_temperature_learnable = bool(distance_weight["learnable"])
         if int(message_dim) <= 0 or int(edge_hidden_dim) <= 0 or int(hidden_dim) <= 0:
             raise ValueError("message_dim、edge_hidden_dim 与 hidden_dim 必须 > 0。")
         if int(num_layers) <= 0 or int(logit_dim) <= 0:
             raise ValueError("num_layers 与 logit_dim 必须 > 0。")
 
         self.mode = str(mode)
-        self.detach_voxel_logits = bool(detach_voxel_logits)
-        self.distance_temperature = temperature
+        # torch.Tensor, (), log 域温度; learnable 时为可学习标量 nn.Parameter, 否则为固定 buffer
+        # forward 统一用 self.log_temperature.exp() 还原正温度, 保证 T 恒 > 0 且可学时为尺度无关更新
+        log_temperature_init = torch.tensor(math.log(temperature_init), dtype=torch.float32)
+        if distance_temperature_learnable:
+            self.log_temperature = nn.Parameter(log_temperature_init)
+        else:
+            self.register_buffer("log_temperature", log_temperature_init)
         self.message_dim = int(message_dim)
         self.logit_dim = int(logit_dim)
         self.inputs = {str(key): bool(value) for key, value in inputs.items()}
@@ -91,6 +102,30 @@ class SparseRefineHead(nn.Module):
             raise ValueError("P content 至少启用 use_P_point_backbone_feat 或 use_P_atom_head_feat。")
         if self.mode == "residual" and not self.inputs.get("use_voxel_logits", False):
             raise ValueError("residual 模式必须启用 use_voxel_logits。")
+
+        self.enable_interface_norm = bool(enable_interface_norm)
+        # nn.LayerNorm | None, 各学习特征源在拼接前的接口归一化; 关或对应输入源关时为 None 走恒等
+        self.interface_norm_P_point = (
+            nn.LayerNorm(int(P_point_backbone_dim))
+            if self.enable_interface_norm and self.inputs.get("use_P_point_backbone_feat", False)
+            else None
+        )
+        self.interface_norm_P_atom = (
+            nn.LayerNorm(int(P_atom_head_dim))
+            if self.enable_interface_norm and self.inputs.get("use_P_atom_head_feat", False)
+            else None
+        )
+        self.interface_norm_P_voxel = (
+            nn.LayerNorm(int(P_voxel_backbone_dim))
+            if self.enable_interface_norm and self.inputs.get("use_P_voxel_backbone_feat", False)
+            else None
+        )
+        # nn.LayerNorm | None, 仅作用于喂给 edge 的 C_voxel 副本; 末层 head 仍用未归一化的 C_voxel 以保 base_logits 残差语义
+        self.interface_norm_C_voxel_edge = (
+            nn.LayerNorm(int(C_voxel_backbone_dim))
+            if self.enable_interface_norm and self.inputs.get("use_C_voxel_backbone_feat", False)
+            else None
+        )
 
         p_content_dim = (
             int(P_point_backbone_dim) * int(self.inputs.get("use_P_point_backbone_feat", False))
@@ -212,11 +247,15 @@ class SparseRefineHead(nn.Module):
         if self.inputs.get("use_P_point_backbone_feat", False):
             if P_point_backbone_feat is None:
                 raise RuntimeError("启用了 use_P_point_backbone_feat，但输入为空。")
-            p_content_parts.append(P_point_backbone_feat)
+            p_content_parts.append(
+                self.interface_norm_P_point(P_point_backbone_feat) if self.interface_norm_P_point is not None else P_point_backbone_feat
+            )
         if self.inputs.get("use_P_atom_head_feat", False):
             if P_atom_head_feat is None:
                 raise RuntimeError("启用了 use_P_atom_head_feat，但输入为空。")
-            p_content_parts.append(P_atom_head_feat)
+            p_content_parts.append(
+                self.interface_norm_P_atom(P_atom_head_feat) if self.interface_norm_P_atom is not None else P_atom_head_feat
+            )
         # torch.Tensor, (sumP, H_msg), 每个 P 的消息内容特征
         p_content = self.P_content_mlp(torch.cat(p_content_parts, dim=1))
         # int, 唯一 C 数量
@@ -237,14 +276,18 @@ class SparseRefineHead(nn.Module):
         if self.inputs.get("use_C_voxel_backbone_feat", False):
             if C_voxel_backbone_feat is None:
                 raise RuntimeError("启用了 use_C_voxel_backbone_feat，但输入为空。")
-            edge_parts.append(C_voxel_backbone_feat[:, None, :].expand(-1, num_neighbors, -1))   # (sumC, K_nn, C_voxel)
+            # torch.Tensor, (sumC, C_voxel), 仅 edge 使用的 C voxel 特征; 先归一化再 expand(数学等价且省算力)
+            C_voxel_edge = self.interface_norm_C_voxel_edge(C_voxel_backbone_feat) if self.interface_norm_C_voxel_edge is not None else C_voxel_backbone_feat
+            edge_parts.append(C_voxel_edge[:, None, :].expand(-1, num_neighbors, -1))   # (sumC, K_nn, C_voxel)
         if self.inputs.get("use_P_voxel_backbone_feat", False):
             if P_voxel_backbone_feat is None:
                 raise RuntimeError("启用了 use_P_voxel_backbone_feat，但输入为空。")
-            if int(P_voxel_backbone_feat.shape[0]) == 0:
-                edge_parts.append(P_voxel_backbone_feat.new_zeros((num_candidates, num_neighbors, P_voxel_backbone_feat.shape[1])))
+            # torch.Tensor, (sumP, C_voxel), edge 使用的 P voxel 特征; 先归一化再 index_select(数学等价且省算力)
+            P_voxel_edge = self.interface_norm_P_voxel(P_voxel_backbone_feat) if self.interface_norm_P_voxel is not None else P_voxel_backbone_feat
+            if int(P_voxel_edge.shape[0]) == 0:
+                edge_parts.append(P_voxel_edge.new_zeros((num_candidates, num_neighbors, P_voxel_edge.shape[1])))
             else:
-                edge_parts.append(P_voxel_backbone_feat.index_select(0, candidate_neighbor_index.reshape(-1)).reshape(num_candidates, num_neighbors, -1))
+                edge_parts.append(P_voxel_edge.index_select(0, candidate_neighbor_index.reshape(-1)).reshape(num_candidates, num_neighbors, -1))
         if self.inputs.get("use_relative_coords", False):
             edge_parts.append(candidate_neighbor_relative_coords)
         if self.inputs.get("use_candidate_class_embedding", False):
@@ -261,8 +304,10 @@ class SparseRefineHead(nn.Module):
             # torch.Tensor, (sumC, K_nn, 1), 每条边的可学习门控权重
             learned_gate = torch.sigmoid(self.edge_mlp(torch.cat(edge_parts, dim=2)))
 
-        # torch.Tensor, (sumC, K_nn), 负平方距离除以温度后的距离分数
-        distance_score = -candidate_neighbor_squared_distance / self.distance_temperature
+        # torch.Tensor, (), 当前正温度; 由 log 域参数还原, 恒 > 0
+        temperature = self.log_temperature.exp()
+        # torch.Tensor, (sumC, K_nn), 负平方距离除以温度后的距离分数; fp32 温度会把结果升型, 避免 bf16 精度损失
+        distance_score = -candidate_neighbor_squared_distance / temperature
         min_value = torch.finfo(distance_score.dtype).min
         # torch.Tensor, (sumC, K_nn), 无效邻居置极小值后的 softmax 输入
         masked_score = distance_score.masked_fill(~candidate_neighbor_valid_mask, min_value)
@@ -281,8 +326,8 @@ class SparseRefineHead(nn.Module):
         if self.inputs.get("use_voxel_logits", False):
             if voxel_logits is None:
                 raise RuntimeError("启用了 use_voxel_logits，但输入为空。")
-            # torch.Tensor, (sumC, logit_dim), residual base 或 direct head 可选输入 logits
-            base_logits = voxel_logits.detach() if self.detach_voxel_logits else voxel_logits
+            # torch.Tensor, (sumC, logit_dim), residual base 或 direct head 可选输入 logits; detach 由调用方 _run_sparse_refine_head 负责
+            base_logits = voxel_logits
             final_parts.insert(0, base_logits)
         if self.inputs.get("use_C_voxel_backbone_feat", False):
             if C_voxel_backbone_feat is None:

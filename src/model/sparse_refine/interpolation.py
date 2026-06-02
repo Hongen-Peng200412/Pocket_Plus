@@ -23,11 +23,11 @@ class AnchorToCandidateKnnSearch(nn.Module):
         - anchor_class: torch.Tensor, (sumP,), P 继承的路由类别 ID
 
     前向输出:
-        - output: dict[str, torch.Tensor], KNN 边字段. 这里的 K=num_neighbors 而不是有效类别数
-            - "candidate_neighbor_index": torch.Tensor, (sumC, K), P 行号，无效位置由 mask 屏蔽
-            - "candidate_neighbor_squared_distance": torch.Tensor, (sumC, K), C 到 P 的平方距离
-            - "candidate_neighbor_relative_coords": torch.Tensor, (sumC, K, 3), C-P centered-world 相对坐标
-            - "candidate_neighbor_valid_mask": torch.Tensor, (sumC, K), 有效邻居掩码
+        - output: dict[str, torch.Tensor], KNN 边字段. 这里的 num_K=num_neighbors 而不是有效类别数(K)
+            - "candidate_neighbor_index": torch.Tensor, (sumC, num_K), P 行号，无效位置由 mask 屏蔽
+            - "candidate_neighbor_squared_distance": torch.Tensor, (sumC, num_K), C 到 P 的平方距离
+            - "candidate_neighbor_relative_coords": torch.Tensor, (sumC, num_K, 3), C-P centered-world 相对坐标
+            - "candidate_neighbor_valid_mask": torch.Tensor, (sumC, num_K), 有效邻居掩码
     """
 
     def __init__(
@@ -72,11 +72,11 @@ class AnchorToCandidateKnnSearch(nn.Module):
             - anchor_class: torch.Tensor, (sumP,), P 继承的路由类别 ID
 
         输出:
-            - output: dict[str, torch.Tensor], KNN 边字段. 这里的 K=num_neighbors 而不是有效类别数
-                - "candidate_neighbor_index": torch.Tensor, (sumC, K), P 行号，无效位置由 mask 屏蔽
-                - "candidate_neighbor_squared_distance": torch.Tensor, (sumC, K), C 到 P 的平方距离
-                - "candidate_neighbor_relative_coords": torch.Tensor, (sumC, K, 3), C-P centered-world 相对坐标
-                - "candidate_neighbor_valid_mask": torch.Tensor, (sumC, K), 有效邻居掩码
+            - output: dict[str, torch.Tensor], KNN 边字段. 这里的 num_K=num_neighbors 而不是有效类别数
+                - "candidate_neighbor_index": torch.Tensor, (sumC, num_K), P 行号，无效位置由 mask 屏蔽
+                - "candidate_neighbor_squared_distance": torch.Tensor, (sumC, num_K), C 到 P 的平方距离
+                - "candidate_neighbor_relative_coords": torch.Tensor, (sumC, num_K, 3), C-P centered-world 相对坐标
+                - "candidate_neighbor_valid_mask": torch.Tensor, (sumC, num_K), 有效邻居掩码
         """
         num_candidates = int(candidate_coord_centered_world.shape[0])
         num_anchors = int(anchor_coord_centered_world.shape[0])

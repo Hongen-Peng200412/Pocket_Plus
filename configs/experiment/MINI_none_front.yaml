@@ -1,0 +1,82 @@
+# @package _global_
+# ============================================================
+# 消融 none_front: detach 档=none(R=F,P=F), loss 档=前(F=T,B=F)
+# ============================================================
+# 与 configs/experiment/detach_main.yaml 同结构, 仅 4 个差异: dataset→MINI、train MINI 块、
+# refine 调度 (start_on_ratio,warmup_ratio)=(0.2,0.3)、以及下方 4 个消融轴开关。
+# 固定开关(detach_voxel_into_refine/detach_voxel_feat_into_point/refine_receptor_from_voxel/
+# pseudo_density_residual/enable_interface_norm)与 detach_main 一致。字段语义见 detach_main。
+# ============================================================
+defaults:
+  - override /model/voxel_backbone: stardard
+  - override /model/point_backbone: stardard
+  - override /model/fusion: e234d4
+  - override /model/atom_head: stardard
+  - override /model/task: binary
+  - override /model/typed_point: "on"
+  - override /model/embed_head: clipbig
+  - override /model/sparse_refine/candidate_set: binary_adaptive
+  - override /model/sparse_refine/anchor_sampler: unweighted_fps
+  - override /model/sparse_refine/density_cube: default
+  - override /model/sparse_refine/anchor_to_candidate: knn_message
+  - override /model/sparse_refine/sparse_refine_head: default
+  - override /model/sparse_refine/anchor_class_conditioning: none
+  - override /loss: sparse_refine
+  - override /dataset: MINI_emb_unet
+  - override /train: B40_L3
+
+name: MINI_none_front
+tag: "MINI_none_front"
+experiment_group: "MINI"
+project_name: PV_detach
+
+dataset:
+  class_mapping: [0, 1, 1, 1, 1]
+  class_names: [background, foreground]
+  num_task_classes: 2
+
+model:
+  backbone:
+    atom_logit_dim: 1
+    enable_recycling: true
+    max_recycles: 3
+    randomize_recycles: true
+    detach_recycle_states: true
+    act_layer_name: "gelu"
+    ffn_type: "gated"
+    atom_head_ffn_type: "gated"
+    enable_atom_head: true
+    # === 消融轴(本文件取值): R / P / F / B ===
+    detach_real_point_feat: false       # R
+    detach_pseudo_point_feat: false     # P
+    enable_atom_head_front: true        # F
+    enable_atom_head_back: false        # B
+    # === 固定开关(同 detach_main) ===
+    detach_voxel_into_refine: true
+    detach_voxel_feat_into_point: true
+    refine_receptor_from_voxel: true
+    pseudo_density_residual: false
+    enable_interface_norm: true
+    voxel_backbone:
+      ligand_head_hidden_channels: 32
+      aux_head_hidden_channels: 32
+      num_conv3d_aux: 1
+      num_conv3d_ligand: 1
+
+  class_names: ${dataset.class_names}
+  monitor_metric: val_score/global/refined_F1
+  monitor_mode: max
+  validation_diagnostics:
+    enabled: true
+  ligand_sparse_refine_loss_schedule:
+    warmup_ratio: 0.3
+    start_on_ratio: 0.2
+
+train:
+  enable_batch_size_tuning: false
+  strict_global_batch_size: false
+  global_batch_size: 39
+  batch_size: 3
+  val_per_epoch: 1
+  scheduler:
+    warmup_ratio: 0.06

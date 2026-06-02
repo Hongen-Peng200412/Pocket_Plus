@@ -32,6 +32,19 @@ backbone:
   online_pdb_feature_reduce: "sum"    # str, scatter 聚合方式
   online_pdb_feature_dim: 49          # int, 原子原始特征维度
 
+  # --- detach 梯度路由 / 前后置头 / 接口 Norm / density 残差 开关 (中性默认: 复现旧行为) ---
+  # 下列字段透传进 VolumePointStage1Model.__init__; 语义见 src/model/stage1_model.py 顶部契约与 __init__ docstring。
+  # 中性默认刻意保持: 不 detach 任何 point/voxel/refine 路径、只用后置头、不归一化、不加 density 残差。
+  enable_atom_head_front: false       # bool, 是否在 point backbone 末端增设二分类前置头; 与 enable_atom_head/back 正交
+  enable_atom_head_back: true         # bool, 是否构造 atom head 末端后置头; 关时 atom_logits=None
+  detach_real_point_feat: false       # bool, detach point backbone 输出真实原子槽位再喂后置 atom head; 前置头不受影响
+  detach_pseudo_point_feat: false     # bool, detach point backbone 输出 pseudo(P) 槽位(进 atom head 与进 refine 两处)
+  detach_voxel_feat_into_point: false # bool, _fuse_point_variable 里把采样 voxel 特征 detach 后再融合进 point
+  detach_voxel_into_refine: true      # bool, 统一 detach refine 吃的三处 voxel 信息(base logits、C/P voxel_final 特征)
+  refine_receptor_from_voxel: false   # bool, 前/后置头 logits 加 home 体素 voxel_logits_aux 的 detach 残差 base
+  pseudo_density_residual: false      # bool, atom head 伪原子分支输出加 density cube 直通残差(仅作用于进 refine 的 P_atom_head_feat)
+  enable_interface_norm: false        # bool, 在 voxel→point/embed→point/density→point/sparse refine 源接口先各自 LayerNorm
+
 # --- 调度器与主监控指标 ---
 # interval/frequency 仅用于完全交给 Lightning 管理的 scheduler。
 # warmup_plateau 使用 cfg.train.scheduler 的显式字段: warmup 固定按 step, plateau 固定在每次 validation end 后读取 monitor_metric。

@@ -37,7 +37,8 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
         ligand_sparse_refine_loss: nn.Module | None = None,
         optimizer: Any = None,
         scheduler: Any = None,
-        atom_loss_weight: float = 1.0,
+        atom_loss_front_weight: float = 0.0,
+        atom_loss_back_weight: float = 1.0,
         voxel_aux_loss_weight: float = 0.0,
         voxel_ligand_loss_weight: float = 0.0,
         ligand_sparse_refine_loss_weight: float = 0.0,
@@ -69,7 +70,8 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
                 - voxel_aux_loss: nn.Module | None, receptor 对外语义的体素辅助监督损失
                 - voxel_ligand_loss: nn.Module | None, dense ligand 体素监督损失
                 - ligand_sparse_refine_loss: nn.Module | None, C 级 sparse refine 监督损失
-                - atom_loss_weight: float, atom loss 静态权重
+                - atom_loss_front_weight: float, 前置头(point backbone 末端) atom loss 静态权重
+                - atom_loss_back_weight: float, 后置头(atom head 末端) atom loss 静态权重
                 - voxel_aux_loss_weight: float, receptor loss 静态权重
                 - voxel_ligand_loss_weight: float, voxel ligand loss 静态权重
                 - ligand_sparse_refine_loss_weight: float, sparse refine loss 最终权重
@@ -77,7 +79,7 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
             - 优化器和调度器
                 - optimizer: Any, Hydra optimizer 配置、callable 或 None
                 - scheduler: Any, Hydra scheduler 配置、callable 或 None
-                - ligand_sparse_refine_loss_schedule: Mapping[str, Any] | None, sparse refine loss 独立 warmup 配置
+                - ligand_sparse_refine_loss_schedule: Mapping[str, Any] | None, sparse refine loss 独立调度配置; 含 start_on(硬 0 延迟)与 warmup(线性升)两段, 要求 start_on <= warmup
                 - interval: str, Lightning scheduler interval
                 - frequency: int, Lightning scheduler frequency
 
@@ -219,8 +221,12 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
         输出:
             - specs: tuple[MetricBranchSpec, ...], 可启用 metric 分支配置
         """
+        # bool, 后置头/前置头是否启用(从 backbone 读取, 缺失时回退默认 True/False)
+        back_on = bool(getattr(self._unwrap_backbone(), "enable_atom_head_back", True))
+        front_on = bool(getattr(self._unwrap_backbone(), "enable_atom_head_front", False))
         return (
-            MetricBranchSpec("atom", self.atom_loss is not None, int(getattr(self.atom_loss, "num_classes", 2)), self.class_names, None),
+            MetricBranchSpec("atom", self.atom_loss is not None and back_on, int(getattr(self.atom_loss, "num_classes", 2)), self.class_names, None),
+            MetricBranchSpec("atom_front", self.atom_loss is not None and front_on, int(getattr(self.atom_loss, "num_classes", 2)), self.class_names, None),
             MetricBranchSpec("receptor", self.voxel_aux_loss is not None, int(getattr(self.voxel_aux_loss, "num_classes", 2)), self.class_names, None),
             MetricBranchSpec("voxel_ligand", self.voxel_ligand_loss is not None, int(getattr(self.voxel_ligand_loss, "num_classes", 2)), self.class_names, voxel_ligand_pr_auc_thresholds),
         )
@@ -441,7 +447,32 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
         if total_steps is None or int(total_steps) <= 0:
             raise RuntimeError("ligand_sparse_refine_loss_schedule 需要 trainer.estimated_stepping_batches 为正数。")
         return int(round(int(total_steps) * float(sched_cfg["warmup_ratio"])))
-    
+
+    def _resolve_sparse_refine_loss_start_on_steps(self, sched_cfg: Mapping[str, Any]) -> int:
+        """
+        解析 sparse refine loss 硬 0 延迟步数(global_step < start_on 时权重硬等于 0)。
+
+        输入参数:
+            - sched_cfg: Mapping[str, Any], ligand_sparse_refine_loss_schedule 配置, 包含 start_on_steps 或 start_on_ratio
+
+        输出:
+            - start_on_steps: int, refine 权重保持硬 0 的 optimizer step 数; start_on_ratio 为 null 时返回 0(复现旧斜坡)
+        """
+        # 旧版 schedule dict 不含 start_on_* 键时按 None 处理, 等价于无延迟(复现旧斜坡)
+        start_on_steps = sched_cfg.get("start_on_steps")
+        if start_on_steps is not None:
+            return int(start_on_steps)
+        if sched_cfg.get("start_on_ratio") is None:
+            return 0
+        try:
+            trainer = self.trainer
+        except RuntimeError:
+            trainer = None
+        total_steps = getattr(trainer, "estimated_stepping_batches", None) if trainer is not None else None
+        if total_steps is None or int(total_steps) <= 0:
+            raise RuntimeError("ligand_sparse_refine_loss_schedule start_on_ratio 需要 trainer.estimated_stepping_batches 为正数。")
+        return int(round(int(total_steps) * float(sched_cfg["start_on_ratio"])))
+
     def _compute_sparse_refine_loss_effective_weight(self) -> torch.Tensor:
         """
         计算当前 global_step 下 sparse refine loss 的有效权重。
@@ -459,16 +490,23 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
         final_weight = float(sched_cfg["final_weight"])
         # int, sparse refine loss warmup 步数
         warmup_steps = self._resolve_sparse_refine_loss_warmup_steps(sched_cfg)
-        if warmup_steps == 0:
-            return torch.tensor(final_weight, device=self.device, dtype=torch.float32)
+        # int, sparse refine loss 硬 0 延迟步数; 必须 <= warmup
+        start_on_steps = self._resolve_sparse_refine_loss_start_on_steps(sched_cfg)
+        if start_on_steps > warmup_steps:
+            raise ValueError("ligand_sparse_refine_loss_schedule: start_on 必须 <= warmup。")
         try:
             trainer = self.trainer
         except RuntimeError:
             trainer = None
         # int, 当前训练 global step
         global_step = int(getattr(trainer, "global_step", self.global_step)) if trainer is not None else int(self.global_step)
-        # float, sparse refine loss warmup 进度, 取值范围 [0,1]
-        progress = min(max(float(global_step) / float(warmup_steps), 0.0), 1.0)
+        if global_step < start_on_steps:
+            return torch.tensor(0.0, device=self.device, dtype=torch.float32)
+        if global_step >= warmup_steps:
+            # 同时覆盖 warmup_steps==0 与 start_on==warmup 的阶跃
+            return torch.tensor(final_weight, device=self.device, dtype=torch.float32)
+        # float, [start_on, warmup] 区间内的线性进度, 取值范围 [0,1)
+        progress = (float(global_step) - start_on_steps) / float(warmup_steps - start_on_steps)
         return torch.tensor(start_weight + progress * (final_weight - start_weight), device=self.device, dtype=torch.float32)
 
     def _compute_total_loss(self, outputs: dict[str, Any], batch: dict[str, Any]) -> tuple[torch.Tensor, list[LossTerm], dict[str, torch.Tensor]]:
@@ -491,7 +529,14 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
         # dict[str, torch.Tensor], 当前 batch 额外 loss 日志项
         extra_logs: dict[str, torch.Tensor] = {}
         if self.atom_loss is not None:
-            loss_terms.append(compute_atom_loss_term(outputs=outputs, batch=batch, loss_module=self.atom_loss, weight=float(self.hparams.atom_loss_weight)))
+            if outputs.get("atom_logits") is not None:
+                loss_terms.append(compute_atom_loss_term(
+                    outputs=outputs, batch=batch, loss_module=self.atom_loss,
+                    weight=float(self.hparams.atom_loss_back_weight), logits_key="atom_logits", name="atom"))
+            if outputs.get("atom_logits_front") is not None:
+                loss_terms.append(compute_atom_loss_term(
+                    outputs=outputs, batch=batch, loss_module=self.atom_loss,
+                    weight=float(self.hparams.atom_loss_front_weight), logits_key="atom_logits_front", name="atom_front"))
         if self.voxel_aux_loss is not None:
             term = compute_receptor_loss_term(outputs=outputs, batch=batch, loss_module=self.voxel_aux_loss, weight=float(self.hparams.voxel_aux_loss_weight))
             if term is not None:
@@ -515,10 +560,19 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
             )
             loss_terms.append(term)
             extra_logs["ligand_sparse_refine_weight_effective"] = logged_weight
+            # torch.Tensor, (), 当前 refine 距离 softmax 的正温度; 监控可学温度往尖锐/平缓哪个方向走
+            extra_logs["sparse_refine_temperature"] = self._unwrap_backbone().sparse_refine_head.log_temperature.exp().detach()
         for term in loss_terms:
-            # torch.Tensor, (), 当前 loss term 实际参与总损失的权重
-            weight = extra_logs["ligand_sparse_refine_weight_effective"] if term.name == "ligand_sparse_refine" else term.value.new_tensor(term.weight)
-            total_loss = total_loss + weight * term.value
+            if term.name == "ligand_sparse_refine":
+                # torch.Tensor, (), schedule 后当前 step 的有效权重
+                weight = extra_logs["ligand_sparse_refine_weight_effective"]
+                # nan_to_num 仅作用于 refine term: schedule 硬 0 阶段的 0 * NaN 会污染总 loss 并把 NaN 灌进全模型梯度;
+                # 其余监督分支的 NaN 视为真实 bug, 不在此处静默吞掉。term.logged_value 仍保留原始值用于告警。
+                total_loss = total_loss + weight * torch.nan_to_num(term.value)
+            else:
+                # torch.Tensor, (), 当前 loss term 实际参与总损失的权重
+                weight = term.value.new_tensor(term.weight)
+                total_loss = total_loss + weight * term.value
         return total_loss, loss_terms, extra_logs
 
     def _log_loss_terms(self, prefix: str, total_loss: torch.Tensor, loss_terms: Sequence[LossTerm], extra_logs: Mapping[str, torch.Tensor]) -> None:
@@ -682,10 +736,14 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
         outputs = self(batch_dict)
         # torch.Tensor/list[LossTerm]/dict[str, torch.Tensor], 当前 batch 总损失、分支损失和额外日志
         total_loss, loss_terms, extra_logs = self._compute_total_loss(outputs=outputs, batch=batch_dict)
-        if self.atom_loss is not None and "atom_logits" in outputs:
-            # torch.Tensor, (N,), atom 分支有效统计掩码
+        if self.atom_loss is not None and outputs.get("atom_logits") is not None:
+            # torch.Tensor, (N,), 后置头 atom 分支有效统计掩码
             atom_mask = outputs.get("atom_valid_mask", batch_dict.get("atom_valid_mask", torch.ones_like(batch_dict["atom_label"], dtype=torch.bool)))
             self.val_metrics.update_branch(branch_name="atom", logits=outputs["atom_logits"], target=outputs.get("atom_target", batch_dict["atom_label"]), mask=atom_mask)
+        if self.atom_loss is not None and outputs.get("atom_logits_front") is not None:
+            # torch.Tensor, (N,), 前置头 atom 分支有效统计掩码
+            front_mask = outputs.get("atom_valid_mask", batch_dict.get("atom_valid_mask", torch.ones_like(batch_dict["atom_label"], dtype=torch.bool)))
+            self.val_metrics.update_branch(branch_name="atom_front", logits=outputs["atom_logits_front"], target=outputs.get("atom_target", batch_dict["atom_label"]), mask=front_mask)
         if self.voxel_aux_loss is not None and "voxel_logits_aux" in outputs:
             # torch.Tensor, (B,D,H,W), receptor 分支 hardmask 与 valid mask 交集
             receptor_mask = (batch_dict["hardmask"].bool() & batch_dict["voxel_valid_mask"].bool()).squeeze(1)

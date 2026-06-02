@@ -17,7 +17,7 @@ class MetricBranchSpec:
     常规 validation AP(PRAUC的近似)/PRAUC 分支配置。
 
     输入参数:
-        - name: str, 分支名; 使用 atom/receptor/voxel_ligand
+        - name: str, 分支名; 使用 atom/atom_front/receptor/voxel_ligand
         - enabled: bool, 是否启用该分支
         - num_classes: int, task 类别数; 2 表示二分类输出无 suffix 指标
         - class_names: tuple[str, ...], (num_classes,), task class 名

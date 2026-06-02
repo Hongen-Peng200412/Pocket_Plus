@@ -26,7 +26,10 @@ model:
     w_mse: 0.0
     focal_soft_negative_suppression: false
     tversky_soft_target: false
-  atom_loss_weight: 0.1
+  # 前/后置头共用上面同一个 atom_loss 模块, 各出一个 loss term(后置=atom, 前置=atom_front)
+  #   → VoxelPointStage1Wrapper._compute_total_loss(): 分别按下列权重加权
+  atom_loss_front_weight: 0.1   # float, 前置头(point backbone 末端) atom loss 权重
+  atom_loss_back_weight: 0.1    # float, 后置头(atom head 末端) atom loss 权重
 
   # --- voxel auxiliary loss: 体素二分类辅助监督 ---
   voxel_aux_loss:
@@ -90,9 +93,15 @@ model:
     focal_soft_negative_suppression: false
     tversky_soft_target: false
   ligand_sparse_refine_loss_weight: 1.2
+  # --- sparse refine loss 独立调度 ---
+  #   → VoxelPointStage1Wrapper._compute_sparse_refine_loss_effective_weight():
+  #     global_step < start_on 时硬等于 0(refine 块完全不训练); [start_on, warmup] 线性升; ≥ warmup 取 final_weight。
+  #     要求 start_on ≤ warmup, 否则 fail-fast。
   ligand_sparse_refine_loss_schedule:
     mode: linear_warmup
     start_weight: 0.0
     final_weight: ${model.ligand_sparse_refine_loss_weight}
-    warmup_steps: null
-    warmup_ratio: 0.2
+    warmup_steps: null            # int|null, 显式 warmup 步数; null 时用 warmup_ratio*total_steps
+    warmup_ratio: 0.2             # float, warmup 步数占总训练步数比例
+    start_on_steps: null          # int|null, 显式硬 0 延迟步数; null 时用 start_on_ratio
+    start_on_ratio: null          # float|null, 硬 0 延迟占总训练步数比例; null 等价于 0(复现旧斜坡, 从第 0 步起)

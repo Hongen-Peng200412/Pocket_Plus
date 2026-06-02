@@ -52,17 +52,31 @@ forward 输入的 batch 关键字段契约:
     - real_mask: torch.Tensor, (N_all,), bool, mixed-only 字段, True 表示 real atom。
     - pseudo_mask: torch.Tensor, (N_all,), bool, mixed-only 字段, True 表示 P anchor。
 
+梯度路由 / 前后置头 / 接口 Norm / density 残差 开关(均挂在 cfg.model.backbone.*, 透传进 __init__, 默认中性复现旧行为):
+    - detach_real_point_feat / detach_pseudo_point_feat: 选择性 detach point backbone 输出真实/伪原子槽位后喂给后置 atom head 与 refine 的 P_point_backbone_feat; 前置头取 detach 之前的 point_feat_raw 不受影响。
+    - detach_voxel_feat_into_point: _fuse_point_variable 里 detach 采样 voxel 特征, 切断 point->voxel 融合回流。
+    - detach_voxel_into_refine: 统一 detach refine 吃的三处 voxel 信息(base logits、C/P voxel_final 特征)。
+    - enable_atom_head_front(atom前置分类头) / enable_atom_head_back(atom后置分类头) / enable_atom_head(atom head这个模块本身): 三者正交; 前置头 atom_logit_head_front 只看 enable_atom_head_front, 在 _run_atom_head 统一尾部执行(atom_head 是否存在均可跑)。
+    - refine_receptor_from_voxel: 前/后置头 logits 加 home 体素 voxel_logits_aux.detach() 残差 base, 开时两头末层零初始化并跳过 prior bias, 要求 atom_logit_dim == voxel_aux_logit_dim。
+    - pseudo_density_residual: atom head 伪分支输出加 density cube 直通残差, 仅作用于进 refine 的 P_atom_head_feat。
+    - enable_interface_norm: 在 voxel->point 融合两源、embed->point 真实原子初始特征、density->point 伪原子初始特征、sparse refine 的 P/edge 学习源处各自 LayerNorm; 几何量/embedding/末层 head 的 C_voxel 不归一化。
+
 forward 输出契约:
-    - atom_logits: torch.Tensor | None, (N_real, atom_logit_dim), floating, wrapper-facing real-only atom logits。
+    - point_feat_raw: torch.Tensor, (N_all, C_point), floating, point backbone 原始输出(未经 detach 路由), 供前置头消费。
+    - fused_point_feat: torch.Tensor, (N_all, C_point), floating, 经 detach 路由后的 point 特征, 供后置 atom head 与 refine 的 P_point_backbone_feat 消费。
+    - atom_logits: torch.Tensor | None, (N_real, atom_logit_dim), floating, wrapper-facing real-only 后置头 logits; enable_atom_head_back=False 时为 None; refine_receptor 开时已加 voxel_aux 残差 base。
+    - atom_logits_front: torch.Tensor | None, (N_real, atom_logit_dim), floating, real-only 前置头 logits; enable_atom_head_front=False 时键缺失; refine_receptor 开时已加 voxel_aux 残差 base。
     - atom_target: torch.Tensor | None, (N_real,), long, wrapper-facing real-only atom 标签。
     - atom_valid_mask: torch.Tensor | None, (N_real,), bool, wrapper-facing real-only 监督掩码。
     - atom_counts: torch.Tensor | None, (B,), long, wrapper-facing real-only counts。
     - atom_tokens: torch.Tensor | None, (N_all, C_token), floating, atom head token projection 前输入; mixed 路径保留全点。
     - atom_hidden: torch.Tensor | None, (N_all, C_hidden), floating, atom head shared attention 输出; mixed 路径保留全点。
-    - pseudo_feature: torch.Tensor | None, (N_pseudo, C_pseudo), floating, P anchor refined feature; 01 阶段或 real-only 路径为 None。
+    - pseudo_feature: torch.Tensor | None, (N_pseudo, C_pseudo), floating, P anchor refined feature; 01 阶段或 real-only 路径为 None; pseudo_density_residual 开时含 density cube 残差。
+    - pseudo_density_feat: torch.Tensor, (N_pseudo, F_atom), floating, density cube 输出的 P 初始特征(anchor 顺序, 接口 Norm 开时已归一化); sparse refine 路径存在。
 """
 from __future__ import annotations
 
+import math
 from typing import Any, Sequence
 
 import torch
@@ -152,6 +166,15 @@ class VolumePointStage1Model(nn.Module):
         anchor_to_candidate_cfg: dict[str, Any] | nn.Module | None = None,
         sparse_refine_head_cfg: dict[str, Any] | nn.Module | None = None,
         anchor_class_conditioning_cfg: dict[str, Any] | None = None,
+        detach_real_point_feat: bool = False,
+        detach_pseudo_point_feat: bool = False,
+        detach_voxel_feat_into_point: bool = False,
+        detach_voxel_into_refine: bool = True,
+        enable_atom_head_front: bool = False,
+        enable_atom_head_back: bool = True,
+        refine_receptor_from_voxel: bool = False,
+        pseudo_density_residual: bool = False,
+        enable_interface_norm: bool = False,
     ) -> None:
         """
         Stage1 体素-点云联合模型, voxel backbone 每轮 recycle, P anchors 只在最后一轮注入。
@@ -214,6 +237,16 @@ class VolumePointStage1Model(nn.Module):
             - act_layer_name: str, 激活函数名称
             - ffn_type: str, point backbone Block FFN 类型
 
+            - detach_real_point_feat: bool, detach point backbone 输出的真实原子槽位再喂给后置 atom head; 前置头取 detach 之前的 point_feat_raw 不受影响
+            - detach_pseudo_point_feat: bool, detach point backbone 输出的 pseudo(P) 槽位; 同时作用于"进 atom head"与"直接进 refine 的 P_point_backbone_feat"两处
+            - detach_voxel_feat_into_point: bool, _fuse_point_variable 里把采样到的 voxel 特征 detach 后再融合进 point
+            - detach_voxel_into_refine: bool, 统一覆盖 refine 吃的三处 voxel 信息(base logits、C/P voxel_final 特征)是否 detach
+            - enable_atom_head_front: bool, 在 point backbone 末端(真实原子)增设二分类前置头; 与 enable_atom_head/back 正交
+            - enable_atom_head_back: bool, 是否构造 atom head 末端的 real_atom_logit_head 后置头; 关时 atom_logits=None
+            - refine_receptor_from_voxel: bool, 前/后置头 logits 都加上该原子 home 体素处 voxel_logits_aux 的 detach 残差 base
+            - pseudo_density_residual: bool, 在 atom head 伪原子分支输出上加 density cube 直通残差; 仅作用于进 refine 的 P_atom_head_feat
+            - enable_interface_norm: bool, 在若干 channel-last 融合/注入接口"先各自 LayerNorm 再拼接/注入"
+
         前向输出:
             - outputs: dict[str, Any], 包含 voxel/point 输出、real-only atom supervised 字段与可选 pseudo_feature
         """
@@ -229,6 +262,17 @@ class VolumePointStage1Model(nn.Module):
         self.online_pdb_feature = bool(online_pdb_feature)
         self.online_pdb_feature_reduce = str(online_pdb_feature_reduce)
         self.online_pdb_feature_dim = int(online_pdb_feature_dim)
+
+        # bool, 梯度路由 / 前后置头 / 接口 Norm / density 残差 开关; 语义见 __init__ docstring 与本模块顶部契约
+        self.detach_real_point_feat = bool(detach_real_point_feat)
+        self.detach_pseudo_point_feat = bool(detach_pseudo_point_feat)
+        self.detach_voxel_feat_into_point = bool(detach_voxel_feat_into_point)
+        self.detach_voxel_into_refine = bool(detach_voxel_into_refine)
+        self.enable_atom_head_front = bool(enable_atom_head_front)
+        self.enable_atom_head_back = bool(enable_atom_head_back)
+        self.refine_receptor_from_voxel = bool(refine_receptor_from_voxel)
+        self.pseudo_density_residual = bool(pseudo_density_residual)
+        self.enable_interface_norm = bool(enable_interface_norm)
 
         # nn.Module, 体素分支模块
         self.voxel_backbone = voxel_backbone if isinstance(voxel_backbone, nn.Module) else instantiate(voxel_backbone)
@@ -407,6 +451,28 @@ class VolumePointStage1Model(nn.Module):
                     float(fusion_proj_drop),
                 )
 
+        # nn.ModuleDict, enable_interface_norm 下 voxel->point 融合两源的 per-变量 LayerNorm; 关时为空走恒等
+        self.interface_norm_fusion = nn.ModuleDict()
+        # nn.LayerNorm | None, embed head 输出 -> point 真实原子初始特征接口归一化
+        self.interface_norm_embed_to_point: nn.LayerNorm | None = None
+        # nn.LayerNorm | None, density cube 输出 -> point 伪原子初始特征接口归一化
+        self.interface_norm_density_to_point: nn.LayerNorm | None = None
+        if self.enable_interface_norm:
+            for point_name, voxel_name in self.point_fusion_items:
+                # int, 当前 point 变量通道数与对应 voxel 特征通道数
+                norm_point_channels = int(self.point_backbone.feature_channels_by_name[point_name])
+                norm_voxel_channels = int(self.voxel_backbone.feature_channels_by_name[voxel_name])
+                self.interface_norm_fusion[point_name] = nn.ModuleDict(
+                    {
+                        "point": nn.LayerNorm(norm_point_channels),
+                        "voxel": nn.LayerNorm(norm_voxel_channels),
+                    }
+                )
+            if self.embed_head is not None and self.embed_head.has_point_output:
+                self.interface_norm_embed_to_point = nn.LayerNorm(int(self.point_backbone.atom_feature_dim))
+            if self.density_cube_encoder is not None:
+                self.interface_norm_density_to_point = nn.LayerNorm(int(self.point_backbone.atom_feature_dim))
+
         self.enable_atom_head = bool(enable_atom_head)
         if self.enable_atom_head:
             self.atom_head_append_coord_mask = bool(atom_head_append_coord_mask)
@@ -440,11 +506,27 @@ class VolumePointStage1Model(nn.Module):
                 append_coord_mask=bool(atom_head_append_coord_mask),
                 prior_prob=prior_prob,
                 prior_probs=prior_probs,
+                enable_atom_head_back=self.enable_atom_head_back,
+                pseudo_density_residual=self.pseudo_density_residual,
+                pseudo_density_in_dim=int(self.point_backbone.atom_feature_dim),
                 typed_point_cfg=self.typed_point_cfg,
             )
         else:
             self.atom_head_append_coord_mask = False
             self.atom_head = None
+
+        # nn.Sequential | None, (N_real, C_point) -> (N_real, atom_logit_dim), 前置头浅 MLP; 与 atom head/后置头正交, 只看 enable_atom_head_front
+        self.atom_logit_head_front = None
+        if self.enable_atom_head_front:
+            # int, point backbone 输出通道数
+            point_out = int(self.point_backbone.out_channels)
+            self.atom_logit_head_front = nn.Sequential(
+                nn.Linear(point_out, point_out),
+                act_cls(),
+                nn.Linear(point_out, int(atom_logit_dim)),
+            )
+            # 前置头末层统一写 prior bias(与后置头在 atom head 内部一致); refine_receptor 开时由下方零初始化统一覆盖
+            self._init_atom_logit_head_prior_bias(self.atom_logit_head_front[-1], int(atom_logit_dim), prior_prob, prior_probs)
 
 
         self.sparse_refine_head: nn.Module | None = None
@@ -464,12 +546,24 @@ class VolumePointStage1Model(nn.Module):
                 "P_atom_head_dim": int(self.atom_head.pseudo_feature_dim),
                 "P_voxel_backbone_dim": int(self.voxel_backbone.feature_channels_by_name["voxel_final"]),
                 "candidate_class_ids": tuple(int(value) for value in self.candidate_set_builder.candidate_class_ids),
+                "enable_interface_norm": self.enable_interface_norm,
             }
             self.sparse_refine_head = (
                 pending_sparse_refine_head_cfg
                 if isinstance(pending_sparse_refine_head_cfg, nn.Module)
                 else instantiate(pending_sparse_refine_head_cfg, **injected_head_kwargs)
             )
+
+        if self.refine_receptor_from_voxel:
+            if int(atom_logit_dim) != int(self.voxel_backbone.voxel_aux_logit_dim):
+                raise ValueError("refine_receptor_from_voxel 要求 atom_logit_dim == voxel_aux_logit_dim。")
+            # 前/后置头末层零初始化, 使初值 = 照抄 voxel_aux home 体素 base; 统一覆盖两头构造时写入的 prior bias
+            for head in (self.atom_logit_head_front, getattr(self.atom_head, "real_atom_logit_head", None)):
+                if head is not None:
+                    # nn.Linear, head 末层
+                    last_linear = next(module for module in reversed(head) if isinstance(module, nn.Linear))
+                    nn.init.zeros_(last_linear.weight)
+                    nn.init.zeros_(last_linear.bias)
 
     def _build_point_fusion_module(
         self,
@@ -575,6 +669,99 @@ class VolumePointStage1Model(nn.Module):
             voxel_zyx[:, 1],
             voxel_zyx[:, 2],
         ].contiguous()
+
+    @staticmethod
+    def _apply_point_feat_detach_routing(
+        point_feat: torch.Tensor,
+        pseudo_mask: torch.Tensor | None,
+        detach_real: bool,
+        detach_pseudo: bool,
+    ) -> torch.Tensor:
+        """
+        按真实/伪原子槽位对 point backbone 输出特征做选择性 detach。
+
+        输入参数:
+            - point_feat: torch.Tensor, (N_all, C_point), point backbone 输出特征(mixed 或 real-only)
+            - pseudo_mask: torch.Tensor | None, (N_all,), bool, True 表示 P anchor; None 表示 real-only 路径
+            - detach_real: bool, 是否 detach 真实原子槽位
+            - detach_pseudo: bool, 是否 detach 伪原子槽位
+
+        输出:
+            - routed_feat: torch.Tensor, (N_all, C_point), 按开关选择性 detach 后的特征
+        """
+        if detach_real and detach_pseudo:
+            return point_feat.detach()
+        if detach_real:
+            # torch.Tensor, (N_all,), bool, True 表示真实原子槽位
+            real_mask = (
+                torch.ones(point_feat.shape[0], dtype=torch.bool, device=point_feat.device)
+                if pseudo_mask is None
+                else ~pseudo_mask
+            )
+            return torch.where(real_mask[:, None], point_feat.detach(), point_feat)
+        if detach_pseudo and pseudo_mask is not None:
+            return torch.where(pseudo_mask[:, None], point_feat.detach(), point_feat)
+        return point_feat
+
+    @staticmethod
+    def _gather_voxel_aux_logit_at_atom_home_voxel(
+        voxel_logits_aux: torch.Tensor,
+        atom_coord_local_voxel: torch.Tensor,
+        atom_batch_index: torch.Tensor,
+        box_shape_zyx: torch.Tensor,
+    ) -> torch.Tensor:
+        """
+        读取每个真实原子 home 体素处的 voxel aux logits, 作为 refine_receptor 残差 base。
+
+        输入参数:
+            - voxel_logits_aux: torch.Tensor, (B, C_aux, D, H, W), 体素辅助(receptor)预测 logits
+            - atom_coord_local_voxel: torch.Tensor, (N, 3), 连续体素 corner 坐标, 轴顺序 x/y/z
+            - atom_batch_index: torch.Tensor, (N,), 每个原子所属 BOX 索引
+            - box_shape_zyx: torch.Tensor, (B, 3), 每个 BOX 体素尺寸, 轴顺序 z/y/x
+
+        输出:
+            - base: torch.Tensor, (N, C_aux), home 体素处的 voxel aux logits, 已 detach
+        """
+        # torch.Tensor, (N, 3), home 体素离散下标, 轴顺序 x/y/z
+        idx_xyz = torch.floor(atom_coord_local_voxel).to(torch.long)
+        # torch.Tensor, (N, 3), home 体素离散下标, 轴顺序 z/y/x
+        idx_zyx = idx_xyz[:, [2, 1, 0]].clamp(min=0)
+        # torch.Tensor, (N, 3), 每个原子所属 BOX 的体素尺寸, 轴顺序 z/y/x
+        shape_zyx = box_shape_zyx.to(idx_zyx.device)[atom_batch_index]
+        idx_zyx = torch.minimum(idx_zyx, shape_zyx - 1)
+        # torch.Tensor, (N, C_aux), home 体素处采样到的 aux logits
+        base = voxel_logits_aux[atom_batch_index, :, idx_zyx[:, 0], idx_zyx[:, 1], idx_zyx[:, 2]]
+        return base.detach()
+
+    @staticmethod
+    def _init_atom_logit_head_prior_bias(
+        last_linear: nn.Module,
+        logit_dim: int,
+        prior_prob: float | None,
+        prior_probs: Sequence[float] | None,
+    ) -> None:
+        """
+        用先验概率初始化 atom logit head 末层 Linear 的 bias, 与后置头 prior 初始化保持一致。
+
+        输入参数:
+            - last_linear: nn.Module, atom logit head 末层, 必须是带 bias 的 nn.Linear
+            - logit_dim: int, logits 输出通道数
+            - prior_prob: float | None, 单通道 sigmoid 正类先验概率; 与 prior_probs 互斥
+            - prior_probs: Sequence[float] | None, 多通道 softmax 类别先验概率
+
+        输出:
+            - None, 原地更新 last_linear.bias
+        """
+        if prior_prob is not None and prior_probs is not None:
+            raise ValueError("prior_prob 和 prior_probs 不能同时配置。")
+        if prior_probs is not None:
+            Stage1AtomHead._init_linear_multiclass_prior_bias(last_linear, int(logit_dim), prior_probs)
+        elif prior_prob is not None:
+            if int(logit_dim) != 1:
+                raise ValueError("多通道前置头请使用 prior_probs，不要使用单通道 prior_prob。")
+            # float, sigmoid 正类先验对应的输出 bias
+            bias_val = -math.log((1.0 - float(prior_prob)) / float(prior_prob))
+            nn.init.constant_(last_linear.bias, bias_val)
 
     def _condition_anchor_pseudo_feat(
         self,
@@ -783,8 +970,17 @@ class VolumePointStage1Model(nn.Module):
             fusion_mode=fusion_mode,
             sampler_mode=sampler_mode,
         )
+        if self.detach_voxel_feat_into_point:
+            sampled_voxel_feat = sampled_voxel_feat.detach()
+        # torch.Tensor, (N, C_point), 融合用的点源特征; 接口 Norm 开时先各自 LayerNorm
+        point_feat_for_fusion = point_like.feat
+        if self.enable_interface_norm:
+            # nn.ModuleDict, 当前 point 变量的两源接口 LayerNorm
+            fusion_norm = self.interface_norm_fusion[feature_name]
+            point_feat_for_fusion = fusion_norm["point"](point_feat_for_fusion)
+            sampled_voxel_feat = fusion_norm["voxel"](sampled_voxel_feat)
         # torch.Tensor, (N, C_point + C_voxel), 融合 MLP 输入特征
-        fusion_input = torch.cat([point_like.feat, sampled_voxel_feat], dim=-1)
+        fusion_input = torch.cat([point_feat_for_fusion, sampled_voxel_feat], dim=-1)
         # torch.Tensor | None, (N,), bool, 当前 point_like 分辨率的 P anchor 掩码
         pseudo_mask = point_like.get("pseudo_mask", None) if hasattr(point_like, "get") else None
         pseudo_mask = validate_pseudo_mask(
@@ -839,6 +1035,9 @@ class VolumePointStage1Model(nn.Module):
         global_keep_mask = embed_output["global_keep_mask"]
         batch = {**batch}
         batch["atom_feat"] = embed_output["atom_feat"]
+        if self.interface_norm_embed_to_point is not None:
+            # embed head 输出 -> point 真实原子初始特征接口归一化(与 density->point 伪原子接口对称)
+            batch["atom_feat"] = self.interface_norm_embed_to_point(batch["atom_feat"])
         batch["atom_coord_centered_world"] = embed_output["atom_coord_centered_world"]
         batch["atom_batch_index"] = embed_output["atom_batch_index"]
         batch["atom_offsets"] = embed_output["atom_offsets"]
@@ -948,6 +1147,9 @@ class VolumePointStage1Model(nn.Module):
             anchor_batch_index=anchor_outputs["anchor_batch_index"],
         )
         pseudo_feat = self._condition_anchor_pseudo_feat(pseudo_feat, anchor_outputs["anchor_class"])
+        if self.interface_norm_density_to_point is not None:
+            # density cube 输出 -> point 伪原子初始特征接口归一化(与 embed->point 真实原子接口对称)
+            pseudo_feat = self.interface_norm_density_to_point(pseudo_feat)
         if int(pseudo_feat.shape[-1]) != int(batch["atom_feat"].shape[-1]):
             raise RuntimeError("density cube pseudo_feat 末维必须等于 batch['atom_feat'] 末维。")
         # dict[str, torch.Tensor], inject_pseudo_atoms 输入字段
@@ -964,6 +1166,8 @@ class VolumePointStage1Model(nn.Module):
         }
         point_batch, pseudo_layout = inject_pseudo_atoms(batch, pseudo_dict)
         pseudo_outputs = {**candidate_outputs, **anchor_outputs}
+        # torch.Tensor, (sumP, F_atom), 注入用的同一张 P 初始特征(anchor 顺序), 供 atom head density 残差消费
+        pseudo_outputs["pseudo_density_feat"] = pseudo_feat
         return point_batch, pseudo_layout, pseudo_outputs
 
     def _run_point_backbone(
@@ -1047,47 +1251,79 @@ class VolumePointStage1Model(nn.Module):
             - pseudo_layout: PseudoAtomLayout | None, mixed layout; None 表示 real-only 路径
 
         输出:
-            - None, 原地更新 outputs 中 atom_tokens/atom_hidden/atom_logits/pseudo_feature 与 supervised 字段
+            - None, 原地更新 outputs 中 atom_tokens/atom_hidden/atom_logits/pseudo_feature、前置头 atom_logits_front 与 supervised 字段
         """
-        if self.atom_head is None:
+        # 1. 后置 attention atom head (可选): 产出 atom_logits/pseudo_feature 与 real-only 监督字段
+        if self.atom_head is not None:
+            # torch.Tensor | None, (N_all,), bool, mixed 路径下 True 表示 P anchor
+            pseudo_mask = atom_head_batch.get("pseudo_mask") if pseudo_layout is not None else None
+            atom_head_output = self.atom_head(
+                point_feat=outputs["fused_point_feat"],
+                point_state=outputs["point_state"],
+                atom_coord_centered_world=atom_head_batch["atom_coord_centered_world"],
+                atom_valid_mask=atom_head_batch["atom_valid_mask"],
+                pseudo_mask=pseudo_mask,
+                pseudo_density_feat=outputs.get("pseudo_density_feat"),
+            )
+            outputs.update(atom_head_output)
+            if pseudo_layout is None:
+                outputs["atom_target"] = atom_head_batch.get("atom_label")
+                outputs["atom_valid_mask"] = atom_head_batch.get("atom_valid_mask")
+                outputs["atom_counts"] = atom_head_batch.get("atom_counts")
+                outputs["atom_coord_local_voxel"] = atom_head_batch.get("atom_coord_local_voxel")
+                outputs["atom_is_in_core_box"] = atom_head_batch.get("atom_is_in_core_box")
+                outputs["atom_global_indices"] = atom_head_batch.get("atom_global_indices")
+            else:
+                outputs["atom_target"] = extract_real_tensor_from_mixed(atom_head_batch.get("atom_label"), pseudo_layout)
+                outputs["atom_valid_mask"] = extract_real_tensor_from_mixed(atom_head_batch.get("atom_valid_mask"), pseudo_layout)
+                outputs["atom_counts"] = pseudo_layout.real_counts.to(device=outputs["fused_point_feat"].device)
+                outputs["atom_coord_local_voxel"] = extract_real_tensor_from_mixed(
+                    atom_head_batch.get("atom_coord_local_voxel"), pseudo_layout
+                )
+                outputs["atom_is_in_core_box"] = extract_real_tensor_from_mixed(
+                    atom_head_batch.get("atom_is_in_core_box"), pseudo_layout
+                )
+                outputs["atom_global_indices"] = extract_real_tensor_from_mixed(
+                    atom_head_batch.get("atom_global_indices"), pseudo_layout
+                )
+        else:
+            # atom head 关时仅置空, 真实原子监督字段已由 forward 用 real_batch 写好, 此处不覆盖
             outputs["atom_tokens"] = None
             outputs["atom_hidden"] = None
             outputs["atom_logits"] = None
             outputs["pseudo_feature"] = None
-            return
 
-        # torch.Tensor | None, (N_all,), bool, mixed 路径下 True 表示 P anchor
-        pseudo_mask = atom_head_batch.get("pseudo_mask") if pseudo_layout is not None else None
-        atom_head_output = self.atom_head(
-            point_feat=outputs["fused_point_feat"],
-            point_state=outputs["point_state"],
-            atom_coord_centered_world=atom_head_batch["atom_coord_centered_world"],
-            atom_valid_mask=atom_head_batch["atom_valid_mask"],
-            pseudo_mask=pseudo_mask,
-        )
-        outputs.update(atom_head_output)
-
-        if pseudo_layout is None:
-            outputs["atom_target"] = atom_head_batch.get("atom_label")
-            outputs["atom_valid_mask"] = atom_head_batch.get("atom_valid_mask")
-            outputs["atom_counts"] = atom_head_batch.get("atom_counts")
-            outputs["atom_coord_local_voxel"] = atom_head_batch.get("atom_coord_local_voxel")
-            outputs["atom_is_in_core_box"] = atom_head_batch.get("atom_is_in_core_box")
-            outputs["atom_global_indices"] = atom_head_batch.get("atom_global_indices")
-            return
-
-        outputs["atom_target"] = extract_real_tensor_from_mixed(atom_head_batch.get("atom_label"), pseudo_layout)
-        outputs["atom_valid_mask"] = extract_real_tensor_from_mixed(atom_head_batch.get("atom_valid_mask"), pseudo_layout)
-        outputs["atom_counts"] = pseudo_layout.real_counts.to(device=outputs["fused_point_feat"].device)
-        outputs["atom_coord_local_voxel"] = extract_real_tensor_from_mixed(
-            atom_head_batch.get("atom_coord_local_voxel"), pseudo_layout
-        )
-        outputs["atom_is_in_core_box"] = extract_real_tensor_from_mixed(
-            atom_head_batch.get("atom_is_in_core_box"), pseudo_layout
-        )
-        outputs["atom_global_indices"] = extract_real_tensor_from_mixed(
-            atom_head_batch.get("atom_global_indices"), pseudo_layout
-        )
+        # 2. refine_receptor 残差 base + 前置头: 与 atom_head 是否存在正交, real 坐标/索引自包含地从 atom_head_batch 取
+        # torch.Tensor | None, (N_real, C_aux), home 体素处 voxel_aux 残差 base; refine_receptor 关时为 None
+        base = None
+        if self.refine_receptor_from_voxel:
+            if pseudo_layout is not None:
+                # torch.Tensor, (N_real, 3), 真实原子连续体素坐标(mixed-real 顺序)
+                real_coord_local = extract_real_tensor_from_mixed(atom_head_batch["atom_coord_local_voxel"], pseudo_layout)
+                # torch.Tensor, (N_real,), 真实原子所属 BOX 索引(mixed-real 顺序)
+                real_batch_index = extract_real_tensor_from_mixed(atom_head_batch["atom_batch_index"], pseudo_layout)
+            else:
+                real_coord_local = atom_head_batch["atom_coord_local_voxel"]
+                real_batch_index = atom_head_batch["atom_batch_index"]
+            base = self._gather_voxel_aux_logit_at_atom_home_voxel(
+                voxel_logits_aux=outputs["voxel_logits_aux"],
+                atom_coord_local_voxel=real_coord_local,
+                atom_batch_index=real_batch_index,
+                box_shape_zyx=atom_head_batch["box_shape_zyx"],
+            )
+        if self.atom_logit_head_front is not None:
+            # torch.Tensor, (N_real, C_point), 前置头消费的真实原子 raw point backbone 特征(未经 detach 路由)
+            real_point_feat_raw = (
+                extract_real_tensor_from_mixed(outputs["point_feat_raw"], pseudo_layout)
+                if pseudo_layout is not None
+                else outputs["point_feat_raw"]
+            )
+            # torch.Tensor, (N_real, atom_logit_dim), 前置头 logits
+            front_logits = self.atom_logit_head_front(real_point_feat_raw)
+            outputs["atom_logits_front"] = front_logits + base if base is not None else front_logits
+        # outputs["atom_logits"] 是 self.atom_head() 产生的
+        if outputs.get("atom_logits") is not None and base is not None:
+            outputs["atom_logits"] = outputs["atom_logits"] + base
 
     def _run_sparse_refine_head(
         self,
@@ -1106,7 +1342,11 @@ class VolumePointStage1Model(nn.Module):
             - pseudo_layout: PseudoAtomLayout | None, final mixed 布局
 
         输出:
-            - None, 原地写入消息有效掩码与 `ligand_refine_logits_C`
+            - None, 原地写入:
+                - self.sparse_refine_head() 直接输出的 refine_outputs:
+                    - "candidate_message_valid_mask": torch.Tensor, (sumC,), 是否至少有一个有效 P 邻居
+                    - "ligand_refine_logits_C": torch.Tensor, (sumC, logit_dim), refined logits
+                - self.anchor_to_candidate() 也就是 class AnchorToCandidateKnnSearch, 对(C,P)的边构建结果
         """
         if self.sparse_refine_head is None:
             return
@@ -1142,13 +1382,18 @@ class VolumePointStage1Model(nn.Module):
             voxel_zyx=outputs["candidate_voxel_zyx"],
             point_batch_index=outputs["candidate_batch_index"],
         )
-        # torch.Tensor, (sumC, C_logits), 默认复用 candidate_set_builder 产出的 detached candidate logits
-        voxel_logits_C = outputs["candidate_logits"]
-        if not bool(getattr(self.sparse_refine_head, "detach_voxel_logits", True)):
+        # detach_voxel_into_refine 统一控制 refine 吃的三处 voxel 信息是否回传梯度到 voxel backbone
+        if self.detach_voxel_into_refine:
+            P_voxel_backbone_feat = P_voxel_backbone_feat.detach()
+            C_voxel_backbone_feat = C_voxel_backbone_feat.detach()
+            # torch.Tensor, (sumC, C_logits), 复用 candidate_set_builder 产出的已 detach candidate logits
+            voxel_logits_C = outputs["candidate_logits"]
+        else:
             # torch.Tensor, (B, C_logits, D, H, W), final voxel backbone 输出的带梯度 ligand logits
             source_logits = voxel_output_dict["voxel_logits_ligand"]
             # torch.Tensor, (sumC, 3), 唯一 C 的 voxel z/y/x 坐标
             voxel_zyx = outputs["candidate_voxel_zyx"]
+            # torch.Tensor, (sumC, C_logits), 从 dense ligand logits 现 gather 的带梯度 C logits
             voxel_logits_C = source_logits[
                 outputs["candidate_batch_index"],
                 :,
@@ -1156,7 +1401,7 @@ class VolumePointStage1Model(nn.Module):
                 voxel_zyx[:, 1],
                 voxel_zyx[:, 2],
             ]
-        # dict[str, torch.Tensor], 每个 C 的 P 邻居索引、距离、相对坐标与有效掩码
+        # dict[str, torch.Tensor], class AnchorToCandidateKnnSearch 对(C,P)的边构建结果(candidate_neighbor_index 、candidate_neighbor_squared_distance 等)
         neighbor_outputs = self.anchor_to_candidate(
             candidate_coord_centered_world=candidate_coord_centered_world,
             candidate_batch_index=outputs["candidate_batch_index"],
@@ -1246,8 +1491,16 @@ class VolumePointStage1Model(nn.Module):
                     real_point_output_dict = point_output_dict
                 last_atom_head_batch = point_batch
                 last_pseudo_layout = pseudo_layout
+                # torch.Tensor | None, (N_all,), bool, final mixed batch 的 P anchor 掩码; real-only 路径为 None
+                final_pseudo_mask = point_batch.get("pseudo_mask")
                 outputs = {
-                    "fused_point_feat": point_output_dict["point_feat"],
+                    "point_feat_raw": point_output_dict["point_feat"],
+                    "fused_point_feat": self._apply_point_feat_detach_routing(
+                        point_output_dict["point_feat"],
+                        final_pseudo_mask,
+                        self.detach_real_point_feat,
+                        self.detach_pseudo_point_feat,
+                    ),
                     "point_state": point_output_dict["point_state"],
                     "atom_target": real_batch.get("atom_label"),
                     "atom_valid_mask": real_batch.get("atom_valid_mask"),

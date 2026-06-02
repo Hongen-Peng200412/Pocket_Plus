@@ -8,7 +8,8 @@ Stage1 atom head 的 real/pseudo 双尾部实现。
     - pseudo_mask is None 表示 real-only 路径, 此时 N_all=N_real 且不产生 pseudo_feature。
 
     - pseudo_mask: torch.Tensor, (N_all,), bool, True 表示 P anchor, False 表示 real atom; 若非 None 必须与 point_feat 第一维一致。
-    - point_feat: torch.Tensor, (N_all, C_point), floating, 最后一轮 point backbone 输出特征, mixed 路径下按 pseudo_atoms.py 的 mixed layout 排列。
+    - point_feat: torch.Tensor, (N_all, C_point), floating, 最后一轮 point backbone 输出特征, mixed 路径下按 pseudo_atoms.py 的 mixed layout 排列; 调用方(stage1_model)按 detach 路由开关传入已 detach 的 fused_point_feat。
+    - pseudo_density_feat: torch.Tensor | None, (N_pseudo, C_density), floating, 可选 density cube 特征(anchor 顺序); 仅 pseudo_density_residual=True 时消费, 加到 pseudo 分支输出上。
     - point_state["coord"]: torch.Tensor, (N_all, 3), floating, Point/Block 使用的点坐标, 轴顺序 (x, y, z)。
     - point_state["batch"]: torch.Tensor, (N_all,), int64/long, 每个点所属 BOX 索引。
     - point_state["offset"]: torch.Tensor, (B,), int64/long, 每个 BOX 在展平点序列中的结束偏移。
@@ -18,8 +19,8 @@ Stage1 atom head 的 real/pseudo 双尾部实现。
     - atom_valid_mask: torch.Tensor, (N_all,), bool, real atom 监督掩码; P anchor 槽位必须为 False。
     - outputs["atom_tokens"]: torch.Tensor, (N_all, C_point) 或 (N_all, C_point+4), floating, token projection 前的输入 token; append_coord_mask=True 时追加 xyz 与 valid mask。
     - outputs["atom_hidden"]: torch.Tensor, (N_all, C_hidden), floating, shared attention stack 输出, 保留 mixed 全点顺序。
-    - outputs["atom_logits"]: torch.Tensor, (N_real, atom_logit_dim), floating, 只对 real atom 输出的监督 logits。
-    - outputs["pseudo_feature"]: torch.Tensor | None, (N_pseudo, pseudo_feature_dim), floating, 只对 P anchor 输出; real-only 路径为 None。
+    - outputs["atom_logits"]: torch.Tensor | None, (N_real, atom_logit_dim), floating, 只对 real atom 输出的监督 logits; enable_atom_head_back=False 时为 None。
+    - outputs["pseudo_feature"]: torch.Tensor | None, (N_pseudo, pseudo_feature_dim), floating, 只对 P anchor 输出; real-only 路径为 None; pseudo_density_residual=True 时含 density cube 残差。
 """
 from __future__ import annotations
 
@@ -232,6 +233,9 @@ class Stage1AtomHead(nn.Module):
         append_coord_mask: bool,
         prior_prob: float | None = None,
         prior_probs: Sequence[float] | None = None,
+        enable_atom_head_back: bool = True,
+        pseudo_density_residual: bool = False,
+        pseudo_density_in_dim: int | None = None,
         typed_point_cfg: dict[str, Any] | TypedPointConfig | None = None,
     ) -> None:
         """
@@ -267,6 +271,9 @@ class Stage1AtomHead(nn.Module):
             - append_coord_mask: bool, 是否把 centered-world 坐标和 atom_valid_mask(监督标志) 拼入 token
             - prior_prob: float | None, 单通道 sigmoid 正类先验概率
             - prior_probs: Sequence[float] | None, 多通道 softmax 类别先验概率
+            - enable_atom_head_back: bool, 是否构造后置头 real_atom_logit_head; 关时 forward 的 atom_logits=None, prior bias 初始化随之跳过
+            - pseudo_density_residual: bool, 是否在 pseudo_feature 上加 density cube 直通残差(LayerNorm->Linear, 末层零初始化)
+            - pseudo_density_in_dim: int | None, density cube 特征通道数; 仅在 pseudo_density_residual=True 时必填, 由 stage1_model 注入为 point_backbone.atom_feature_dim
 
         前向输入:
             - point_feat: torch.Tensor, (N_all, point_channels), point backbone 输出点特征
@@ -274,12 +281,13 @@ class Stage1AtomHead(nn.Module):
             - atom_coord_centered_world: torch.Tensor, (N_all, 3), centered-world 坐标
             - atom_valid_mask: torch.Tensor, (N_all,), bool, real atom 监督掩码; P anchor 应为 False
             - pseudo_mask: torch.Tensor | None, (N_all,), True 表示 P anchor; None 表示 real-only 路径
+            - pseudo_density_feat: torch.Tensor | None, (N_pseudo, pseudo_density_in_dim), P 来源 density cube 特征(anchor 顺序); 仅 pseudo_density_residual=True 时消费
 
         前向输出:
             - outputs: dict[str, torch.Tensor | None], atom head 输出字典
                 - atom_tokens: torch.Tensor, (N_all, point_channels) 或 (N_all, point_channels + 4), token projection 前输入
                 - atom_hidden: torch.Tensor, (N_all, hidden_dim), shared attention stack 输出
-                - atom_logits: torch.Tensor, (N_real, atom_logit_dim), 真实原子的 logits
+                - atom_logits: torch.Tensor | None, (N_real, atom_logit_dim), 真实原子的 logits; 后置头关时为 None
                 - pseudo_feature: torch.Tensor | None, (N_pseudo, pseudo_feature_dim), P anchor refined feature; real-only 路径为 None
         """
         super().__init__()
@@ -331,11 +339,17 @@ class Stage1AtomHead(nn.Module):
             pre_norm=bool(pre_norm),
             typed_point_cfg=self.typed_point_cfg,
         )
-        # nn.Sequential, (N_real, hidden_dim) -> (N_real, atom_logit_dim), real atom 分类尾部
-        self.real_atom_logit_head = nn.Sequential(
-            nn.Linear(self.hidden_dim, self.hidden_dim),
-            act_layer(),
-            nn.Linear(self.hidden_dim, self.atom_logit_dim),
+        # bool, 是否构造后置头
+        self.enable_atom_head_back = bool(enable_atom_head_back)
+        # nn.Sequential | None, (N_real, hidden_dim) -> (N_real, atom_logit_dim), real atom 分类后置头; 关时为 None
+        self.real_atom_logit_head = (
+            nn.Sequential(
+                nn.Linear(self.hidden_dim, self.hidden_dim),
+                act_layer(),
+                nn.Linear(self.hidden_dim, self.atom_logit_dim),
+            )
+            if self.enable_atom_head_back
+            else None
         )
         # nn.Sequential, (N_pseudo, hidden_dim) -> (N_pseudo, pseudo_feature_dim), P anchor feature 尾部
         self.pseudo_feature_head = nn.Sequential(
@@ -344,16 +358,31 @@ class Stage1AtomHead(nn.Module):
             nn.Linear(self.hidden_dim, self.pseudo_feature_dim),
         )
 
+        # nn.Sequential | None, (N_pseudo, pseudo_density_in_dim) -> (N_pseudo, pseudo_feature_dim), density cube 直通残差; 关时为 None
+        self.density_residual = None
+        if bool(pseudo_density_residual):
+            if pseudo_density_in_dim is None:
+                raise ValueError("pseudo_density_residual=True 时必须提供 pseudo_density_in_dim。")
+            self.density_residual = nn.Sequential(
+                nn.LayerNorm(int(pseudo_density_in_dim)),
+                nn.Linear(int(pseudo_density_in_dim), self.pseudo_feature_dim),
+            )
+            # 末层 Linear 零初始化, 使残差初值为 0、不改变 pseudo_feature
+            nn.init.zeros_(self.density_residual[-1].weight)
+            nn.init.zeros_(self.density_residual[-1].bias)
+
         if prior_prob is not None and prior_probs is not None:
             raise ValueError("prior_prob 和 prior_probs 不能同时配置。")
-        if prior_probs is not None:
-            self._init_linear_multiclass_prior_bias(self.real_atom_logit_head[2], self.atom_logit_dim, prior_probs)
-        elif prior_prob is not None:
-            if self.atom_logit_dim != 1:
-                raise ValueError("多通道 atom head 请使用 prior_probs，不要使用单通道 prior_prob。")
-            # float, sigmoid 正类先验对应的输出 bias
-            bias_val = -math.log((1.0 - float(prior_prob)) / float(prior_prob))
-            nn.init.constant_(self.real_atom_logit_head[2].bias, bias_val)
+        if self.real_atom_logit_head is not None:
+            # 后置头关时不构造分类尾部, prior bias 初始化随之跳过
+            if prior_probs is not None:
+                self._init_linear_multiclass_prior_bias(self.real_atom_logit_head[2], self.atom_logit_dim, prior_probs)
+            elif prior_prob is not None:
+                if self.atom_logit_dim != 1:
+                    raise ValueError("多通道 atom head 请使用 prior_probs，不要使用单通道 prior_prob。")
+                # float, sigmoid 正类先验对应的输出 bias
+                bias_val = -math.log((1.0 - float(prior_prob)) / float(prior_prob))
+                nn.init.constant_(self.real_atom_logit_head[2].bias, bias_val)
 
     def _build_atom_token_proj(
         self,
@@ -415,6 +444,7 @@ class Stage1AtomHead(nn.Module):
         atom_coord_centered_world: torch.Tensor,
         atom_valid_mask: torch.Tensor,
         pseudo_mask: torch.Tensor | None = None,
+        pseudo_density_feat: torch.Tensor | None = None,
     ) -> dict[str, torch.Tensor | None]:
         pseudo_mask = validate_pseudo_mask(pseudo_mask, int(point_feat.shape[0]), name="Stage1AtomHead.forward")
 
@@ -461,9 +491,12 @@ class Stage1AtomHead(nn.Module):
             real_hidden = atom_hidden[real_mask]
             # torch.Tensor, (N_pseudo, pseudo_feature_dim), P anchor refined feature
             pseudo_feature = self.pseudo_feature_head(atom_hidden[pseudo_mask])
+            if self.density_residual is not None and pseudo_density_feat is not None:
+                # density cube 直通残差; 末层零初始化使初值不改变 pseudo_feature
+                pseudo_feature = pseudo_feature + self.density_residual(pseudo_density_feat)
 
-        # torch.Tensor, (N_real, atom_logit_dim), 真实原子的 logits
-        atom_logits = self.real_atom_logit_head(real_hidden)
+        # torch.Tensor | None, (N_real, atom_logit_dim), 真实原子的 logits; 后置头关时为 None
+        atom_logits = self.real_atom_logit_head(real_hidden) if self.real_atom_logit_head is not None else None
         return {
             "atom_tokens": atom_tokens,
             "atom_hidden": atom_hidden,

@@ -26,7 +26,10 @@ model:
     w_mse: 0.0
     focal_soft_negative_suppression: false
     tversky_soft_target: false
-  atom_loss_weight: 0.1
+  # 前/后置头共用上面同一个 atom_loss 模块, 各出一个 loss term(后置=atom, 前置=atom_front)
+  #   → VoxelPointStage1Wrapper._compute_total_loss(): 分别按下列权重加权
+  atom_loss_front_weight: 0.1   # float, 前置头(point backbone 末端) atom loss 权重
+  atom_loss_back_weight: 0.1    # float, 后置头(atom head 末端) atom loss 权重
 
   # --- voxel auxiliary loss: 体素化受体结合原子语义监督 ---
   voxel_aux_loss:

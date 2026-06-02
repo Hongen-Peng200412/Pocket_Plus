@@ -56,21 +56,25 @@ def compute_atom_loss_term(
     batch: Mapping[str, Any],
     loss_module: nn.Module,
     weight: float,
+    logits_key: str = "atom_logits",
+    name: str = "atom",
 ) -> LossTerm:
     """
-    计算 atom 分支损失项。
+    计算 atom 分支损失项, 前/后置头共用本函数, 仅 logits 键与日志名不同。
 
     输入参数:
-        - outputs: Mapping[str, Any], backbone 输出; 包含 atom_logits, 可包含 atom_target/atom_valid_mask
+        - outputs: Mapping[str, Any], backbone 输出; 包含 logits_key 指向的 logits, 可包含 atom_target/atom_valid_mask
         - batch: Mapping[str, Any], 当前 batch; 包含 atom_label, 可包含 atom_valid_mask
         - loss_module: nn.Module, atom 损失模块
         - weight: float, atom 损失权重
+        - logits_key: str, outputs 中 atom logits 的键名; 后置头取 "atom_logits", 前置头取 "atom_logits_front"
+        - name: str, loss term 日志名; 后置头为 "atom", 前置头为 "atom_front"
 
     输出:
         - loss_term: LossTerm, atom 分支损失项
     """
     # torch.Tensor, (sumN, C_atom), 原子级预测 logits
-    atom_logits = outputs["atom_logits"]
+    atom_logits = outputs[logits_key]
     # torch.Tensor, (sumN,), 原子级真值标签
     atom_target = outputs.get("atom_target", batch["atom_label"])
     # torch.Tensor | None, (sumN,), 原子有效掩码
@@ -94,7 +98,7 @@ def compute_atom_loss_term(
         raise RuntimeError("loss_module must be an instance of UnifiedCompositeLoss or AdaptiveClassificationCompositeLoss.")
     # torch.Tensor, 标量, atom 原始损失
     value = loss_output_to_tensor(loss_out)
-    return LossTerm(name="atom", value=value, weight=float(weight), logged_value=value.detach())
+    return LossTerm(name=name, value=value, weight=float(weight), logged_value=value.detach())
 
 # 体素————受体区域
 def compute_receptor_loss_term(
