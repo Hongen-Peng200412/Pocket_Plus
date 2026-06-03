@@ -13,25 +13,23 @@ import json
 
 _ALLOWED_SCOPES = {"global"}
 
-# --------------------------------- 构造验证日志 key: panel /(subpanel)/ scope / metric_leaf ------------------------------------
+# --------------------------------- 构造验证日志 key: panel / scope / metric_leaf ------------------------------------
 def build_metric_key(
     *,
     panel: str,
     metric: str,
     num_classes: int,
     scope: str,
-    subpanel: str | None,
     task_class_name: str | None,
 ) -> str:
     """
-    构造验证日志 key: panel /(subpanel)/ scope / metric_leaf
+    构造验证日志 key: panel / scope / metric_leaf
 
     输入参数:
-        - panel: str, 顶层面板名, 如 val_score / val_uncapped / val_refined
+        - panel: str, 顶层面板名, 如 val_score / val_uncapped_best / val_uncapped_sampling / val_refined
         - metric: str, 指标 leaf 名, 如 F1 / PRAUC / sampling_F1
         - num_classes: int, task 类别总数; 二分类时不追加 task class suffix
         - scope: str, 指标作用域; 只允许 global
-        - subpanel: str | None, 子面板名; val_uncapped 使用 best/sampling
         - task_class_name: str | None, task class 名; num_classes>2 时追加到 metric suffix
 
     输出:
@@ -45,11 +43,7 @@ def build_metric_key(
         metric_leaf = f"{metric}_{task_class_name}"
 
     # list[str], 从左到右的 key 路径分段
-    parts = [panel]
-    if subpanel is not None:
-        parts.append(subpanel)
-    parts.append(scope)
-    parts.append(metric_leaf)
+    parts = [panel, scope, metric_leaf]
     return "/".join(parts)
 
 

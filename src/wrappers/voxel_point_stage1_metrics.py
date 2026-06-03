@@ -168,7 +168,6 @@ class ValidationMetricManager(nn.Module):
                     metric=f"{spec.name}_PRAUC",
                     num_classes=spec.num_classes,
                     scope="global",
-                    subpanel=None,
                     task_class_name=None,
                 )
                 payload[key] = self.metrics[f"{spec.name}__binary"].compute()
@@ -184,7 +183,6 @@ class ValidationMetricManager(nn.Module):
                     metric=f"{spec.name}_PRAUC",
                     num_classes=spec.num_classes,
                     scope="global",
-                    subpanel=None,
                     task_class_name=class_name,
                 )
                 payload[key] = value

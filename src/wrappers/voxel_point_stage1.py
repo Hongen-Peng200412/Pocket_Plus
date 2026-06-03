@@ -853,7 +853,7 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
         输入参数:
             - payload: Mapping[str, torch.Tensor], validation epoch scalar payload
 
-        原地更新 runtime cache(它们都是从 val_uncapped/best 里面直接拿的):
+        原地更新 runtime cache(它们都是从 val_uncapped_best 里面直接拿的):
             - self._cached_voxel_ligand_p_best_by_class
             - self._cached_voxel_ligand_p_sampling_by_class
             - self._cached_voxel_ligand_best_f1_before_refine_by_class
@@ -872,11 +872,11 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
             # str, 多分类 metric leaf 的 task class suffix
             suffix = "" if len(self.class_names) <= 2 else f"_{class_name}"
             # str, 当前 candidate class 的 p_best scalar 写回键
-            p_best_key = f"val_uncapped/best/global/p_best{suffix}"
+            p_best_key = f"val_uncapped_best/global/p_best{suffix}"
             # str, 当前 candidate class 的 p_sampling scalar 写回键
-            p_sampling_key = f"val_uncapped/best/global/p_sampling{suffix}"
+            p_sampling_key = f"val_uncapped_best/global/p_sampling{suffix}"
             # str, 当前 candidate class 的 best_F1 scalar 写回键
-            best_f1_key = f"val_uncapped/best/global/best_F1{suffix}"
+            best_f1_key = f"val_uncapped_best/global/best_F1{suffix}"
             if p_best_key not in payload or p_sampling_key not in payload or best_f1_key not in payload:
                 # 已过滤 sanity/tuning(见 _allow_validation_cache_update), 到此处必为正常 fit validation: 缺键意味着该候选类整轮验证没有 GT 正例, 直接 fail-fast
                 raise RuntimeError(

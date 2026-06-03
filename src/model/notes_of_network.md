@@ -181,7 +181,7 @@
 
 Wrapper 维护的 candidate cache 有两个语义：
 
-- `p_best_by_class`：来自 `val_uncapped/best` 的 dense best-F1 阈值。
+- `p_best_by_class`：来自 `val_uncapped_best` 的 dense best-F1 阈值。
 - `p_sampling_by_class`：来自 diagnostics 计算的 sampling 阈值，用于 recorded/adaptive 采样 runtime。
 
 sanity check 和 tuner 不应污染正式 cache；普通 fit validation 可以写回 cache，用于 warmup 后的正式 candidate sampling。
@@ -213,10 +213,10 @@ sanity check 和 tuner 不应污染正式 cache；普通 fit validation 可以�
 
 当前 validation 里，dense ligand 分支和 sparse refine 分支按时间顺序更新以下面板：
 
-1. `val_uncapped/best`
+1. `val_uncapped_best`
    - dense 全空间统计。
    - 看 dense ligand 分支理论 best-F1、`p_best` 和 best-F1 cutoff 下的候选数量。
-2. `val_uncapped/sampling`
+2. `val_uncapped_sampling`
    - dense 全空间统计，但按真实 per BOX/per class sampling boundary 聚合。
    - 看当前 sampling 策略打算怎样切 C，输出 `p_sampling_*`、`sampling_F1`、`numC_sampling_target`、`numC_sampling_cutoff`。
 3. `val_capped`
@@ -229,7 +229,8 @@ sanity check 和 tuner 不应污染正式 cache；普通 fit validation 可以�
    - 只在 C 内，用 sparse refine 后的 `ligand_refine_logits_C` 做 local 判别统计。
 6. `val_score`
    - 端到端分数。
-   - `refined_F1` / `unrefined_F1` 的 recall 分母使用 dense 全空间 GT；它和 `val_refined/global/F1` 的 local 语义不同。
+   - `refined_F1` / `unrefined_F1` 只允许 C 内体素预测为正，C 外 GT 正例计入 FN。
+   - `refined_p` / `unrefined_p` 各自按对应 score histogram 独立选择，使 `val_score` 端到端 F1 最大；它和 `val_refined/global/F1` 的 local 语义不同。
 
 `batch["class_name"]` 是原始 source folder，例如 `metal_ion`、`peptide`、`nucleic`、`small_molecule`、`random_BOX`；它不是 task class。当前 wrapper diagnostics 不再按它生成分组指标，task class 才作为多分类 metric suffix。
 

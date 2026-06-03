@@ -597,7 +597,7 @@ class CpcValidationDiagnostics(nn.Module):
 
 
     # ---------------------------------------------------- 计算 --------------------------------------------------
-    # 用于 val_uncapped. 从 score histogram 计算并记录 best-F1 、best_F1、best_tp、p_sampling 等等
+    # 用于 val_uncapped_best. 从 score histogram 计算并记录 best-F1 、best_F1、best_tp、p_sampling 等等
     def _best_f1_scalars_from_hist(
         self,
         *,
@@ -608,7 +608,7 @@ class CpcValidationDiagnostics(nn.Module):
         task_class_name: str,
     ) -> tuple[dict[str, torch.Tensor], tuple[DiagnosticsWarning, ...]]:
         """
-        用于 val_uncapped. 从 score histogram 计算并记录 best-F1 、best_F1、best_tp 等等
+        用于 val_uncapped_best. 从 score histogram 计算并记录 best-F1 、best_F1、best_tp 等等
 
         调用时机:
             - validation step 过程中先累积 uncapped_best_pos_hist / uncapped_best_neg_hist
@@ -634,8 +634,7 @@ class CpcValidationDiagnostics(nn.Module):
         if float(num_gt.item()) <= 0.0:
             nan = pos_hist.new_tensor(float("nan"), dtype=torch.float32)
             key = build_metric_key(
-                panel="val_uncapped",
-                subpanel="best",
+                panel="val_uncapped_best",
                 scope=scope,
                 metric="best_F1",
                 num_classes=len(self.class_names),
@@ -667,8 +666,7 @@ class CpcValidationDiagnostics(nn.Module):
             reversed_idx = int((cumulative_all >= sampling_target.to(device=cumulative_all.device, dtype=cumulative_all.dtype)).nonzero(as_tuple=False)[0].item())
             sampling_idx = int(all_hist.numel() - 1 - reversed_idx)
         base_kwargs = {
-            "panel": "val_uncapped",
-            "subpanel": "best",
+            "panel": "val_uncapped_best",
             "scope": scope,
             "num_classes": len(self.class_names),
             "task_class_name": task_class_name,
@@ -688,7 +686,7 @@ class CpcValidationDiagnostics(nn.Module):
         }, ()
 
 
-    # 用于 val_uncapped/sampling, 计算并记录 sampling_F1、sampling_precision、sampling_tp 等等
+    # 用于 val_uncapped_sampling, 计算并记录 sampling_F1、sampling_precision、sampling_tp 等等
     def _sampling_scalars_for_class(
         self,
         *,
@@ -700,7 +698,7 @@ class CpcValidationDiagnostics(nn.Module):
         target_count: torch.Tensor
     ) -> dict[str, torch.Tensor]:
         """
-        用于 val_uncapped/sampling, 计算并记录 sampling_F1、sampling_precision、sampling_tp 等等
+        用于 val_uncapped_sampling, 计算并记录 sampling_F1、sampling_precision、sampling_tp 等等
 
         输入参数:
             - task_class_name: str, task class 名
@@ -725,8 +723,7 @@ class CpcValidationDiagnostics(nn.Module):
         # torch.Tensor, (), sampling F1
         f1 = 2.0 * precision * recall / (precision + recall).clamp_min(1.0e-12)
         base_kwargs = {
-            "panel": "val_uncapped",
-            "subpanel": "sampling",
+            "panel": "val_uncapped_sampling",
             "scope": "global",
             "num_classes": len(self.class_names),
             "task_class_name": task_class_name,
@@ -785,7 +782,6 @@ class CpcValidationDiagnostics(nn.Module):
         f1 = 2.0 * precision * recall / (precision + recall).clamp_min(1.0e-12)
         base_kwargs = {
             "panel": "val_capped",
-            "subpanel": None,
             "scope": "global",
             "num_classes": len(self.class_names),
             "task_class_name": task_class_name,
@@ -803,8 +799,8 @@ class CpcValidationDiagnostics(nn.Module):
         }
 
 
-    # 用于 val_unrefined 或 val_refined, 从 C 的 score histogram 计算并记录 local(C内的)版本的: p(截断概率概率)、F1、precison 等
-    # 顺便计算前两者对应的 unrefined_score 或 refined_score, 从 C 的 score histogram 和 dense_gt 计算并记录 global(全局的)F1、precision 等(截断概率仍然使用 p )
+    # 用于 val_unrefined 或 val_refined, 从 C 的 score histogram 计算并记录 local(C内的)版本的: p(截断概率)、F1、precision 等
+    # 同时计算对应 val_score 端到端指标; val_score 使用 dense 全空间 GT 作 recall 分母, 并独立选择使端到端 F1 最大的 p
     def _C_panel_scalars_from_hist(
         self,
         *,
@@ -816,8 +812,8 @@ class CpcValidationDiagnostics(nn.Module):
         task_class_name: str,
     ) -> tuple[dict[str, torch.Tensor], dict[str, torch.Tensor]]:
         """
-        - 用于 val_unrefined 或 val_refined, 从 C 的 score histogram 计算并记录 local(C内的)版本的: p(截断概率概率)、F1、precison 等
-        - 顺便计算前两者对应的 unrefined_score 或 refined_score, 从 C 的 score histogram 和 dense_gt 计算并记录 global(全局的)F1、precision 等(截断概率仍然使用 p )
+        - 用于 val_unrefined 或 val_refined, 从 C 的 score histogram 计算并记录 local(C内的)版本的: p(截断概率)、F1、precision 等
+        - 同时计算对应的 unrefined_score 或 refined_score; score 使用 dense 全空间 GT 作 recall 分母, 并独立选择使端到端 F1 最大的 p
 
         输入参数:
             - panel: str, val_unrefined 或 val_refined
@@ -837,15 +833,29 @@ class CpcValidationDiagnostics(nn.Module):
         fp = torch.cumsum(neg_hist.flip(0), dim=0).flip(0).to(dtype=torch.float32)
         # torch.Tensor, (), C 内 GT 正例总数
         num_gt_in_C = pos_hist.sum().to(dtype=torch.float32)
+        # torch.Tensor, (), dense 全空间 GT 正例总数
+        dense_gt_f = dense_gt.to(dtype=torch.float32)
 
         if float(num_gt_in_C.item()) <= 0.0:
             # torch.Tensor, (), C 内无正例时的占位 NaN
             nan = pos_hist.new_tensor(float("nan"), dtype=torch.float32)
-            # torch.Tensor, (), val_score 端到端 F1; dense 有正例但 C 完全漏检时记为 0.0
-            score_f1 = pos_hist.new_tensor(0.0, dtype=torch.float32) if float(dense_gt.item()) > 0.0 else nan
-            local_key = build_metric_key(panel=panel, subpanel=None, scope="global", metric="F1", num_classes=len(self.class_names), task_class_name=task_class_name)
-            score_key = build_metric_key(panel="val_score", subpanel=None, scope="global", metric=f"{score_prefix}_F1", num_classes=len(self.class_names), task_class_name=task_class_name)
-            return {local_key: nan}, {score_key: score_f1}
+            # torch.Tensor, (), val_score 端到端 F1; dense 有正例但 C 完全漏检时记为 0.0, dense 无正例时无定义
+            score_f1 = pos_hist.new_tensor(0.0, dtype=torch.float32) if float(dense_gt_f.item()) > 0.0 else nan
+            # torch.Tensor, (), val_score 端到端 recall; dense 有正例但 C 完全漏检时为 0.0
+            score_recall = pos_hist.new_tensor(0.0, dtype=torch.float32) if float(dense_gt_f.item()) > 0.0 else nan
+            local_key = build_metric_key(panel=panel, scope="global", metric="F1", num_classes=len(self.class_names), task_class_name=task_class_name)
+            score_kwargs = {
+                "panel": "val_score",
+                "scope": "global",
+                "num_classes": len(self.class_names),
+                "task_class_name": task_class_name,
+            }
+            return {local_key: nan}, {
+                build_metric_key(metric=f"{score_prefix}_p", **score_kwargs): nan,
+                build_metric_key(metric=f"{score_prefix}_F1", **score_kwargs): score_f1,
+                build_metric_key(metric=f"{score_prefix}_precision", **score_kwargs): nan,
+                build_metric_key(metric=f"{score_prefix}_recall", **score_kwargs): score_recall,
+            }
 
         # torch.Tensor, (T,), C 内 local FN
         local_fn = num_gt_in_C - tp
@@ -857,40 +867,39 @@ class CpcValidationDiagnostics(nn.Module):
         local_f1 = 2.0 * precision * local_recall / (precision + local_recall).clamp_min(1.0e-12)
 
         # int, C 内 local F1 最佳阈值 bin index
-        best_idx = int(torch.argmax(local_f1).item())
-        # torch.Tensor, (), dense 全空间 GT 正例总数
-        dense_gt_f = dense_gt.to(dtype=torch.float32)
-        # torch.Tensor, (), 用 dense GT 作分母的端到端 recall
-        e2e_recall = tp[best_idx] / dense_gt_f.clamp_min(1.0)
-        # torch.Tensor, (), 用 dense GT 作分母的端到端 F1
-        e2e_f1 = 2.0 * precision[best_idx] * e2e_recall / (precision[best_idx] + e2e_recall).clamp_min(1.0e-12)
+        local_best_idx = int(torch.argmax(local_f1).item())
+        # torch.Tensor, (T,), 用 dense GT 作分母的端到端 recall
+        e2e_recall = tp / dense_gt_f.clamp_min(1.0)
+        # torch.Tensor, (T,), 用 dense GT 作分母的端到端 F1; p 独立服务于 val_score 自身
+        e2e_f1 = 2.0 * precision * e2e_recall / (precision + e2e_recall).clamp_min(1.0e-12)
+        # int, 端到端 F1 最佳阈值 bin index; torch.argmax 保持并列时取第一个最大值的既有策略
+        score_best_idx = int(torch.argmax(e2e_f1).item())
         local_kwargs = {
             "panel": panel,
-            "subpanel": None,
             "scope": "global",
             "num_classes": len(self.class_names),
             "task_class_name": task_class_name,
         }
         score_kwargs = {
             "panel": "val_score",
-            "subpanel": None,
             "scope": "global",
             "num_classes": len(self.class_names),
             "task_class_name": task_class_name,
         }
         return {
-            build_metric_key(metric="p", **local_kwargs): self.threshold_grid[best_idx],
-            build_metric_key(metric="F1", **local_kwargs): local_f1[best_idx],
-            build_metric_key(metric="precision", **local_kwargs): precision[best_idx],
-            build_metric_key(metric="recall", **local_kwargs): local_recall[best_idx],
-            build_metric_key(metric="tp", **local_kwargs): tp[best_idx],
-            build_metric_key(metric="fp", **local_kwargs): fp[best_idx],
-            build_metric_key(metric="fn", **local_kwargs): local_fn[best_idx],
+            build_metric_key(metric="p", **local_kwargs): self.threshold_grid[local_best_idx],
+            build_metric_key(metric="F1", **local_kwargs): local_f1[local_best_idx],
+            build_metric_key(metric="precision", **local_kwargs): precision[local_best_idx],
+            build_metric_key(metric="recall", **local_kwargs): local_recall[local_best_idx],
+            build_metric_key(metric="tp", **local_kwargs): tp[local_best_idx],
+            build_metric_key(metric="fp", **local_kwargs): fp[local_best_idx],
+            build_metric_key(metric="fn", **local_kwargs): local_fn[local_best_idx],
             build_metric_key(metric="num_gt_in_C", **local_kwargs): num_gt_in_C,
         }, {
-            build_metric_key(metric=f"{score_prefix}_F1", **score_kwargs): e2e_f1,
-            build_metric_key(metric=f"{score_prefix}_precision", **score_kwargs): precision[best_idx],
-            build_metric_key(metric=f"{score_prefix}_recall", **score_kwargs): e2e_recall,
+            build_metric_key(metric=f"{score_prefix}_p", **score_kwargs): self.threshold_grid[score_best_idx],
+            build_metric_key(metric=f"{score_prefix}_F1", **score_kwargs): e2e_f1[score_best_idx],
+            build_metric_key(metric=f"{score_prefix}_precision", **score_kwargs): precision[score_best_idx],
+            build_metric_key(metric=f"{score_prefix}_recall", **score_kwargs): e2e_recall[score_best_idx],
         }
 
 
