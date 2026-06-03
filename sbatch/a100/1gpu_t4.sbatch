@@ -9,7 +9,7 @@
 #SBATCH -e /home/penghongen/My_Project/feedback_plus/logs/_temp_slurm/%x_%j.err
 #SBATCH -p a100
 #SBATCH --qos=a100g2
-#SBATCH --job-name=train
+#SBATCH --job-name=none_front
 #SBATCH --nodes=1
 #SBATCH --gres=gpu:a100:1
 #SBATCH --ntasks-per-node=1
@@ -50,7 +50,7 @@ write_custom_run_cmd_hook() {
     local TARGET_FILE="$1"
     cat << EOF > "${TARGET_FILE}"
 #!/bin/bash
-python /home/penghongen/My_Project/Pocket_Plus/src/train.py "+experiment=MINI_sparse_refine006"
+python /home/penghongen/My_Project/Pocket_Plus/src/train.py "+experiment=MINI_none_front"
 EOF
 }
 # ============================================================
