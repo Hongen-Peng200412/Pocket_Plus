@@ -175,7 +175,7 @@ def merge_type_aware_tensor_outputs(
     pseudo_mask: torch.Tensor,
 ) -> torch.Tensor:
     """
-    将 real/pseudo 子集输出按 mixed 顺序恢复，并保留分支计算产生的精度。
+    将真实原子张量和伪原子张量用 mixed 顺序拼起来，并保留分支计算产生的精度。
 
     输入参数:
         - real_y: torch.Tensor, (N_real, ...), real 分支输出特征
