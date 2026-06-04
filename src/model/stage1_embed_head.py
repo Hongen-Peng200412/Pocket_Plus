@@ -190,7 +190,7 @@ def scatter_to_voxel_grid(
     add_occupancy_channels: bool = False,
 ) -> torch.Tensor:
     """
-    将 per-atom 特征 scatter 到体素网格上。
+    将 per-atom 特征 硬scatter 到体素网格上。
 
     输入参数:
         - point_feat: torch.Tensor, (N, C), per-atom 特征
