@@ -645,7 +645,7 @@ class VolumePointStage1Model(nn.Module):
         # torch.Tensor, `(N_i, C)`，去掉冗余维度后的点特征
         return sampled.squeeze(0).squeeze(-1).squeeze(-1).transpose(0, 1).contiguous()
 
-    def _sample_voxel_feature_batch(
+    def _sample_voxel_feature_trilinear(
         self,
         voxel_feat: torch.Tensor,
         point_coord_centered_world: torch.Tensor,
@@ -726,7 +726,7 @@ class VolumePointStage1Model(nn.Module):
         sampler_mode = self.sampler_mode_by_point_name[feature_name]
 
         # torch.Tensor, `(N_current, C_voxel)`, 当前点集按该点变量绑定的采样策略采样得到的体素特征。
-        sampled_voxel_feat = self._sample_voxel_feature_batch(
+        sampled_voxel_feat = self._sample_voxel_feature_trilinear(
             voxel_feat=voxel_output_dict["voxel_features"][voxel_name],
             point_coord_centered_world=point_like.coord,
             point_batch_index=point_like.batch,
@@ -739,7 +739,7 @@ class VolumePointStage1Model(nn.Module):
 
         # torch.Tensor, `(N_current, C_point + C_voxel)`, 点特征与采样体素特征的拼接结果。
         fusion_input = torch.cat([point_like.feat, sampled_voxel_feat], dim=-1)
-        point_like.feat = self.point_fusion_modules[feature_name](fusion_input)  # 目前实际调用上个函数 def _sample_voxel_feature_batch
+        point_like.feat = self.point_fusion_modules[feature_name](fusion_input)  # 目前实际调用上个函数 def _sample_voxel_feature_trilinear
         return point_like
 
 

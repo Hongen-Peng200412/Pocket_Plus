@@ -59,7 +59,7 @@ def build_anchor_coordinates(
     world_xyz = origin_xyz + local_xyz * voxel_size_xyz
     # torch.Tensor, (B, 3), BOX 体素形状, 轴顺序 x/y/z
     box_shape_xyz = box_shape_zyx[:, [2, 1, 0]].to(device=box_origin_world.device, dtype=box_origin_world.dtype)
-    # torch.Tensor, (sumP, 3), 每个 P 所属 BOX 的中心世界坐标
+    # torch.Tensor, (B, 3), 每个 BOX 的中心世界坐标
     box_center_xyz = box_origin_world + 0.5 * box_shape_xyz * voxel_size_world
     # torch.Tensor, (sumP, 3), P 相对 BOX 中心的世界坐标
     centered_world_xyz = world_xyz - box_center_xyz.index_select(0, anchor_batch_index)
