@@ -16,7 +16,7 @@
 #SBATCH --cpus-per-task=24
 
 SBATCH_ROOT="${POCKET_PLUS_SBATCH_ROOT:-/home/penghongen/My_Project/Pocket_Plus/sbatch}"
-export POCKET_PLUS_LOCAL_CACHE_ENABLED="${POCKET_PLUS_LOCAL_CACHE_ENABLED:-1}"
+export POCKET_PLUS_LOCAL_CACHE_ENABLED="${POCKET_PLUS_LOCAL_CACHE_ENABLED:-0}"
 export POCKET_PLUS_LOCAL_CACHE_ENV_PACK="${POCKET_PLUS_LOCAL_CACHE_ENV_PACK:-/home/penghongen/My_Project/env_packs/Pocket_Plus_centos7_cu121_allgpu.tar.gz}"
 export POCKET_PLUS_LOCK_PRE_ENABLED="${POCKET_PLUS_LOCK_PRE_ENABLED:-0}"
 export POCKET_PLUS_LOCK_AFTER_ENABLED="${POCKET_PLUS_LOCK_AFTER_ENABLED:-1}"
@@ -51,7 +51,7 @@ write_custom_run_cmd_hook() {
     cat << EOF > "${TARGET_FILE}"
 
 #!/bin/bash
-python /home/penghongen/My_Project/Pocket_Plus/src/inference/run.py --config=标准0_cryoatom_trivial
+/home/penghongen/My_Project/Pocket_Plus/src/inference/utils/yield_json_from_raw_sample.py
 
 EOF
 }

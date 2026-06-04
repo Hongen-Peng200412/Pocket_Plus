@@ -483,7 +483,7 @@ if __name__ == "__main__":
 
 
     parser.add_argument("--valid_json_path", type=str, help="约束可选集合列表的 json 参照字典路径 (必须传入)",
-    default="/home/penghongen/My_Project/Data/split/3.5_cc_qscore_v2_raw4/val.json")   # test/val 在这里切换
+    default="/home/penghongen/My_Project/Data/split/3.5_cc_qscore_v2_raw4/test_0.json")   # test/val 在这里切换
     # parser.add_argument("--valid_json_path", type=str, help="约束可选集合列表的 json 参照字典路径 (必须传入)", 
     # default="/home/penghongen/My_Project/Data/raw.json")
 
@@ -493,7 +493,7 @@ if __name__ == "__main__":
     default="/home/penghongen/My_Project/Pocket_Plus/src/inference/utils")
 
     parser.add_argument("--output_json_name", type=str, help="生成的 json 文件名称", 
-    default="val_cryoatom_new.json")
+    default="test_protein.json")
 
 
 
@@ -501,9 +501,9 @@ if __name__ == "__main__":
 
     # -------------------------- 参数 --------------------------
     parser.add_argument("--max_scan", type=int, default=None, help="从全部样本里随机选取验证扫描的最多个数")
-    parser.add_argument("--max_accept", type=int, default=80, help="只要扫描出这么多合规的就算成功并且退出运行")
+    parser.add_argument("--max_accept", type=int, default=100, help="只要扫描出这么多合规的就算成功并且退出运行")
     parser.add_argument("--min_nucleic_ratio", type=float, default=None, help="核酸数目/蛋白数目的比率阈值下限(none则不限制), 允许端点")
-    parser.add_argument("--max_nucleic_ratio", type=float, default=None, help="核酸数目/蛋白数目的比率阈值上限(none则不限制), 允许端点")
+    parser.add_argument("--max_nucleic_ratio", type=float, default=0.0, help="核酸数目/蛋白数目的比率阈值上限(none则不限制), 允许端点")
     
     
     # Namespace,  获取解析和捕获成功后的全用户输入环境数据载体
@@ -568,4 +568,24 @@ python /home/penghongen/My_Project/Pocket_Plus/src/inference/utils/yield_json_fr
 =================================================================================
 [Success] Execution finished successfully.
 =================================================================================
+"""
+
+
+# NOTE: 最终测试集.json——————纯蛋白的100个样本(含cryoAtom套)
+"""
+[Attempt] Executing dynamic command from /home/penghongen/run_cmd_293101.sh...
+
+#!/bin/bash
+python /home/penghongen/My_Project/Pocket_Plus/src/inference/utils/yield_json_from_raw_sample.py
+
+=================================================================================
+---------- 开始生成样本 JSON 文件 ----------
+提取到的初始候选配对总数: 269
+---------- 扫描完成，统计信息 ----------
+  - 初始检查候选配对总数: 269
+  - 实际执行文件和比例探测运算的配对次数: 100
+  - 缺失结构或密度图文件配对数: 0
+  - 因核酸比例不合格而过滤抛弃数: 0
+  - 最终保留且符合要求的有效配对数: 100
+✅ json 生成完毕! 输出在: /home/penghongen/My_Project/Pocket_Plus/src/inference/utils/test_protein.json
 """
