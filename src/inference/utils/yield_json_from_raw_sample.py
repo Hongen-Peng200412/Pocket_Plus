@@ -493,7 +493,7 @@ if __name__ == "__main__":
     default="/home/penghongen/My_Project/Pocket_Plus/src/inference/utils")
 
     parser.add_argument("--output_json_name", type=str, help="生成的 json 文件名称", 
-    default="test_protein.json")
+    default="protein_100.json")
 
 
 
