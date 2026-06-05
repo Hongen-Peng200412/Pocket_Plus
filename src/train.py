@@ -97,8 +97,12 @@ def _needs_input_channel_initialization(model: torch.nn.Module) -> bool:
     """Return True when a backbone submodule is waiting for dataset input channels."""
     backbone = getattr(model, "backbone", None)
     maybe_compiled_backbone = getattr(backbone, "_orig_mod", backbone)
-    density_cube_encoder = getattr(maybe_compiled_backbone, "density_cube_encoder", None)
-    return density_cube_encoder is not None and getattr(density_cube_encoder, "in_channels", None) is None
+    # 共享/独立 density encoder 都可能 lazy in_channels, DDP 前都要 materialize
+    for encoder_name in ("density_cube_encoder", "real_density_cube_encoder"):
+        encoder = getattr(maybe_compiled_backbone, encoder_name, None)
+        if encoder is not None and getattr(encoder, "in_channels", None) is None:
+            return True
+    return False
 
 
 def _extract_input_tensor(sample):

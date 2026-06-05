@@ -1,0 +1,33 @@
+# @package _global_
+# ============================================================
+# detach_residual 组 / max_detach 预设
+# ============================================================
+# 本组统一持有 "梯度 detach 路由 + 头/refine 的 logit 接线(拼接输入/残差)" 这一类开关。
+# 各键本身仍是 model.backbone.* 形参(透传进 VolumePointStage1Model.__init__),
+# 其中 sparse_refine_residual_mode / sparse_refine_use_voxel_logits 在 sparse_refine_head
+# 延迟实例化时注入 sparse_refine_head_cfg(见 src/model/stage1_model.py)。
+#
+# 使用: 实验在 defaults 里加 `- /model/detach_residual: max_detach` 即可整体覆盖
+# model/default.yaml 中这 12 个键的中性默认; 不选本组时沿用中性默认。
+# 设计动机见 CLAUDE/plans/implement/detach/00-grad-routing-heads-norm.md。
+# 字段语义见 src/model/stage1_model.py 顶部 "detach 与 logit 残差" 契约。
+# ============================================================
+model:
+  backbone:
+    # === 头开关 ===
+    enable_atom_head_front: true        # bool, point backbone 末端前置头(最大隔离下唯一 atom 监督来源)
+    enable_atom_head_back: false        # bool, 关闭 atom head 末端后置头(atom_logits=None)
+
+    # === detach 路由(voxel / point+前置头 / refine 三块解耦) ===
+    detach_real_point_feat: true        # bool, detach 真实原子槽位再喂后置头
+    detach_pseudo_point_feat: true      # bool, detach pseudo(P) 槽位, 切断 refine->point 直接路径
+    detach_voxel_into_refine: true      # bool, 切断 refine->voxel 三处直接路径(base logits、C/P voxel_final)
+    detach_voxel_feat_into_real_point: true   # bool, 真实原子接收采样 voxel 特征 detach
+    detach_voxel_feat_into_pseudo_point: true # bool, 伪原子接收采样 voxel 特征 detach
+
+    # === logit 残差 / 拼接接线 ===
+    refine_receptor_from_voxel: true            # bool, 前/后置头 logits 加 home 体素 voxel_aux detach 残差 base
+    atom_head_concat_receptor_base_logit: false # bool, 前/后置头不把 aux base logit 拼进输入(与上一条正交)
+    pseudo_density_residual: false              # bool, 关闭 atom head 伪原子分支 density 直通残差
+    sparse_refine_residual_mode: residual       # str, refine 头 direct/residual 输出模式
+    sparse_refine_use_voxel_logits: true        # bool, refine 头把 C 原始 logits 拼进输入(residual 模式需 true)

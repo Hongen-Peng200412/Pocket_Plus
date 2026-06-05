@@ -1,0 +1,45 @@
+# @package _global_
+# ============================================================
+# Density cube: 伪原子(P anchor) + 真实原子 density 同时启用; 各用独立 encoder
+# 同一文件写入 density_cube_cfg(伪) 与 real_density_cube_cfg(真) + real_atom_density_cube=true。
+# 含 density_cube_cfg(伪), 仅在 anchor_sampler 启用(sparse refine 开)时合法。
+# 两者均为 "切 box + Conv3d + GAP" 实现, 行为同源, 仅 cube 边长/卷积深度不同。
+#   → VolumePointStage1Model.__init__: 分别 instantiate(density_cube_cfg) 与 instantiate(real_density_cube_cfg)。
+# ============================================================
+model:
+  backbone:
+    # --- 伪原子(P anchor) density encoder(沿用 pseudo.yaml 参数) ---
+    density_cube_cfg:
+      _target_: src.model.sparse_refine.density_cube.DensityCubeEncoder
+      in_channels: null  # int|null, lazy 初始化 raw voxel_grid 通道数
+      cube_size: 11      # int, P anchor 周围 cube 边长(奇数)
+      hidden_channels: 64 # int, Conv3d hidden 通道数
+      num_downsample: 2  # int, stride=2 下采样 Conv3d block 数
+      num_conv: 1        # int, 下采样后 stride=1 Conv3d block 数
+      out_dim: ${model.backbone.point_backbone.atom_feature_dim} # int, 输出维度 == point atom_feature_dim
+      encoder_type: conv_gap # str, encoder 类型; 当前只支持 conv_gap
+      norm: group        # str, 归一化类型; group/none
+      num_groups: 8      # int, GroupNorm group 数
+      act: silu          # str, 激活函数; silu/relu/gelu
+      chunk_size: 1024    # int, 每次抽取/编码的 P anchor 数
+
+    # --- 真实原子 density 调制(独立 encoder) ---
+    real_atom_density_cube: true                 # bool, 启用真实原子 density cube 调制
+    real_atom_density_share_encoder: false       # bool, 用独立 encoder(real_density_cube_cfg)
+    real_atom_density_cube_size: 9               # int, 真实原子 cube 边长(奇数), 与 real_density_cube_cfg.cube_size 对齐
+    real_atom_density_combine_mode: film_plus    # str, embed<->density 融合; concat_mlp/film/film_plus/mini_residue
+    real_atom_density_fusion_mlp_ratio: 3.0      # float, real density 融合 MLP 隐藏层膨胀倍率(film 不使用)
+    real_atom_density_fusion_proj_drop: 0.3      # float, real density 融合 MLP dropout(film 不使用)
+    real_density_cube_cfg:
+      _target_: src.model.sparse_refine.density_cube.DensityCubeEncoder
+      in_channels: null  # int|null, lazy 初始化 raw voxel_grid 通道数
+      cube_size: 9       # int, 真实原子周围 cube 边长(奇数), 与 real_atom_density_cube_size 对齐
+      hidden_channels: 64 # int, Conv3d hidden 通道数
+      num_downsample: 2  # int, stride=2 下采样 Conv3d block 数
+      num_conv: 1        # int, 下采样后 stride=1 Conv3d block 数; 真实原子量大, 减为 1 省显存
+      out_dim: ${model.backbone.point_backbone.atom_feature_dim} # int, 输出维度 == point atom_feature_dim
+      encoder_type: conv_gap # str, encoder 类型; 当前只支持 conv_gap
+      norm: group        # str, 归一化类型; group/none
+      num_groups: 8      # int, GroupNorm group 数
+      act: silu          # str, 激活函数; silu/relu/gelu
+      chunk_size: 2048   # int, 每次抽取/编码的真实原子数

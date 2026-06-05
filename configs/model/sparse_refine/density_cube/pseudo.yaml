@@ -1,14 +1,16 @@
 # @package _global_
 # ============================================================
-# Density cube encoder 默认配置
-# 此文件写入 cfg.model.backbone.density_cube_cfg。
-# 为 P anchor 从 batch["voxel_grid"] 抽取局部 cube, 编码为 inject_pseudo_atoms 使用的 pseudo_feat。
+# Density cube: 仅伪原子(P anchor) density 编码; 真实原子 density 关闭
+# 写入 cfg.model.backbone.density_cube_cfg(供 sparse refine 的 P anchor 使用) + real_atom_density_cube=false。
+# 含 density_cube_cfg, 仅在 anchor_sampler 启用(sparse refine 开)时合法。
+# 参数沿用旧 density_cube/default.yaml(cube=11, num_conv=2), 保证从 default 迁移到 pseudo 行为不变。
 #   → VolumePointStage1Model.__init__: instantiate(density_cube_cfg) 构造 DensityCubeEncoder。
 #   → train.py::_initialize_lazy_modules_before_ddp(): in_channels=null 时按首个 dataset 样本设置 raw voxel_grid 通道数。
 #   → VolumePointStage1Model._prepare_pseudo_batch(): density_cube_encoder(batch["voxel_grid"], anchor_voxel_zyx, anchor_batch_index)。
 # ============================================================
 model:
   backbone:
+    real_atom_density_cube: false     # bool, 关闭真实原子 density cube 调制
     density_cube_cfg:
       # _target_: str, density cube encoder 类全称; Hydra 据此实例化 nn.Module
       _target_: src.model.sparse_refine.density_cube.DensityCubeEncoder

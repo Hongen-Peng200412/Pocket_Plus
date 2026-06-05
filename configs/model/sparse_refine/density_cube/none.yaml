@@ -1,10 +1,11 @@
 # @package _global_
 # ============================================================
-# Density cube encoder 关闭配置
-# 写入 cfg.model.backbone.density_cube_cfg=null。
-#   → VolumePointStage1Model.__init__: 不构造 DensityCubeEncoder。
+# Density cube 关闭: 伪原子(P anchor) density 与真实原子 density 都不启用
+# 写入 cfg.model.backbone.density_cube_cfg=null 且 real_atom_density_cube=false。
+#   → VolumePointStage1Model.__init__: 不构造伪原子 DensityCubeEncoder, 也不构造真实原子 density 通路。
 #   → 若 anchor_sampler_cfg 非 null 且 density_cube_cfg=null, VolumePointStage1Model.__init__ 会 fail-fast。
 # ============================================================
 model:
   backbone:
-    density_cube_cfg: null  # null, 关闭 P anchor 初始 pseudo_feat 的 density cube 编码
+    density_cube_cfg: null            # null, 关闭 P anchor 初始 pseudo_feat 的 density cube 编码
+    real_atom_density_cube: false     # bool, 关闭真实原子 density cube 调制

@@ -26,11 +26,7 @@ backbone:
   prior_probs: null  # list[float]|null, 多通道 softmax 类别先验概率向量; 长度必须等于 atom_logit_dim 且总和为 1
                      # → VolumePointStage1Model.__init__: atom_logit_head bias 初始化为 log(prior_probs)
 
-  # --- 在线 pdb_feature ---
-  # 仅在 embed_head 未启用时生效; embed_head 启用时 forward() 的 elif 结构自动跳过
-  online_pdb_feature: false           # bool, 是否在线 scatter raw atom_feat 到体素网格
-  online_pdb_feature_reduce: "sum"    # str, scatter 聚合方式
-  online_pdb_feature_dim: 49          # int, 原子原始特征维度
+  # --- 在线 pdb_feature 已下放到 model/embed_head 组(各 embed_head 变体自带 online_pdb_feature*); 此处不再定义 ---
 
   # --- detach 梯度路由 / 前后置头 / 接口 Norm / density 残差 开关 (中性默认: 复现旧行为) ---
   # 下列字段透传进 VolumePointStage1Model.__init__; 语义见 src/model/stage1_model.py 顶部契约与 __init__ docstring。
@@ -39,11 +35,20 @@ backbone:
   enable_atom_head_back: true         # bool, 是否构造 atom head 末端后置头; 关时 atom_logits=None
   detach_real_point_feat: false       # bool, detach point backbone 输出真实原子槽位再喂后置 atom head; 前置头不受影响
   detach_pseudo_point_feat: false     # bool, detach point backbone 输出 pseudo(P) 槽位(进 atom head 与进 refine 两处)
-  detach_voxel_feat_into_point: false # bool, _fuse_point_variable 里把采样 voxel 特征 detach 后再融合进 point
+  detach_voxel_feat_into_real_point: false   # bool, 真实原子接收采样 voxel 特征是否 detach; 中性默认 false(设计推荐值在实验里开)
+  detach_voxel_feat_into_pseudo_point: false # bool, 伪原子接收采样 voxel 特征是否 detach; 中性默认 false(噪声隔离推荐值 true 在实验里开)
   detach_voxel_into_refine: true      # bool, 统一 detach refine 吃的三处 voxel 信息(base logits、C/P voxel_final 特征)
+
   refine_receptor_from_voxel: false   # bool, 前/后置头 logits 加 home 体素 voxel_logits_aux 的 detach 残差 base
   pseudo_density_residual: false      # bool, atom head 伪原子分支输出加 density cube 直通残差(仅作用于进 refine 的 P_atom_head_feat)
   enable_interface_norm: false        # bool, 在 voxel→point/embed→point/density→point/sparse refine 源接口先各自 LayerNorm
+  
+  atom_head_concat_receptor_base_logit: false # bool, 前/后置头是否把 home 体素 aux base logit 拼进输入(与 refine_receptor_from_voxel 正交)
+  # refine 头接线开关(归属 detach_residual 组, 延迟实例化时注入 sparse_refine_head; 中性默认):
+  sparse_refine_residual_mode: residual       # str, refine 头 direct/residual 输出模式
+  sparse_refine_use_voxel_logits: true        # bool, refine 头是否把 C 原始 logits 拼进输入(residual 模式需 true)
+
+
 
 # --- 调度器与主监控指标 ---
 # interval/frequency 仅用于完全交给 Lightning 管理的 scheduler。

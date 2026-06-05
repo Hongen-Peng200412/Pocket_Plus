@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import torch
-import torch.nn.functional as F
 from torch import nn
+
+from src.model.utils import gather_voxel_cube
 
 
 class DensityCubeEncoder(nn.Module):
@@ -159,46 +160,12 @@ class DensityCubeEncoder(nn.Module):
         device = self.proj.weight.device
         self.encoder = nn.Sequential(*self._make_encoder_layers(self.in_channels)).to(device=device)
 
-    def _extract_cube_chunk(
-        self,
-        padded_grid: torch.Tensor,
-        anchor_voxel_zyx: torch.Tensor,
-        anchor_batch_index: torch.Tensor,
-    ) -> torch.Tensor:
-        """
-        为一个 P chunk 抽取 zero-padded density cube。
-
-        输入参数:
-            - padded_grid: torch.Tensor, (B, C, D+2r, H+2r, W+2r), 已 padding 的 density 输入体
-            - anchor_voxel_zyx: torch.Tensor, (P_chunk, 3), chunk 内 P 来源 voxel 坐标, 轴顺序 z/y/x
-            - anchor_batch_index: torch.Tensor, (P_chunk,), chunk 内 P 所属 BOX 索引
-
-        输出:
-            - cube: torch.Tensor, (P_chunk, C, cube_size, cube_size, cube_size), density cube
-        """
-        # torch.Tensor, (cube_size,), cube 单轴内的局部偏移索引
-        offsets = torch.arange(self.cube_size, device=padded_grid.device, dtype=torch.long)
-        # torch.Tensor, (P_chunk, cube_size, 1, 1), 每个 anchor cube 的 z 轴采样索引
-        z_index = anchor_voxel_zyx[:, 0, None, None, None] + offsets[None, :, None, None]
-        # torch.Tensor, (P_chunk, 1, cube_size, 1), 每个 anchor cube 的 y 轴采样索引
-        y_index = anchor_voxel_zyx[:, 1, None, None, None] + offsets[None, None, :, None]
-        # torch.Tensor, (P_chunk, 1, 1, cube_size), 每个 anchor cube 的 x 轴采样索引
-        x_index = anchor_voxel_zyx[:, 2, None, None, None] + offsets[None, None, None, :]
-        # torch.Tensor, (P_chunk, 1, 1, 1), 每个 anchor 所属 BOX 索引
-        b_index = anchor_batch_index[:, None, None, None]
-
-        # torch.Tensor, (P_chunk, cube_size, cube_size, cube_size, C), 混合高级索引提取 cube
-        # 注意: 高级索引 (b, z, y, x) 被切片 (:) 分隔, 因此广播后形状 (P_chunk, cube_size, cube_size, cube_size) 会被放到最前面
-        cube_channels_last = padded_grid[b_index, :, z_index, y_index, x_index]
-
-        # torch.Tensor, (P_chunk, C, cube_size, cube_size, cube_size), 还原通道维度的顺序
-        return cube_channels_last.permute(0, 4, 1, 2, 3).contiguous()
-
     def forward(
         self,
         voxel_grid: torch.Tensor,
         anchor_voxel_zyx: torch.Tensor,
         anchor_batch_index: torch.Tensor,
+        cube_size: int | None = None,
     ) -> torch.Tensor:
         """
         抽取 P anchor 周围 density cube 并编码为 pseudo_feat。
@@ -207,6 +174,7 @@ class DensityCubeEncoder(nn.Module):
             - voxel_grid: torch.Tensor, (B, C, D, H, W), density 输入体
             - anchor_voxel_zyx: torch.Tensor, (sumP, 3), P 来源 voxel 坐标, 轴顺序 z/y/x
             - anchor_batch_index: torch.Tensor, (sumP,), P 所属 BOX 索引
+            - cube_size: int | None, 本次抽取的 cube 边长; None 回退到实例默认 self.cube_size
 
         输出:
             - pseudo_feat: torch.Tensor, (sumP, out_dim), P anchor 初始点特征
@@ -222,13 +190,16 @@ class DensityCubeEncoder(nn.Module):
         if anchor_batch_index.ndim != 1 or int(anchor_batch_index.shape[0]) != int(anchor_voxel_zyx.shape[0]):
             raise ValueError("anchor_batch_index 必须为 (sumP,) 且与 anchor_voxel_zyx 对齐。")
 
+        # int, 实际使用的 cube 边长; None 回退到实例默认 self.cube_size
+        cube_size = self.cube_size if cube_size is None else int(cube_size)
+        if cube_size < 1 or cube_size % 2 == 0:
+            raise ValueError("cube_size 必须为 >=1 的奇数。")
+
         # int, P anchor 总数
         num_anchors = int(anchor_voxel_zyx.shape[0])
         if num_anchors == 0:
             return voxel_grid.new_empty((0, self.out_dim))
 
-        radius = self.cube_size // 2
-        padded_grid = F.pad(voxel_grid, (radius, radius, radius, radius, radius, radius))
         # torch.Tensor, (sumP, 3), P 来源 voxel 坐标, 已对齐到 voxel_grid device
         anchor_voxel_zyx = anchor_voxel_zyx.to(device=voxel_grid.device, dtype=torch.long)
         # torch.Tensor, (sumP,), P 所属 BOX 索引, 已对齐到 voxel_grid device
@@ -237,11 +208,13 @@ class DensityCubeEncoder(nn.Module):
         feature_parts: list[torch.Tensor] = []
         for start in range(0, num_anchors, self.chunk_size):
             end = min(start + self.chunk_size, num_anchors)
-            # torch.Tensor, (P_chunk, C, cube_size, cube_size, cube_size), 当前 chunk 的 density cube
-            cube = self._extract_cube_chunk(
-                padded_grid=padded_grid,
-                anchor_voxel_zyx=anchor_voxel_zyx[start:end],
-                anchor_batch_index=anchor_batch_index[start:end],
+            # torch.Tensor, (P_chunk, C, cube_size, cube_size, cube_size), 当前 chunk 的 density cube(_valid_mask 此处无用)
+            cube, _valid_mask = gather_voxel_cube(
+                grid=voxel_grid,
+                center_zyx=anchor_voxel_zyx[start:end],
+                batch_index=anchor_batch_index[start:end],
+                cube_size=cube_size,
+                zero_fill=True,
             )
             # torch.Tensor, (P_chunk, hidden_channels, d, h, w), 编码后的 cube 特征
             encoded = self.encoder(cube)

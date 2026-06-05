@@ -49,3 +49,9 @@ model:
       add_occupancy_channels: false
       use_soft_splatting: false
       use_centroid_encoding: false
+
+    # --- 在线 pdb_feature (从 model/default.yaml 下放至此) ---
+    # passthrough 无体素输出: 翻 true 可在线 scatter raw 49ch 受体原子到体素网格(替代 embed voxel 注入)
+    online_pdb_feature: false           # bool, 是否在线 scatter raw atom_feat 到体素网格
+    online_pdb_feature_reduce: "sum"    # str, scatter 聚合方式
+    online_pdb_feature_dim: 49          # int, 原子原始特征维度

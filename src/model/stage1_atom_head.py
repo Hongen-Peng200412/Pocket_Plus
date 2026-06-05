@@ -10,6 +10,7 @@ Stage1 atom head 的 real/pseudo 双尾部实现。
     - pseudo_mask: torch.Tensor, (N_all,), bool, True 表示 P anchor, False 表示 real atom; 若非 None 必须与 point_feat 第一维一致。
     - point_feat: torch.Tensor, (N_all, C_point), floating, 最后一轮 point backbone 输出特征, mixed 路径下按 pseudo_atoms.py 的 mixed layout 排列; 调用方(stage1_model)按 detach 路由开关传入已 detach 的 fused_point_feat。
     - pseudo_density_feat: torch.Tensor | None, (N_pseudo, C_density), floating, 可选 density cube 特征(anchor 顺序); 仅 pseudo_density_residual=True 时消费, 加到 pseudo 分支输出上。
+    - real_receptor_base_logit: torch.Tensor | None, (N_real, atom_logit_dim), floating, 可选 home 体素 aux base logit(real 顺序); 仅 concat_receptor_base_logit=True 时消费, 拼进后置头首层输入(base 恒由 stage1_model detach)。
     - point_state["coord"]: torch.Tensor, (N_all, 3), floating, Point/Block 使用的点坐标, 轴顺序 (x, y, z)。
     - point_state["batch"]: torch.Tensor, (N_all,), int64/long, 每个点所属 BOX 索引。
     - point_state["offset"]: torch.Tensor, (B,), int64/long, 每个 BOX 在展平点序列中的结束偏移。
@@ -236,6 +237,8 @@ class Stage1AtomHead(nn.Module):
         enable_atom_head_back: bool = True,
         pseudo_density_residual: bool = False,
         pseudo_density_in_dim: int | None = None,
+        concat_receptor_base_logit: bool = False,
+        receptor_base_dim: int | None = None,
         typed_point_cfg: dict[str, Any] | TypedPointConfig | None = None,
     ) -> None:
         """
@@ -274,6 +277,8 @@ class Stage1AtomHead(nn.Module):
             - enable_atom_head_back: bool, 是否构造后置头 real_atom_logit_head; 关时 forward 的 atom_logits=None, prior bias 初始化随之跳过
             - pseudo_density_residual: bool, 是否在 pseudo_feature 上加 density cube 直通残差(LayerNorm->Linear, 末层零初始化)
             - pseudo_density_in_dim: int | None, density cube 特征通道数; 仅在 pseudo_density_residual=True 时必填, 由 stage1_model 注入为 point_backbone.atom_feature_dim
+            - concat_receptor_base_logit: bool, 后置头是否把 home 体素 aux base logit 拼进首层输入; 与 stage1_model 的"末尾加残差"正交
+            - receptor_base_dim: int | None, concat 时 base logit 通道数(=atom_logit_dim); concat_receptor_base_logit=True 时必填
 
         前向输入:
             - point_feat: torch.Tensor, (N_all, point_channels), point backbone 输出点特征
@@ -341,10 +346,16 @@ class Stage1AtomHead(nn.Module):
         )
         # bool, 是否构造后置头
         self.enable_atom_head_back = bool(enable_atom_head_back)
-        # nn.Sequential | None, (N_real, hidden_dim) -> (N_real, atom_logit_dim), real atom 分类后置头; 关时为 None
+        # bool, 后置头是否把 home 体素 aux base logit 拼进首层输入(与 stage1_model 末尾加残差正交)
+        self.concat_receptor_base_logit = bool(concat_receptor_base_logit)
+        # int, concat 时 base logit 通道数(=atom_logit_dim); 关时为 0
+        self.receptor_base_dim = int(receptor_base_dim) if self.concat_receptor_base_logit else 0
+        # int, real_atom_logit_head 首层输入维; concat 时扩 receptor_base_dim
+        back_in = self.hidden_dim + self.receptor_base_dim
+        # nn.Sequential | None, (N_real, back_in) -> (N_real, atom_logit_dim), real atom 分类后置头; 关时为 None
         self.real_atom_logit_head = (
             nn.Sequential(
-                nn.Linear(self.hidden_dim, self.hidden_dim),
+                nn.Linear(back_in, self.hidden_dim),
                 act_layer(),
                 nn.Linear(self.hidden_dim, self.atom_logit_dim),
             )
@@ -445,6 +456,7 @@ class Stage1AtomHead(nn.Module):
         atom_valid_mask: torch.Tensor,
         pseudo_mask: torch.Tensor | None = None,
         pseudo_density_feat: torch.Tensor | None = None,
+        real_receptor_base_logit: torch.Tensor | None = None,
     ) -> dict[str, torch.Tensor | None]:
         pseudo_mask = validate_pseudo_mask(pseudo_mask, int(point_feat.shape[0]), name="Stage1AtomHead.forward")
 
@@ -495,8 +507,12 @@ class Stage1AtomHead(nn.Module):
                 # density cube 直通残差; 末层零初始化使初值不改变 pseudo_feature
                 pseudo_feature = pseudo_feature + self.density_residual(pseudo_density_feat)
 
+        # torch.Tensor, (N_real, back_in), real atom 分类输入; concat 时拼 home 体素 base logit(real 顺序)
+        real_logit_input = real_hidden
+        if self.concat_receptor_base_logit:
+            real_logit_input = torch.cat([real_hidden, real_receptor_base_logit], dim=1)
         # torch.Tensor | None, (N_real, atom_logit_dim), 真实原子的 logits; 后置头关时为 None
-        atom_logits = self.real_atom_logit_head(real_hidden) if self.real_atom_logit_head is not None else None
+        atom_logits = self.real_atom_logit_head(real_logit_input) if self.real_atom_logit_head is not None else None
         return {
             "atom_tokens": atom_tokens,
             "atom_hidden": atom_hidden,

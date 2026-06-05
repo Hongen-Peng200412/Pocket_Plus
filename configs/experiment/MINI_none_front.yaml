@@ -4,7 +4,7 @@
 # ============================================================
 # 与 configs/experiment/detach_main.yaml 同结构, 仅 4 个差异: dataset→MINI、train MINI 块、
 # refine 调度 (start_on_ratio,warmup_ratio)=(0.2,0.3)、以及下方 4 个消融轴开关。
-# 固定开关(detach_voxel_into_refine/detach_voxel_feat_into_point/refine_receptor_from_voxel/
+# 固定开关(detach_voxel_into_refine/detach_voxel_feat_into_real/pseudo_point/refine_receptor_from_voxel/
 # pseudo_density_residual/enable_interface_norm)与 detach_main 一致。字段语义见 detach_main。
 # ============================================================
 defaults:
@@ -17,7 +17,7 @@ defaults:
   - override /model/embed_head: clipbig
   - override /model/sparse_refine/candidate_set: binary_adaptive
   - override /model/sparse_refine/anchor_sampler: unweighted_fps
-  - override /model/sparse_refine/density_cube: default
+  - override /model/sparse_refine/density_cube: pseudo
   - override /model/sparse_refine/anchor_to_candidate: knn_message
   - override /model/sparse_refine/sparse_refine_head: default
   - override /model/sparse_refine/anchor_class_conditioning: none
@@ -53,7 +53,8 @@ model:
     enable_atom_head_back: false        # B
     # === 固定开关(同 detach_main) ===
     detach_voxel_into_refine: true
-    detach_voxel_feat_into_point: true
+    detach_voxel_feat_into_real_point: true
+    detach_voxel_feat_into_pseudo_point: true
     refine_receptor_from_voxel: true
     pseudo_density_residual: false
     enable_interface_norm: true

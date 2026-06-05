@@ -100,8 +100,7 @@ class SparseRefineHead(nn.Module):
         self.inputs = {str(key): bool(value) for key, value in inputs.items()}
         if not (self.inputs.get("use_P_point_backbone_feat", False) or self.inputs.get("use_P_atom_head_feat", False)):
             raise ValueError("P content 至少启用 use_P_point_backbone_feat 或 use_P_atom_head_feat。")
-        if self.mode == "residual" and not self.inputs.get("use_voxel_logits", False):
-            raise ValueError("residual 模式必须启用 use_voxel_logits。")
+        # 第 2a 点: 删除 mode==residual 与 use_voxel_logits 的耦合约束, 使四种组合均合法
 
         self.enable_interface_norm = bool(enable_interface_norm)
         # nn.LayerNorm | None, 各学习特征源在拼接前的接口归一化; 关或对应输入源关时为 None 走恒等
@@ -322,22 +321,27 @@ class SparseRefineHead(nn.Module):
 
         # list[torch.Tensor], 输出 head 的输入特征分块
         final_parts = [candidate_message_delta]
+        # bool, 是否把 base_logits 拼进 MLP 输入
+        use_voxel_logits = self.inputs.get("use_voxel_logits", False)
+        # bool, 是否需要取出 base_logits: use_voxel_logits(进 MLP) 或 residual(末尾加残差) 任一为真
+        need_base = use_voxel_logits or self.mode == "residual"
         base_logits: torch.Tensor | None = None
-        if self.inputs.get("use_voxel_logits", False):
+        if need_base:
             if voxel_logits is None:
-                raise RuntimeError("启用了 use_voxel_logits，但输入为空。")
+                raise RuntimeError("use_voxel_logits 或 residual 模式要求 voxel_logits 非空。")
             # torch.Tensor, (sumC, logit_dim), residual base 或 direct head 可选输入 logits; detach 由调用方 _run_sparse_refine_head 负责
             base_logits = voxel_logits
+        if use_voxel_logits:
             final_parts.insert(0, base_logits)
         if self.inputs.get("use_C_voxel_backbone_feat", False):
             if C_voxel_backbone_feat is None:
                 raise RuntimeError("启用了 use_C_voxel_backbone_feat，但输入为空。")
-            final_parts.insert(1 if base_logits is not None else 0, C_voxel_backbone_feat)
+            # 插入下标按 base_logits 是否已进 final_parts(即 use_voxel_logits)判断, 而非 base_logits 是否非空:
+            # residual-only 时 base_logits 非空但不进 MLP
+            final_parts.insert(1 if use_voxel_logits else 0, C_voxel_backbone_feat)
         # torch.Tensor, (sumC, logit_dim), 输出 MLP 产生的 refined logits 或 logits 增量
         output_logits = self.output_mlp(torch.cat(final_parts, dim=1))
         if self.mode == "residual":
-            if base_logits is None:
-                raise RuntimeError("residual 模式要求 voxel_logits 非空。")
             output_logits = base_logits + output_logits
         return {
             "candidate_message_valid_mask": candidate_message_valid_mask,

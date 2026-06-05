@@ -8,6 +8,8 @@
 #   sbatch sbatch/h200/1gpu.sbatch "+experiment=detach_main"
 # ============================================================
 defaults:
+  # detach + 头/refine logit 接线 11 开关统一走 detach_residual 组(非 override 新增组, 必须置于所有 override 之前)
+  - /model/detach_residual: max_detach
   - override /model/voxel_backbone: stardard
   - override /model/point_backbone: stardard
   - override /model/fusion: e234d4
@@ -17,7 +19,7 @@ defaults:
   - override /model/embed_head: clipbig
   - override /model/sparse_refine/candidate_set: binary_adaptive
   - override /model/sparse_refine/anchor_sampler: unweighted_fps
-  - override /model/sparse_refine/density_cube: default
+  - override /model/sparse_refine/density_cube: pseudo
   - override /model/sparse_refine/anchor_to_candidate: knn_message
   - override /model/sparse_refine/sparse_refine_head: default
   - override /model/sparse_refine/anchor_class_conditioning: none
@@ -55,16 +57,8 @@ model:
     enable_atom_head: true        # bool, 构造 atom head(refine 需要 pseudo_feature, 必须开)
 
 
-    # === 最大 detach: 三块解耦 ===
-    enable_atom_head_front: true        # bool, point backbone 末端前置头(本实验唯一 atom 监督来源)
-    enable_atom_head_back: false        # bool, 关闭 atom head 末端后置头(atom_logits=None)
-    detach_real_point_feat: true        # bool, detach 真实原子槽位再喂后置头(本实验后置头已关)
-    detach_pseudo_point_feat: true      # bool, detach pseudo 槽位, 切断 refine->point 直接路径
-    detach_voxel_into_refine: true      # bool, 切断 refine->voxel 三处直接路径
-    detach_voxel_feat_into_point: true  # bool, 切断 point-fusion->voxel 的二次回流
-    refine_receptor_from_voxel: true    # bool, 前置头 logits 加 home 体素 voxel_aux detach 残差 base
-    pseudo_density_residual: false      # bool, 本轮关闭 density 直通残差
-    enable_interface_norm: true         # bool, 开启接口归一化(voxel→point/embed→point/density→point/sparse refine 源)
+    # === 最大 detach: 11 个 detach/头/refine logit 接线开关已移交 detach_residual=max_detach(见 defaults) ===
+    enable_interface_norm: true         # bool, 接口归一化
 
 
     voxel_backbone:

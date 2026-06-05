@@ -1,5 +1,5 @@
 # @package _global_
-# 融合逻辑变体: Dense 4-hook (基线) — 4 层级全融合
+# 融合逻辑变体: Dense 4-hook — film_plus + weighted_cube
 model:
   backbone:
     point_fusion_map:
@@ -8,9 +8,16 @@ model:
       point_dec2: voxel_c2         # 解码器第 2 层
       point_dec1: voxel_c1         # 解码器第 1 层
       point_feat: voxel_final      # 最终输出
-    point_fusion_modes: ["concat_linear", "concat_linear", "concat_linear", "concat_linear", "concat_linear"]
-                                   # list[str], "concat_linear"=拼接后过线性层
-    sampler_modes: ["trilinear", "trilinear", "trilinear", "trilinear", "trilinear"]
-                                   # list[str], "trilinear"=三线性插值采样
-    fusion_mlp_ratio: 2.0         # float, 融合 MLP 膨胀倍率
-    fusion_proj_drop: 0.2         # float, 融合层 dropout
+    point_fusion_modes: ["film_plus", "film_plus", "film_plus", "film_plus", "film_plus"]
+                                   # list[str], "film_plus"=MLP 生成 gamma/beta 的 FiLM 调制
+    sampler_modes: ["weighted_cube", "weighted_cube", "weighted_cube", "weighted_cube", "weighted_cube"]
+                                   # list[str], "weighted_cube"=3^3 邻域可学习加权池化
+    sampler_cube_init:
+      - [2.0, 1.5, 0.5, 1.0]     # point_dec4: home / 含原子 / 其他 / 温度
+      - [2.0, 1.5, 0.5, 1.0]     # point_dec3
+      - [2.0, 1.5, 0.5, 1.0]     # point_dec2
+      - [2.0, 1.5, 0.5, 1.0]     # point_dec1
+      - [2.0, 1.5, 0.5, 1.0]     # point_feat
+    fusion_mlp_ratio: 2.0         # float, concat_mlp / mini_residue / film_plus 隐藏层膨胀倍率
+    fusion_proj_drop: 0.2         # float, concat_mlp / mini_residue / film_plus 融合 MLP dropout; film 不使用
+    fusion_cube_chunk_size: 32768 # int, weighted_cube/cube_mean 采样每块最大点数; 纯显存/吞吐不改数值; 仅限制前向瞬时尖峰(~0.45GB bf16), 对极端大样本鲁棒
