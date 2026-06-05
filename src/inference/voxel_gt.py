@@ -199,13 +199,12 @@ def load_ligand_gt_from_labels_npz(
 
 # ---------------------------------- 推理时得到 voxel-label 的第二种方式：从头构建 ----------------------------------
 def load_ligand_gt_from_structure(
-    cif_path: str,
-    cif_gt_path: str | None,
+    ligand_structure_path: str,
+    receptor_structure_path: str,
     filter_preset: str,
     class_mapping: list[int] | None,
     select_first_model: bool,
     error_dir: str | None,
-    eval_mode: str,
     origin: np.ndarray,
     voxel_size: np.ndarray,
     grid_shape_zyx: tuple[int, int, int],
@@ -215,13 +214,12 @@ def load_ligand_gt_from_structure(
     现场调用 Make_Data 逻辑构建 ligand voxel GT。
 
     输入参数:
-        - cif_path: str, 推理输入结构路径; easy 模式下也作为标注受体结构
-        - cif_gt_path: str | None, 真实结构路径; None 时由 load_gt_from_structure 回退到 cif_path
+        - ligand_structure_path: str, 用于提取 ligand GT 的结构路径
+        - receptor_structure_path: str, 用于计算受体 binding label 的结构路径
         - filter_preset: str, 配体筛选预设名
         - class_mapping: list[int] | None, 类别映射表; 映射后 >0 的 ligand 作为前景
         - select_first_model: bool, 多 model 结构处理策略
         - error_dir: str | None, 结构解析错误输出目录
-        - eval_mode: str, 评估模式, 可选 easy/hard/trivial
         - origin: np.ndarray, (3,), 密度图世界坐标原点(x,y,z)
         - voxel_size: np.ndarray, (3,), 体素大小(x,y,z)
         - grid_shape_zyx: tuple[int,int,int], 整图形状(D,H,W)
@@ -244,13 +242,12 @@ def load_ligand_gt_from_structure(
 
     # dict[str, Any], 结构现场求解的 atom/pocket/ligand GT 信息
     gt_data = load_gt_from_structure(
-        cif_path=cif_path,
-        cif_gt_path=cif_gt_path,
+        ligand_structure_path=ligand_structure_path,
+        receptor_structure_path=receptor_structure_path,
         filter_preset=filter_preset,
         class_mapping=class_mapping,
         select_first_model=select_first_model,
         error_dir=error_dir,
-        eval_mode=eval_mode,
     )
     return _build_voxel_gt_from_ligand_coords(
         origin=origin,

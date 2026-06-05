@@ -46,8 +46,8 @@
 排查评估问题时优先核对：
 
 - `eval_gt` 是否启用。
-- `eval_mode` 的含义以 `src/inference/voxel_gt.py` 当前实现为准。
-- GT 来自结构、labels 还是其它缓存。
+- `structure_input_source`、`sim_map_source`、`gt_receptor_source` 是否明确指向本轮应使用的 JSON 字段。
+- GT 来自结构、labels 还是其它缓存；structure GT 的 ligand 固定来自 `cif_gt_path`。
 - metric 输入是原始 probability、threshold 后 mask、后处理实例，还是按类别拆开的结果。
 - 阈值搜索的 objective 是否只用于评估/校准，不要误认为普通推理必需。
 - 可视化和报告字段是否来自同一次预测缓存和同一套后处理参数。

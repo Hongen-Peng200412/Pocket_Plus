@@ -32,6 +32,9 @@ compute_density: true        # bool, 是否在 get_features_when_infer() 中计�
 select_first_model: false    # bool, 多 model CIF 的处理策略
 error_dir: null              # str|null, 结构解析或 GT 构造失败时的错误输出目录
 filter_preset: "five_class"  # str, structure GT 与可视化导出时使用的配体筛选预设名
+structure_input_source: "cif_path"                 # str, forward 结构输入字段名; 可选 cif_path / cif_gt_path
+sim_map_source: "sim_map_path_cryoatom"            # str, forward 模拟图输入字段名; 仅启用 sim/diff/posdiff 通道时读取
+gt_receptor_source: "cif_gt_path"                 # str, structure GT 中 compute_binding_labels 使用的受体结构字段名
 
 # --- 可由训练 dataset 配置回退的字段 ---
 # run.py 会先把 checkpoint 对应训练配置中的 dataset 节写入 `_train_dataset_cfg`;
@@ -75,8 +78,8 @@ instance_score_min: 0.0       # float, advanced 模式下实例级均分阈值
 #   - eval_gt=false: 不构造 GT
 #   - eval_gt=true 且 labels_npz_path 非 null: 走 labels_npz GT
 #   - eval_gt=true 且 labels_npz_path 为 null: 走 structure GT
+#   - structure GT 的 ligand 固定来自 cif_gt_path, receptor 结构由 gt_receptor_source 选择
 eval_gt: false                    # bool, 是否为每个样本构造 GT 并计算 voxel / instance 指标
-eval_mode: "easy"                 # str, structure GT 模式; easy 使用 cif_path, hard 使用 cif_gt_path, trivial 使用真实结构自评
 labels_npz_path: null             # str|null, 全局默认 labels.npz 路径; raw_pairs_json 中同名字段若非 null, 会逐样本覆盖
 ligand_gt_distance_threshold: 1.7 # float, ligand GT 距离阈值(Å); 与训练 voxel_ligand_loss.hard_label_threshold 对齐
 alpha: 0.6                        # float, instance precision 判定中的包含率阈值
@@ -93,6 +96,7 @@ sample_name: null      # str|null, 全局默认样本名; 常由 raw_pairs_json 
 cif_path: null         # str|null, 全局默认结构文件路径; 通常应由 raw_pairs_json 逐样本提供
 map_path: null         # str|null, 全局默认实验密度图路径; 通常应由 raw_pairs_json 逐样本提供
 sim_map_path: null     # str|null, 全局默认模拟密度图路径; 仅启用 sim/diff/posdiff 通道时才可能被读取
+sim_map_path_cryoatom: null  # str|null, 全局默认 cryoatom 模拟密度图路径; 由 sim_map_source 显式选择是否读取
 
 # --- Hydra 运行目录行为 ---
 hydra:

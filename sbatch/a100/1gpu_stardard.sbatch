@@ -1,17 +1,17 @@
 #!/bin/bash
 # ============================================================
-# A800 单卡训练 (1 GPU, 24 核 CPU)
+# A100 单卡训练 (1 GPU, 16 核 CPU)
 # ============================================================
-# 用法 (推荐): sbatch sbatch/a800/1gpu.sbatch "+experiment=exp001_baseline"
-# 用法 (旧配置): sbatch sbatch/a800/1gpu.sbatch CONFIG_NAME ["HYDRA_OVERRIDES"]
+# 用法 (推荐): sbatch sbatch/a100/1gpu.sbatch "+experiment=exp001_baseline"
+# 用法 (旧配置): sbatch sbatch/a100/1gpu.sbatch CONFIG_NAME ["HYDRA_OVERRIDES"]
 # ============================================================
 #SBATCH -o /home/penghongen/My_Project/feedback_plus/logs/_temp_slurm/%x_%j.out
 #SBATCH -e /home/penghongen/My_Project/feedback_plus/logs/_temp_slurm/%x_%j.err
-#SBATCH -p nvlink
-#SBATCH --qos=nvlinkg8
-#SBATCH --job-name=train
+#SBATCH -p a100
+#SBATCH --qos=a100g2
+#SBATCH --job-name=base_sta
 #SBATCH --nodes=1
-#SBATCH --gres=gpu:a800:1
+#SBATCH --gres=gpu:a100:1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=24
 
@@ -51,10 +51,24 @@ write_custom_run_cmd_hook() {
     cat << EOF > "${TARGET_FILE}"
 
 #!/bin/bash
-python /home/penghongen/My_Project/Pocket_Plus/src/train.py "+experiment=ligand006__"
+python /home/penghongen/My_Project/Pocket_Plus/src/inference/main/two_stage_basic.py \
+    --config="unet_base_stardard" \
+    stage1_objective_expr='avg_voxel_f1' \
+    stage2_objective_expr='avg_instance_f1 + avg_voxel_f1'
 
 EOF
 }
+# ============================================================
+# write_custom_run_cmd_hook() {
+#     local TARGET_FILE="$1"
+#     cat << EOF > "${TARGET_FILE}"
+# #!/bin/bash
+# python Pocket_Plus/src/inference/run.py \\
+#     --config=raw_single \\
+#     ckpt_path="feedback_plus/logs/.../checkpoints/last.ckpt"
+# EOF
+# }
+
 
 
 

@@ -4,40 +4,12 @@ parse_input.py - 数据加载与特征整合模块
 负责将各种来源的数据整合为模型需要的输入格式。
 加载方式： 从原始 .cif + .map 文件实时提取特征（load_from_raw_cif）
 
-评估模式 (eval_mode) 数据流对比:
+推理与结构 GT 的路径角色由上层 voxel_pipeline 显式解析：
+    - forward 结构路径用于网络输入原子特征。
+    - ligand_structure_path 固定用于提取 ligand GT。
+    - receptor_structure_path 用于 compute_binding_labels 计算受体口袋原子标签。
 
-    Trivial 模式 (eval_mode="trivial"):
-        cif_path (真实结构)  ──→ 模型推断 ──→ pred (根据受体预测的结合原子坐标) ———————————————————————————————─┐
-                                                                                                            │
-        cif_path (真实结构)  ──→ 提取配体 ——————————————────┐                                                │
-        cif_path (真实结构)  ──→ 提供受体原子 ──→ compute_binding_labels ——————──→ atom_gt                    │
-                                                                                    │                       │
-                                                                    semantic_evaluate(pred, atom_gt, dist_threshold)
-
-        cif_gt_path 被完全忽略（即使用户提供也不使用）。
-        pred ∈ cif_path, GT ∈ cif_path, 且 cif_path 本身含配体 → 最简单的评估场景
-
-    Easy 模式 (eval_mode="easy", 默认):
-        cif_path (预测受体)  ──→ 模型推断 ──→ pred (根据受体预测的结合原子坐标) ———————————————————————————————─┐
-                                                                                                            │
-        cif_gt_path (真实全复合物) ──→ 提取配体 ————————————─┐                                                │
-        cif_path (预测受体)  ──→ 提供受体原子 ──→ compute_binding_labels ——————──→ atom_gt                    │
-                                                                                    │                       │
-                                                                    semantic_evaluate(pred, atom_gt, dist_threshold)
-
-        pred ∈ cif_path 的原子集, GT 也 ∈ cif_path 的原子集, 两者必然匹配良好 → 降低了难度
-
-    Hard 模式 (eval_mode="hard"):
-        cif_path (预测受体)  ──→ 模型推断 ──→ pred (根据受体预测的结合原子坐标) ———————————————————————————————─┐
-                                                                                                            │
-        cif_gt_path (真实全复合物) ──→ 提取配体 ————————————─┐                                                │
-        cif_gt_path (真实全复合物) ──→ 提供受体原子 ──→ compute_binding_labels ──→ atom_gt                    │
-                                                                                    │                       │
-                                                                    semantic_evaluate(pred, atom_gt, dist_threshold)
-
-        pred ∈ cif_path 的原子集, GT ∈ cif_gt_path 的原子集, 两者是不同坐标系的原子 → 评估更严格
-
-    注意: 当 cif_gt_path 为 None 时 (场景A), easy 与 hard 行为完全一致, 因为 cif_gt_path 回退到 cif_path。
+当前 voxel-only 评估只消费 ligand GT；受体口袋原子标签仍保留给联合推理/后续评估链路。
 """
 
 import sys
@@ -165,7 +137,7 @@ def _load_and_resample_map(
 
 
 # =============================================================================
-# 从原始文件加载特征/标签（无需预处理 BOX）
+# 从 cif_path、map_path 和可选的 sim_map_path 加载特征(注意这只是个工具函数————cif_path、sim_map_path内容中立, 在后文调用)
 # =============================================================================
 def load_from_raw_cif(
     cif_path: str,
@@ -296,30 +268,25 @@ def load_from_raw_cif(
     }
 
 
+# 从 ligand_structure_path、receptor_structure_path 加载标签
 def load_gt_from_structure(
-    cif_path: str,          # 用于提供受体, 必选
-    cif_gt_path: str,       # 用于产生候选配体、挑选合格配体并选中配体的信息, 可选: 传 None 则回退到 cif_path
+    ligand_structure_path: str,
+    receptor_structure_path: str,
     filter_preset: str,
     class_mapping: list,
     select_first_model: bool,
     error_dir: str,
-    eval_mode: str,         # "easy" 或 "hard"
 ) -> Optional[dict]:
     """
-    从原始 .cif / .pdb 文件提取点   云级 Ground Truth 标签:  按 Pocket/Make_Data/labels/filter_config.py 定义的预设读取配体筛选规则，
-    对蛋白质原子进行结合位点标注，再将原子级标签映射到 EMDB 体素网格。
+    从显式结构路径提取点云级 Ground Truth 标签。
 
-    Args:
-        - cif_path:           str,         必选: 提供受体 (.cif / .pdb), 一般是AF3或cryoAtom预测的结构(可以为空, 为空时默认为 cif_gt_path), 并在cif_gt_path为空时也提供配体
-        - cif_gt_path:        str,         可选: 提供配体 (.cif / .pdb)————用于产生候选配体、挑选合格配体并选中配体的信息. 
-        - filter_preset:      str,         配体筛选预设名，来自 labels/filter_config.py, 例如 "binary" / "five_class" / "cryoem_broad"
-        - class_mapping:      list[int]|None, 标签类别映射表，例如 [0,1,1,1,1] 在5分类（背景0）中将多类合并为二分类; 依据训练配置 dataset.class_mapping 决定
-        - select_first_model: bool,        structure选择第一个model / 如果一个structure 含有多个model那么直接记入error_log并跳过处理
-        - error_dir:          str|None,    错误日志目录
-        - eval_mode:          str,         评估模式: "trivial"、"easy" 或 "hard"
-            - "trivial": 若提供 cif_gt_path，则完全使用 cif_gt_path 提取配体和受体（否则回退到 cif_path）
-            - "easy": 结合位点标注基于 cif_path 的受体原子 (预测结构)
-            - "hard": 结合位点标注基于 cif_gt_path 的受体原子 (真实结构)
+    输入参数:
+        - ligand_structure_path: str, 用于产生候选配体、筛选合格配体并提取 ligand 坐标的结构路径
+        - receptor_structure_path: str, 用于提供受体原子并计算 binding label 的结构路径
+        - filter_preset: str, 配体筛选预设名，来自 labels/filter_config.py, 例如 "binary" / "five_class" / "cryoem_broad"
+        - class_mapping: list[int] | None, 标签类别映射表，例如 [0,1,1,1,1] 将多类合并为二分类
+        - select_first_model: bool, structure 选择第一个 model；若为 false 且存在多个 model 则记入 error_log
+        - error_dir: str | None, 错误日志目录
 
     输出:
         - gt_data: dict, 包含:
@@ -331,29 +298,17 @@ def load_gt_from_structure(
             - "ligand_candidate_ids": np.ndarray, (N_ligand,), 通过筛选的配体 candidate_id
             - "ligand_class_ids": np.ndarray, (N_ligand,), 原始配体类别 ID
             - "mapped_ligand_class_ids": np.ndarray, (N_ligand,), 映射后的配体类别 ID
-
-    内部流程:
-        1. parse_structure()         解析 .cif 得到原子坐标和配体候选列表
-        2. filter_and_classify()     按 filter_preset 筛选配体并分配口袋类别
-        3. compute_binding_labels()  计算每个原子的口袋类别 ID
-           - easy 模式: 受体原子来自 cif_path (parsed_data)
-           - hard 模式: 受体原子来自 cif_gt_path (parsed_gt_data)
-        4. class_mapping（可选）      对类别做映射
     """
     from Make_Data.PDB_processor.parser import parse_structure
     from Make_Data.labels.ligand_filter import filter_and_classify
     from Make_Data.labels.filter_config import get_filter_preset
     from Make_Data.labels.instance_labels import compute_binding_labels
-    if eval_mode not in ("easy", "hard", "trivial"):
-        raise ValueError(f"[parse_input.load_gt_from_structure] eval_mode 必须为 'easy'、'hard' 或 'trivial', 收到: '{eval_mode}'")
-    # trivial 模式: 若提供 cif_gt_path，则推理输入、配体筛选与 GT 统一基于真实结构 cif_gt_path
-    if eval_mode == "trivial": # 换来换去都一样
-        if cif_gt_path:
-            cif_path = cif_gt_path
-        cif_gt_path = cif_path
-    else:
-        cif_gt_path = cif_gt_path if cif_gt_path is not None else cif_path
-    sample_name = Path(cif_path).stem
+
+    if ligand_structure_path is None:
+        raise ValueError("ligand_structure_path 不能为空")
+    if receptor_structure_path is None:
+        raise ValueError("receptor_structure_path 不能为空")
+    sample_name = Path(ligand_structure_path).stem
 
     # ---- 0. 读取配体筛选配置 ----
     # LigandFilterConfig, 按预设名读取口袋分类规则
@@ -364,34 +319,34 @@ def load_gt_from_structure(
         raise ValueError(f"[parse_input.load_gt_from_structure] 未知 filter_preset: '{filter_preset}'\n可用预设: {available}")
 
 
-    # ---- 1. 解析 .cif 结构文件 ----
+    # ---- 1. 解析 ligand GT 结构文件 ----
     # ParsedStructure 或 None，包含原子坐标、配体候选列表等
-    parsed_gt_data = parse_structure(   # 解析 GT 结构（提供配体信息）
-        cif_gt_path,
+    parsed_ligand_data = parse_structure(
+        ligand_structure_path,
         error_dir,
         sample_name,
         require_ligand=False,  # 推理时不强制要求配体存在；若无配体则返回全背景标签
         select_first_model=select_first_model,
     )
-    if parsed_gt_data is None:
+    if parsed_ligand_data is None:
         raise RuntimeError(
-            f"[parse_input.load_gt_from_structure] parse_structure() 失败 (GT结构): {cif_gt_path}\n"
+            f"[parse_input.load_gt_from_structure] parse_structure() 失败 (ligand GT结构): {ligand_structure_path}\n"
             "请检查 CIF/PDB 文件格式，或查看 error_dir 中的日志。"
         )
-    # 解析受体结构（提供蛋白/核酸原子坐标）
-    if cif_path == cif_gt_path:
-        parsed_data = parsed_gt_data
+    # 解析 receptor 结构（提供蛋白/核酸原子坐标）
+    if receptor_structure_path == ligand_structure_path:
+        parsed_receptor_data = parsed_ligand_data
     else:
-        parsed_data = parse_structure(
-            cif_path,
+        parsed_receptor_data = parse_structure(
+            receptor_structure_path,
             error_dir,
             sample_name,
             require_ligand=False,
             select_first_model=select_first_model,
         )
-        if parsed_data is None:
+        if parsed_receptor_data is None:
             raise RuntimeError(
-                f"[parse_input.load_gt_from_structure] parse_structure() 失败 (受体结构): {cif_path}\n"
+                f"[parse_input.load_gt_from_structure] parse_structure() 失败 (receptor结构): {receptor_structure_path}\n"
                 "请检查 CIF/PDB 文件格式，或查看 error_dir 中的日志。"
             )
 
@@ -401,15 +356,13 @@ def load_gt_from_structure(
     # dict[int, tuple[int, str]], candidate_id → (class_id, class_name)
     # list, 被排除的候选及原因（此处不使用）
     selected, pocket_class_map, _ = filter_and_classify(
-        parsed_gt_data.ligand_candidates, filter_config
+        parsed_ligand_data.ligand_candidates, filter_config
     )
 
 
     # ---- 3. 计算原子级标签 ----
-    # trivial/easy 模式: 受体原子来自 cif_path (parsed_data)
-    # hard 模式: 受体原子来自 cif_gt_path (parsed_gt_data)
     # ParsedStructure, 决定结合位点标注所依赖的受体结构
-    labeling_structure = parsed_gt_data if eval_mode == "hard" else parsed_data
+    labeling_structure = parsed_receptor_data
     # dict 或 None, 含 pocket_class_ids: np.ndarray (N_atoms,) int32
     binding_labels = compute_binding_labels(
         labeling_structure,

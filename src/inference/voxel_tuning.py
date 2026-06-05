@@ -37,50 +37,6 @@ def _json_default(value: Any) -> Any:
         return str(value)
     raise TypeError(f"对象不可 JSON 序列化: {type(value)}")
 
-def build_voxel_cache_key(
-    ckpt_path: str,
-    cif_path: str,
-    map_path: str,
-    sim_map_path: str | None,
-    forward_params: dict[str, Any],
-    gt_source: str,
-    labels_npz_path: str | None,
-    cif_gt_path: str | None,
-    gt_params: dict[str, Any],
-) -> str:
-    """
-    根据 forward 输入与 GT 输入生成 voxel 缓存键。
-
-    输入参数:
-        - ckpt_path: str, checkpoint 路径
-        - cif_path: str, 结构文件路径
-        - map_path: str, 实验密度图路径
-        - sim_map_path: str | None, 模拟密度图路径; 未使用模拟图时为 None
-        - forward_params: dict[str, Any], 影响 GPU forward 与整图合并的参数
-        - gt_source: str, GT 来源类型, 可选 none/labels_npz/structure
-        - labels_npz_path: str | None, labels.npz 路径; 非 labels_npz GT 时为 None
-        - cif_gt_path: str | None, hard/trivial GT 结构路径; 无额外 GT 结构时为 None
-        - gt_params: dict[str, Any], 影响 GT 构造的参数
-
-    输出:
-        - cache_key: str, sha256 十六进制缓存键
-    """
-    # dict[str, Any], 参与缓存键计算的稳定 JSON 载荷
-    payload = {
-        "ckpt_path": str(ckpt_path),
-        "cif_path": str(cif_path),
-        "map_path": str(map_path),
-        "sim_map_path": None if sim_map_path is None else str(sim_map_path),
-        "forward_params": dict(forward_params),
-        "gt_source": str(gt_source),
-        "labels_npz_path": None if labels_npz_path is None else str(labels_npz_path),
-        "cif_gt_path": None if cif_gt_path is None else str(cif_gt_path),
-        "gt_params": dict(gt_params),
-    }
-    # str, 排序后的 JSON 文本, 保证同一输入产生稳定 hash
-    payload_json = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=_json_default)
-    return hashlib.sha256(payload_json.encode("utf-8")).hexdigest()
-
 
 def save_voxel_prediction_cache(
     cache_path: str,

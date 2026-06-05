@@ -4,10 +4,11 @@ from __future__ import annotations
 Linux 服务器用法示例:
     -     sbatch sbatch/a100/1gpu.sbatch voxel_param_search "raw_pairs_json=/path/pairs.json ckpt_path=/path/model.ckpt output_root=inference_output/two_stage_basic cache_root=inference_output/voxel_cache stage1_objective_expr=avg_voxel_f1 stage2_objective_expr='avg_instance_f1 + 0.5*avg_voxel_f1'"
     -     sbatch /home/penghongen/My_Project/Pocket_Plus/sbatch/a100/1gpu.sbatch voxel_param_search_16b "stage1_objective_expr='avg_voxel_f1' stage2_objective_expr='avg_instance_f1 + avg_voxel_f1'"
-或者: 
+
+！！！或者: 
 #!/bin/bash
-python Pocket_Plus/src/inference/main/two_stage_basic.py \
-    --config="voxel_param_search_20b_new" \
+python /home/penghongen/My_Project/Pocket_Plus/src/inference/main/two_stage_basic.py \
+    --config="unet_c1" \
     stage1_objective_expr='avg_voxel_f1' \
     stage2_objective_expr='avg_instance_f1 + avg_voxel_f1'
 
@@ -73,6 +74,77 @@ DEFAULT_STAGE1_OBJECTIVE_EXPR = "avg_voxel_f1"
 DEFAULT_STAGE2_OBJECTIVE_EXPR = "avg_instance_f1 + 0.5*avg_voxel_f1"
 
 
+
+def build_stage1_cfg(base_cfg: dict[str, Any], run_root: str) -> dict[str, Any]:
+    stage_cfg = copy.deepcopy(base_cfg)
+    stage_cfg["output_root"] = _stage_output_root(run_root, "stage1_threshold_only")
+    stage_cfg["filter_strength"] = "basic"
+    stage_cfg["threshold"] = 0.0
+    stage_cfg["min_component_voxels"] = 10
+    stage_cfg["connectivity_policy"] = "7_none"
+    stage_cfg["merge_dist"] = 0.0
+    stage_cfg["search_strategy"] = "grid"
+    stage_cfg["vis_enable"] = True
+    stage_cfg["search_space"] = {
+        "threshold": {"type": "float", "min": 0.05, "max": 1.0, "step": 0.01},
+    }
+    stage_cfg["objective_expr"] = str(stage_cfg.get(STAGE1_OBJECTIVE_KEY, DEFAULT_STAGE1_OBJECTIVE_EXPR))
+    stage_cfg["fixed_search_params"] = [
+        "min_component_voxels",
+        "connectivity_policy",
+        *ADVANCED_SEARCH_PARAM_NAMES,
+    ]
+    return stage_cfg
+
+def build_stage2_cfg(base_cfg: dict[str, Any], run_root: str, best_threshold: float | dict[str, float]) -> dict[str, Any]:
+    """
+    构造 two_stage_basic 第二阶段参数搜索配置。
+
+    输入参数:
+        - base_cfg: dict[str, Any], 基础 voxel_param_search 配置
+        - run_root: str, 两阶段输出根目录
+        - best_threshold: float | dict[str, float], 第一阶段最优 threshold; 多分类时为类别名到 threshold 的映射
+
+    输出:
+        - stage_cfg: dict[str, Any], 第二阶段 voxel_param_search 配置
+    """
+    stage_cfg = copy.deepcopy(base_cfg)
+    stage_cfg["output_root"] = _stage_output_root(run_root, "stage2_threshold_component_policy")
+    stage_cfg["filter_strength"] = "basic"
+    stage_cfg["min_component_voxels"] = 10
+    stage_cfg["connectivity_policy"] = "7_none"
+    stage_cfg["merge_dist"] = 5.0
+    stage_cfg["search_strategy"] = "grid"
+    stage_cfg["vis_enable"] = True
+    if isinstance(best_threshold, dict):
+        if len(best_threshold) == 0:
+            raise ValueError("best_threshold by_class 映射不能为空")
+        # dict[str, dict[str, Any]], class_name -> 当前类局部 threshold 搜索空间
+        search_space_by_class = {
+            str(class_name): {"threshold": _threshold_window(float(threshold))}
+            for class_name, threshold in best_threshold.items()
+        }
+        # float, 用于保留 stage_cfg.threshold 的全类平均阈值, 实际逐类搜索会使用 search_space_by_class
+        stage_cfg["threshold"] = float(sum(float(v) for v in best_threshold.values()) / len(best_threshold))
+        stage_cfg["search_space"] = {
+            "threshold": {"type": "float", "min": 0.0, "max": 1.0, "step": 0.01},
+            # "min_component_voxels": {"type": "int", "min": 5, "max": 10, "step": 1},
+            # "connectivity_policy": {"values": ["7_none", "19_none", "27_none"]},
+        }
+        stage_cfg["search_space_by_class"] = search_space_by_class
+    else:
+        stage_cfg["threshold"] = float(best_threshold)
+        stage_cfg["search_space"] = {
+            "threshold": _threshold_window(float(best_threshold)),
+            # "min_component_voxels": {"type": "int", "min": 5, "max": 10, "step": 1},
+            # "connectivity_policy": {"values": ["7_none", "19_none", "27_none"]},
+        }
+        stage_cfg["search_space_by_class"] = {}
+    stage_cfg["objective_expr"] = str(stage_cfg.get(STAGE2_OBJECTIVE_KEY, DEFAULT_STAGE2_OBJECTIVE_EXPR))
+    stage_cfg["fixed_search_params"] = list(ADVANCED_SEARCH_PARAM_NAMES)
+    return stage_cfg
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run two-stage basic voxel parameter search.")
     parser.add_argument("--config", required=True, help="Config name under configs/infer_or_eval or YAML path.")
@@ -107,28 +179,6 @@ def _stage_output_root(run_root: str, stage_name: str) -> str:
     return str(Path(run_root) / stage_name)
 
 
-def build_stage1_cfg(base_cfg: dict[str, Any], run_root: str) -> dict[str, Any]:
-    stage_cfg = copy.deepcopy(base_cfg)
-    stage_cfg["output_root"] = _stage_output_root(run_root, "stage1_threshold_only")
-    stage_cfg["filter_strength"] = "basic"
-    stage_cfg["threshold"] = 0.0
-    stage_cfg["min_component_voxels"] = 15
-    stage_cfg["connectivity_policy"] = "7_none"
-    stage_cfg["merge_dist"] = 0.0
-    stage_cfg["search_strategy"] = "grid"
-    stage_cfg["vis_enable"] = False
-    stage_cfg["search_space"] = {
-        "threshold": {"type": "float", "min": 0.05, "max": 1.0, "step": 0.01},
-    }
-    stage_cfg["objective_expr"] = str(stage_cfg.get(STAGE1_OBJECTIVE_KEY, DEFAULT_STAGE1_OBJECTIVE_EXPR))
-    stage_cfg["fixed_search_params"] = [
-        "min_component_voxels",
-        "connectivity_policy",
-        *ADVANCED_SEARCH_PARAM_NAMES,
-    ]
-    return stage_cfg
-
-
 def _threshold_window(best_threshold: float) -> dict[str, float | str]:
     """
     基于第一阶段最优 threshold 构造第二阶段局部搜索窗口。
@@ -142,59 +192,10 @@ def _threshold_window(best_threshold: float) -> dict[str, float | str]:
     if not 0.0 <= float(best_threshold) <= 1.0:
         raise ValueError(f"best_threshold 必须在 [0,1], 实际为 {best_threshold}")
     # float, 第二阶段 threshold 搜索下界
-    threshold_min = round(max(0.0, float(best_threshold) - 0.08), 2)
+    threshold_min = round(max(0.0, float(best_threshold) - 0.10), 2)
     # float, 第二阶段 threshold 搜索上界
-    threshold_max = round(min(1.0, float(best_threshold) + 0.04), 2)
+    threshold_max = round(min(1.0, float(best_threshold) + 0.10), 2)
     return {"type": "float", "min": threshold_min, "max": threshold_max, "step": 0.01}
-
-
-def build_stage2_cfg(base_cfg: dict[str, Any], run_root: str, best_threshold: float | dict[str, float]) -> dict[str, Any]:
-    """
-    构造 two_stage_basic 第二阶段参数搜索配置。
-
-    输入参数:
-        - base_cfg: dict[str, Any], 基础 voxel_param_search 配置
-        - run_root: str, 两阶段输出根目录
-        - best_threshold: float | dict[str, float], 第一阶段最优 threshold; 多分类时为类别名到 threshold 的映射
-
-    输出:
-        - stage_cfg: dict[str, Any], 第二阶段 voxel_param_search 配置
-    """
-    stage_cfg = copy.deepcopy(base_cfg)
-    stage_cfg["output_root"] = _stage_output_root(run_root, "stage2_threshold_component_policy")
-    stage_cfg["filter_strength"] = "basic"
-    stage_cfg["min_component_voxels"] = 15
-    stage_cfg["connectivity_policy"] = "7_none"
-    stage_cfg["merge_dist"] = 5.0
-    stage_cfg["search_strategy"] = "grid"
-    stage_cfg["vis_enable"] = True
-    if isinstance(best_threshold, dict):
-        if len(best_threshold) == 0:
-            raise ValueError("best_threshold by_class 映射不能为空")
-        # dict[str, dict[str, Any]], class_name -> 当前类局部 threshold 搜索空间
-        search_space_by_class = {
-            str(class_name): {"threshold": _threshold_window(float(threshold))}
-            for class_name, threshold in best_threshold.items()
-        }
-        # float, 用于保留 stage_cfg.threshold 的全类平均阈值, 实际逐类搜索会使用 search_space_by_class
-        stage_cfg["threshold"] = float(sum(float(v) for v in best_threshold.values()) / len(best_threshold))
-        stage_cfg["search_space"] = {
-            "threshold": {"type": "float", "min": 0.0, "max": 1.0, "step": 0.01},
-            "min_component_voxels": {"type": "int", "min": 5, "max": 10, "step": 1},
-            "connectivity_policy": {"values": ["7_none", "19_none", "27_none"]},
-        }
-        stage_cfg["search_space_by_class"] = search_space_by_class
-    else:
-        stage_cfg["threshold"] = float(best_threshold)
-        stage_cfg["search_space"] = {
-            "threshold": _threshold_window(float(best_threshold)),
-            "min_component_voxels": {"type": "int", "min": 5, "max": 10, "step": 1},
-            "connectivity_policy": {"values": ["7_none", "19_none", "27_none"]},
-        }
-        stage_cfg["search_space_by_class"] = {}
-    stage_cfg["objective_expr"] = str(stage_cfg.get(STAGE2_OBJECTIVE_KEY, DEFAULT_STAGE2_OBJECTIVE_EXPR))
-    stage_cfg["fixed_search_params"] = list(ADVANCED_SEARCH_PARAM_NAMES)
-    return stage_cfg
 
 
 def read_stage1_best_thresholds(stage1_output_root: str) -> float | dict[str, float]:

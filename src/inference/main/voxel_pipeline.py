@@ -50,10 +50,12 @@ def _build_cache_or_forward(
     if bool(_get_cfg(cfg_dict, "use_cache", True)) and os.path.exists(cache_path):
         return load_voxel_prediction_cache(cache_path)
 
+    # str, 当前 forward 实际使用的结构路径
+    effective_cif_path = _resolve_forward_structure_path(cfg_dict)
     # str | None, 当前 forward 实际使用的模拟密度图路径
     effective_sim_map_path = _resolve_effective_sim_map_path(cfg_dict)
     raw_data = load_from_raw_cif(
-        cif_path=str(_get_cfg(cfg_dict, "cif_path", True)),
+        cif_path=effective_cif_path,
         map_path=str(_get_cfg(cfg_dict, "map_path", True)),
         sim_map_path=effective_sim_map_path,
         target_voxel_size=float(_get_cfg(cfg_dict, "target_voxel_size", True)),
@@ -110,13 +112,12 @@ def _build_cache_or_forward(
         )
     elif gt_source == "structure":
         gt_data = load_ligand_gt_from_structure(
-            cif_path=str(_get_cfg(cfg_dict, "cif_path", True)),
-            cif_gt_path=_get_cfg(cfg_dict, "cif_gt_path", False),
+            ligand_structure_path=str(_get_cfg(cfg_dict, "cif_gt_path", True)),
+            receptor_structure_path=_resolve_gt_receptor_path(cfg_dict),
             filter_preset=str(_get_cfg(cfg_dict, "filter_preset", True)),
             class_mapping=_get_cfg(cfg_dict, "class_mapping", False),
             select_first_model=bool(_get_cfg(cfg_dict, "select_first_model", True)),
             error_dir=_get_cfg(cfg_dict, "error_dir", False),
-            eval_mode=str(_get_cfg(cfg_dict, "eval_mode", True)),
             origin=raw_data["origin"],
             voxel_size=raw_data["voxel_size"],
             grid_shape_zyx=tuple(int(v) for v in raw_data["full_shape_zyx"]),
@@ -130,7 +131,7 @@ def _build_cache_or_forward(
     meta = {
         "sample_name": _resolve_sample_name(cfg_dict),
         "cache_path": cache_path,
-        "cif_path": str(_get_cfg(cfg_dict, "cif_path", True)),
+        "cif_path": effective_cif_path,
         "map_path": str(_get_cfg(cfg_dict, "map_path", True)),
         "sim_map_path": effective_sim_map_path,
         "cif_gt_path": _get_cfg(cfg_dict, "cif_gt_path", False),
@@ -232,7 +233,7 @@ def run_voxel_single(
     if first_class_name == "foreground" and bool(_get_cfg(cfg_dict, "vis_enable", True)) and _get_cfg(cfg_dict, "vis_output_root", False) is not None:
         build_infer_vis_bundle(
             output_root=str(_get_cfg(cfg_dict, "vis_output_root", True)),
-            cif_path=str(_get_cfg(cfg_dict, "cif_path", True)),
+            cif_path=str(cache_data.meta["cif_path"]),
             map_path=str(_get_cfg(cfg_dict, "map_path", True)),
             cif_gt_path=_get_cfg(cfg_dict, "cif_gt_path", False),
             pred_atom_coords=np.empty((0, 3), dtype=np.float32),
@@ -884,12 +885,59 @@ def _resolve_density_channel_names_from_cfg(cfg_dict: dict[str, Any]) -> list[st
         return list(ALL_CHANNEL_NAMES)
     return enabled_channels
 
+def _resolve_path_by_cfg_key(
+    cfg_dict: dict[str, Any],
+    selector_key: str,
+) -> str:
+    """
+    按配置中的字段名选择当前样本路径。
+
+    输入参数:
+        - cfg_dict: dict[str, Any], 当前推理配置
+        - selector_key: str, 选择器配置名; 其值必须是当前 cfg_dict 中的路径字段名
+
+    输出:
+        - path_value: str, 解析出的路径字符串
+    """
+    # str, 资源字段名, 例如 cif_path / cif_gt_path / sim_map_path_cryoatom
+    source_key = str(_get_cfg(cfg_dict, selector_key, True))
+    # object, 资源字段值; 必须非空
+    path_value = _get_cfg(cfg_dict, source_key, True)
+    return str(path_value)
+
+
+def _resolve_forward_structure_path(cfg_dict: dict[str, Any]) -> str:
+    """
+    解析当前 forward 实际使用的结构路径。
+
+    输入参数:
+        - cfg_dict: dict[str, Any], 当前推理配置; structure_input_source 的值必须是结构路径字段名
+
+    输出:
+        - cif_path: str, 实际传给 load_from_raw_cif() 的结构路径
+    """
+    return _resolve_path_by_cfg_key(cfg_dict, "structure_input_source")
+
+
+def _resolve_gt_receptor_path(cfg_dict: dict[str, Any]) -> str:
+    """
+    解析 structure GT 中 compute_binding_labels 使用的受体结构路径。
+
+    输入参数:
+        - cfg_dict: dict[str, Any], 当前推理配置; gt_receptor_source 的值必须是结构路径字段名
+
+    输出:
+        - receptor_structure_path: str, 受体标注结构路径
+    """
+    return _resolve_path_by_cfg_key(cfg_dict, "gt_receptor_source")
+
+
 def _resolve_effective_sim_map_path(cfg_dict: dict[str, Any]) -> str | None:
     """
     解析当前 forward 可能需要的模拟密度图路径(不需要则返回None)。
 
     输入参数:
-        - cfg_dict: dict[str, Any], 当前推理配置
+        - cfg_dict: dict[str, Any], 当前推理配置; sim_map_source 的值必须是模拟图路径字段名
 
     输出:
         - sim_map_path: str | None, 仅启用 sim/diff/posdiff 通道时返回路径
@@ -900,8 +948,7 @@ def _resolve_effective_sim_map_path(cfg_dict: dict[str, Any]) -> str | None:
     needs_sim = any(name.split("_")[0] in {"sim", "diff", "posdiff"} for name in density_channel_names)
     if not needs_sim:
         return None
-    # str | None, 模拟密度图路径; 需要 sim 通道时由 load_from_raw_cif 负责 fail-fast
-    return _get_cfg(cfg_dict, "sim_map_path", False)
+    return _resolve_path_by_cfg_key(cfg_dict, "sim_map_source")
 
 def _resolve_gt_source(cfg_dict: dict[str, Any]) -> str:
     """
