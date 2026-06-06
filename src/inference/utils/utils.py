@@ -599,6 +599,7 @@ def export_selected_ligands_cif(
         sample_id=Path(cif_gt_path).stem,
         require_ligand=False,
         select_first_model=select_first_model,
+        allow_incomplete_backbone=True,
     )
     if parsed is None:
         return None
@@ -660,6 +661,7 @@ def export_gt_pocket_atoms_cif(
         sample_id=Path(cif_gt_path).stem,
         require_ligand=False,
         select_first_model=select_first_model,
+        allow_incomplete_backbone=True,
     )
     if parsed is None:
         return None

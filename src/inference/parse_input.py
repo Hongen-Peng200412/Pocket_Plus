@@ -207,7 +207,13 @@ def load_from_raw_cif(
         error_dir=error_dir,
         compute_density=compute_density,
         select_first_model=select_first_model,
+        allow_incomplete_backbone=True,
     )
+    if atom_info_result is None:
+        raise RuntimeError(
+            f"[parse_input.load_from_raw_cif] get_features_when_infer() 解析失败: {cif_path}\n"
+            "请检查 CIF/PDB 文件格式，或查看 error_dir 中的日志。"
+        )
     atom_info_dict = atom_info_result[0]
     # np.ndarray, (N_atom, 3), float32, 原子世界坐标(x,y,z)
     atom_coords = atom_info_dict["coords"].astype(np.float32, copy=False)
@@ -327,6 +333,7 @@ def load_gt_from_structure(
         sample_name,
         require_ligand=False,  # 推理时不强制要求配体存在；若无配体则返回全背景标签
         select_first_model=select_first_model,
+        allow_incomplete_backbone=True,
     )
     if parsed_ligand_data is None:
         raise RuntimeError(
@@ -343,6 +350,7 @@ def load_gt_from_structure(
             sample_name,
             require_ligand=False,
             select_first_model=select_first_model,
+            allow_incomplete_backbone=True,
         )
         if parsed_receptor_data is None:
             raise RuntimeError(
