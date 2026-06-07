@@ -501,6 +501,10 @@ class VolumePointStage1Model(nn.Module):
             point_name: mode_name
             for (point_name, _), mode_name in zip(self.point_fusion_items, self.point_fusion_modes)
         }
+        # list, 与 point_fusion_items 等长的 cube 初值列表; None 表示该 hook 非 weighted_cube
+        cube_init_list = list(sampler_cube_init) if sampler_cube_init is not None else [None] * len(self.point_fusion_items)
+        if len(cube_init_list) != len(self.point_fusion_items):
+            raise ValueError("sampler_cube_init 必须与 point_fusion_map / sampler_modes 等长。")
         # nn.ModuleDict, weighted_cube hook 的 per-hook 可学习正偏置(a/b/c, log 域保存) + log 温度; 其余 sampler 不建
         self.cube_weight_params = nn.ModuleDict()
         for (point_name, _), mode_name, init_tuple in zip(self.point_fusion_items, self.sampler_modes, cube_init_list):
@@ -615,10 +619,6 @@ class VolumePointStage1Model(nn.Module):
             raise ValueError("fusion_cube_chunk_size must be > 0")
 
         self.fusion_cube_chunk_size = int(fusion_cube_chunk_size)
-        # list, 与 point_fusion_items 等长的 cube 初值列表; None 表示该 hook 非 weighted_cube
-        cube_init_list = list(sampler_cube_init) if sampler_cube_init is not None else [None] * len(self.point_fusion_items)
-        if len(cube_init_list) != len(self.point_fusion_items):
-            raise ValueError("sampler_cube_init 必须与 point_fusion_map / sampler_modes 等长。")
 
 
 
