@@ -281,17 +281,18 @@ def postprocess_ligand_probability_map(
         - origin: np.ndarray, (3,), 世界坐标原点(x,y,z)
         - voxel_size: np.ndarray, (3,), 体素大小(x,y,z)
         - threshold: float, 初始概率阈值
-        - min_component_voxels: int, 最小实例体素数
         - filter_strength: str, "basic" 或 "advanced"
 
 
-        第一次过滤(base): 简单的单阈值连通分析 + 去除小连通域
+        第一次过滤(filter_strength = "basic"): 简单的单阈值连通分析 + 去除小连通域 + 合并近邻
         - connectivity_policy: str, 两阶段连通域策略, 如 "7_none"
-        - sigma_nearby: float, ligand 自身近邻高斯 sigma
-        - kernel_nearby: int, ligand 自身近邻高斯核大小
+        - min_component_voxels: int, 最小实例体素数
+        - merge_dist: float, 初步 instance 中心世界坐标合并阈值; <=0.0 表示跳过合并
 
 
         第二次过滤: 算 "概率得分"(用高斯滤波) + "响应得分"(按照正负得分系数) 
+        - sigma_nearby: float, ligand 自身近邻高斯 sigma
+        - kernel_nearby: int, ligand 自身近邻高斯核大小
         - receptor_pred: np.ndarray | None, (D,H,W), receptor 概率图
         - sigma_response: float, receptor 响应高斯 sigma
         - kernel_response: int, receptor 响应高斯核大小
@@ -300,8 +301,7 @@ def postprocess_ligand_probability_map(
 
         - voxel_score_min: float, advanced 低分体素删除阈值
         - instance_score_min: float, advanced 低均分 instance 删除阈值
-        - merge_dist: float, 初步 instance 中心世界坐标合并阈值; <=0.0 表示跳过合并
-
+    
     输出:
         - result: VoxelPostprocessResult, 后处理结果对象
     """

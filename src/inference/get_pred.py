@@ -490,6 +490,8 @@ def _merge_box_probability_into_full(
     value_sum[full_slices] += prob_patch * weight
     weight_sum[full_slices] += weight
 
+
+# ---------------- 主函数 -----------------
 def get_voxel_pred(
     model: torch.nn.Module,
     device: str | torch.device,

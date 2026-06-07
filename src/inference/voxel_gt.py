@@ -30,15 +30,15 @@ def _build_voxel_gt_from_ligand_coords(
 
     输出:
         - result: dict[str, Any], voxel GT 字典, 包含:
-            - "gt_ligand_mask": np.ndarray, (D,H,W), bool, 所有保留 ligand instance 的 union 前景并集
-            - "gt_instance_label": np.ndarray, (D,H,W), int32, union ligand instance 标签图, 0 表示背景
-            - "gt_ligand_mask_by_class_id": dict[int, np.ndarray], class_id -> (D,H,W), bool, 类别内 GT ligand mask
-            - "gt_instance_label_by_class_id": dict[int, np.ndarray], class_id -> (D,H,W), int32, 类别内 GT instance 标签
+            - "gt_ligand_mask": np.ndarray, (D,H,W), bool, 取值0/1: 这个体素处有/无 ligand
+            - "gt_instance_label": np.ndarray, (D,H,W), int32, union ligand instance 标签图, 取值为 0~所有配体总数(不论类别)
+            - "gt_ligand_mask_by_class_id": dict[int, np.ndarray], class_id -> (D,H,W), bool, 类别内 GT ligand mask, 取值为 0/1(是否是这个类别的配体)
+            - "gt_instance_label_by_class_id": dict[int, np.ndarray], class_id -> (D,H,W), int32, 类别内 GT instance 标签, 取值为 0~这个类别的总配体数
             - "gt_instance_meta": list[dict[str, Any]], 每个保留 ligand 的 instance 来源元信息
                 - candidate_id: int, 上游 ligand candidate ID
                 - class_id: int, 映射后的任务类别 ID
-                - union_instance_id: int, union instance 标签中的 ID
-                - class_instance_id: int, 类别内 instance 标签中的 ID
+                - union_instance_id: int, union instance 标签中的 ID(1~配体总数)
+                - class_instance_id: int, 类别内 instance 标签中的 ID(1~这个类别的配体数)
                 - voxel_count: int, 当前 ligand 写入 union GT 的体素数
     """
     origin = np.asarray(origin, dtype=np.float32).reshape(3)
@@ -57,9 +57,9 @@ def _build_voxel_gt_from_ligand_coords(
     )
     # np.ndarray, (D,H,W), int32, union GT instance 标签; 0表示背景
     gt_instance_label = np.zeros(grid_shape_zyx, dtype=np.int32)
-    # dict[int, np.ndarray], class_id -> (D,H,W), 类别内 GT instance 标签
+    # dict[int, np.ndarray], class_id -> (D,H,W), 这个类别的 GT instance 标签
     gt_instance_label_by_class_id: dict[int, np.ndarray] = {}
-    # dict[int, int], class_id -> 下一个类别内 instance ID
+    # dict[int, int], class_id -> 这个类别的下一个 instance ID
     next_class_instance_id: dict[int, int] = {}
     # list[dict[str, Any]], 每个保留 ligand 的 GT instance 来源元信息
     gt_instance_meta: list[dict[str, Any]] = []
@@ -89,7 +89,7 @@ def _build_voxel_gt_from_ligand_coords(
         # np.ndarray, (D,H,W), bool, 尚未被其他 GT instance 占用且属于当前 ligand 的 union 体素
         writable_mask = np.logical_and(instance_mask, gt_instance_label == 0)
         # np.ndarray, (D,H,W), int32, 当前类别内 GT instance 标签
-        class_instance_label = gt_instance_label_by_class_id[mapped_class_id]
+        class_instance_label = gt_instance_label_by_class_id[mapped_class_id]  # 绑定非拷贝
         # np.ndarray, (D,H,W), bool, 尚未被同类 GT instance 占用且属于当前 ligand 的体素
         class_writable_mask = np.logical_and(instance_mask, class_instance_label == 0)
         # int, 当前 ligand 在 union GT 中的 instance ID
@@ -153,15 +153,15 @@ def load_ligand_gt_from_labels_npz(
 
     输出:
         - result: dict[str, Any], voxel GT 字典, 包含:
-            - "gt_ligand_mask": np.ndarray, (D,H,W), bool, 所有保留 ligand instance 的 union 前景并集
-            - "gt_instance_label": np.ndarray, (D,H,W), int32, union ligand instance 标签图, 0 表示背景
-            - "gt_ligand_mask_by_class_id": dict[int, np.ndarray], class_id -> (D,H,W), bool, 类别内 GT ligand mask
-            - "gt_instance_label_by_class_id": dict[int, np.ndarray], class_id -> (D,H,W), int32, 类别内 GT instance 标签
+            - "gt_ligand_mask": np.ndarray, (D,H,W), bool, 取值0/1: 这个体素处有/无 ligand
+            - "gt_instance_label": np.ndarray, (D,H,W), int32, union ligand instance 标签图, 取值为 0~所有配体总数(不论类别)
+            - "gt_ligand_mask_by_class_id": dict[int, np.ndarray], class_id -> (D,H,W), bool, 类别内 GT ligand mask, 取值为 0/1(是否是这个类别的配体)
+            - "gt_instance_label_by_class_id": dict[int, np.ndarray], class_id -> (D,H,W), int32, 类别内 GT instance 标签, 取值为 0~这个类别的总配体数
             - "gt_instance_meta": list[dict[str, Any]], 每个保留 ligand 的 instance 来源元信息
                 - candidate_id: int, 上游 ligand candidate ID
                 - class_id: int, 映射后的任务类别 ID
-                - union_instance_id: int, union instance 标签中的 ID
-                - class_instance_id: int, 类别内 instance 标签中的 ID
+                - union_instance_id: int, union instance 标签中的 ID(1~配体总数)
+                - class_instance_id: int, 类别内 instance 标签中的 ID(1~这个类别的配体数)
                 - voxel_count: int, 当前 ligand 写入 union GT 的体素数
     """
     with np.load(labels_npz_path, allow_pickle=False) as data:
@@ -227,15 +227,15 @@ def load_ligand_gt_from_structure(
 
     输出:
         - result: dict[str, Any], voxel GT 字典, 包含:
-            - "gt_ligand_mask": np.ndarray, (D,H,W), bool, 所有保留 ligand instance 的 union 前景并集
-            - "gt_instance_label": np.ndarray, (D,H,W), int32, union ligand instance 标签图, 0 表示背景
-            - "gt_ligand_mask_by_class_id": dict[int, np.ndarray], class_id -> (D,H,W), bool, 类别内 GT ligand mask
-            - "gt_instance_label_by_class_id": dict[int, np.ndarray], class_id -> (D,H,W), int32, 类别内 GT instance 标签
+            - "gt_ligand_mask": np.ndarray, (D,H,W), bool, 取值0/1: 这个体素处有/无 ligand
+            - "gt_instance_label": np.ndarray, (D,H,W), int32, union ligand instance 标签图, 取值为 0~所有配体总数(不论类别)
+            - "gt_ligand_mask_by_class_id": dict[int, np.ndarray], class_id -> (D,H,W), bool, 类别内 GT ligand mask, 取值为 0/1(是否是这个类别的配体)
+            - "gt_instance_label_by_class_id": dict[int, np.ndarray], class_id -> (D,H,W), int32, 类别内 GT instance 标签, 取值为 0~这个类别的总配体数
             - "gt_instance_meta": list[dict[str, Any]], 每个保留 ligand 的 instance 来源元信息
                 - candidate_id: int, 上游 ligand candidate ID
                 - class_id: int, 映射后的任务类别 ID
-                - union_instance_id: int, union instance 标签中的 ID
-                - class_instance_id: int, 类别内 instance 标签中的 ID
+                - union_instance_id: int, union instance 标签中的 ID(1~配体总数)
+                - class_instance_id: int, 类别内 instance 标签中的 ID(1~这个类别的配体数)
                 - voxel_count: int, 当前 ligand 写入 union GT 的体素数
     """
     from src.inference.parse_input import load_gt_from_structure
