@@ -615,7 +615,7 @@ class VolumePointStage1Model(nn.Module):
                 f"Unsupported point_fusion_modes={unsupported_fusion_modes}, "
                 f"supported={sorted(supported_point_fusion_modes)}"
             )
-        if self.fusion_cube_chunk_size <= 0:
+        if int(fusion_cube_chunk_size) <= 0:
             raise ValueError("fusion_cube_chunk_size must be > 0")
 
         self.fusion_cube_chunk_size = int(fusion_cube_chunk_size)

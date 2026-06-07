@@ -303,7 +303,14 @@ def postprocess_ligand_probability_map(
         - instance_score_min: float, advanced 低均分 instance 删除阈值
     
     输出:
-        - result: VoxelPostprocessResult, 后处理结果对象
+        - result: VoxelPostprocessResult, 后处理结果对象(class VoxelPostprocessResult):
+                prob_map=prob_map,
+                score_map=score_map,
+                binary_mask_raw=binary_mask_raw,
+                instance_label_raw=instance_label_raw,
+                binary_mask_filtered=filtered_label > 0,
+                instance_label_filtered=filtered_label,
+                candidates=candidates,
     """
     if not (0.0 <= threshold <= 1.0):
         raise ValueError(f"threshold 必须在 [0,1], 实际为 {threshold}")
