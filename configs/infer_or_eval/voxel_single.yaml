@@ -90,8 +90,7 @@ instance_score_min: 0.0       # float, advanced 模式下实例级均分阈值
 #   - structure GT 的 ligand 固定来自 cif_gt_path, receptor 结构由 gt_receptor_source 选择
 eval_gt: false                    # bool, 是否构造 GT 并计算 voxel / instance 指标
 ligand_gt_distance_threshold: 1.7 # float, ligand GT 距离阈值(Å); 与训练 voxel_ligand_loss.hard_label_threshold 对齐
-alpha: 0.6                        # float, instance precision 判定中的包含率阈值
-beta: 0.6                         # float, instance recall 判定中的包含率阈值
+compute_instance_metrics: true    # bool, 是否计算 instance 级一对一匹配与 top-K; 覆盖率阈值固定 0.3/0.6, K 固定 3/4/5
 
 # --- 可视化 ---
 # run_voxel_single() 只有在 `vis_enable=true` 且 `vis_output_root` 非 null 时才调用 build_infer_vis_bundle()。

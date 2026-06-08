@@ -1,3 +1,6 @@
+"""
+已经有缓存, 根据它评估+调参
+"""
 from __future__ import annotations
 
 import copy
@@ -14,11 +17,19 @@ from joblib import Parallel, delayed
 from scipy.optimize import differential_evolution
 from tqdm import tqdm
 
-from src.inference.voxel_evaluator import evaluate_instance_mask, evaluate_voxel_mask
+from src.inference.voxel_evaluator import (
+    DEFAULT_COVERAGE_THRESHOLDS,
+    DEFAULT_TOPK_VALUES,
+    evaluate_global_instance_matching,
+    evaluate_topk_success,
+    evaluate_voxel_mask,
+    evaluate_voxel_pr_auc,
+)
 from src.inference.voxel_postprocess import postprocess_ligand_probability_map
 from src.inference.utils.voxel_types import VoxelPredCacheData
 
-# ----------------------------------- 保存/读取逻辑 -------------------------------------
+
+# ----------------------------------- 工具函数 -------------------------------------
 def _json_default(value: Any) -> Any:
     """
     将 numpy/path 等对象转换为可 JSON 序列化对象。
@@ -37,7 +48,95 @@ def _json_default(value: Any) -> Any:
         return str(value)
     raise TypeError(f"对象不可 JSON 序列化: {type(value)}")
 
+def _safe_div(numerator: float, denominator: float) -> float:
+    """
+    计算安全除法, 分母为 0 时返回 0.0。
 
+    输入参数:
+        - numerator: float, 分子
+        - denominator: float, 分母
+
+    输出:
+        - value: float, 除法结果或 0.0
+    """
+    if float(denominator) == 0.0:
+        return 0.0
+    return float(numerator) / float(denominator)
+
+def _extract_best_metrics(summary: dict[str, Any]) -> dict[str, Any]:
+    """
+    从单次评估 summary 中抽取写入 best_metrics 的指标键。
+
+    输入参数:
+        - summary: dict[str, Any], evaluate_postprocess_params_on_cache_set() 返回的汇总结果
+
+    输出:
+        - metrics: dict[str, Any], 含 avg_*、global_instance_*、*_success_ratio_* 与 objective_score
+    """
+    # dict[str, Any], 抽取出的指标键值
+    metrics: dict[str, Any] = {}
+    for key, value in summary.items():
+        if key == "objective_score" or key.startswith("avg_") or key.startswith("global_instance_") or "_success_ratio_" in key or key.startswith("pr_auc"):
+            metrics[key] = value
+    return metrics
+
+def _aggregate_global_instance_and_topk(per_sample: list[dict[str, Any]]) -> dict[str, float]:
+    """
+    将逐样本 instance 计数与 top-K 命中求和, 汇成数据集级 global instance 与 top-K 成功率指标。
+
+    输入参数:
+        - per_sample: list[dict[str, Any]], 每项含 num_pred_instances/num_gt_instances/tp_cov*/top*_success_cov*
+
+    输出:
+        - metrics: dict[str, float], 包含:
+            - "global_instance_precision_cov{tag}": float, Σtp / Σnum_pred
+            - "global_instance_recall_cov{tag}": float, Σtp / Σnum_gt
+            - "global_instance_f1_cov{tag}": float, 2PR/(P+R)
+            - "top{K}_success_ratio_cov{tag}": float, Σ命中 / 样本数
+    """
+    # int, 样本数
+    num_samples = len(per_sample)
+    # int, 全数据集预测 instance 总数(precision 分母)
+    sum_num_pred = sum(int(item["num_pred_instances"]) for item in per_sample)
+    # int, 全数据集 GT instance 总数(recall 分母)
+    sum_num_gt = sum(int(item["num_gt_instances"]) for item in per_sample)
+    # dict[str, float], 数据集级指标输出
+    metrics: dict[str, float] = {}
+    # list[str], 覆盖率标签集合(如 04/06), 来自 tp_cov* 键
+    coverage_tags = sorted({key[len("tp_cov"):] for key in per_sample[0] if key.startswith("tp_cov")})
+    for tag in coverage_tags:
+        # int, 该覆盖率阈值下全数据集匹配成功实例数
+        sum_tp = sum(int(item[f"tp_cov{tag}"]) for item in per_sample)
+        # float, 该覆盖率阈值下 global precision
+        precision = _safe_div(sum_tp, sum_num_pred)
+        # float, 该覆盖率阈值下 global recall
+        recall = _safe_div(sum_tp, sum_num_gt)
+        metrics[f"global_instance_precision_cov{tag}"] = precision
+        metrics[f"global_instance_recall_cov{tag}"] = recall
+        metrics[f"global_instance_f1_cov{tag}"] = _safe_div(2.0 * precision * recall, precision + recall)
+        if f"tp_pred_loose_cov{tag}" in per_sample[0] and f"tp_gt_loose_cov{tag}" in per_sample[0]:
+            # int/int, loose 口径下被任意 GT 命中的预测数、被任意预测命中的 GT 数
+            sum_tp_pred_loose = sum(int(item[f"tp_pred_loose_cov{tag}"]) for item in per_sample)
+            sum_tp_gt_loose = sum(int(item[f"tp_gt_loose_cov{tag}"]) for item in per_sample)
+            # float/float, loose 版数据集级 precision / recall / F1
+            precision_loose = _safe_div(sum_tp_pred_loose, sum_num_pred)
+            recall_loose = _safe_div(sum_tp_gt_loose, sum_num_gt)
+            metrics[f"global_instance_precision_loose_cov{tag}"] = precision_loose
+            metrics[f"global_instance_recall_loose_cov{tag}"] = recall_loose
+            metrics[f"global_instance_f1_loose_cov{tag}"] = _safe_div(2.0 * precision_loose * recall_loose, precision_loose + recall_loose)
+    # list[str], top-K 命中键集合(如 top3_success_cov03)
+    topk_keys = sorted(key for key in per_sample[0] if key.startswith("top") and "_success_cov" in key)
+    for key in topk_keys:
+        # int, 该 (K, 覆盖率) 组合下命中样本数
+        sum_hit = sum(int(item[key]) for item in per_sample)
+        metrics[key.replace("_success_cov", "_success_ratio_cov")] = _safe_div(sum_hit, num_samples)
+    return metrics
+
+
+
+
+
+# ----------------------------------- 保存/读取逻辑 -------------------------------------
 def save_voxel_prediction_cache(
     cache_path: str,
     ligand_pred: np.ndarray,
@@ -213,28 +312,23 @@ def evaluate_loaded_cached_sample_with_postprocess(
         - cache_path: str, voxel prediction cache 路径, 仅用于标记结果(不读取)
         - data: VoxelPredCacheData, 已加载的 voxel prediction cache 数据
         - postprocess_params: dict[str, Any], 后处理参数
-        - eval_params: dict[str, Any], 评估参数, 包含 alpha/beta
+        - eval_params: dict[str, Any], 评估参数, 包含:
+            - "compute_instance_metrics": bool, 是否计算 instance 级匹配与 top-K(Stage1 voxel-only 时为 False)
+            - "coverage_thresholds": tuple[float, ...], 覆盖率阈值集合; 默认 (0.3, 0.6)
+            - "topk_values": tuple[int, ...], top-K 取值集合; 默认 (3, 4, 5)
+            - "compute_pr_auc": bool, 是否计算体素 PR-AUC(阈值无关, 仅 test 阶段二分类置 True); 缺省 False
 
     输出:
-        - summary: dict[str, Any], 单样本后处理评估结果, 包含:
+        - summary: dict[str, Any], 单样本后处理评估结果, 始终包含:
             - "cache_path": str, 当前缓存路径
             - "num_candidates": int, 后处理后保留的 ligand 候选数
-            - "voxel_precision": float, 体素级精确率
-            - "voxel_recall": float, 体素级召回率
-            - "voxel_f1": float, 体素级 F1
-            - "voxel_iou": float, 体素级 IoU
-            - "voxel_dice": float, 体素级 Dice
-            - "instance_precision": float, instance 级精确率
-            - "instance_recall": float, instance 级召回率
-            - "instance_f1": float, instance 级 F1
-            - "tp": int, 体素级真阳性体素数
-            - "fp": int, 体素级假阳性体素数
-            - "fn": int, 体素级假阴性体素数
-            - "tn": int, 体素级真阴性体素数
+            - "voxel_precision/recall/f1/iou/dice": float, 体素级指标
+            - "tp/fp/fn/tn": int, 体素级混淆计数
+          当 compute_instance_metrics=True 时额外包含(供上层数据集级求和):
             - "num_pred_instances": int, 预测 instance 数
             - "num_gt_instances": int, GT instance 数
-            - "pred_instance_tp": int, 满足 precision 阈值的预测 instance 数
-            - "gt_instance_hit": int, 满足 recall 阈值的 GT instance 数
+            - "tp_cov{tag}": int, 该覆盖率阈值下 Hungarian 匹配成功实例数
+            - "top{K}_success_cov{tag}": int, 该样本 top-K 是否命中(0/1)
     """
     if data.gt_ligand_mask is None or data.gt_instance_label is None:
         raise ValueError(f"缓存缺少 GT 字段, 无法评估: {cache_path}")
@@ -258,16 +352,40 @@ def evaluate_loaded_cached_sample_with_postprocess(
         instance_score_min=float(postprocess_params["instance_score_min"]),
         merge_dist=float(postprocess_params["merge_dist"]),
     )
-    voxel_metrics = evaluate_voxel_mask(result.binary_mask_filtered, data.gt_ligand_mask)
-    instance_metrics = evaluate_instance_mask(
-        pred_instance_label=result.instance_label_filtered,
-        gt_instance_label=data.gt_instance_label,
-        alpha=float(eval_params["alpha"]),
-        beta=float(eval_params["beta"]),
-    )
     merged = {"cache_path": cache_path, "num_candidates": int(len(result.candidates))}
-    merged.update(voxel_metrics)
-    merged.update(instance_metrics)
+    merged.update(evaluate_voxel_mask(result.binary_mask_filtered, data.gt_ligand_mask))
+    if bool(eval_params["compute_instance_metrics"]):
+        # tuple[float, ...], 覆盖率阈值集合
+        coverage_thresholds = tuple(eval_params.get("coverage_thresholds", DEFAULT_COVERAGE_THRESHOLDS))
+        # tuple[int, ...], top-K 取值集合
+        topk_values = tuple(eval_params.get("topk_values", DEFAULT_TOPK_VALUES))
+        merged.update(
+            evaluate_global_instance_matching(
+                pred_instance_label=result.instance_label_filtered,
+                gt_instance_label=data.gt_instance_label,
+                coverage_thresholds=coverage_thresholds,
+            )
+        )
+        merged.update(
+            evaluate_topk_success(
+                pred_instance_label=result.instance_label_filtered,
+                gt_instance_label=data.gt_instance_label,
+                candidates=result.candidates,
+                topk_values=topk_values,
+                coverage_thresholds=coverage_thresholds,
+            )
+        )
+    # NOTE: PR-AUC 阈值无关、只在二分类(ligand_pred 为 (D,H,W))算; 仅 test 阶段开 compute_pr_auc, 不进搜索循环
+    if bool(eval_params.get("compute_pr_auc", False)) and np.asarray(data.ligand_pred).ndim == 3:
+        # dict[str, float | None], {"pr_auc": AP 或 None}
+        pr_auc_result = evaluate_voxel_pr_auc(
+            score_map=data.ligand_pred,
+            gt_ligand_mask=data.gt_ligand_mask,
+            hardmask=data.hardmask,
+        )
+        if pr_auc_result["pr_auc"] is None:
+            print(f"[pr_auc] 警告: 样本 {data.meta.get('sample_name', cache_path)} 有效区无 GT 正类, 跳过 PR-AUC, 不计入 macro")
+        merged["pr_auc"] = pr_auc_result["pr_auc"]
     return merged
 
 # 【disk】: 加载一个样本结果(data), 评估一套后处理参数, 产生这组缓存的 summary
@@ -282,7 +400,7 @@ def evaluate_cached_sample_with_postprocess(
     输入参数:
         - cache_path: str, voxel prediction cache 路径
         - postprocess_params: dict[str, Any], 后处理参数
-        - eval_params: dict[str, Any], 评估参数, 包含 alpha/beta
+        - eval_params: dict[str, Any], 评估参数, 包含 compute_instance_metrics/coverage_thresholds/topk_values
 
     输出:
         - metrics: dict[str, Any], 单样本后处理评估结果, 字段同 evaluate_loaded_cached_sample_with_postprocess()
@@ -296,7 +414,9 @@ def evaluate_cached_sample_with_postprocess(
     )
 
 
-def get_foreground_class_names_from_cache(data: VoxelPredCacheData) -> list[str]:
+
+# !!!!!!!!! (以 for_class 或 by_class 起头<————> 只用于多分类)二分类会略去 !!!!!!!!!
+def get_foreground_class_names_by_class(data: VoxelPredCacheData) -> list[str]:
     """
     从缓存数据中解析参与逐类评估的前景类别名。
 
@@ -318,8 +438,8 @@ def get_foreground_class_names_from_cache(data: VoxelPredCacheData) -> list[str]
         raise ValueError(f"缓存 class_names 长度 {len(class_names)} 小于 ligand_pred 通道数 {ligand_pred.shape[0]}")
     return class_names[1:ligand_pred.shape[0]]
 
-
-def select_class_cache_view(
+# !!!!!!!!! 略去 !!!!!!!!!
+def select_cache_view_for_class(
     data: VoxelPredCacheData,
     class_name: str,
 ) -> VoxelPredCacheData:
@@ -356,6 +476,7 @@ def select_class_cache_view(
             gt_instance_meta=data.gt_instance_meta,
             meta=meta,
         )
+
     if ligand_pred.ndim != 4:
         raise ValueError(f"ligand_pred 必须为 (D,H,W) 或 (C,D,H,W), 实际为 {ligand_pred.shape}")
     # list[str], (C,), softmax 任务类别名, 需要包含 background
@@ -400,7 +521,7 @@ def select_class_cache_view(
         meta=meta,
     )
 
-
+# !!!!!!!!! 略去 !!!!!!!!!
 def evaluate_loaded_cached_sample_for_class_with_postprocess(
     cache_path: str,
     data: VoxelPredCacheData,
@@ -416,24 +537,26 @@ def evaluate_loaded_cached_sample_for_class_with_postprocess(
         - data: VoxelPredCacheData, 已加载的 voxel prediction cache 数据
         - class_name: str, 当前评估的前景类别名
         - postprocess_params: dict[str, Any], 后处理参数
-        - eval_params: dict[str, Any], 评估参数, 包含 alpha/beta
+        - eval_params: dict[str, Any], 评估参数, 包含 compute_instance_metrics/coverage_thresholds/topk_values
 
     输出:
         - metrics: dict[str, Any], 单类别单样本后处理评估结果, 包含 class_name/class_id/cache_path
     """
     # VoxelPredCacheData, 单类别 3D 评估视图
-    class_data = select_class_cache_view(data, class_name)
+    class_data = select_cache_view_for_class(data, class_name)
+    # dict[str, Any], 多分类逐类路径强制关闭 PR-AUC(本轮仅二分类前景算 PR-AUC)
+    class_eval_params = {**eval_params, "compute_pr_auc": False}
     metrics = evaluate_loaded_cached_sample_with_postprocess(
         cache_path=cache_path,
         data=class_data,
         postprocess_params=postprocess_params,
-        eval_params=eval_params,
+        eval_params=class_eval_params,
     )
     metrics["class_name"] = class_name
     metrics["class_id"] = int(class_data.meta["selected_class_id"])
     return metrics
 
-
+# !!!!!!!!! 略去 !!!!!!!!!
 def evaluate_cached_sample_for_class_with_postprocess(
     cache_path: str,
     class_name: str,
@@ -447,7 +570,7 @@ def evaluate_cached_sample_for_class_with_postprocess(
         - cache_path: str, voxel prediction cache 路径
         - class_name: str, 当前评估的前景类别名
         - postprocess_params: dict[str, Any], 后处理参数
-        - eval_params: dict[str, Any], 评估参数, 包含 alpha/beta
+        - eval_params: dict[str, Any], 评估参数, 包含 compute_instance_metrics/coverage_thresholds/topk_values
 
     输出:
         - metrics: dict[str, Any], 单类别单样本后处理评估结果
@@ -480,22 +603,54 @@ def _summarize_postprocess_metrics(
     输出:
         - summarys: dict[str, Any], 在 per_sample(summary) 的基础上添加逐样本(在 postprocess_params 里每个参数上的)汇总结果
     """
-    metric_names = [
+    # list[str], 始终逐样本平均的 voxel 级指标(instance 指标已改为数据集级求和, 不再逐样本平均)
+    voxel_metric_names = [
         "num_candidates",
         "voxel_precision",
         "voxel_recall",
         "voxel_f1",
         "voxel_iou",
         "voxel_dice",
-        "instance_precision",
-        "instance_recall",
-        "instance_f1",
     ]
     summarys: dict[str, Any] = {"per_sample": per_sample, "postprocess_params": dict(postprocess_params)}
-    for metric_name in metric_names:
+    for metric_name in voxel_metric_names:
         values = [float(item[metric_name]) for item in per_sample]
         summarys[f"avg_{metric_name}"] = float(np.mean(values))
+    # 仅当单样本含 instance 计数时(compute_instance_metrics=True), 追加数据集级 global instance + top-K 指标
+    if len(per_sample) > 0 and "num_pred_instances" in per_sample[0]:
+        summarys.update(_aggregate_global_instance_and_topk(per_sample))
+    # 仅当单样本含 pr_auc 时(compute_pr_auc=True), 追加 macro PR-AUC(空 GT 样本 pr_auc 为 None, 不计入)
+    if len(per_sample) > 0 and "pr_auc" in per_sample[0]:
+        # list[float], 有效(非 None)的逐样本 PR-AUC
+        valid_pr_auc = [float(item["pr_auc"]) for item in per_sample if item.get("pr_auc") is not None]
+        summarys["pr_auc_num_valid"] = len(valid_pr_auc)
+        if len(valid_pr_auc) > 0:
+            summarys["pr_auc_macro"] = float(np.mean(valid_pr_auc))
     return summarys
+
+# 用 summarys 算 score
+def _score_postprocess_summary(
+    summarys: dict[str, Any],
+    optimizer_params: dict[str, Any],
+) -> float:
+    """
+    根据单次参数评估 summarys 计算优化目标分数(score)。
+
+    输入参数:
+        - summarys: dict[str, Any], _summarize_postprocess_metrics(per_sample, postprocess_params) 返回的汇总结果
+        - optimizer_params: dict[str, Any], 优化器参数, 包含 objective_expr/fixed_search_params
+
+    输出:
+        - score: float, 当前参数组合的优化目标分数; 数值越大越好
+    """
+    # dict[str, Any], eval 可直接使用的局部变量; summarys 保留完整汇总对象
+    variables: dict[str, Any] = {"summarys": summarys}
+    for key, value in summarys.items():
+        if isinstance(value, (bool, np.bool_)):
+            continue
+        if isinstance(value, (int, float, np.integer, np.floating)):
+            variables[str(key)] = float(value)
+    return float(eval(str(optimizer_params["objective_expr"]), {}, variables))
 
 # 【已memory时】: 用多个样本结果(datas), 评估一套后处理参数, 产生这组缓存的 summarys
 def evaluate_loaded_postprocess_params_on_cache_set(
@@ -550,9 +705,9 @@ def evaluate_postprocess_params_on_cache_set(
             - "avg_voxel_f1": float, 全样本平均体素级 F1
             - "avg_voxel_iou": float, 全样本平均体素级 IoU
             - "avg_voxel_dice": float, 全样本平均体素级 Dice
-            - "avg_instance_precision": float, 全样本平均 instance 级精确率
-            - "avg_instance_recall": float, 全样本平均 instance 级召回率
-            - "avg_instance_f1": float, 全样本平均 instance 级 F1
+          当 compute_instance_metrics=True 时额外含数据集级指标:
+            - "global_instance_precision/recall/f1_cov03/cov06": float, 一对一匹配的 global instance 指标
+            - "top{3,4,5}_success_ratio_cov03/cov06": float, top-K 成功率
     """
     if len(cache_paths) == 0:
         raise ValueError("cache_paths 不能为空")
@@ -564,6 +719,9 @@ def evaluate_postprocess_params_on_cache_set(
     return _summarize_postprocess_metrics(per_sample, postprocess_params)
 
 
+
+
+# !!!!!!!!! 略去 !!!!!!!!!
 def evaluate_postprocess_params_on_cache_set_for_class(
     cache_paths: list[str],
     loaded_cache_items: list[tuple[str, VoxelPredCacheData]],
@@ -582,7 +740,7 @@ def evaluate_postprocess_params_on_cache_set_for_class(
         - cache_data_mode: str, 缓存读取模式, 可选 disk/memory
         - class_name: str, 当前评估的前景类别名
         - postprocess_params: dict[str, Any], 后处理参数
-        - eval_params: dict[str, Any], 评估参数, 包含 alpha/beta
+        - eval_params: dict[str, Any], 评估参数, 包含 compute_instance_metrics/coverage_thresholds/topk_values
         - n_jobs: int, joblib 并行 worker 数
 
     输出:
@@ -610,8 +768,7 @@ def evaluate_postprocess_params_on_cache_set_for_class(
     summarys["class_name"] = class_name
     return summarys
 
-
-def _macro_average_best_metrics(best_metrics_by_class: dict[str, dict[str, Any]]) -> dict[str, float]:
+def _macro_average_best_metrics_by_class(best_metrics_by_class: dict[str, dict[str, Any]]) -> dict[str, float]:
     """
     对逐类最优指标做 macro 平均。
 
@@ -638,29 +795,6 @@ def _macro_average_best_metrics(best_metrics_by_class: dict[str, dict[str, Any]]
     return macro_metrics
 
 
-# 用 summarys 算 score
-def _score_postprocess_summary(
-    summarys: dict[str, Any],
-    optimizer_params: dict[str, Any],
-) -> float:
-    """
-    根据单次参数评估 summarys 计算优化目标分数。
-
-    输入参数:
-        - summarys: dict[str, Any], evaluate_postprocess_params_on_cache_set() 返回的汇总结果
-        - optimizer_params: dict[str, Any], 优化器参数, 包含 objective_expr/fixed_search_params
-
-    输出:
-        - score: float, 当前参数组合的优化目标分数; 数值越大越好
-    """
-    # dict[str, Any], eval 可直接使用的局部变量; summarys 保留完整汇总对象
-    variables: dict[str, Any] = {"summarys": summarys}
-    for key, value in summarys.items():
-        if isinstance(value, (bool, np.bool_)):
-            continue
-        if isinstance(value, (int, float, np.integer, np.floating)):
-            variables[str(key)] = float(value)
-    return float(eval(str(optimizer_params["objective_expr"]), {}, variables))
 
 
 
@@ -751,7 +885,7 @@ def optimize_postprocess_params(
         best_summary = evaluate_params({})
         return {
             "best_params": best_summary["postprocess_params"],
-            "best_metrics": {k: v for k, v in best_summary.items() if k.startswith("avg_") or k == "objective_score"},
+            "best_metrics": _extract_best_metrics(best_summary),
             "history": history,
         }
 
@@ -768,7 +902,7 @@ def optimize_postprocess_params(
             raise RuntimeError("grid 搜索未产生任何结果")
         return {
             "best_params": best_summary["postprocess_params"],
-            "best_metrics": {k: v for k, v in best_summary.items() if k.startswith("avg_") or k == "objective_score"},
+            "best_metrics": _extract_best_metrics(best_summary),
             "history": history,
         }
 
@@ -794,7 +928,7 @@ def optimize_postprocess_params(
         best_summary = evaluate_params(best_search_params)
         return {
             "best_params": best_summary["postprocess_params"],
-            "best_metrics": {k: v for k, v in best_summary.items() if k.startswith("avg_") or k == "objective_score"},
+            "best_metrics": _extract_best_metrics(best_summary),
             "history": history,
             "optimizer_fun": float(de_result.fun),
         }
@@ -805,11 +939,7 @@ def optimize_postprocess_params(
 
 
 
-
-
-
-
-
+# !!!! 多分类 !!!!
 def _optimize_postprocess_params_for_class(
     cache_paths: list[str],
     loaded_cache_items: list[tuple[str, VoxelPredCacheData]],
@@ -834,7 +964,7 @@ def _optimize_postprocess_params_for_class(
         - fixed_postprocess_params: dict[str, Any], 固定后处理参数
         - search_space: dict[str, Any], 当前类别的参数搜索空间
         - search_strategy: str, 搜索策略, 可选 grid/differential_evolution
-        - eval_params: dict[str, Any], 评估参数, 包含 alpha/beta
+        - eval_params: dict[str, Any], 评估参数, 包含 compute_instance_metrics/coverage_thresholds/topk_values
         - optimizer_params: dict[str, Any], 优化器参数, 包含 objective_expr/fixed_search_params
         - n_jobs: int, 并行 worker 数
         - show_progress: bool, 是否显示参数组合搜索进度条
@@ -893,7 +1023,7 @@ def _optimize_postprocess_params_for_class(
         best_summary = evaluate_params({})
         return {
             "best_params": best_summary["postprocess_params"],
-            "best_metrics": {k: v for k, v in best_summary.items() if k.startswith("avg_") or k == "objective_score"},
+            "best_metrics": _extract_best_metrics(best_summary),
             "history": history,
         }
     if search_strategy == "grid":
@@ -911,7 +1041,7 @@ def _optimize_postprocess_params_for_class(
             raise RuntimeError(f"类别 {class_name} 的 grid 搜索未产生任何结果")
         return {
             "best_params": best_summary["postprocess_params"],
-            "best_metrics": {k: v for k, v in best_summary.items() if k.startswith("avg_") or k == "objective_score"},
+            "best_metrics": _extract_best_metrics(best_summary),
             "history": history,
         }
     # list[str], 当前类别 differential_evolution 的搜索参数名列表
@@ -952,7 +1082,6 @@ def _optimize_postprocess_params_for_class(
         "optimizer_fun": float(de_result.fun),
     }
 
-
 def optimize_postprocess_params_by_class(
     cache_paths: list[str],
     loaded_cache_items: list[tuple[str, VoxelPredCacheData]],
@@ -977,7 +1106,7 @@ def optimize_postprocess_params_by_class(
         - search_space: dict[str, Any], 全局参数搜索空间
         - search_space_by_class: dict[str, dict[str, Any]], 类别名到局部搜索空间覆盖项的映射
         - search_strategy: str, 搜索策略, 可选 grid/differential_evolution
-        - eval_params: dict[str, Any], 评估参数, 包含 alpha/beta
+        - eval_params: dict[str, Any], 评估参数, 包含 compute_instance_metrics/coverage_thresholds/topk_values
         - optimizer_params: dict[str, Any], 优化器参数, 包含 objective_expr/fixed_search_params
         - n_jobs: int, 并行 worker 数
         - show_progress: bool, 是否显示参数组合搜索进度条
@@ -997,7 +1126,7 @@ def optimize_postprocess_params_by_class(
     else:
         raise ValueError(f"未知 cache_data_mode: {cache_data_mode}")
     # list[str], 可变长度, 不含 background 的前景类别名
-    class_names = get_foreground_class_names_from_cache(first_data)
+    class_names = get_foreground_class_names_by_class(first_data)
     if class_names == ["foreground"]:
         raise ValueError("optimize_postprocess_params_by_class 只接受多分类缓存")
 
@@ -1032,11 +1161,10 @@ def optimize_postprocess_params_by_class(
         "best_params": {"by_class": best_params_by_class},
         "best_metrics": {
             "by_class": best_metrics_by_class,
-            "macro": _macro_average_best_metrics(best_metrics_by_class),
+            "macro": _macro_average_best_metrics_by_class(best_metrics_by_class),
         },
         "history": {"by_class": history_by_class},
     }
-
 
 def write_best_by_class_csv(
     best_metrics_by_class: dict[str, dict[str, Any]],
@@ -1067,9 +1195,8 @@ def write_best_by_class_csv(
         "avg_voxel_f1",
         "avg_voxel_iou",
         "avg_voxel_dice",
-        "avg_instance_precision",
-        "avg_instance_recall",
-        "avg_instance_f1",
+        "global_instance_f1_cov03",
+        "global_instance_f1_cov06",
         "best_params_json",
     ]
     with open(csv_path, "w", encoding="utf-8", newline="") as f:
@@ -1092,7 +1219,7 @@ def generate_param_grid(search_space: dict[str, Any]) -> list[dict[str, Any]]:
     从离散搜索空间生成参数网格。
 
     输入参数:
-        - search_space: dict[str, Any], 描述参数空间。单个条目形如: threshold: {type: float, min: 0.05, max: 0.95, step: 0.10}
+        - search_space: dict[str, Any], 描述参数空间。单个条目形如———— threshold: {type: float, min: 0.05, max: 0.95, step: 0.10}
 
     输出:
         - grid: list[dict[str, Any]], 可变长度, 参数组合列表

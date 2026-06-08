@@ -825,6 +825,7 @@ def write_pymol_vis_script(
     vis_paths: dict,
     instance_label: np.ndarray,
     out_path: str,
+    extra_map_paths: list = None,
 ) -> str:
     """
     生成 PyMOL 启动脚本, 打开后自动加载当前样本可视化文件并按预测 instance 建组。
@@ -833,6 +834,7 @@ def write_pymol_vis_script(
         - vis_paths: dict, build_infer_vis_bundle() 已写出的路径字典, 包含 root_dir/gt_structure/pred_instances 等路径
         - instance_label: np.ndarray | None, (D, H, W), 预测 instance 标签, 0 为背景, 正整数为 instance_id
         - out_path: str, .pml 脚本输出路径
+        - extra_map_paths: list[str] | None, 额外加载到 extra 分组的已存在体素图路径(如 baseline 原始差图)
 
     使用说明:
         - 在 PyMOL 中打开 out_path, 不要单独打开 pred/instances_pred.cif。
@@ -880,6 +882,14 @@ def write_pymol_vis_script(
     _append_load(lines, "pred_density_binary", "pred_density_binary_map", "pred_density", [])
     _append_load(lines, "pred_density", "pred_density_masked_map", "pred_density", [])
     _append_load(lines, "pred_density_prob", "pred_density_prob_map", "pred_density", [])
+
+    # 额外体素图(如 baseline 原始差图): 已存在文件直接加载到 extra 分组, 与结构/密度对齐查看
+    for extra_path in (extra_map_paths or []):
+        if extra_path and os.path.exists(extra_path):
+            # str, PyMOL 对象名, 取文件名(去扩展名)
+            extra_obj = Path(extra_path).stem
+            lines.append(f'load "{_rel_pml_path(extra_path)}", {extra_obj}')
+            lines.append(f"group extra, {extra_obj}")
 
     # list[int], 预测 instance_id 列表, 仅保留正整数标签
     instance_ids = []
@@ -935,6 +945,7 @@ def build_infer_vis_bundle(
     pred_voxel_prob: np.ndarray = None,
     pred_instance_label: np.ndarray = None,
     write_pred_atom_coords: bool = True,
+    extra_map_paths: list = None,
 ) -> dict:
     """
     根据推断输入/输出打包可视化文件夹，结构为 output_root/<pdb_id>/{gt,pred}
@@ -960,6 +971,7 @@ def build_infer_vis_bundle(
         - pred_voxel_prob: np.ndarray | None, (D, H, W), float32, ligand 概率图
         - pred_instance_label: np.ndarray | None, (D, H, W), int32, 预测 instance 标签
         - write_pred_atom_coords: bool, 是否写出 pred_atom_coords 对应的预测原子点云
+        - extra_map_paths: list[str] | None, 额外加载到 PyMOL 的已存在体素图路径(如 baseline 原始差图 sidecar MRC); 不写文件, 仅登记进 result 与 PyMOL 脚本
 
     返回:
         - result: dict, 各个输出文件路径的汇总字典
@@ -987,6 +999,9 @@ def build_infer_vis_bundle(
             - open_in_pymol.pml: PyMOL 启动脚本, 自动加载可视化文件并把预测 instance 拆成 pred_instance_### 分组对象。
     """
     result = {}
+    # list[str], 额外加载的体素图中真实存在的路径(如 baseline 原始差图); 仅登记不写文件
+    existing_extra_map_paths = [str(p) for p in (extra_map_paths or []) if p and os.path.exists(str(p))]
+    result["extra_maps"] = existing_extra_map_paths
 
     # -------- 0. 样本 ID --------
     if not pdb_id:
@@ -1115,6 +1130,7 @@ def build_infer_vis_bundle(
             vis_paths=result,
             instance_label=pred_instance_label_array,
             out_path=os.path.join(root_dir, "open_in_pymol.pml"),
+            extra_map_paths=existing_extra_map_paths,
         )
     else:
         result["pred_instances"] = None
@@ -1122,6 +1138,7 @@ def build_infer_vis_bundle(
             vis_paths=result,
             instance_label=None,
             out_path=os.path.join(root_dir, "open_in_pymol.pml"),
+            extra_map_paths=existing_extra_map_paths,
         )
 
     return result
@@ -1201,21 +1218,25 @@ def write_voxel_batch_excel(results: list[dict], output_root: str) -> str:
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "VoxelResults"
-    headers = [
-        "sample_name",
-        "num_candidates",
+    # list[str], 逐样本指标列(voxel 指标 + instance 计数 + top-K 命中); 旧 instance_precision/recall/f1 已废弃
+    metric_headers = [
         "voxel_precision",
         "voxel_recall",
         "voxel_f1",
         "voxel_iou",
         "voxel_dice",
-        "instance_precision",
-        "instance_recall",
-        "instance_f1",
         "num_pred_instances",
         "num_gt_instances",
-        "error",
+        "tp_cov03",
+        "tp_cov06",
+        "top3_success_cov03",
+        "top4_success_cov03",
+        "top5_success_cov03",
+        "top3_success_cov06",
+        "top4_success_cov06",
+        "top5_success_cov06",
     ]
+    headers = ["sample_name", "num_candidates", *metric_headers, "error"]
     ws.append(headers)
     for cell in ws[1]:
         cell.font = Font(bold=True)
@@ -1223,33 +1244,21 @@ def write_voxel_batch_excel(results: list[dict], output_root: str) -> str:
     metric_rows: list[dict] = []
     for row in results:
         if row.get("error"):
-            ws.append([row.get("sample_name", ""), "", "", "", "", "", "", "", "", "", "", "", row["error"]])
+            ws.append([row.get("sample_name", ""), ""] + [""] * len(metric_headers) + [row["error"]])
             continue
         metrics = row.get("metrics", {}) or {}
-        ws.append(
-            [
-                row.get("sample_name", ""),
-                row.get("num_candidates", ""),
-                metrics.get("voxel_precision", ""),
-                metrics.get("voxel_recall", ""),
-                metrics.get("voxel_f1", ""),
-                metrics.get("voxel_iou", ""),
-                metrics.get("voxel_dice", ""),
-                metrics.get("instance_precision", ""),
-                metrics.get("instance_recall", ""),
-                metrics.get("instance_f1", ""),
-                metrics.get("num_pred_instances", ""),
-                metrics.get("num_gt_instances", ""),
-                "",
-            ]
-        )
+        # list, 当前样本一行: sample_name + num_candidates + 各指标(缺失留空) + error 空列
+        excel_row = [row.get("sample_name", ""), row.get("num_candidates", "")]
+        excel_row.extend(metrics.get(name, "") for name in metric_headers)
+        excel_row.append("")
+        ws.append(excel_row)
         if metrics:
             metric_rows.append(metrics)
 
     if metric_rows:
         ws.append([])
         summary = ["MEAN", ""]
-        for metric_name in headers[2:12]:
+        for metric_name in metric_headers:
             values = [float(item[metric_name]) for item in metric_rows if metric_name in item]
             summary.append(float(np.mean(values)) if values else "")
         summary.append("")

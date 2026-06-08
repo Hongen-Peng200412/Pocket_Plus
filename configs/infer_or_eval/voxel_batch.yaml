@@ -82,8 +82,7 @@ instance_score_min: 0.0       # float, advanced 模式下实例级均分阈值
 eval_gt: false                    # bool, 是否为每个样本构造 GT 并计算 voxel / instance 指标
 labels_npz_path: null             # str|null, 全局默认 labels.npz 路径; raw_pairs_json 中同名字段若非 null, 会逐样本覆盖
 ligand_gt_distance_threshold: 1.7 # float, ligand GT 距离阈值(Å); 与训练 voxel_ligand_loss.hard_label_threshold 对齐
-alpha: 0.6                        # float, instance precision 判定中的包含率阈值
-beta: 0.6                         # float, instance recall 判定中的包含率阈值
+compute_instance_metrics: true    # bool, 是否计算 instance 级一对一匹配与 top-K; 覆盖率阈值固定 0.3/0.6, K 固定 3/4/5
 
 # --- 可视化与单样本占位默认值 ---
 # 下列字段本质上是“批量默认值”:

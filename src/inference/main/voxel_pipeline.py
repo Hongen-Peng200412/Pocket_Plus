@@ -12,7 +12,14 @@ import torch
 from src.datasets.density_channel_builder import ALL_CHANNEL_NAMES
 from src.inference.get_pred import get_voxel_pred
 from src.inference.parse_input import load_from_raw_cif, split_volume_to_boxes
-from src.inference.voxel_evaluator import evaluate_instance_mask, evaluate_voxel_mask
+from src.inference.voxel_evaluator import (
+    DEFAULT_COVERAGE_THRESHOLDS,
+    DEFAULT_TOPK_VALUES,
+    evaluate_global_instance_matching,
+    evaluate_topk_success,
+    evaluate_voxel_mask,
+    evaluate_voxel_pr_auc,
+)
 from src.inference.utils.yield_json_from_raw_sample import load_raw_pairs
 from src.inference.voxel_gt import load_ligand_gt_from_labels_npz, load_ligand_gt_from_structure
 from src.inference.voxel_postprocess import postprocess_ligand_probability_map
@@ -127,7 +134,7 @@ def _build_cache_or_forward(
     # list[str], (C,), 当前任务类别名; 二分类默认 background/foreground
     class_names = [str(v) for v in (_get_cfg(cfg_dict, "class_names", False) or ["background", "foreground"])]
     # tuple[dict[str, np.ndarray] | None, dict[str, np.ndarray] | None], 类别名粒度的逐类 GT
-    gt_ligand_mask_by_class, gt_instance_label_by_class = _gt_by_class_id_to_name(gt_data, class_names)
+    gt_ligand_mask_by_class, gt_instance_label_by_class = _gt_id_to_name(gt_data, class_names)
     meta = {
         "sample_name": _resolve_sample_name(cfg_dict),
         "cache_path": cache_path,
@@ -209,7 +216,7 @@ def run_voxel_single(
     _save_probability_outputs(output_dir, cache_data)
 
     post_params = _postprocess_params_from_cfg(cfg_dict)
-    post_results_by_class = _postprocess_cache_by_class(cache_data, post_params)
+    post_results_by_class = _postprocess_cache(cache_data, post_params)
     first_class_name, post_result = next(iter(post_results_by_class.items()))
     if first_class_name == "foreground":
         _save_postprocess_outputs(output_dir, post_result)
@@ -219,13 +226,10 @@ def run_voxel_single(
             os.makedirs(class_dir, exist_ok=True)
             _save_postprocess_outputs(class_dir, class_post_result)
 
-    metrics = _evaluate_post_results_by_class(
+    metrics = _evaluate_post_results(
         post_results_by_class=post_results_by_class,
         cache_data=cache_data,
-        eval_params={
-            "alpha": float(_get_cfg(cfg_dict, "alpha", True)),
-            "beta": float(_get_cfg(cfg_dict, "beta", True)),
-        },
+        eval_params=_eval_params_from_cfg(cfg_dict),
     )
     if metrics is not None:
         _write_json(os.path.join(output_dir, "metrics.json"), metrics)
@@ -249,6 +253,7 @@ def run_voxel_single(
             pred_voxel_prob=cache_data.ligand_pred,
             pred_instance_label=post_result.instance_label_filtered,
             write_pred_atom_coords=False,
+            extra_map_paths=_resolve_extra_map_paths(cache_data),
         )
 
     # dict[str, int], 前景类别名到后处理候选数的映射
@@ -364,7 +369,7 @@ def _save_best_outputs_from_cache(
     输入参数:
         - cache_paths: list[str], 可变长度, 缓存路径列表
         - best_params: dict[str, Any], 最优后处理参数
-        - eval_params: dict[str, Any], 评估参数, 仅用了 eval_params["alpha"]、eval_params["beta"]
+        - eval_params: dict[str, Any], 评估参数, 含 compute_instance_metrics / coverage_thresholds / topk_values
         - cfg_dict: dict[str, Any], param_search 配置; vis_enable=true 且 vis_output_root 非空时输出最优参数可视化
         - output_root: str, 输出根目录
 
@@ -387,7 +392,7 @@ def _save_best_outputs_from_cache(
         sample_name = str(cache_data.meta.get("sample_name", Path(cache_path).stem))
         sample_dir = os.path.join(best_root, sample_name)
         os.makedirs(sample_dir, exist_ok=True)
-        post_results_by_class = _postprocess_cache_by_class(cache_data, dict(best_params))
+        post_results_by_class = _postprocess_cache(cache_data, dict(best_params))
         first_class_name, post_result = next(iter(post_results_by_class.items()))
         _save_probability_outputs(sample_dir, cache_data)
         if first_class_name == "foreground":
@@ -397,13 +402,10 @@ def _save_best_outputs_from_cache(
                 class_dir = os.path.join(sample_dir, class_name)
                 os.makedirs(class_dir, exist_ok=True)
                 _save_postprocess_outputs(class_dir, class_post_result)
-        metrics = _evaluate_post_results_by_class(
+        metrics = _evaluate_post_results(
             post_results_by_class=post_results_by_class,
             cache_data=cache_data,
-            eval_params={
-                "alpha": float(eval_params["alpha"]),
-                "beta": float(eval_params["beta"]),
-            },
+            eval_params=eval_params,
         )
         if metrics is not None:
             _write_json(os.path.join(sample_dir, "metrics.json"), metrics)
@@ -426,6 +428,7 @@ def _save_best_outputs_from_cache(
                 pred_voxel_prob=cache_data.ligand_pred,
                 pred_instance_label=post_result.instance_label_filtered,
                 write_pred_atom_coords=False,
+                extra_map_paths=_resolve_extra_map_paths(cache_data),
             )
         # dict[str, int], 前景类别名到最优参数下候选数的映射
         num_candidates_by_class = {class_name: int(len(class_result.candidates)) for class_name, class_result in post_results_by_class.items()}
@@ -467,10 +470,7 @@ def run_voxel_param_search(
     cache_paths = _collect_or_build_cache_paths(cfg_dict, model, device)
     fixed_postprocess_params = _postprocess_params_from_cfg(cfg_dict)
     search_space = _get_cfg(cfg_dict, "search_space", True)
-    eval_params = {
-        "alpha": float(_get_cfg(cfg_dict, "alpha", True)),
-        "beta": float(_get_cfg(cfg_dict, "beta", True)),
-    }
+    eval_params = _eval_params_from_cfg(cfg_dict)
     optimizer_params = {
         "objective_expr": str(_get_cfg(cfg_dict, "objective_expr", True)),
         "fixed_search_params": list(_get_cfg(cfg_dict, "fixed_search_params", True)),
@@ -572,7 +572,7 @@ def _resolve_cache_prediction_ndim(
 
     输入参数:
         - cache_paths: list[str], 可变长度, 缓存路径列表; disk 模式使用
-        - loaded_cache_items: list[tuple[str, VoxelPredCacheData]], 可变长度, 已加载缓存; memory 模式使用
+        - loaded_cache_items: list[tuple[str, VoxelPredCacheData]] 或 [], 可变长度, 已加载缓存; memory 模式使用
         - cache_data_mode: str, 缓存读取模式, 可选 disk/memory
 
     输出:
@@ -627,10 +627,56 @@ def _average_numeric_metrics_by_class(metrics_by_class: dict[str, dict[str, Any]
     return macro_metrics
 
 
-def _evaluate_post_results_by_class(
+def _evaluate_single_post_result(
+    post_result: VoxelPostprocessResult,
+    gt_ligand_mask: np.ndarray,
+    gt_instance_label: np.ndarray,
+    eval_params: dict[str, Any],
+) -> dict[str, Any]:
+    """
+    单个类别(或二分类前景)的后处理结果进行评估指标: evaluate_voxel_mask, evaluate_global_instance_matching, evaluate_topk_success(后两者可选)
+
+    输入参数:
+        - post_result: VoxelPostprocessResult, 当前类别的后处理结果
+        - gt_ligand_mask: np.ndarray, (D,H,W), 当前类别 GT ligand 掩码
+        - gt_instance_label: np.ndarray, (D,H,W), 当前类别 GT instance 标签
+        - eval_params: dict[str, Any], 评估参数, 含 compute_instance_metrics/coverage_thresholds/topk_values
+
+    输出:
+        - metrics: dict[str, Any], voxel 指标; compute_instance_metrics=True 时追加 instance 计数与 top-K 0/1
+    """
+    # dict[str, Any], 当前类别平铺 metrics
+    metrics: dict[str, Any] = {}
+    metrics.update(evaluate_voxel_mask(post_result.binary_mask_filtered, gt_ligand_mask))
+    if bool(eval_params["compute_instance_metrics"]):
+        # tuple[float, ...], 覆盖率阈值集合
+        coverage_thresholds = tuple(eval_params.get("coverage_thresholds", DEFAULT_COVERAGE_THRESHOLDS))
+        # tuple[int, ...], top-K 取值集合
+        topk_values = tuple(eval_params.get("topk_values", DEFAULT_TOPK_VALUES))
+        metrics.update(
+            evaluate_global_instance_matching(
+                pred_instance_label=post_result.instance_label_filtered,
+                gt_instance_label=gt_instance_label,
+                coverage_thresholds=coverage_thresholds,
+            )
+        )
+        metrics.update(
+            evaluate_topk_success(
+                pred_instance_label=post_result.instance_label_filtered,
+                gt_instance_label=gt_instance_label,
+                candidates=post_result.candidates,
+                topk_values=topk_values,
+                coverage_thresholds=coverage_thresholds,
+            )
+        )
+    metrics["num_candidates"] = int(len(post_result.candidates))
+    return metrics
+
+
+def _evaluate_post_results(
     post_results_by_class: dict[str, VoxelPostprocessResult],
     cache_data: VoxelPredCacheData,
-    eval_params: dict[str, float],
+    eval_params: dict[str, Any],
 ) -> dict[str, Any] | None:
     """
     根据二分类或多分类后处理结果计算评估指标。
@@ -638,7 +684,7 @@ def _evaluate_post_results_by_class(
     输入参数:
         - post_results_by_class: dict[str, VoxelPostprocessResult], 前景类别名到后处理结果的映射
         - cache_data: VoxelPredCacheData, 当前样本缓存数据, 可包含 union GT 和逐类 GT
-        - eval_params: dict[str, float], 评估参数, 包含 alpha/beta
+        - eval_params: dict[str, Any], 评估参数, 含 compute_instance_metrics/coverage_thresholds/topk_values
 
     输出:
         - metrics: dict[str, Any] | None, 二分类为平铺指标, 多分类为 by_class/macro 嵌套指标; 无 GT 时为 None
@@ -649,19 +695,23 @@ def _evaluate_post_results_by_class(
     if first_class_name == "foreground":
         if cache_data.gt_ligand_mask is None or cache_data.gt_instance_label is None:
             return None
-        # dict[str, Any], 二分类沿用平铺 metrics 格式
-        metrics: dict[str, Any] = {}
-        metrics.update(evaluate_voxel_mask(first_post_result.binary_mask_filtered, cache_data.gt_ligand_mask))
-        metrics.update(
-            evaluate_instance_mask(
-                pred_instance_label=first_post_result.instance_label_filtered,
-                gt_instance_label=cache_data.gt_instance_label,
-                alpha=float(eval_params["alpha"]),
-                beta=float(eval_params["beta"]),
-            )
+        metrics = _evaluate_single_post_result(
+            post_result=first_post_result,
+            gt_ligand_mask=cache_data.gt_ligand_mask,
+            gt_instance_label=cache_data.gt_instance_label,
+            eval_params=eval_params,
         )
-        metrics["num_candidates"] = int(len(first_post_result.candidates))
+        if bool(eval_params.get("compute_pr_auc", True)) and np.asarray(cache_data.ligand_pred).ndim == 3:
+            # dict[str, float | None], test 阶段 per-sample PR-AUC; summary macro 仍由 voxel_tuning 统一汇总
+            metrics.update(
+                evaluate_voxel_pr_auc(
+                    score_map=cache_data.ligand_pred,
+                    gt_ligand_mask=cache_data.gt_ligand_mask,
+                    hardmask=cache_data.hardmask,
+                )
+            )
         return metrics
+
     if cache_data.gt_ligand_mask_by_class is None or cache_data.gt_instance_label_by_class is None:
         if cache_data.gt_ligand_mask is None and cache_data.gt_instance_label is None:
             return None
@@ -671,19 +721,12 @@ def _evaluate_post_results_by_class(
     for class_name, post_result in post_results_by_class.items():
         if class_name not in cache_data.gt_ligand_mask_by_class or class_name not in cache_data.gt_instance_label_by_class:
             raise ValueError(f"缓存缺少类别 {class_name} 的逐类 GT")
-        # dict[str, Any], 当前前景类别的平铺 metrics
-        class_metrics: dict[str, Any] = {}
-        class_metrics.update(evaluate_voxel_mask(post_result.binary_mask_filtered, cache_data.gt_ligand_mask_by_class[class_name]))
-        class_metrics.update(
-            evaluate_instance_mask(
-                pred_instance_label=post_result.instance_label_filtered,
-                gt_instance_label=cache_data.gt_instance_label_by_class[class_name],
-                alpha=float(eval_params["alpha"]),
-                beta=float(eval_params["beta"]),
-            )
+        metrics_by_class[class_name] = _evaluate_single_post_result(
+            post_result=post_result,
+            gt_ligand_mask=cache_data.gt_ligand_mask_by_class[class_name],
+            gt_instance_label=cache_data.gt_instance_label_by_class[class_name],
+            eval_params=eval_params,
         )
-        class_metrics["num_candidates"] = int(len(post_result.candidates))
-        metrics_by_class[class_name] = class_metrics
     return {
         "by_class": metrics_by_class,
         "macro": _average_numeric_metrics_by_class(metrics_by_class),
@@ -790,13 +833,11 @@ def _merge_sample_pair_cfg(
             sample_cfg[key] = value
     return sample_cfg
 
-def _gt_by_class_id_to_name(
+def _gt_id_to_name(
     gt_data: dict[str, Any],
     class_names: list[str],
 ) -> tuple[dict[str, np.ndarray] | None, dict[str, np.ndarray] | None]:
     """
-    将 class_id 粒度的逐类 GT 转成 class_name 粒度。
-
     输入参数:
         - gt_data: dict[str, Any], load_ligand_gt_from_* 返回的 GT 字典
         - class_names: list[str], (C,), 任务类别名列表, 下标对应 class_id
@@ -885,12 +926,13 @@ def _resolve_density_channel_names_from_cfg(cfg_dict: dict[str, Any]) -> list[st
         return list(ALL_CHANNEL_NAMES)
     return enabled_channels
 
+
 def _resolve_path_by_cfg_key(
     cfg_dict: dict[str, Any],
     selector_key: str,
 ) -> str:
     """
-    按配置中的字段名选择当前样本路径。
+    按配置中的字段名( cif_path / cif_gt_path / sim_map_path_cryoatom)选择当前样本路径。
 
     输入参数:
         - cfg_dict: dict[str, Any], 当前推理配置
@@ -905,10 +947,9 @@ def _resolve_path_by_cfg_key(
     path_value = _get_cfg(cfg_dict, source_key, True)
     return str(path_value)
 
-
 def _resolve_forward_structure_path(cfg_dict: dict[str, Any]) -> str:
     """
-    解析当前 forward 实际使用的结构路径。
+    解析当前 forward 实际使用的PDB结构路径。
 
     输入参数:
         - cfg_dict: dict[str, Any], 当前推理配置; structure_input_source 的值必须是结构路径字段名
@@ -917,7 +958,6 @@ def _resolve_forward_structure_path(cfg_dict: dict[str, Any]) -> str:
         - cif_path: str, 实际传给 load_from_raw_cif() 的结构路径
     """
     return _resolve_path_by_cfg_key(cfg_dict, "structure_input_source")
-
 
 def _resolve_gt_receptor_path(cfg_dict: dict[str, Any]) -> str:
     """
@@ -930,7 +970,6 @@ def _resolve_gt_receptor_path(cfg_dict: dict[str, Any]) -> str:
         - receptor_structure_path: str, 受体标注结构路径
     """
     return _resolve_path_by_cfg_key(cfg_dict, "gt_receptor_source")
-
 
 def _resolve_effective_sim_map_path(cfg_dict: dict[str, Any]) -> str | None:
     """
@@ -949,6 +988,8 @@ def _resolve_effective_sim_map_path(cfg_dict: dict[str, Any]) -> str | None:
     if not needs_sim:
         return None
     return _resolve_path_by_cfg_key(cfg_dict, "sim_map_source")
+
+
 
 def _resolve_gt_source(cfg_dict: dict[str, Any]) -> str:
     """
@@ -1024,6 +1065,42 @@ def _postprocess_params_from_cfg(cfg_dict: dict[str, Any]) -> dict[str, Any]:
     return params
 
 
+def _eval_params_from_cfg(cfg_dict: dict[str, Any]) -> dict[str, Any]:
+    """
+    从配置中构造评估参数; coverage_thresholds / topk_values 为固定常量, 不参与搜索。
+
+    输入参数:
+        - cfg_dict: dict[str, Any], 当前推理配置; compute_instance_metrics 缺省时默认 True
+
+    输出:
+        - eval_params: dict[str, Any], 含 compute_instance_metrics / coverage_thresholds / topk_values / compute_pr_auc
+    """
+    # bool|None, 是否计算 instance/top-K; Stage1 voxel-only 时由调用方显式设 False, 缺省按 True
+    compute_instance_metrics = _get_cfg(cfg_dict, "compute_instance_metrics", False)
+    # bool|None, 是否计算体素 PR-AUC; 仅 test 阶段显式置 True, 缺省 False(不进搜索循环)
+    compute_pr_auc = _get_cfg(cfg_dict, "compute_pr_auc", False)
+    return {
+        "compute_instance_metrics": True if compute_instance_metrics is None else bool(compute_instance_metrics),
+        "coverage_thresholds": DEFAULT_COVERAGE_THRESHOLDS,
+        "topk_values": DEFAULT_TOPK_VALUES,
+        "compute_pr_auc": False if compute_pr_auc is None else bool(compute_pr_auc),
+    }
+
+def _resolve_extra_map_paths(cache_data: VoxelPredCacheData) -> list[str] | None:
+    """
+    解析可视化时需要额外加载的体素图路径: cache_data.meta.get("raw_diff_map_path") 。
+
+    输入参数:
+        - cache_data: VoxelPredCacheData, 当前样本缓存; baseline 缓存的 meta 含 raw_diff_map_path
+
+    输出:
+        - extra_map_paths: list[str] | None, 额外 MRC 路径列表; DL 缓存无该字段时为 None
+    """
+    # str | None, baseline 原始差图的 sidecar MRC 路径; DL 缓存为 None
+    raw_diff_map_path = cache_data.meta.get("raw_diff_map_path")
+    return [str(raw_diff_map_path)] if raw_diff_map_path else None
+
+
 
 
 # ----------------------------------------------- 用于保存/写入的的工具函数 ------------------------------------------------
@@ -1074,10 +1151,9 @@ def _postprocess_one_probability_map(
         merge_dist=float(post_params["merge_dist"]),
     )
 
-
-def _postprocess_cache_by_class(cache_data: VoxelPredCacheData, post_params: dict[str, Any]) -> dict[str, VoxelPostprocessResult]:
+def _postprocess_cache(cache_data: VoxelPredCacheData, post_params: dict[str, Any]) -> dict[str, VoxelPostprocessResult]:
     """
-    根据缓存中的概率图维度执行二分类或多分类后处理。
+    根据缓存中的概率图维度执行二分类或多分类后处理, 返回 VoxelPostprocessResult
 
     输入参数:
         - cache_data: VoxelPredCacheData, 当前样本的整图预测缓存
@@ -1125,12 +1201,13 @@ def _postprocess_cache_by_class(cache_data: VoxelPredCacheData, post_params: dic
     return results
 
 
+
 def _save_postprocess_outputs(
     output_dir: str,
     post_result: VoxelPostprocessResult,
 ) -> None:
     """
-    保存后处理输出数组和候选 JSON。
+    保存后处理输出(ligand_mask_filtered.npz、instance_label_filtered.npz)和候选 JSON(voxel_candidates.json)。
 
     输入参数:
         - output_dir: str, 当前样本输出目录
@@ -1193,6 +1270,8 @@ def _save_probability_outputs(
                 os.makedirs(class_dir, exist_ok=True)
                 np.savez(os.path.join(class_dir, "receptor_pred.npz"), receptor_pred=receptor_pred[class_id])
 
+
+
 def _write_param_search_excel(
     history: list[dict[str, Any]],
     output_root: str,
@@ -1223,33 +1302,33 @@ def _write_param_search_excel(
         "avg_voxel_f1",
         "avg_voxel_iou",
         "avg_voxel_dice",
-        "avg_instance_precision",
-        "avg_instance_recall",
-        "avg_instance_f1",
+        "global_instance_precision_cov03",
+        "global_instance_recall_cov03",
+        "global_instance_f1_cov03",
+        "global_instance_precision_cov06",
+        "global_instance_recall_cov06",
+        "global_instance_f1_cov06",
+        "top3_success_ratio_cov03",
+        "top4_success_ratio_cov03",
+        "top5_success_ratio_cov03",
+        "top3_success_ratio_cov06",
+        "top4_success_ratio_cov06",
+        "top5_success_ratio_cov06",
         "postprocess_params_json",
     ]
     ws.append(headers)
     for cell in ws[1]:
         cell.font = Font(bold=True)
 
+    # list[str], 指标列名(去掉首列 rank 与末列 postprocess_params_json); Stage1 voxel-only 时 instance/top-K 列留空
+    metric_headers = headers[1:-1]
     sorted_history = sorted(history, key=lambda item: float(item.get("objective_score", 0.0)), reverse=True)
     for rank, item in enumerate(sorted_history, start=1):
-        ws.append(
-            [
-                rank,
-                item.get("objective_score", ""),
-                item.get("avg_num_candidates", ""),
-                item.get("avg_voxel_precision", ""),
-                item.get("avg_voxel_recall", ""),
-                item.get("avg_voxel_f1", ""),
-                item.get("avg_voxel_iou", ""),
-                item.get("avg_voxel_dice", ""),
-                item.get("avg_instance_precision", ""),
-                item.get("avg_instance_recall", ""),
-                item.get("avg_instance_f1", ""),
-                json.dumps(item.get("postprocess_params", {}), ensure_ascii=False, sort_keys=True, default=_json_default),
-            ]
-        )
+        # list[Any], 当前行内容: rank + 各指标(缺失留空) + 后处理参数 JSON
+        row: list[Any] = [rank]
+        row.extend(item.get(name, "") for name in metric_headers)
+        row.append(json.dumps(item.get("postprocess_params", {}), ensure_ascii=False, sort_keys=True, default=_json_default))
+        ws.append(row)
     excel_path = os.path.join(output_root, "param_search_results.xlsx")
     wb.save(excel_path)
     return excel_path

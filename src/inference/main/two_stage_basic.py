@@ -1,35 +1,31 @@
 from __future__ import annotations
 
 """
-Linux 服务器用法示例:
-    -     sbatch sbatch/a100/1gpu.sbatch voxel_param_search "raw_pairs_json=/path/pairs.json ckpt_path=/path/model.ckpt output_root=inference_output/two_stage_basic cache_root=inference_output/voxel_cache stage1_objective_expr=avg_voxel_f1 stage2_objective_expr='avg_instance_f1 + 0.5*avg_voxel_f1'"
-    -     sbatch /home/penghongen/My_Project/Pocket_Plus/sbatch/a100/1gpu.sbatch voxel_param_search_16b "stage1_objective_expr='avg_voxel_f1' stage2_objective_expr='avg_instance_f1 + avg_voxel_f1'"
+固定自动化测试 pipeline 入口: 在验证集(protein_40)上选阈值, 在测试集(protein_110)上固定评估。
 
-！！！或者: 
-#!/bin/bash
-python /home/penghongen/My_Project/Pocket_Plus/src/inference/main/two_stage_basic.py \
-    --config="unet_c1" \
-    stage1_objective_expr='avg_voxel_f1' \
-    stage2_objective_expr='avg_instance_f1 + avg_voxel_f1'
+用法:
+    python src/inference/main/two_stage_basic.py \
+        --val_config unet_c1_stardard_40 \
+        --test_config unet_c1_stardard \
+        [key=value 覆盖项...]
 
 命令含义:
-    - voxel_param_search 是 configs/infer_or_eval/voxel_param_search.yaml 的配置名。
-    - 引号内是 Hydra/OmegaConf 覆盖项, 通常至少需要指定 raw_pairs_json、ckpt_path、output_root。
-    - stage1_objective_expr 控制第一阶段 threshold-only 搜索目标。
-    - stage2_objective_expr 控制第二阶段 threshold/min_component_voxels/connectivity_policy 搜索目标。
+    - --val_config: 验证配置名(或 YAML 路径), 对应 protein_40, 用于扫 threshold。
+    - --test_config: 测试配置名(或 YAML 路径), 对应 protein_110, 只做固定评估、不扫参。
+    - 末尾 key=value 覆盖项同时套用到两个配置(常见: ckpt_path、device、stage1_objective_expr、stage2_objective_expr);
+      路径/身份字段(output_root、cache_root、raw_pairs_json、vis_output_root、error_dir)请在各自 YAML 配好, 不要统一覆盖。
 
-工作内容:
-    1. 读取基础 voxel_param_search YAML, 合并命令行覆盖项。
-    2. 只加载一次 checkpoint 和训练配置。
-    3. 第一阶段固定 basic、min_component_voxels=5、connectivity_policy=7_none, 搜索 threshold=0.05..1.00。
-    4. 从第一阶段 best_params.json 读取最优 threshold。
-    5. 第二阶段固定 basic, 搜索 threshold=[best-0.08,best+0.04]、min_component_voxels=5..10、connectivity_policy=7_none/19_none/27_none。
+固定三段流程(均只加载一次 checkpoint, 验证与测试共用同一模型):
+    1. protein_40 Stage 1: 固定 basic / mcv=10 / 7_none / merge_dist=0.0 / vis=false, 只扫 threshold=0.00..1.00, objective=avg_voxel_f1, 不做 instance 运算。
+    2. protein_40 Stage 2: 固定 basic / mcv=10 / 7_none / merge_dist=5.0 / vis=true, 在 Stage1 best 阈值 ±0.10 内只扫 threshold, objective 含 global instance F1。
+    3. protein_110 fixed test: search_space={}, 用 Stage2 best 后处理参数固定评估, vis=true, 不扫参。
 
 输出目录:
-    - {output_root}/stage1_threshold_only: 第一阶段完整参数搜索产物, 包含 best_params.json、best_summary.json、per_sample_best_metrics.json、搜索历史 Excel 和 best_outputs/。
-    - {output_root}/stage2_threshold_component_policy: 第二阶段完整参数搜索产物, 文件结构同第一阶段, 不会覆盖第一阶段。
-    - {output_root}/stage1_best_threshold.txt: 第一阶段最优 threshold 的纯文本记录。
-    - {output_root}/two_stage_basic_summary.json: 两阶段输出目录、第一阶段最优 threshold、第二阶段搜索空间和两个 objective_expr 的汇总。
+    - {val_output_root}/stage1_threshold_only: 第一阶段参数搜索产物。
+    - {val_output_root}/stage2_threshold_component_policy: 第二阶段参数搜索产物。
+    - {test_output_root}: 第三阶段固定测试产物(直接写测试配置根目录)。
+    - {val_output_root}/stage1_best_threshold.txt: 第一阶段最优 threshold 纯文本。
+    - {val_output_root}/two_stage_basic_summary.json: 三段输出目录、Stage1 最优 threshold、Stage2 best 参数与测试侧字段汇总。
 """
 
 import argparse
@@ -71,7 +67,31 @@ ADVANCED_SEARCH_PARAM_NAMES = [
 STAGE1_OBJECTIVE_KEY = "stage1_objective_expr"
 STAGE2_OBJECTIVE_KEY = "stage2_objective_expr"
 DEFAULT_STAGE1_OBJECTIVE_EXPR = "avg_voxel_f1"
-DEFAULT_STAGE2_OBJECTIVE_EXPR = "avg_instance_f1 + 0.5*avg_voxel_f1"
+DEFAULT_STAGE2_OBJECTIVE_EXPR = "avg_voxel_f1 + global_instance_f1_cov03 + global_instance_f1_cov06"
+
+# dict[str, float | str], Stage1 threshold 默认搜索空间(DL); baseline 由配置 stage1_search_space 覆盖成高分位网格
+DEFAULT_STAGE1_THRESHOLD_SPACE = {"type": "float", "min": 0.0, "max": 1.0, "step": 0.01}
+# float, Stage2 局部窗口默认半宽(DL ±0.10); baseline 由配置 stage2_threshold_window_halfwidth 覆盖
+DEFAULT_STAGE2_WINDOW_HALFWIDTH = 0.10
+# float, Stage2 threshold 默认步长(DL 0.01); baseline 由配置 stage2_threshold_step 覆盖
+DEFAULT_STAGE2_THRESHOLD_STEP = 0.01
+
+# list[str], _postprocess_params_from_cfg() 读取的后处理参数名; test 阶段据此从 Stage2 best 复制固定参数
+POSTPROCESS_PARAM_NAMES = [
+    "threshold",
+    "min_component_voxels",
+    "filter_strength",
+    "connectivity_policy",
+    "sigma_nearby",
+    "kernel_nearby",
+    "sigma_response",
+    "kernel_response",
+    "score_add",
+    "score_minus",
+    "voxel_score_min",
+    "instance_score_min",
+    "merge_dist",
+]
 
 
 
@@ -84,10 +104,11 @@ def build_stage1_cfg(base_cfg: dict[str, Any], run_root: str) -> dict[str, Any]:
     stage_cfg["connectivity_policy"] = "7_none"
     stage_cfg["merge_dist"] = 0.0
     stage_cfg["search_strategy"] = "grid"
-    stage_cfg["vis_enable"] = True
-    stage_cfg["search_space"] = {
-        "threshold": {"type": "float", "min": 0.05, "max": 1.0, "step": 0.01},
-    }
+    stage_cfg["vis_enable"] = False
+    stage_cfg["compute_instance_metrics"] = False
+    # dict[str, float | str], Stage1 threshold 搜索空间; baseline 用配置 stage1_search_space 覆盖成高分位网格, DL 缺省 0..1 step 0.01
+    stage1_threshold_space = base_cfg.get("stage1_search_space") or DEFAULT_STAGE1_THRESHOLD_SPACE
+    stage_cfg["search_space"] = {"threshold": dict(stage1_threshold_space)}
     stage_cfg["objective_expr"] = str(stage_cfg.get(STAGE1_OBJECTIVE_KEY, DEFAULT_STAGE1_OBJECTIVE_EXPR))
     stage_cfg["fixed_search_params"] = [
         "min_component_voxels",
@@ -116,12 +137,17 @@ def build_stage2_cfg(base_cfg: dict[str, Any], run_root: str, best_threshold: fl
     stage_cfg["merge_dist"] = 5.0
     stage_cfg["search_strategy"] = "grid"
     stage_cfg["vis_enable"] = True
+    stage_cfg["compute_instance_metrics"] = True
+    # float, Stage2 局部窗口半宽; baseline 用配置 stage2_threshold_window_halfwidth 覆盖
+    window_halfwidth = float(base_cfg.get("stage2_threshold_window_halfwidth") or DEFAULT_STAGE2_WINDOW_HALFWIDTH)
+    # float, Stage2 threshold 步长; baseline 用配置 stage2_threshold_step 覆盖
+    window_step = float(base_cfg.get("stage2_threshold_step") or DEFAULT_STAGE2_THRESHOLD_STEP)
     if isinstance(best_threshold, dict):
         if len(best_threshold) == 0:
             raise ValueError("best_threshold by_class 映射不能为空")
         # dict[str, dict[str, Any]], class_name -> 当前类局部 threshold 搜索空间
         search_space_by_class = {
-            str(class_name): {"threshold": _threshold_window(float(threshold))}
+            str(class_name): {"threshold": _threshold_window(float(threshold), window_halfwidth, window_step)}
             for class_name, threshold in best_threshold.items()
         }
         # float, 用于保留 stage_cfg.threshold 的全类平均阈值, 实际逐类搜索会使用 search_space_by_class
@@ -135,7 +161,7 @@ def build_stage2_cfg(base_cfg: dict[str, Any], run_root: str, best_threshold: fl
     else:
         stage_cfg["threshold"] = float(best_threshold)
         stage_cfg["search_space"] = {
-            "threshold": _threshold_window(float(best_threshold)),
+            "threshold": _threshold_window(float(best_threshold), window_halfwidth, window_step),
             # "min_component_voxels": {"type": "int", "min": 5, "max": 10, "step": 1},
             # "connectivity_policy": {"values": ["7_none", "19_none", "27_none"]},
         }
@@ -146,9 +172,10 @@ def build_stage2_cfg(base_cfg: dict[str, Any], run_root: str, best_threshold: fl
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run two-stage basic voxel parameter search.")
-    parser.add_argument("--config", required=True, help="Config name under configs/infer_or_eval or YAML path.")
-    parser.add_argument("overrides", nargs="*", help="OmegaConf dotlist overrides, e.g. ckpt_path=... raw_pairs_json=...")
+    parser = argparse.ArgumentParser(description="固定三段流程: protein_40 选阈值, protein_110 固定测试。")
+    parser.add_argument("--val_config", required=True, help="验证配置名(protein_40)或 YAML 路径; 用于 Stage1/Stage2 扫阈值。")
+    parser.add_argument("--test_config", required=True, help="测试配置名(protein_110)或 YAML 路径; 用于固定测试。")
+    parser.add_argument("overrides", nargs="*", help="OmegaConf dotlist 覆盖项, 同时套用到两个配置, 例如 ckpt_path=... device=...")
     return parser.parse_args(argv)
 
 
@@ -179,23 +206,42 @@ def _stage_output_root(run_root: str, stage_name: str) -> str:
     return str(Path(run_root) / stage_name)
 
 
-def _threshold_window(best_threshold: float) -> dict[str, float | str]:
+def _threshold_step_decimals(step: float) -> int:
+    """
+    由步长推断窗口边界 round 的小数位数。
+
+    输入参数:
+        - step: float, threshold 步长, 如 0.01 / 0.0001
+
+    输出:
+        - decimals: int, 小数位数, 至少 2; 用于对窗口上下界做 round 避免浮点毛刺
+    """
+    # str, 步长字符串的小数部分(如 "0.0001" -> "0001")
+    fractional = repr(float(step)).split(".")[-1] if "." in repr(float(step)) else ""
+    return max(2, len(fractional))
+
+
+def _threshold_window(best_threshold: float, halfwidth: float, step: float) -> dict[str, float | str]:
     """
     基于第一阶段最优 threshold 构造第二阶段局部搜索窗口。
 
     输入参数:
         - best_threshold: float, 第一阶段最优 threshold, 取值范围 [0,1]
+        - halfwidth: float, 窗口半宽(DL 默认 0.10, baseline 0.001)
+        - step: float, threshold 步长(DL 默认 0.01, baseline 0.0001)
 
     输出:
         - search_space: dict[str, float | str], threshold 的 grid 搜索空间配置
     """
     if not 0.0 <= float(best_threshold) <= 1.0:
         raise ValueError(f"best_threshold 必须在 [0,1], 实际为 {best_threshold}")
+    # int, 窗口边界 round 小数位
+    decimals = _threshold_step_decimals(step)
     # float, 第二阶段 threshold 搜索下界
-    threshold_min = round(max(0.0, float(best_threshold) - 0.10), 2)
+    threshold_min = round(max(0.0, float(best_threshold) - float(halfwidth)), decimals)
     # float, 第二阶段 threshold 搜索上界
-    threshold_max = round(min(1.0, float(best_threshold) + 0.10), 2)
-    return {"type": "float", "min": threshold_min, "max": threshold_max, "step": 0.01}
+    threshold_max = round(min(1.0, float(best_threshold) + float(halfwidth)), decimals)
+    return {"type": "float", "min": threshold_min, "max": threshold_max, "step": float(step)}
 
 
 def read_stage1_best_thresholds(stage1_output_root: str) -> float | dict[str, float]:
@@ -244,20 +290,71 @@ def read_best_threshold(stage1_output_root: str) -> float:
     return float(best_threshold)
 
 
+def read_best_params(stage_output_root: str) -> dict[str, Any]:
+    """
+    读取某阶段 best_params.json 的完整后处理参数(二分类平铺)。
+
+    输入参数:
+        - stage_output_root: str, 阶段输出目录
+
+    输出:
+        - best_params: dict[str, Any], 完整后处理参数; 含 best threshold 与各固定后处理项
+    """
+    best_params_path = Path(stage_output_root) / "best_params.json"
+    with best_params_path.open("r", encoding="utf-8") as f:
+        best_params = json.load(f)
+    if "by_class" in best_params:
+        raise ValueError("read_best_params 只支持二分类平铺 best_params; 多分类 test 暂不支持")
+    return best_params
+
+
+def build_test_cfg(test_base_cfg: dict[str, Any], stage2_best_params: dict[str, Any]) -> dict[str, Any]:
+    """
+    构造 protein_110 固定测试配置: 用 Stage2 best 后处理参数固定评估一次, 不扫参。
+
+    输入参数:
+        - test_base_cfg: dict[str, Any], 测试配置(protein_110); output_root 直接作为测试产物根目录
+        - stage2_best_params: dict[str, Any], Stage2 选出的完整后处理参数(含 best threshold)
+
+    输出:
+        - stage_cfg: dict[str, Any], 测试阶段 voxel_param_search 配置; search_space 为空
+    """
+    stage_cfg = copy.deepcopy(test_base_cfg)
+    # 固定使用 Stage2 best 的全部后处理参数(best threshold + mcv=10 + 7_none + merge_dist=5.0 + basic + advanced 占位)
+    for name in POSTPROCESS_PARAM_NAMES:
+        if name not in stage2_best_params:
+            raise KeyError(f"Stage2 best_params 缺少后处理参数: {name}")
+        stage_cfg[name] = stage2_best_params[name]
+    stage_cfg["search_strategy"] = "grid"
+    stage_cfg["search_space"] = {}
+    stage_cfg["search_space_by_class"] = {}
+    stage_cfg["fixed_search_params"] = []
+    stage_cfg["vis_enable"] = True
+    stage_cfg["compute_instance_metrics"] = True
+    # PR-AUC 阈值无关, 只在 110 fixed test 算一次(search_space={} 单次评估, 无冗余)
+    stage_cfg["compute_pr_auc"] = True
+    stage_cfg["objective_expr"] = str(stage_cfg.get(STAGE2_OBJECTIVE_KEY, DEFAULT_STAGE2_OBJECTIVE_EXPR))
+    return stage_cfg
+
+
 def write_two_stage_summary(
     run_root: str,
     stage1_cfg: dict[str, Any],
     stage2_cfg: dict[str, Any],
+    test_stage_cfg: dict[str, Any],
     best_threshold: float | dict[str, float],
+    stage2_best_params: dict[str, Any],
 ) -> None:
     """
-    写出 two_stage_basic 两阶段搜索摘要。
+    写出三段流程摘要(写在验证 run_root)。
 
     输入参数:
-        - run_root: str, 两阶段输出根目录
+        - run_root: str, 验证侧两阶段输出根目录
         - stage1_cfg: dict[str, Any], 第一阶段参数搜索配置
         - stage2_cfg: dict[str, Any], 第二阶段参数搜索配置
+        - test_stage_cfg: dict[str, Any], protein_110 固定测试配置
         - best_threshold: float | dict[str, float], 第一阶段最优 threshold
+        - stage2_best_params: dict[str, Any], 第二阶段最优后处理参数(测试阶段实际使用)
 
     输出:
         - None, 写出 stage1_best_threshold.txt 和 two_stage_basic_summary.json
@@ -272,10 +369,14 @@ def write_two_stage_summary(
     summary = {
         "stage1_output_root": stage1_cfg["output_root"],
         "stage2_output_root": stage2_cfg["output_root"],
+        "test_output_root": test_stage_cfg["output_root"],
+        "test_raw_pairs_json": test_stage_cfg.get("raw_pairs_json"),
         "stage1_objective_expr": stage1_cfg["objective_expr"],
         "stage2_objective_expr": stage2_cfg["objective_expr"],
         "stage2_search_space": stage2_cfg["search_space"],
         "stage2_search_space_by_class": stage2_cfg.get("search_space_by_class", {}),
+        "stage2_best_params": stage2_best_params,
+        "test_threshold": stage2_best_params.get("threshold"),
     }
     if isinstance(best_threshold, dict):
         summary["stage1_best_threshold_by_class"] = best_threshold
@@ -296,41 +397,132 @@ def _print_stage_cfg(stage_name: str, stage_cfg: dict[str, Any]) -> None:
     print("=" * 72)
 
 
+def _fmt_metric(summary: dict[str, Any], key: str) -> str:
+    """
+    从 best_summary 取一个指标并格式化; 缺失返回 'NA'。
+
+    输入参数:
+        - summary: dict[str, Any], test 阶段 best_summary
+        - key: str, 指标键名
+
+    输出:
+        - text: str, 6 位小数文本或 'NA'
+    """
+    # Any, 指标原始值; 缺失或 None 时返回 NA
+    value = summary.get(key)
+    if value is None:
+        return "NA"
+    return f"{float(value):.6f}"
+
+
+def _print_final_test_metrics(best_summary: dict[str, Any], test_threshold: Any) -> None:
+    """
+    在三段流程末尾打印 protein_110 固定测试的紧凑最终指标(只到 stdout, 不写文件)。
+
+    输入参数:
+        - best_summary: dict[str, Any], test 阶段 run_voxel_param_search 返回的 best_summary
+        - test_threshold: Any, 实际使用的测试 threshold(来自 Stage2 best params)
+    """
+    print("=" * 72)
+    print("[two_stage_basic] protein_110 fixed test 最终指标")
+    print(f"test_threshold: {test_threshold}")
+    print(f"avg_voxel_f1:   {_fmt_metric(best_summary, 'avg_voxel_f1')}")
+    print(f"pr_auc_macro:   {_fmt_metric(best_summary, 'pr_auc_macro')}  (有效样本数 {best_summary.get('pr_auc_num_valid', 'NA')})")
+    for tag in ("03", "06"):
+        # str, 当前覆盖率阈值下的 global instance F1/P/R 文本
+        f1 = _fmt_metric(best_summary, f"global_instance_f1_cov{tag}")
+        precision = _fmt_metric(best_summary, f"global_instance_precision_cov{tag}")
+        recall = _fmt_metric(best_summary, f"global_instance_recall_cov{tag}")
+        print(f"global_instance cov{tag}: F1={f1} P={precision} R={recall}")
+        # str, 当前覆盖率阈值下的 loose global instance F1/P/R 文本
+        f1_loose = _fmt_metric(best_summary, f"global_instance_f1_loose_cov{tag}")
+        precision_loose = _fmt_metric(best_summary, f"global_instance_precision_loose_cov{tag}")
+        recall_loose = _fmt_metric(best_summary, f"global_instance_recall_loose_cov{tag}")
+        print(f"global_instance loose cov{tag}: F1={f1_loose} P={precision_loose} R={recall_loose}")
+    for tag in ("03", "06"):
+        # str, 当前覆盖率阈值下 top3/4/5 成功率文本
+        topk_text = "  ".join(f"top{k}={_fmt_metric(best_summary, f'top{k}_success_ratio_cov{tag}')}" for k in (3, 4, 5))
+        print(f"topK cov{tag}: {topk_text}")
+    print("=" * 72)
+
+
+def run_two_stage_then_fixed_test(
+    val_cfg: dict[str, Any],
+    test_cfg: dict[str, Any],
+    model: Any,
+    device: torch.device,
+) -> dict[str, str]:
+    """
+    执行固定三段流程: protein_40 Stage1 -> protein_40 Stage2 -> protein_110 fixed test。
+
+    输入参数:
+        - val_cfg: dict[str, Any], 验证配置(protein_40); 已注入 _train_dataset_cfg
+        - test_cfg: dict[str, Any], 测试配置(protein_110); 已注入 _train_dataset_cfg
+        - model: torch.nn.Module | None, stage1 模型; baseline 复用预生成 cache 时可为 None(命中缓存绝不 forward)
+        - device: torch.device, 推理设备
+
+    输出:
+        - result: dict[str, str], 三段输出目录与摘要路径
+    """
+    # str, 验证侧两阶段输出根目录
+    val_run_root = str(get_required_cfg(val_cfg, "output_root"))
+    os.makedirs(val_run_root, exist_ok=True)
+
+    stage1_cfg = build_stage1_cfg(val_cfg, val_run_root)
+    _print_stage_cfg("protein_40 stage1_threshold_only", stage1_cfg)
+    run_voxel_param_search(stage1_cfg, model, device)
+
+    best_threshold = read_stage1_best_thresholds(str(stage1_cfg["output_root"]))
+    stage2_cfg = build_stage2_cfg(val_cfg, val_run_root, best_threshold)
+    _print_stage_cfg("protein_40 stage2_threshold_component_policy", stage2_cfg)
+    run_voxel_param_search(stage2_cfg, model, device)
+
+    # dict[str, Any], Stage2 最优后处理参数(含 best threshold), 供 protein_110 固定测试复用
+    stage2_best_params = read_best_params(str(stage2_cfg["output_root"]))
+    test_stage_cfg = build_test_cfg(test_cfg, stage2_best_params)
+    _print_stage_cfg("protein_110 fixed_test", test_stage_cfg)
+    # dict[str, Any], test 阶段参数搜索结果(search_space={}, 单次固定评估); best_summary 含 PR-AUC 与全部指标
+    test_result = run_voxel_param_search(test_stage_cfg, model, device)
+    _print_final_test_metrics(test_result["best_summary"], stage2_best_params.get("threshold"))
+
+    write_two_stage_summary(val_run_root, stage1_cfg, stage2_cfg, test_stage_cfg, best_threshold, stage2_best_params)
+    return {
+        "val_run_root": val_run_root,
+        "stage1_output_root": str(stage1_cfg["output_root"]),
+        "stage2_output_root": str(stage2_cfg["output_root"]),
+        "test_output_root": str(test_stage_cfg["output_root"]),
+        "summary_path": str(Path(val_run_root) / "two_stage_basic_summary.json"),
+    }
+
+
 def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
-    base_cfg = load_base_config(args.config, args.overrides)
-    run_root = str(get_required_cfg(base_cfg, "output_root"))
-    os.makedirs(run_root, exist_ok=True)
+    val_cfg = load_base_config(args.val_config, args.overrides)
+    test_cfg = load_base_config(args.test_config, args.overrides)
 
-    ckpt_path = str(get_required_cfg(base_cfg, "ckpt_path"))
-    device_value = base_cfg.get("device")
+    ckpt_path = str(get_required_cfg(val_cfg, "ckpt_path"))
+    device_value = val_cfg.get("device")
     device_str = str(device_value) if device_value is not None else "cuda:0"
     device = torch.device(device_str)
 
     print("=" * 72)
-    print("[two_stage_basic] 双 basic voxel 参数搜索")
-    print(f"config: {args.config}")
-    print(f"run_root: {run_root}")
+    print("[two_stage_basic] 固定三段流程: protein_40 选阈值 -> protein_110 固定测试")
+    print(f"val_config: {args.val_config}  raw_pairs_json: {val_cfg.get('raw_pairs_json')}")
+    print(f"test_config: {args.test_config}  raw_pairs_json: {test_cfg.get('raw_pairs_json')}")
+    print(f"val_output_root: {val_cfg.get('output_root')}")
+    print(f"test_output_root: {test_cfg.get('output_root')}")
     print(f"device: {device_str}")
     print(f"checkpoint: {ckpt_path}")
     print("=" * 72)
 
-    backbone_override = base_cfg.get("backbone_override")
+    backbone_override = val_cfg.get("backbone_override")
     model = load_model(ckpt_path, device, backbone_override=backbone_override)
     train_cfg = load_training_config(ckpt_path)
-    base_cfg["_train_dataset_cfg"] = train_cfg["dataset"]
+    val_cfg["_train_dataset_cfg"] = train_cfg["dataset"]
+    test_cfg["_train_dataset_cfg"] = train_cfg["dataset"]
 
-    stage1_cfg = build_stage1_cfg(base_cfg, run_root)
-    _print_stage_cfg("stage1_threshold_only", stage1_cfg)
-    run_voxel_param_search(stage1_cfg, model, device)
-
-    best_threshold = read_stage1_best_thresholds(str(stage1_cfg["output_root"]))
-    stage2_cfg = build_stage2_cfg(base_cfg, run_root, best_threshold)
-    _print_stage_cfg("stage2_threshold_component_policy", stage2_cfg)
-    run_voxel_param_search(stage2_cfg, model, device)
-
-    write_two_stage_summary(run_root, stage1_cfg, stage2_cfg, best_threshold)
-    print(f"[two_stage_basic] done. summary: {Path(run_root) / 'two_stage_basic_summary.json'}")
+    result = run_two_stage_then_fixed_test(val_cfg, test_cfg, model, device)
+    print(f"[two_stage_basic] done. summary: {result['summary_path']}")
 
 
 if __name__ == "__main__":

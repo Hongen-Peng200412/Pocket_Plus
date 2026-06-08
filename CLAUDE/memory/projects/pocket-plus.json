@@ -24,6 +24,26 @@
       "date": "2026-05-30",
       "summary": "Wrapper diagnostics/comment follow-up: adaptive p_sampling diagnostics now use the actual sampling target for threshold stats, key wrapper tensors received concise inline comments, and py_compile passed.",
       "handoff": "CLAUDE/memory/handoffs/2026-05-30-wrapper-diagnostics-comments.md"
+    },
+    {
+      "date": "2026-06-07",
+      "summary": "Test pipeline eval+baseline overhaul implemented (global instance Hungarian metrics, top-K success ratio, dual-config two_stage_basic with 110 fixed test, baseline cache builder + runner + 2 base configs, phenix doc); local py_compile/yaml checks pass. Now grilling 3 finishing items: voxel PR-AUC (locked), final-metrics print (locked), full receptor-only phenix integration (Q3 framing open).",
+      "handoff": "CLAUDE/memory/handoffs/2026-06-07-test-pipeline-eval-baseline.md"
+    },
+    {
+      "date": "2026-06-07",
+      "summary": "Finishing items fully implemented after grill (plan at docs/test_pipline/收尾实施计划.md): PR-AUC=AP test-only (voxel_evaluator.evaluate_voxel_pr_auc + voxel_tuning/voxel_pipeline plumbing, binary-only, empty-GT warn+exclude, pr_auc_macro), two_stage stage builders parameterized for baseline high-quantile grids (Stage1 0.97:1.0:0.0001, Stage2 best±0.001/0.0001) + final-metrics print, phenix A2 derive_phenix_map_path consumption + new generate_phenix_diff_maps.py (idempotent, receptor-strip stardard-only via shared src/inference/utils/receptor_strip.py, resolution json>csv>3.5), machine constants to CLI. Local py_compile/yaml/no-residual checks pass; server numeric validation in Pocket_Plus_centos7_cu121_allgpu still pending.",
+      "handoff": "CLAUDE/memory/handoffs/2026-06-07-finishing-items-implemented.md"
+    },
+    {
+      "date": "2026-06-08",
+      "summary": "Test pipeline final config/docs pass completed: coverage threshold changed to cov03/cov06, 16 DL configs moved under DL with EVAL_OUT outputs and feedback_plus ckpt/cache reuse, baseline configs moved under non_DL, docs/test_pipline/general.md and 运行指导.md now define final state and commands. Local py_compile/config/doc-link checks pass; server smoke still pending.",
+      "handoff": "CLAUDE/memory/handoffs/2026-06-08-test-pipeline-final-config-docs.md"
+    },
+    {
+      "date": "2026-06-08",
+      "summary": "Test pipeline docs refreshed to a forward-looking current-flow description, DL configs default to basic postprocess for ligand-only heads, per-sample PR-AUC is written to best output metrics, voxel_single/batch comments use cov03/cov06, and the old Phenix smoke driver is a fail-fast stub. Local py_compile/grep checks pass; server smoke remains pending.",
+      "handoff": "CLAUDE/memory/handoffs/2026-06-08-test-pipeline-doc-refresh-minimal-fixes.md"
     }
   ],
   "blockers": [

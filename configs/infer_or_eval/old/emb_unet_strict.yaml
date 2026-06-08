@@ -1,3 +1,6 @@
+defaults:
+  - _self_
+
 # ============================================================
 # voxel-only ligand 后处理参数搜索配置
 # 此文件由 src/inference/main/run.py 通过 Hydra 加载:
@@ -12,14 +15,14 @@ mode: "voxel_param_search"  # str, 固定为 voxel_param_search; → run.py: mai
 
 
 # --- 批量样本列表与缓存阶段公共参数 ---
-raw_pairs_json: "/home/penghongen/My_Project/Pocket_Plus/src/inference/utils/val_cryoatom_new.json"       # str|null, 样本列表 JSON 路径; → _collect_or_build_cache_paths(): load_raw_pairs()
+raw_pairs_json: "/home/penghongen/My_Project/Pocket_Plus/src/inference/utils/protein_110.json"       # str|null, 样本列表 JSON 路径; → _collect_or_build_cache_paths(): load_raw_pairs()
                            # 每个 pair 至少提供 cif_path/map_path; 其余字段若非 null, 会通过 _merge_sample_pair_cfg() 覆盖同名全局配置
 continue_on_error: true    # bool, 当前 _collect_or_build_cache_paths() 不读取该字段; 保留为与 batch 配置一致的工作流开关
-ckpt_path: "/home/penghongen/My_Project/feedback_plus/logs/ligand/exp003_stardardligand3____job243840/checkpoints/TOP_epoch_05_score_0.7385.ckpt"            # str|null, Lightning checkpoint 路径; → run.py: load_model()/load_training_config(); 运行时必须显式覆盖
+ckpt_path: "/home/penghongen/My_Project/feedback_plus/logs/unet000/emb_unet000____job292191/checkpoints/TOP_epoch_05_score_0.7472.ckpt"            # str|null, Lightning checkpoint 路径; → run.py: load_model()/load_training_config(); 运行时必须显式覆盖
 backbone_override: null    # dict|null, 可选 backbone 覆盖配置; 若提供则覆盖 checkpoint 中恢复的 backbone
 device: "cuda:0"           # str, GPU forward 阶段使用的推理设备; → run.py: torch.device(device)
-output_root: "/home/penghongen/My_Project/feedback_plus/infer_out/ligand_pro_s40_new"  # str, param_search 总输出目录; → run_voxel_param_search(): 写入 best_params.json / best_summary.json / Excel / best_outputs/
-cache_root: "/home/penghongen/My_Project/feedback_plus/infer_cache/ligand_pro_s40_new"          # str, GPU forward 缓存根目录; → _resolve_cache_path(): 固定写为 cache_root/sample_name.npz
+output_root: "/home/penghongen/My_Project/feedback_plus/infer_out/emb_unet_strict"  # str, param_search 总输出目录; → run_voxel_param_search(): 写入 best_params.json / best_summary.json / Excel / best_outputs/
+cache_root: "/home/penghongen/My_Project/feedback_plus/infer_cache/emb_unet_strict"          # str, GPU forward 缓存根目录; → _resolve_cache_path(): 固定写为 cache_root/sample_name.npz
 cache_data_mode: "memory"  # str, 搜索阶段缓存读取模式; disk 逐轮按需读取 .npz, memory 搜索前一次性预加载全部缓存
 use_cache: true            # bool, 若对应样本缓存已存在则直接读取, 跳过重新 forward
 save_cache: true           # bool, 首次 forward 后是否保存 .npz 缓存; param_search 通常依赖缓存, 实际使用时通常应保持 true
@@ -32,8 +35,15 @@ show_progress: true        # bool, 是否为缓存构建阶段的单样本 BOX f
 target_voxel_size: 1.0       # float, 密度图重采样目标体素大小
 compute_density: true        # bool, 是否在 get_features_when_infer() 中计算原子局部密度特征
 select_first_model: true    # bool, 多 model CIF 的处理策略
-error_dir: "/home/penghongen/My_Project/feedback_plus/infer_error/ligand_pro_s40_new"              # str|null, 结构解析或 GT 构造失败时的错误输出目录; 传入 load_from_raw_cif() / load_ligand_gt_from_structure()
+error_dir: "/home/penghongen/My_Project/feedback_plus/infer_error/emb_unet_strict"              # str|null, 结构解析或 GT 构造失败时的错误输出目录; 传入 load_from_raw_cif() / load_ligand_gt_from_structure()
 filter_preset: "five_class"  # str, structure GT 与最优参数可视化导出时使用的配体筛选预设名
+
+
+
+# ------------------------------------ 网络与GT的来源 --------------------------------------
+structure_input_source: "cif_path"                 # str, forward 结构输入字段名; 可选 cif_path / cif_gt_path
+sim_map_source: "sim_map_path_cryoatom"            # str, forward 模拟图输入字段名; 可选 sim_map_path / sim_map_path_cryoatom; 仅启用 sim/diff/posdiff 通道时读取
+gt_receptor_source: "cif_path"                 # str, structure GT 中 compute_binding_labels 计算真实结合原子所使用的受体结构字段名
 
 
 
@@ -54,12 +64,12 @@ class_mapping: null           # list[int]|null, null 时回退到训练 dataset.
 #   2. get_voxel_pred(): 对所有 BOX forward 并合并回整图概率图
 window_size: 80             # int, BOX 边长(voxel)
 stride: 40                  # int, 滑窗步长(voxel)
-num_box_workers: 12          # int, CPU 并行构造 BOX 的线程数; H100 1GPU 脚本申请 24 核, 默认温和开启并行
-batch_size: 10               # int, 每批送入 GPU forward 的 BOX 数
+num_box_workers: 16          # int, CPU 并行构造 BOX 的线程数; H100 1GPU 脚本申请 24 核, 默认温和开启并行
+batch_size: 16               # int, 每批送入 GPU forward 的 BOX 数
 merge_mode: "mean"          # str, BOX 合并策略; 可选 mean/max
 core_offset: 5              # int, 非边界侧裁剪厚度; 0 表示不裁剪
 gaussian_sigma_ratio: 0.5  # float|null, BOX 合并时的 Gaussian 衰减 sigma 比例; null 表示不启用衰减
-output_heads: ["ligand", "receptor"]    # list[str], advanced 后处理需要 receptor 响应图; receptor 来自训练时的 aux/receptor voxel head
+output_heads: ["ligand"]    # list[str], advanced 后处理需要 receptor 响应图; receptor 来自训练时的 aux/receptor voxel head
 
 
 
@@ -89,8 +99,8 @@ search_space_by_class: {}      # dict[str,dict], 多分类逐类搜索时按类�
 # param_search 必须依赖 GT 评分:
 #   - _collect_or_build_cache_paths() 在缓存构建阶段会强制 sample_cfg["eval_gt"] = true
 #   - GT 来源仍遵循 _resolve_gt_source() 规则: labels_npz 优先, 否则走 structure GT
+#   - structure GT 的 ligand 固定来自 cif_gt_path, receptor 结构由 gt_receptor_source 选择
 eval_gt: true                     # bool, 参数搜索期望为 true; 即使误设为 false, 缓存构建 helper 也会在内部强制打开
-eval_mode: "easy"                 # str, structure GT 模式; easy 使用 cif_path, hard 使用 cif_gt_path, trivial 使用真实结构自评
 labels_npz_path: null             # str|null, 全局默认 labels.npz 路径; raw_pairs_json 中同名字段若非 null, 会逐样本覆盖
 ligand_gt_distance_threshold: 1.7 # float, ligand GT 距离阈值(Å); 与训练 voxel_ligand_loss.hard_label_threshold 对齐
 alpha: 0.6                        # float, instance precision 判定中的包含率阈值
@@ -145,10 +155,11 @@ search_space:
 cif_path: null           # str|null, 全局默认结构文件路径; 通常应由 raw_pairs_json 逐样本提供
 map_path: null           # str|null, 全局默认实验密度图路径; 通常应由 raw_pairs_json 逐样本提供
 sim_map_path: null       # str|null, 全局默认模拟密度图路径; 仅启用 sim/diff/posdiff 通道时才可能被读取
+sim_map_path_cryoatom: null  # str|null, 全局默认 cryoatom 模拟密度图路径; 由 sim_map_source 显式选择是否读取
 cif_gt_path: null        # str|null, 全局默认真实结构路径; 常由 raw_pairs_json 逐样本提供
 sample_name: null        # str|null, 全局默认样本名; 常由 raw_pairs_json 逐样本提供, 若仍为 null 则回退为 Path(cif_path).stem
 vis_enable: true        # bool, 是否在 best_outputs 阶段为最优参数结果导出 map/cif 可视化资产
-vis_output_root: "/home/penghongen/My_Project/feedback_plus/infer_vis/ligand_pro_s40_new"    # str|null, 最优参数可视化输出根目录; → _save_best_outputs_from_cache(): null 时即使 vis_enable=true 也会跳过可视化
+vis_output_root: "/home/penghongen/My_Project/feedback_plus/infer_vis/emb_unet_strict"    # str|null, 最优参数可视化输出根目录; → _save_best_outputs_from_cache(): null 时即使 vis_enable=true 也会跳过可视化
 
 # --- Hydra 运行目录行为 ---
 hydra:
