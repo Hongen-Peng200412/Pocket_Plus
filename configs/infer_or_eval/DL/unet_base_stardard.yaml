@@ -36,7 +36,7 @@ target_voxel_size: 1.0       # float, 密度图重采样目标体素大小
 compute_density: true        # bool, 是否在 get_features_when_infer() 中计算原子局部密度特征
 select_first_model: true    # bool, 多 model CIF 的处理策略
 error_dir: "/home/penghongen/My_Project/EVAL_OUT/infer_error/unet_base_stardard"              # str|null, 结构解析或 GT 构造失败时的错误输出目录; 传入 load_from_raw_cif() / load_ligand_gt_from_structure()
-filter_preset: "five_class"  # str, structure GT 与最优参数可视化导出时使用的配体筛选预设名
+filter_preset: "five_class_raw4"  # str, structure GT 与最优参数可视化导出时使用的配体筛选预设名
 
 
 

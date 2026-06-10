@@ -33,7 +33,7 @@ show_progress: true          # bool, 是否显示进度条
 target_voxel_size: 1.0       # float, 密度图重采样目标体素大小
 compute_density: true        # bool, 是否计算原子局部密度特征
 select_first_model: true     # bool, 多 model 结构处理策略
-filter_preset: "five_class"  # str, structure GT 与可视化的配体筛选预设名
+filter_preset: "five_class_raw4"  # str, structure GT 与可视化的配体筛选预设名
 
 # ------------------------------------ 网络与GT的来源(strict) --------------------------------------
 structure_input_source: "cif_path"            # str, baseline 结构输入字段名(strict 用 cryoatom 结构)

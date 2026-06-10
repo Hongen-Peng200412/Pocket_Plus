@@ -31,7 +31,7 @@ target_voxel_size: 1.0       # float, 密度图重采样目标体素大小
 compute_density: true        # bool, 是否在 get_features_when_infer() 中计算原子局部密度特征
 select_first_model: false    # bool, 多 model CIF 的处理策略
 error_dir: null              # str|null, 结构解析或 GT 构造失败时的错误输出目录
-filter_preset: "five_class"  # str, structure GT 与可视化导出时使用的配体筛选预设名
+filter_preset: "five_class_raw4"  # str, structure GT 与可视化导出时使用的配体筛选预设名
 structure_input_source: "cif_path"                 # str, forward 结构输入字段名; 可选 cif_path / cif_gt_path
 sim_map_source: "sim_map_path_cryoatom"            # str, forward 模拟图输入字段名; 仅启用 sim/diff/posdiff 通道时读取
 gt_receptor_source: "cif_gt_path"                 # str, structure GT 中 compute_binding_labels 使用的受体结构字段名
