@@ -51,14 +51,7 @@ write_custom_run_cmd_hook() {
     cat << EOF > "${TARGET_FILE}"
 
 #!/bin/bash
-python /home/penghongen/My_Project/Pocket_Plus/src/inference/main/run_baseline_two_stage.py \
-    --base_dir /home/penghongen/My_Project/EVAL_OUT/phenix_ \
-    --phenix_output_root /home/penghongen/My_Project/EVAL_OUT/phenix_/phenix_diff_maps \
-    --val_json /home/penghongen/My_Project/Pocket_Plus/src/inference/utils/protein_40.json \
-    --test_json /home/penghongen/My_Project/Pocket_Plus/src/inference/utils/protein_110.json \
-    --systems stardard \
-    --baselines phenix_real_space_diff_map \
-    --device cuda:0
+python /home/penghongen/My_Project/Pocket_Plus/src/inference/utils/yield_json_from_raw_sample.py
 
 EOF
 }

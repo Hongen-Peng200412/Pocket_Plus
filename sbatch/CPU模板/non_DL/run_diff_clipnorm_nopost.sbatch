@@ -48,6 +48,8 @@ srun python src/inference/main/run_baseline_two_stage.py \
     --baselines diff_clipnorm_nopost \
     --device cpu \
     --cache_n_jobs 8 \
-    --cache_backend loky
+    --cache_backend loky \
+    --extra_test_json nucleic_40=/home/penghongen/My_Project/Pocket_Plus/src/inference/utils/nucleic_40.json \
+    --vis_enable false
 
 echo "[non-dl] diff_clipnorm_nopost done."

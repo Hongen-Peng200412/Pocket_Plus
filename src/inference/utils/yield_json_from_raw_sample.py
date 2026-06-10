@@ -607,8 +607,10 @@ if __name__ == "__main__":
 
 
 
+    # parser.add_argument("--valid_json_path", type=str, help="约束可选集合列表的 json 参照字典路径 (必须传入)",
+    # default="/home/penghongen/My_Project/Data/split/3.5_cc_qscore_v2_raw4/test_0.json")   # test/val 在这里切换
     parser.add_argument("--valid_json_path", type=str, help="约束可选集合列表的 json 参照字典路径 (必须传入)",
-    default="/home/penghongen/My_Project/Data/split/3.5_cc_qscore_v2_raw4/test_0.json")   # test/val 在这里切换
+    default="/home/penghongen/My_Project/Data/split/3.5_cc_qscore_v2_raw4/test_3.json")   # test/val 在这里切换
     # parser.add_argument("--valid_json_path", type=str, help="约束可选集合列表的 json 参照字典路径 (必须传入)", 
     # default="/home/penghongen/My_Project/Data/raw.json")
 
@@ -618,7 +620,7 @@ if __name__ == "__main__":
     default="/home/penghongen/My_Project/Pocket_Plus/src/inference/utils")
 
     parser.add_argument("--output_json_name", type=str, help="生成的 json 文件名称", 
-    default="protein_110.json")
+    default="nucleic_40.json")
 
 
 
@@ -626,9 +628,9 @@ if __name__ == "__main__":
 
     # -------------------------- 参数 --------------------------
     parser.add_argument("--max_scan", type=int, default=None, help="从全部样本里随机选取验证扫描的最多个数")
-    parser.add_argument("--max_accept", type=int, default=110, help="最多写入输出 JSON 的合规样本个数")
-    parser.add_argument("--min_nucleic_ratio", type=float, default=None, help="核酸数目/蛋白数目的比率阈值下限(none则不限制), 允许端点")
-    parser.add_argument("--max_nucleic_ratio", type=float, default=0.0, help="核酸数目/蛋白数目的比率阈值上限(none则不限制), 允许端点")
+    parser.add_argument("--max_accept", type=int, default=40, help="最多写入输出 JSON 的合规样本个数")
+    parser.add_argument("--min_nucleic_ratio", type=float, default=0.0001, help="核酸数目/蛋白数目的比率阈值下限(none则不限制), 允许端点")
+    parser.add_argument("--max_nucleic_ratio", type=float, default=None, help="核酸数目/蛋白数目的比率阈值上限(none则不限制), 允许端点")
     parser.add_argument("--skip_density_map_validation", action="store_true", help="跳过真实密度图与模拟密度图几何一致性校验")
     parser.add_argument("--target_voxel_size", type=float, default=1.0, help="密度图重采样目标体素大小")
     parser.add_argument("--density_origin_atol", type=float, default=1e-4, help="密度图 origin 绝对误差容忍度")

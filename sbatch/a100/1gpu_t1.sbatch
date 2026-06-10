@@ -50,7 +50,11 @@ write_custom_run_cmd_hook() {
     local TARGET_FILE="$1"
     cat << EOF > "${TARGET_FILE}"
 #!/bin/bash
-python /home/penghongen/My_Project/Pocket_Plus/src/train.py "+experiment=MINI_both_front"
+python /home/penghongen/My_Project/Pocket_Plus/src/inference/main/two_stage_basic.py \
+  --val_config DL/emb_unet_strict_40 \
+  --test_config DL/emb_unet_strict \
+  --extra_test_json nucleic_40=/home/penghongen/My_Project/Pocket_Plus/src/inference/utils/nucleic_40.json \
+  pipeline_vis_enable=false
 EOF
 }
 # ============================================================

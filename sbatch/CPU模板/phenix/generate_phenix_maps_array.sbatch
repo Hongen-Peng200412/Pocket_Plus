@@ -33,6 +33,7 @@ PHENIX_BIN="${PHENIX_BIN:-/home/yangjy/software/phenix/build/bin/phenix.real_spa
 RESOLUTION_CSV="${RESOLUTION_CSV:-/home/penghongen/My_Project/Data/EMDB_PDB_resolution_3.5.csv}"
 VAL_JSON="${VAL_JSON:-/home/penghongen/My_Project/Pocket_Plus/src/inference/utils/protein_40.json}"
 TEST_JSON="${TEST_JSON:-/home/penghongen/My_Project/Pocket_Plus/src/inference/utils/protein_110.json}"
+EXTRA_TEST_JSON="${EXTRA_TEST_JSON:-nucleic_40=/home/penghongen/My_Project/Pocket_Plus/src/inference/utils/nucleic_40.json}"
 
 mkdir -p "${PHENIX_OUTPUT_ROOT}" "$(dirname "${PHENIX_OUTPUT_ROOT}")/logs"
 
@@ -45,6 +46,7 @@ srun python src/inference/baseline/generate_phenix_diff_maps.py \
     --resolution_csv "${RESOLUTION_CSV}" \
     --val_json "${VAL_JSON}" \
     --test_json "${TEST_JSON}" \
+    --extra_test_json "${EXTRA_TEST_JSON}" \
     --systems stardard strict
 
 echo "[phenix-map] array task done."

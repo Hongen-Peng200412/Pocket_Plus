@@ -375,6 +375,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--systems", nargs="*", default=SYSTEMS, help="要生成的系统, 默认 stardard strict。")
     parser.add_argument("--val_json", default=DEFAULT_VAL_JSON, help="protein_40 样本列表 JSON。")
     parser.add_argument("--test_json", default=DEFAULT_TEST_JSON, help="protein_110 样本列表 JSON。")
+    parser.add_argument("--extra_test_json", action="append", default=[], help="追加样本列表 JSON, 支持 label=/path/to/json 或直接路径。")
     parser.add_argument("--phenix_bin", default=DEFAULT_PHENIX_BIN, help="phenix.real_space_diff_map 可执行文件路径。")
     parser.add_argument("--resolution_csv", default=DEFAULT_RESOLUTION_CSV, help="EMDB 分辨率 CSV(emdb_id,resolution)。")
     parser.add_argument("--no_skip_existing", action="store_true", help="不跳过已存在的对齐差图(默认幂等跳过)。")
@@ -386,8 +387,12 @@ def main(argv: list[str] | None = None) -> None:
     skip_existing = not bool(args.no_skip_existing)
     # dict[str, float], EMDB 分辨率表
     resolution_table = load_resolution_table(str(args.resolution_csv))
-    # list[dict[str, Any]], 合并 val/test 的样本(按 system+sample_name 去重, 同名复用同一差图)
+    # list[str], 追加样本列表 JSON 路径; label=path 只取 path
+    extra_jsons = [str(value).split("=", 1)[-1] for value in args.extra_test_json]
+    # list[dict[str, Any]], 合并 val/test/extra 的样本(按 system+sample_name 去重, 同名复用同一差图)
     all_samples = _load_samples(str(args.val_json)) + _load_samples(str(args.test_json))
+    for extra_json in extra_jsons:
+        all_samples.extend(_load_samples(extra_json))
     # tuple[int|None, int|None], 当前 array 分片设置; None 表示单进程全量串行
     shard_index, num_shards = resolve_shard_from_args_or_slurm(args.shard_index, args.num_shards)
     # list[dict[str, Any]], 完整任务表, 任务身份为 (system, sample_name)

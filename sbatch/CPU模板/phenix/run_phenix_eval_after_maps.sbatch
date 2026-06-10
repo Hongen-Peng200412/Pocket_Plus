@@ -31,6 +31,7 @@ BASE_DIR="${PHENIX_BASE_DIR:-/home/penghongen/My_Project/EVAL_OUT/phenix_}"
 PHENIX_OUTPUT_ROOT="${PHENIX_OUTPUT_ROOT:-${BASE_DIR}/phenix_diff_maps}"
 VAL_JSON="${VAL_JSON:-/home/penghongen/My_Project/Pocket_Plus/src/inference/utils/protein_40.json}"
 TEST_JSON="${TEST_JSON:-/home/penghongen/My_Project/Pocket_Plus/src/inference/utils/protein_110.json}"
+EXTRA_TEST_JSON="${EXTRA_TEST_JSON:-nucleic_40=/home/penghongen/My_Project/Pocket_Plus/src/inference/utils/nucleic_40.json}"
 NUM_SHARDS="${PHENIX_NUM_SHARDS:-30}"
 
 mkdir -p "${BASE_DIR}/logs"
@@ -44,6 +45,7 @@ srun python src/inference/baseline/check_phenix_diff_maps.py \
     --num_shards "${NUM_SHARDS}" \
     --val_json "${VAL_JSON}" \
     --test_json "${TEST_JSON}" \
+    --extra_test_json "${EXTRA_TEST_JSON}" \
     --systems stardard strict
 
 srun python src/inference/main/run_baseline_two_stage.py \
@@ -53,6 +55,8 @@ srun python src/inference/main/run_baseline_two_stage.py \
     --test_json "${TEST_JSON}" \
     --systems stardard strict \
     --baselines phenix_real_space_diff_map \
-    --device cpu
+    --device cpu \
+    --extra_test_json "${EXTRA_TEST_JSON}" \
+    --vis_enable false
 
 echo "[phenix-eval] done."

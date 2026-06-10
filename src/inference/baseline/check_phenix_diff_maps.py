@@ -77,10 +77,15 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--systems", nargs="*", default=SYSTEMS, help="要检查的系统, 默认 stardard strict。")
     parser.add_argument("--val_json", default=DEFAULT_VAL_JSON, help="protein_40 样本列表 JSON。")
     parser.add_argument("--test_json", default=DEFAULT_TEST_JSON, help="protein_110 样本列表 JSON。")
+    parser.add_argument("--extra_test_json", action="append", default=[], help="追加样本列表 JSON, 支持 label=/path/to/json 或直接路径。")
     args = parser.parse_args(argv)
 
-    # list[dict[str, Any]], 合并 val/test 后重建完整任务表
+    # list[str], 追加样本列表 JSON 路径; label=path 只取 path
+    extra_jsons = [str(value).split("=", 1)[-1] for value in args.extra_test_json]
+    # list[dict[str, Any]], 合并 val/test/extra 后重建完整任务表
     all_samples = _load_samples(str(args.val_json)) + _load_samples(str(args.test_json))
+    for extra_json in extra_jsons:
+        all_samples.extend(_load_samples(extra_json))
     tasks = build_phenix_tasks(all_samples, [str(v) for v in args.systems])
 
     # list[dict[str, Any]] / list[str], shard 摘要与缺失摘要

@@ -188,6 +188,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="固定三段流程: protein_40 选阈值, protein_110 固定测试。")
     parser.add_argument("--val_config", required=True, help="验证配置名(protein_40)或 YAML 路径; 用于 Stage1/Stage2 扫阈值。")
     parser.add_argument("--test_config", required=True, help="测试配置名(protein_110)或 YAML 路径; 用于固定测试。")
+    parser.add_argument(
+        "--extra_test_json",
+        action="append",
+        default=[],
+        help="追加固定测试 split, 格式 label=/path/to/raw_pairs.json; 可重复传入, 例如 nucleic_40=.../nucleic_40.json。",
+    )
     parser.add_argument("overrides", nargs="*", help="OmegaConf dotlist 覆盖项, 同时套用到两个配置, 例如 ckpt_path=... device=...")
     return parser.parse_args(argv)
 
@@ -354,9 +360,10 @@ def write_two_stage_summary(
     run_root: str,
     stage1_cfg: dict[str, Any],
     stage2_cfg: dict[str, Any],
-    test_stage_cfg: dict[str, Any],
+    test_records: list[dict[str, Any]],
     best_threshold: float | dict[str, float],
     stage2_best_params: dict[str, Any],
+    write_stage1_threshold: bool,
 ) -> None:
     """
     写出三段流程摘要(写在验证 run_root)。
@@ -365,25 +372,29 @@ def write_two_stage_summary(
         - run_root: str, 验证侧两阶段输出根目录
         - stage1_cfg: dict[str, Any], 第一阶段参数搜索配置
         - stage2_cfg: dict[str, Any], 第二阶段参数搜索配置
-        - test_stage_cfg: dict[str, Any], protein_110 固定测试配置
+        - test_records: list[dict[str, Any]], 固定测试 split 摘要, 第一项为主 protein_110 测试
         - best_threshold: float | dict[str, float], 第一阶段最优 threshold
         - stage2_best_params: dict[str, Any], 第二阶段最优后处理参数(测试阶段实际使用)
+        - write_stage1_threshold: bool, 是否写出 stage1_best_threshold.txt; Stage1 跳过时保持旧文件不动
 
     输出:
         - None, 写出 stage1_best_threshold.txt 和 two_stage_basic_summary.json
     """
     os.makedirs(run_root, exist_ok=True)
     threshold_path = Path(run_root) / "stage1_best_threshold.txt"
-    if isinstance(best_threshold, dict):
-        threshold_path.write_text(json.dumps(best_threshold, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    else:
-        threshold_path.write_text(f"{best_threshold:.6f}\n", encoding="utf-8")
+    if write_stage1_threshold:
+        if isinstance(best_threshold, dict):
+            threshold_path.write_text(json.dumps(best_threshold, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        else:
+            threshold_path.write_text(f"{best_threshold:.6f}\n", encoding="utf-8")
 
+    primary_test = test_records[0] if test_records else {}
     summary = {
         "stage1_output_root": stage1_cfg["output_root"],
         "stage2_output_root": stage2_cfg["output_root"],
-        "test_output_root": test_stage_cfg["output_root"],
-        "test_raw_pairs_json": test_stage_cfg.get("raw_pairs_json"),
+        "test_output_root": primary_test.get("output_root"),
+        "test_raw_pairs_json": primary_test.get("raw_pairs_json"),
+        "fixed_tests": test_records,
         "stage1_objective_expr": stage1_cfg["objective_expr"],
         "stage2_objective_expr": stage2_cfg["objective_expr"],
         "stage2_search_space": stage2_cfg["search_space"],
@@ -428,16 +439,17 @@ def _fmt_metric(summary: dict[str, Any], key: str) -> str:
     return f"{float(value):.6f}"
 
 
-def _print_final_test_metrics(best_summary: dict[str, Any], test_threshold: Any) -> None:
+def _print_final_test_metrics(test_label: str, best_summary: dict[str, Any], test_threshold: Any) -> None:
     """
-    在三段流程末尾打印 protein_110 固定测试的紧凑最终指标(只到 stdout, 不写文件)。
+    在三段流程末尾打印某个固定测试 split 的紧凑最终指标(只到 stdout, 不写文件)。
 
     输入参数:
+        - test_label: str, 当前固定测试 split 标签
         - best_summary: dict[str, Any], test 阶段 run_voxel_param_search 返回的 best_summary
         - test_threshold: Any, 实际使用的测试 threshold(来自 Stage2 best params)
     """
     print("=" * 72)
-    print("[two_stage_basic] protein_110 fixed test 最终指标")
+    print(f"[two_stage_basic] {test_label} fixed test 最终指标")
     print(f"test_threshold: {test_threshold}")
     print(f"avg_voxel_f1:   {_fmt_metric(best_summary, 'avg_voxel_f1')}")
     print(f"pr_auc_macro:   {_fmt_metric(best_summary, 'pr_auc_macro')}  (有效样本数 {best_summary.get('pr_auc_num_valid', 'NA')})")
@@ -459,11 +471,170 @@ def _print_final_test_metrics(best_summary: dict[str, Any], test_threshold: Any)
     print("=" * 72)
 
 
+def _read_json_dict(path: str | Path) -> dict[str, Any]:
+    """
+    读取 JSON 文件并按 dict 返回。
+
+    输入参数:
+        - path: str | Path, JSON 文件路径
+
+    输出:
+        - data: dict[str, Any], JSON 顶层对象
+    """
+    with Path(path).open("r", encoding="utf-8") as f:
+        data = json.load(f)
+    if not isinstance(data, dict):
+        raise TypeError(f"JSON 顶层对象必须为 dict: {path}")
+    return data
+
+
+def _best_params_path(output_root: str) -> Path:
+    return Path(output_root) / "best_params.json"
+
+
+def _best_summary_path(output_root: str) -> Path:
+    return Path(output_root) / "best_summary.json"
+
+
+def parse_extra_test_json_specs(values: list[str]) -> list[tuple[str, str]]:
+    """
+    解析追加固定测试 split 的命令行规格。
+
+    输入参数:
+        - values: list[str], 每项为 label=/path/to/raw_pairs.json 或 raw_pairs.json
+
+    输出:
+        - specs: list[tuple[str, str]], 每项为 (split_label, raw_pairs_json)
+    """
+    specs: list[tuple[str, str]] = []
+    for value in values:
+        if "=" in value:
+            label, raw_pairs_json = value.split("=", 1)
+            split_label = label.strip()
+            split_json = raw_pairs_json.strip()
+        else:
+            split_json = value.strip()
+            split_label = Path(split_json).stem
+        if not split_label or not split_json:
+            raise ValueError(f"--extra_test_json 格式错误: {value}")
+        specs.append((split_label, split_json))
+    return specs
+
+
+def _append_path_leaf_suffix(path_value: Any, suffix: str) -> str | None:
+    """
+    给路径最后一级目录追加 split 后缀。
+
+    输入参数:
+        - path_value: Any, 原始路径值; None 保持为 None
+        - suffix: str, 追加到最后一级目录名后的后缀
+
+    输出:
+        - new_path: str | None, 后缀派生后的路径
+    """
+    if path_value is None:
+        return None
+    path = Path(str(path_value))
+    return str(path.with_name(f"{path.name}_{suffix}"))
+
+
+def derive_extra_test_cfgs(test_cfg: dict[str, Any], specs: list[tuple[str, str]]) -> list[dict[str, Any]]:
+    """
+    从主测试配置派生追加固定测试配置。
+
+    输入参数:
+        - test_cfg: dict[str, Any], 主测试配置, 通常对应 protein_110
+        - specs: list[tuple[str, str]], 每项为 (split_label, raw_pairs_json)
+
+    输出:
+        - extra_cfgs: list[dict[str, Any]], 每项为独立 output/cache/error 路径的追加测试配置
+    """
+    extra_cfgs: list[dict[str, Any]] = []
+    for split_label, raw_pairs_json in specs:
+        cfg = copy.deepcopy(test_cfg)
+        cfg["test_label"] = split_label
+        cfg["raw_pairs_json"] = raw_pairs_json
+        for key in ("output_root", "cache_root", "vis_output_root", "error_dir"):
+            if key in cfg:
+                cfg[key] = _append_path_leaf_suffix(cfg.get(key), split_label)
+        if not _pipeline_vis_enabled(cfg):
+            cfg["vis_output_root"] = None
+        extra_cfgs.append(cfg)
+    return extra_cfgs
+
+
+def _run_param_search_unless_best_params(stage_name: str, stage_cfg: dict[str, Any], model: Any, device: torch.device) -> bool:
+    """
+    按 best_params.json 是否存在决定运行或跳过参数搜索。
+
+    输入参数:
+        - stage_name: str, 当前阶段名称, 仅用于日志
+        - stage_cfg: dict[str, Any], run_voxel_param_search 配置
+        - model: Any, DL 模型; baseline 路径可为 None
+        - device: torch.device, 推理设备
+
+    输出:
+        - skipped_existing: bool, 是否因为已有 best_params.json 而跳过
+    """
+    best_params_path = _best_params_path(str(stage_cfg["output_root"]))
+    if best_params_path.exists():
+        print(f"[two_stage_basic] skip {stage_name}: found {best_params_path}", flush=True)
+        return True
+    run_voxel_param_search(stage_cfg, model, device)
+    return False
+
+
+def _run_or_read_fixed_test(
+    test_label: str,
+    test_base_cfg: dict[str, Any],
+    stage2_best_params: dict[str, Any],
+    model: Any,
+    device: torch.device,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """
+    执行或读取一个固定测试 split。
+
+    输入参数:
+        - test_label: str, 当前固定测试 split 标签
+        - test_base_cfg: dict[str, Any], 测试基底配置
+        - stage2_best_params: dict[str, Any], Stage2 选出的固定后处理参数
+        - model: Any, DL 模型; baseline 路径可为 None
+        - device: torch.device, 推理设备
+
+    输出:
+        - test_stage_cfg: dict[str, Any], 已注入固定后处理参数的测试配置
+        - record: dict[str, Any], 当前 split 的输出索引与是否跳过
+    """
+    test_stage_cfg = build_test_cfg(test_base_cfg, stage2_best_params)
+    _print_stage_cfg(f"{test_label} fixed_test", test_stage_cfg)
+
+    output_root = str(test_stage_cfg["output_root"])
+    best_summary_path = _best_summary_path(output_root)
+    skipped_existing = best_summary_path.exists()
+    if skipped_existing:
+        print(f"[two_stage_basic] skip {test_label} fixed_test: found {best_summary_path}", flush=True)
+        best_summary = _read_json_dict(best_summary_path)
+    else:
+        test_result = run_voxel_param_search(test_stage_cfg, model, device)
+        best_summary = test_result["best_summary"]
+
+    _print_final_test_metrics(test_label, best_summary, stage2_best_params.get("threshold"))
+    return test_stage_cfg, {
+        "label": test_label,
+        "output_root": output_root,
+        "raw_pairs_json": test_stage_cfg.get("raw_pairs_json"),
+        "best_summary_path": str(best_summary_path),
+        "skipped_existing": skipped_existing,
+        "test_threshold": stage2_best_params.get("threshold"),
+    }
+
+
 def run_two_stage_then_fixed_test(
     val_cfg: dict[str, Any],
     test_cfg: dict[str, Any],
     model: Any,
     device: torch.device,
+    extra_test_cfgs: list[dict[str, Any]] | None = None,
 ) -> dict[str, str]:
     """
     执行固定三段流程: protein_40 Stage1 -> protein_40 Stage2 -> protein_110 fixed test。
@@ -473,6 +644,7 @@ def run_two_stage_then_fixed_test(
         - test_cfg: dict[str, Any], 测试配置(protein_110); 已注入 _train_dataset_cfg
         - model: torch.nn.Module | None, stage1 模型; baseline 复用预生成 cache 时可为 None(命中缓存绝不 forward)
         - device: torch.device, 推理设备
+        - extra_test_cfgs: list[dict[str, Any]] | None, 追加固定测试配置, 如 nucleic_40
 
     输出:
         - result: dict[str, str], 三段输出目录与摘要路径
@@ -483,27 +655,49 @@ def run_two_stage_then_fixed_test(
 
     stage1_cfg = build_stage1_cfg(val_cfg, val_run_root)
     _print_stage_cfg("protein_40 stage1_threshold_only", stage1_cfg)
-    run_voxel_param_search(stage1_cfg, model, device)
+    stage1_skipped_existing = _run_param_search_unless_best_params("protein_40 stage1_threshold_only", stage1_cfg, model, device)
 
     best_threshold = read_stage1_best_thresholds(str(stage1_cfg["output_root"]))
     stage2_cfg = build_stage2_cfg(val_cfg, val_run_root, best_threshold)
     _print_stage_cfg("protein_40 stage2_threshold_component_policy", stage2_cfg)
-    run_voxel_param_search(stage2_cfg, model, device)
+    _run_param_search_unless_best_params("protein_40 stage2_threshold_component_policy", stage2_cfg, model, device)
 
     # dict[str, Any], Stage2 最优后处理参数(含 best threshold), 供 protein_110 固定测试复用
     stage2_best_params = read_best_params(str(stage2_cfg["output_root"]))
-    test_stage_cfg = build_test_cfg(test_cfg, stage2_best_params)
-    _print_stage_cfg("protein_110 fixed_test", test_stage_cfg)
-    # dict[str, Any], test 阶段参数搜索结果(search_space={}, 单次固定评估); best_summary 含 PR-AUC 与全部指标
-    test_result = run_voxel_param_search(test_stage_cfg, model, device)
-    _print_final_test_metrics(test_result["best_summary"], stage2_best_params.get("threshold"))
+    test_records: list[dict[str, Any]] = []
+    primary_test_stage_cfg, primary_test_record = _run_or_read_fixed_test(
+        "protein_110",
+        test_cfg,
+        stage2_best_params,
+        model,
+        device,
+    )
+    test_records.append(primary_test_record)
+    for extra_test_cfg in extra_test_cfgs or []:
+        test_label = str(extra_test_cfg.get("test_label") or Path(str(extra_test_cfg.get("raw_pairs_json", "extra_test"))).stem)
+        _, extra_test_record = _run_or_read_fixed_test(
+            test_label,
+            extra_test_cfg,
+            stage2_best_params,
+            model,
+            device,
+        )
+        test_records.append(extra_test_record)
 
-    write_two_stage_summary(val_run_root, stage1_cfg, stage2_cfg, test_stage_cfg, best_threshold, stage2_best_params)
+    write_two_stage_summary(
+        val_run_root,
+        stage1_cfg,
+        stage2_cfg,
+        test_records,
+        best_threshold,
+        stage2_best_params,
+        write_stage1_threshold=not stage1_skipped_existing,
+    )
     return {
         "val_run_root": val_run_root,
         "stage1_output_root": str(stage1_cfg["output_root"]),
         "stage2_output_root": str(stage2_cfg["output_root"]),
-        "test_output_root": str(test_stage_cfg["output_root"]),
+        "test_output_root": str(primary_test_stage_cfg["output_root"]),
         "summary_path": str(Path(val_run_root) / "two_stage_basic_summary.json"),
     }
 
@@ -512,6 +706,7 @@ def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
     val_cfg = load_base_config(args.val_config, args.overrides)
     test_cfg = load_base_config(args.test_config, args.overrides)
+    extra_test_cfgs = derive_extra_test_cfgs(test_cfg, parse_extra_test_json_specs(args.extra_test_json))
 
     ckpt_path = str(get_required_cfg(val_cfg, "ckpt_path"))
     device_value = val_cfg.get("device")
@@ -522,6 +717,8 @@ def main(argv: list[str] | None = None) -> None:
     print("[two_stage_basic] 固定三段流程: protein_40 选阈值 -> protein_110 固定测试")
     print(f"val_config: {args.val_config}  raw_pairs_json: {val_cfg.get('raw_pairs_json')}")
     print(f"test_config: {args.test_config}  raw_pairs_json: {test_cfg.get('raw_pairs_json')}")
+    for extra_test_cfg in extra_test_cfgs:
+        print(f"extra_test: {extra_test_cfg.get('test_label')}  raw_pairs_json: {extra_test_cfg.get('raw_pairs_json')}")
     print(f"val_output_root: {val_cfg.get('output_root')}")
     print(f"test_output_root: {test_cfg.get('output_root')}")
     print(f"device: {device_str}")
@@ -533,8 +730,10 @@ def main(argv: list[str] | None = None) -> None:
     train_cfg = load_training_config(ckpt_path)
     val_cfg["_train_dataset_cfg"] = train_cfg["dataset"]
     test_cfg["_train_dataset_cfg"] = train_cfg["dataset"]
+    for extra_test_cfg in extra_test_cfgs:
+        extra_test_cfg["_train_dataset_cfg"] = train_cfg["dataset"]
 
-    result = run_two_stage_then_fixed_test(val_cfg, test_cfg, model, device)
+    result = run_two_stage_then_fixed_test(val_cfg, test_cfg, model, device, extra_test_cfgs=extra_test_cfgs)
     print(f"[two_stage_basic] done. summary: {result['summary_path']}")
 
 
