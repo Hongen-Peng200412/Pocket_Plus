@@ -45,6 +45,7 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
         ligand_sparse_refine_loss_schedule: Mapping[str, Any] | None = None,
         monitor_metric: str = "val_score/global/atom_PRAUC",
         monitor_mode: str = "max",
+        stop_after_lr_reductions: int | None = None,
         voxel_ligand_pr_auc_thresholds: int | None = 1024,
         val_metric_device_policy: str = "auto",
         initial_p_best_by_class: Sequence[float] | None = None,
@@ -86,6 +87,7 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
             - 性能度量
                 - monitor_metric: str, scheduler/checkpoint 监控指标 key
                 - monitor_mode: str, scheduler/checkpoint 监控方向, 由 train.py 同步消费
+                - stop_after_lr_reductions: int | None, warmup_plateau 实际降低学习率达到该次数后停止训练; None 或 <=0 表示关闭
                 - voxel_ligand_pr_auc_thresholds: int | None, dense ligand AP 阈值配置(默认1024)
 
             - other
@@ -132,6 +134,8 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
         self._validation_index = 0
         self._warmup_plateau_scheduler = None
         self._pending_warmup_plateau_state: Mapping[str, Any] | None = None
+        # int, 已发生的实际 LR 衰减次数; 只统计 ReduceLROnPlateau 真正降低学习率的 validation
+        self._lr_reduction_count = 0
 
         # ValidationMetricManager, 管理 atom/receptor/voxel_ligand 常规 AP/PRAUC
         self.val_metrics = ValidationMetricManager(
@@ -930,7 +934,22 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
             raise RuntimeError(f"warmup_plateau scheduler monitor metric {monitor_name!r} is not available after validation.")
         # torch.Tensor, (), 当前 validation monitor metric 值
         metric_value = computed_metrics[monitor_name].detach().to(self.device).float().reshape(())
-        self._warmup_plateau_scheduler.step_plateau(metric_value, global_step=int(self.global_step))
+        lr_reduced = self._warmup_plateau_scheduler.step_plateau(metric_value, global_step=int(self.global_step))
+        if not lr_reduced:
+            return
+        self._lr_reduction_count += 1
+        self.log("train/runtime/lr_reduction_count", float(self._lr_reduction_count), prog_bar=True, on_step=False, on_epoch=True, sync_dist=False)
+        stop_after = self.hparams.get("stop_after_lr_reductions", None)
+        if stop_after is None or int(stop_after) <= 0:
+            return
+        if self._lr_reduction_count >= int(stop_after):
+            if bool(getattr(self.trainer, "is_global_zero", True)):
+                print(
+                    "[Train] warmup_plateau 已触发 "
+                    f"{self._lr_reduction_count} 次实际 LR 衰减, 达到 stop_after_lr_reductions={int(stop_after)}, "
+                    "将在当前 validation/checkpoint 流程结束后停止训练。"
+                )
+            self.trainer.should_stop = True
 
 
 
@@ -984,12 +1003,14 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
             - checkpoint: dict[str, Any], Lightning checkpoint 字典
 
         原地写入:
+            - lr_reduction_count
             - voxel_ligand_candidate_class_ids
             - voxel_ligand_p_best_by_class; voxel_ligand_p_sampling_by_class
             - voxel_ligand_best_f1_before_refine_by_class
         """
         if self._warmup_plateau_scheduler is not None:
             checkpoint["warmup_plateau_reduce_on_plateau_state"] = self._warmup_plateau_scheduler.state_dict()
+        checkpoint["lr_reduction_count"] = int(self._lr_reduction_count)
         if self._sparse_candidate_class_ids is None:
             return
         checkpoint["voxel_ligand_candidate_class_ids"] = self._sparse_candidate_class_ids
@@ -1014,7 +1035,7 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
             - checkpoint: dict[str, Any], Lightning checkpoint 字典
 
         输出:
-            - None, 原地恢复 scheduler/candidate cache
+            - None, 原地恢复 scheduler、LR 衰减计数和 candidate cache
         """
         if self._sparse_candidate_class_ids is not None:
             # Any | None, checkpoint 中保存的 candidate class id 列表
@@ -1035,5 +1056,7 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
             self._sync_sparse_candidate_runtime_to_backbone()
         if "warmup_plateau_reduce_on_plateau_state" in checkpoint:
             self._pending_warmup_plateau_state = checkpoint["warmup_plateau_reduce_on_plateau_state"]
+        if "lr_reduction_count" in checkpoint:
+            self._lr_reduction_count = int(checkpoint["lr_reduction_count"])
 
 

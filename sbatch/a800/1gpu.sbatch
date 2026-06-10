@@ -51,7 +51,7 @@ write_custom_run_cmd_hook() {
     cat << EOF > "${TARGET_FILE}"
 
 #!/bin/bash
-/home/penghongen/My_Project/Pocket_Plus/src/inference/utils/yield_json_from_raw_sample.py
+/home/penghongen/My_Project/Pocket_Plus/src/train.py "+experiment=unet000"
 
 EOF
 }

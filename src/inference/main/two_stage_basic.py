@@ -12,13 +12,13 @@ from __future__ import annotations
 命令含义:
     - --val_config: 验证配置名(或 YAML 路径), 对应 protein_40, 用于扫 threshold。
     - --test_config: 测试配置名(或 YAML 路径), 对应 protein_110, 只做固定评估、不扫参。
-    - 末尾 key=value 覆盖项同时套用到两个配置(常见: ckpt_path、device、stage1_objective_expr、stage2_objective_expr);
+    - 末尾 key=value 覆盖项同时套用到两个配置(常见: ckpt_path、device、stage1_objective_expr、stage2_objective_expr、pipeline_vis_enable);
       路径/身份字段(output_root、cache_root、raw_pairs_json、vis_output_root、error_dir)请在各自 YAML 配好, 不要统一覆盖。
 
 固定三段流程(均只加载一次 checkpoint, 验证与测试共用同一模型):
     1. protein_40 Stage 1: 固定 basic / mcv=10 / 7_none / merge_dist=0.0 / vis=false, 只扫 threshold=0.00..1.00, objective=avg_voxel_f1, 不做 instance 运算。
-    2. protein_40 Stage 2: 固定 basic / mcv=10 / 7_none / merge_dist=5.0 / vis=true, 在 Stage1 best 阈值 ±0.10 内只扫 threshold, objective 含 global instance F1。
-    3. protein_110 fixed test: search_space={}, 用 Stage2 best 后处理参数固定评估, vis=true, 不扫参。
+    2. protein_40 Stage 2: 固定 basic / mcv=10 / 7_none / merge_dist=5.0 / vis 由 pipeline_vis_enable 控制, 在 Stage1 best 阈值 ±0.10 内只扫 threshold, objective 含 global instance F1。
+    3. protein_110 fixed test: search_space={}, 用 Stage2 best 后处理参数固定评估, vis 由 pipeline_vis_enable 控制, 不扫参。
 
 输出目录:
     - {val_output_root}/stage1_threshold_only: 第一阶段参数搜索产物。
@@ -117,6 +117,19 @@ def build_stage1_cfg(base_cfg: dict[str, Any], run_root: str) -> dict[str, Any]:
     ]
     return stage_cfg
 
+def _pipeline_vis_enabled(base_cfg: dict[str, Any]) -> bool:
+    """
+    解析 two_stage_basic 的总可视化开关。
+
+    输入参数:
+        - base_cfg: dict[str, Any], 基础 voxel_param_search 配置, 可包含 pipeline_vis_enable
+
+    输出:
+        - enabled: bool, Stage2 与 fixed test 是否导出可视化资产
+    """
+    return bool(base_cfg.get("pipeline_vis_enable", True))
+
+
 def build_stage2_cfg(base_cfg: dict[str, Any], run_root: str, best_threshold: float | dict[str, float]) -> dict[str, Any]:
     """
     构造 two_stage_basic 第二阶段参数搜索配置。
@@ -136,7 +149,7 @@ def build_stage2_cfg(base_cfg: dict[str, Any], run_root: str, best_threshold: fl
     stage_cfg["connectivity_policy"] = "7_none"
     stage_cfg["merge_dist"] = 5.0
     stage_cfg["search_strategy"] = "grid"
-    stage_cfg["vis_enable"] = True
+    stage_cfg["vis_enable"] = _pipeline_vis_enabled(base_cfg)
     stage_cfg["compute_instance_metrics"] = True
     # float, Stage2 局部窗口半宽; baseline 用配置 stage2_threshold_window_halfwidth 覆盖
     window_halfwidth = float(base_cfg.get("stage2_threshold_window_halfwidth") or DEFAULT_STAGE2_WINDOW_HALFWIDTH)
@@ -329,7 +342,7 @@ def build_test_cfg(test_base_cfg: dict[str, Any], stage2_best_params: dict[str, 
     stage_cfg["search_space"] = {}
     stage_cfg["search_space_by_class"] = {}
     stage_cfg["fixed_search_params"] = []
-    stage_cfg["vis_enable"] = True
+    stage_cfg["vis_enable"] = _pipeline_vis_enabled(test_base_cfg)
     stage_cfg["compute_instance_metrics"] = True
     # PR-AUC 阈值无关, 只在 110 fixed test 算一次(search_space={} 单次评估, 无冗余)
     stage_cfg["compute_pr_auc"] = True

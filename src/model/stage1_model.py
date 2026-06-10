@@ -91,7 +91,7 @@ from hydra.utils import instantiate
 from torch import nn
 
 from src.model.stage1_atom_head import Stage1AtomHead
-from src.model.stage1_embed_head import scatter_to_voxel_grid
+from src.model.stage1_embed_head import scatter_to_voxel_grid, soft_scatter_to_voxel_grid
 from src.model.utils import CubeWeightingParams, FeatureCombine, gather_voxel_cube, gather_voxel_feature_at_zyx
 from src.model.typed_point import (
     TypedPointConfig,
@@ -164,6 +164,7 @@ class VolumePointStage1Model(nn.Module):
         prior_probs: Sequence[float] | None = None,
         online_pdb_feature: bool = False,
         online_pdb_feature_reduce: str = "sum",
+        online_pdb_feature_use_soft_splatting: bool = False,
         online_pdb_feature_dim: int = 49,
         atom_head_pseudo_feature_dim: int | None = None,
         typed_point_cfg: dict[str, Any] | TypedPointConfig | None = None,
@@ -280,6 +281,7 @@ class VolumePointStage1Model(nn.Module):
                 - prior_probs: Sequence[float] | None, 多通道 softmax 类别先验概率
                 - online_pdb_feature: bool, embed head 无 voxel 输出时是否在线 scatter raw atom_feat
                 - online_pdb_feature_reduce: str, 在线 scatter 聚合方式
+                - online_pdb_feature_use_soft_splatting: bool, 在线 raw atom_feat scatter 是否使用三线性 soft splatting
                 - online_pdb_feature_dim: int, 在线 scatter 的 raw atom 特征通道数
                 - enable_recycling: bool, 是否启用 recycle
                 - max_recycles: int, 最大 recycle 轮数
@@ -325,6 +327,7 @@ class VolumePointStage1Model(nn.Module):
         self.enable_interface_norm = bool(enable_interface_norm)
         self.online_pdb_feature = bool(online_pdb_feature)
         self.online_pdb_feature_reduce = str(online_pdb_feature_reduce)
+        self.online_pdb_feature_use_soft_splatting = bool(online_pdb_feature_use_soft_splatting)
         self.online_pdb_feature_dim = int(online_pdb_feature_dim)
         self.enable_recycling = bool(enable_recycling)
         self.max_recycles = int(max_recycles)
@@ -1390,7 +1393,12 @@ class VolumePointStage1Model(nn.Module):
         if self.online_pdb_feature:
             with torch.no_grad():
                 # torch.Tensor, (B, online_pdb_feature_dim, D, H, W), raw atom_feat 在线 scatter 体素网格
-                raw_pdb_grid = scatter_to_voxel_grid(
+                scatter_fn = (
+                    soft_scatter_to_voxel_grid
+                    if self.online_pdb_feature_use_soft_splatting
+                    else scatter_to_voxel_grid
+                )
+                raw_pdb_grid = scatter_fn(
                     point_feat=batch["atom_feat"].detach(),
                     atom_coord_local_voxel=batch["atom_coord_local_voxel"],
                     point_batch=batch["atom_batch_index"],

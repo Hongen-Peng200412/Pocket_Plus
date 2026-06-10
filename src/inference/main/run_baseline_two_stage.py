@@ -30,7 +30,7 @@ if project_root in sys.path:
     sys.path.remove(project_root)
 sys.path.insert(0, project_root)
 
-from src.inference.main.build_baseline_cache import ALL_BASELINE_NAMES, build_baseline_cache_for_split
+from src.inference.baseline.build_baseline_cache import ALL_BASELINE_NAMES, build_baseline_cache_for_split
 from src.inference.main.two_stage_basic import run_two_stage_then_fixed_test
 
 # list[str], 两个系统
@@ -94,6 +94,8 @@ def _make_split_cfg(
     raw_pairs_json: str,
     base_dir: str,
     phenix_output_root: str,
+    cache_n_jobs: int,
+    cache_backend: str,
 ) -> dict[str, Any]:
     """
     从系统基础配置派生某 (baseline, system, split) 的完整配置。
@@ -106,6 +108,8 @@ def _make_split_cfg(
         - raw_pairs_json: str, 当前 split 的样本列表 JSON
         - base_dir: str, 落地根目录
         - phenix_output_root: str, phenix 预生成差图根目录(仅 phenix baseline 消费)
+        - cache_n_jobs: int, baseline cache 构建并行 worker 数
+        - cache_backend: str, joblib cache 构建后端
 
     输出:
         - cfg: dict[str, Any], 注入 baseline 身份/路径后的配置
@@ -115,6 +119,8 @@ def _make_split_cfg(
     cfg["system"] = system
     cfg["raw_pairs_json"] = raw_pairs_json
     cfg["phenix_output_root"] = phenix_output_root
+    cfg["cache_n_jobs"] = int(cache_n_jobs)
+    cfg["cache_backend"] = str(cache_backend)
     cfg.update(derive_baseline_paths(base_dir, baseline_name, system, split))
     return cfg
 
@@ -128,6 +134,8 @@ def run_one_baseline(
     test_json: str,
     phenix_output_root: str,
     device: torch.device,
+    cache_n_jobs: int,
+    cache_backend: str,
 ) -> dict[str, str]:
     """
     执行单个 baseline×system 的完整流程: 预生成 40/110 缓存 -> 三段流程。
@@ -141,18 +149,22 @@ def run_one_baseline(
         - test_json: str, protein_110 样本列表
         - phenix_output_root: str, phenix 预生成差图根目录(仅 phenix baseline 消费)
         - device: torch.device, 占位设备(baseline 不 forward)
+        - cache_n_jobs: int, baseline cache 构建并行 worker 数
+        - cache_backend: str, joblib cache 构建后端
 
     输出:
         - result: dict[str, str], run_two_stage_then_fixed_test 的输出目录与摘要路径
     """
     # dict[str, Any], 验证(40)与测试(110)配置
-    val_cfg = _make_split_cfg(base_cfg, baseline_name, system, "40", val_json, base_dir, phenix_output_root)
-    test_cfg = _make_split_cfg(base_cfg, baseline_name, system, "110", test_json, base_dir, phenix_output_root)
+    val_cfg = _make_split_cfg(base_cfg, baseline_name, system, "40", val_json, base_dir, phenix_output_root, cache_n_jobs, cache_backend)
+    test_cfg = _make_split_cfg(base_cfg, baseline_name, system, "110", test_json, base_dir, phenix_output_root, cache_n_jobs, cache_backend)
 
     print("=" * 72)
     print(f"[run_baseline_two_stage] baseline={baseline_name} system={system}")
     print(f"val_output_root: {val_cfg['output_root']}")
     print(f"test_output_root: {test_cfg['output_root']}")
+    print(f"cache_n_jobs: {cache_n_jobs}")
+    print(f"cache_backend: {cache_backend}")
     print("=" * 72)
 
     # 预生成两侧 baseline 缓存(含 raw 差图 sidecar)
@@ -172,6 +184,8 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--test_json", default=DEFAULT_TEST_JSON, help="protein_110 样本列表 JSON。")
     parser.add_argument("--phenix_output_root", default=DEFAULT_PHENIX_OUTPUT_ROOT, help="phenix 预生成差图根目录(仅 phenix baseline 消费)。")
     parser.add_argument("--device", default="cuda:0", help="占位设备; baseline 不 forward。")
+    parser.add_argument("--cache_n_jobs", type=int, default=1, help="baseline cache 构建并行 worker 数; 默认 1 保持串行。")
+    parser.add_argument("--cache_backend", default="loky", help="baseline cache 构建 joblib 后端, 如 loky/threads。")
     args = parser.parse_args(argv)
 
     device = torch.device(str(args.device))
@@ -188,6 +202,8 @@ def main(argv: list[str] | None = None) -> None:
                 test_json=str(args.test_json),
                 phenix_output_root=str(args.phenix_output_root),
                 device=device,
+                cache_n_jobs=int(args.cache_n_jobs),
+                cache_backend=str(args.cache_backend),
             )
     print("[run_baseline_two_stage] all baselines done.")
 

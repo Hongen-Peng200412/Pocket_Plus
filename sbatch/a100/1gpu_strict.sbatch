@@ -51,10 +51,14 @@ write_custom_run_cmd_hook() {
     cat << EOF > "${TARGET_FILE}"
 
 #!/bin/bash
-python /home/penghongen/My_Project/Pocket_Plus/src/inference/main/two_stage_basic.py \
-    --config="unet_base_strict" \
-    stage1_objective_expr='avg_voxel_f1' \
-    stage2_objective_expr='avg_instance_f1 + avg_voxel_f1'
+python /home/penghongen/My_Project/Pocket_Plus/src/inference/main/run_baseline_two_stage.py \
+    --base_dir /home/penghongen/My_Project/EVAL_OUT/phenix_ \
+    --phenix_output_root /home/penghongen/My_Project/EVAL_OUT/phenix_/phenix_diff_maps \
+    --val_json /home/penghongen/My_Project/Pocket_Plus/src/inference/utils/protein_40.json \
+    --test_json /home/penghongen/My_Project/Pocket_Plus/src/inference/utils/protein_110.json \
+    --systems strict \
+    --baselines phenix_real_space_diff_map \
+    --device cuda:0
 
 EOF
 }

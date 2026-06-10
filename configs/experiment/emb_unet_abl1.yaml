@@ -34,6 +34,7 @@ project_name: PV_unet000                 # wandb 的项目名称
 
 # --- 模型总体参数 ---
 model:
+  stop_after_lr_reductions: 4        # int, warmup_plateau 第 4 次实际降低 LR 后结束训练
   backbone:
     # --- atom head 关闭 ---
     enable_atom_head: false          # bool, 关闭 atom head; 不构建 atom_token_proj / atom_attention_stack / atom_logit_head
