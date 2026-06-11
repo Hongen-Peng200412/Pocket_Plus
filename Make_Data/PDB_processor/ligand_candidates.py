@@ -6,12 +6,12 @@ Unified Preprocessing System - Candidate Ligand Parsing & Attribute Computation
 
 Part 1 核心模块：
   1. 从 PDB/mmCIF 结构中提取 **几乎所有** HETATM 残基作为候选配体
-     （排除水分子 + HETATM_EXCLUSION_LIST + 与主链共价连接的 Modified_Residues）
+     （默认按 preset 排除水、常见低层 HETATM 成分和与主链共价连接的 Modified_Residues）
   2. 为每个候选计算一组可扩展的属性，支持下游多种筛选规则
 
 Part 1 core module:
   1. Extract nearly all HETATM residues as candidate ligands
-     (excluding water + HETATM_EXCLUSION_LIST + covalently linked Modified_Residues)
+     (by default excluding water, common low-level HETATM components, and covalently linked Modified_Residues)
   2. Compute an extensible set of attributes per candidate for downstream filtering
 
 当前已实现的属性 / Currently implemented attributes:
@@ -583,16 +583,20 @@ def _compute_polymer_segments(model) -> Dict[Tuple, int]:
 # ============================================================================
 # 主函数 / Main Functions(将被 Pocket_Plus\Make_Data\PDB_processor\parser.py 调用以保存候选配体信息 candidates.npz)
 # ============================================================================
-def find_all_hetatm_candidates(model) -> Tuple[List[LigandCandidate], int]:
+def find_all_hetatm_candidates(
+    model,
+    use_exclusion_resnames: bool = True,
+    exclusion_resnames: Optional[Set[str]] = None,
+    exclude_covalent_modified_residues: bool = True,
+) -> Tuple[List[LigandCandidate], int]:
     """
     从结构模型中提取所有 HETATM 候选配体，并计算其属性。
     Extract all HETATM candidate ligands from a structure model and compute attributes.
 
     处理流程 / Pipeline:
         1. 遍历所有链和残基，收集有效 HETATM 候选
-           - 排除 WATER_RESIDUES
-           - 排除 HETATM_EXCLUSION_LIST（溶剂/缓冲/占位符等）
-           - 排除与主链共价连接的 Modified_Residues（修饰受体残基）
+           - use_exclusion_resnames=True 时，按 exclusion_resnames 排除水、溶剂/缓冲/占位符等
+           - exclude_covalent_modified_residues=True 时，排除与主链共价连接的 Modified_Residues（修饰受体残基）
         2. 预计算聚合物链段长度
         3. 对每个候选残基：
            a. 提取坐标
@@ -603,6 +607,9 @@ def find_all_hetatm_candidates(model) -> Tuple[List[LigandCandidate], int]:
 
     输入参数 / Input:
         - model: Bio.PDB.Model, Biopython 结构模型 (通常取第一个 model)
+        - use_exclusion_resnames: bool, 是否启用按 resname 的低层 HETATM 排除列表
+        - exclusion_resnames: set[str] | None, 需要排除的 HETATM resname；None 时使用 HETATM_EXCLUSION_LIST
+        - exclude_covalent_modified_residues: bool, 是否排除与主链共价连接的修饰残基
 
     输出 / Output:
         - candidates: list[LigandCandidate], 候选配体列表
@@ -623,6 +630,8 @@ def find_all_hetatm_candidates(model) -> Tuple[List[LigandCandidate], int]:
     global_id = 0
     # int, 水分子计数
     water_count = 0
+    # set[str], 当前启用的按 resname 排除列表；None 时保持旧版默认行为
+    active_exclusion_resnames = HETATM_EXCLUSION_LIST if exclusion_resnames is None else set(exclusion_resnames)
 
     for chain in model:
         # str, 链 ID
@@ -635,14 +644,13 @@ def find_all_hetatm_candidates(model) -> Tuple[List[LigandCandidate], int]:
                 continue
             # str, 残基名 (大写，去空格)
             resname = residue.resname.strip().upper()
-            if resname in WATER_RESIDUES:
-                water_count += 1
-                continue
-            # 排除非特异性小分子（溶剂/缓冲/未知组分）
-            if resname in HETATM_EXCLUSION_LIST:
+            # 按 preset 暴露的低层排除列表跳过水、溶剂、缓冲液、占位符等
+            if use_exclusion_resnames and resname in active_exclusion_resnames:
+                if resname in WATER_RESIDUES:
+                    water_count += 1
                 continue
             # 修饰残基若与主链共价连接，则视作受体修饰位点，不作为候选配体
-            if resname in Modified_Residues and is_connected_to(residue, chain):
+            if exclude_covalent_modified_residues and resname in Modified_Residues and is_connected_to(residue, chain):
                 continue
 
             # ------ 提取重原子坐标 ------

@@ -593,6 +593,9 @@ def export_selected_ligands_cif(
     from Make_Data.labels.filter_config import get_filter_preset
     from Make_Data.labels.ligand_filter import filter_and_classify
 
+    filter_config = get_filter_preset(filter_preset)
+    if filter_config is None:
+        raise ValueError(f"[utils] Unknown filter_preset: {filter_preset}")
     parsed = parse_structure(
         cif_gt_path,
         error_dir=str(Path(out_path).parent),
@@ -600,12 +603,12 @@ def export_selected_ligands_cif(
         require_ligand=False,
         select_first_model=select_first_model,
         allow_incomplete_backbone=True,
+        use_exclusion_resnames=filter_config.use_exclusion_resnames,
+        exclusion_resnames=filter_config.exclusion_resnames,
+        exclude_covalent_modified_residues=filter_config.exclude_covalent_modified_residues,
     )
     if parsed is None:
         return None
-    filter_config = get_filter_preset(filter_preset)
-    if filter_config is None:
-        raise ValueError(f"[utils] Unknown filter_preset: {filter_preset}")
     selected, _, _ = filter_and_classify(parsed.ligand_candidates, filter_config)
     if not selected:
         return None
@@ -655,6 +658,9 @@ def export_gt_pocket_atoms_cif(
     from Make_Data.labels.ligand_filter import filter_and_classify
     from Make_Data.labels.instance_labels import compute_binding_labels
 
+    filter_config = get_filter_preset(filter_preset)
+    if filter_config is None:
+        raise ValueError(f"[utils] Unknown filter_preset: {filter_preset}")
     parsed = parse_structure(
         cif_gt_path,
         error_dir=str(Path(out_path).parent),
@@ -662,12 +668,12 @@ def export_gt_pocket_atoms_cif(
         require_ligand=False,
         select_first_model=select_first_model,
         allow_incomplete_backbone=True,
+        use_exclusion_resnames=filter_config.use_exclusion_resnames,
+        exclusion_resnames=filter_config.exclusion_resnames,
+        exclude_covalent_modified_residues=filter_config.exclude_covalent_modified_residues,
     )
     if parsed is None:
         return None
-    filter_config = get_filter_preset(filter_preset)
-    if filter_config is None:
-        raise ValueError(f"[utils] Unknown filter_preset: {filter_preset}")
     selected, pocket_class_map, _ = filter_and_classify(parsed.ligand_candidates, filter_config)
     if not selected:
         return None

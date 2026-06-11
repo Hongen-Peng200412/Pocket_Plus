@@ -17,10 +17,35 @@ from .ligand_filter import LigandFilterConfig, PocketClassRule
 
 
 # ============================================================================
+# 候选提取默认排除列表 / Default candidate-level exclusions
+# ============================================================================
+
+DEFAULT_EXCLUSION_RESNAMES = {
+    # 溶剂 / Solvents
+    'HOH', 'WAT', 'H2O', 'DOD',
+
+    # 结晶、缓冲液与 cryo-EM 制样常见添加剂
+    'GOL', 'EDO', 'MPD', 'PEG', 'PG4', 'P6G',
+    'TRS', 'MES', 'HEP', 'ACT', 'CIT',
+    'EOH', 'MOH', 'IPA', 'DMS', 'DTT', 'BME',
+    'BU1', 'TBU',
+
+    # 未知或占位组分
+    'UNX', 'UNL', 'UNK',
+
+    # 惰性气体
+    'XE', 'KR',
+}
+
+
+# ============================================================================
 # 预设定义 / Presets
 # ============================================================================
 
 FIVE_CLASS_PRESET = LigandFilterConfig(
+    use_exclusion_resnames=True,
+    exclusion_resnames=set(DEFAULT_EXCLUSION_RESNAMES),
+    exclude_covalent_modified_residues=True,
     rules=[
         PocketClassRule(  # 优先使用前面的
             class_id=1,
@@ -58,6 +83,9 @@ FIVE_CLASS_PRESET = LigandFilterConfig(
 )
 
 FIVE_CLASS_5_PRESET = LigandFilterConfig(
+    use_exclusion_resnames=True,
+    exclusion_resnames=set(DEFAULT_EXCLUSION_RESNAMES),
+    exclude_covalent_modified_residues=True,
     rules=[
         PocketClassRule(  # 优先使用前面的
             class_id=1,
@@ -100,6 +128,9 @@ FIVE_CLASS_5_PRESET = LigandFilterConfig(
 
 
 FIVE_CLASS_RAW4_PRESET = LigandFilterConfig(
+    use_exclusion_resnames=True,
+    exclusion_resnames=set(DEFAULT_EXCLUSION_RESNAMES),
+    exclude_covalent_modified_residues=True,
     rules=[
         PocketClassRule(  # 优先使用前面的
             class_id=1,
@@ -137,6 +168,9 @@ FIVE_CLASS_RAW4_PRESET = LigandFilterConfig(
 )
 
 FIVE_CLASS_RAW5_PRESET = LigandFilterConfig(
+    use_exclusion_resnames=True,
+    exclusion_resnames=set(DEFAULT_EXCLUSION_RESNAMES),
+    exclude_covalent_modified_residues=True,
     rules=[
         PocketClassRule(  # 优先使用前面的
             class_id=1,
@@ -179,6 +213,9 @@ FIVE_CLASS_RAW5_PRESET = LigandFilterConfig(
 
 
 FIVE_CLASS_MOD4_PRESET = LigandFilterConfig(
+    use_exclusion_resnames=True,
+    exclusion_resnames=set(DEFAULT_EXCLUSION_RESNAMES),
+    exclude_covalent_modified_residues=True,
     rules=[
         PocketClassRule(  # 优先使用前面的
             class_id=1,
@@ -220,6 +257,9 @@ FIVE_CLASS_MOD4_PRESET = LigandFilterConfig(
 )
 
 FIVE_CLASS_MOD5_PRESET = LigandFilterConfig(
+    use_exclusion_resnames=True,
+    exclusion_resnames=set(DEFAULT_EXCLUSION_RESNAMES),
+    exclude_covalent_modified_residues=True,
     rules=[
         PocketClassRule(  # 优先使用前面的
             class_id=1,
@@ -267,6 +307,9 @@ FIVE_CLASS_MOD5_PRESET = LigandFilterConfig(
 
 
 BINARY_PRESET = LigandFilterConfig(
+    use_exclusion_resnames=True,
+    exclusion_resnames=set(DEFAULT_EXCLUSION_RESNAMES),
+    exclude_covalent_modified_residues=True,
     rules=[
         PocketClassRule(
             class_id=1,
@@ -280,6 +323,9 @@ BINARY_PRESET = LigandFilterConfig(
 )
 
 THREE_CLASS_PRESET = LigandFilterConfig(   # 优先使用前面的
+    use_exclusion_resnames=True,
+    exclusion_resnames=set(DEFAULT_EXCLUSION_RESNAMES),
+    exclude_covalent_modified_residues=True,
     rules=[
         PocketClassRule(                
             class_id=1,
@@ -380,6 +426,7 @@ def get_default_filter_preset_name() -> str:
 
 
 __all__ = [
+    "DEFAULT_EXCLUSION_RESNAMES",
     "LigandFilterConfig",
     "PocketClassRule",
     "BINARY_PRESET",

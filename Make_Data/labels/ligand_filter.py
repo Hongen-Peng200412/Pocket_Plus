@@ -16,7 +16,7 @@ Part 2 核心模块：
 """
 import numpy as np
 from dataclasses import dataclass, field
-from typing import List, Dict, Optional, Tuple
+from typing import List, Dict, Optional, Tuple, Set
 import sys
 from pathlib import Path
 
@@ -188,12 +188,22 @@ class LigandFilterConfig:
     配体筛选配置————只是 PocketClassRule 列表的容器（壳子）。
 
     候选配体按 rules 列表顺序依次检查：
+      - 候选生成阶段可先按 exclusion_resnames 与共价修饰残基开关排除低层 HETATM 成分
       - 第一条 accepts() 返回 None 的规则生效，候选被分配该规则的 class_id
       - 不匹配任何规则的候选直接排除（不产生口袋，背景）
 
     字段说明 / Fields:
+        - use_exclusion_resnames: bool, 是否启用按 resname 的低层 HETATM 排除列表
+        - exclusion_resnames: set[str] | None, 候选生成阶段排除的 resname 集合
+        - exclude_covalent_modified_residues: bool, 是否在候选生成阶段排除与主链共价连接的修饰残基
         - rules: list[PocketClassRule], 有序规则列表（先匹配先生效）
     """
+    # bool, 是否启用按残基名的低层 HETATM 排除列表
+    use_exclusion_resnames: bool = True
+    # set[str] | None, 需要在候选生成阶段排除的 HETATM resname
+    exclusion_resnames: Optional[Set[str]] = None
+    # bool, 是否排除与主链共价连接的修饰残基
+    exclude_covalent_modified_residues: bool = True
     # list[PocketClassRule], 有序规则列表
     rules: List[PocketClassRule] = field(default_factory=list)
 

@@ -334,6 +334,9 @@ def load_gt_from_structure(
         require_ligand=False,  # 推理时不强制要求配体存在；若无配体则返回全背景标签
         select_first_model=select_first_model,
         allow_incomplete_backbone=True,
+        use_exclusion_resnames=filter_config.use_exclusion_resnames,
+        exclusion_resnames=filter_config.exclusion_resnames,
+        exclude_covalent_modified_residues=filter_config.exclude_covalent_modified_residues,
     )
     if parsed_ligand_data is None:
         raise RuntimeError(
@@ -351,6 +354,9 @@ def load_gt_from_structure(
             require_ligand=False,
             select_first_model=select_first_model,
             allow_incomplete_backbone=True,
+            use_exclusion_resnames=filter_config.use_exclusion_resnames,
+            exclusion_resnames=filter_config.exclusion_resnames,
+            exclude_covalent_modified_residues=filter_config.exclude_covalent_modified_residues,
         )
         if parsed_receptor_data is None:
             raise RuntimeError(

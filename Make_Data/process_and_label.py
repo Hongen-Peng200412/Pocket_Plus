@@ -286,7 +286,10 @@ def process_and_label_single_file(
             sample_id,
             require_ligand=require_ligand,
             select_first_model=select_first_model,
-            allow_incomplete_backbone=allow_incomplete_backbone
+            allow_incomplete_backbone=allow_incomplete_backbone,
+            use_exclusion_resnames=filter_config.use_exclusion_resnames,
+            exclusion_resnames=filter_config.exclusion_resnames,
+            exclude_covalent_modified_residues=filter_config.exclude_covalent_modified_residues,
         )
         if parsed_data is None:
             return sample_id, False, "Parse failed"

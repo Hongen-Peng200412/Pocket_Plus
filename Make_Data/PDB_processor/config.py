@@ -272,10 +272,10 @@ DENSITY_BIN_EDGES: np.ndarray = np.array([0.0, 2.0, 4.0, 6.0, 8.0, 10.0, 12.0, 1
 
 
 # ============================================================================
-# 水分子 - 永久排除 / Water Residues - Permanently Excluded
+# 水分子默认排除名 / Water residues in the default exclusion list
 # ============================================================================
 # set[str], 水分子残基名
-# 含义: 这些残基永远不被视为候选配体，在解析阶段直接跳过
+# 含义: 默认 preset 会在候选解析阶段排除这些残基；关闭 resname 排除列表后可进入候选
 WATER_RESIDUES: set = {'HOH', 'WAT', 'H2O', 'DOD'}
 
 

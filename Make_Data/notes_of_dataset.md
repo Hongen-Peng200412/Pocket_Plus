@@ -66,15 +66,15 @@ raw4 的划分日志记录：`all.json` 共 5390 个样本，`train.json` 4152 �
 
 位置：`/home/penghongen/My_Project/Data/DATA_v2_raw4/parsed_pdb/{pdb_id}/candidates.npz`
 
-意义：保存过滤前的候选配体属性。这里的候选配体来自 PDB/mmCIF 中几乎所有 HETATM 残基，但已永久排除水、`HETATM_EXCLUSION_LIST` 中的溶剂/缓冲/占位组分，以及与主链共价连接的修饰残基。
+意义：保存过滤前的候选配体属性。这里的候选配体来自 PDB/mmCIF 中几乎所有 HETATM 残基；当前 preset 默认排除水、常见溶剂/缓冲/占位组分，以及与主链共价连接的修饰残基。
 
 生成逻辑：
 
 1. `process_and_label.py` 调用 `PDB_processor/parser.py::parse_structure()`。
 2. `parse_structure()` 调用 `PDB_processor/ligand_candidates.py::find_all_hetatm_candidates(model)`。
 3. 遍历所有链和残基，仅处理 `het_flag.startswith('H_')` 的 HETATM 残基。
-4. 排除水分子并统计 `water_count`。
-5. 排除非特异性 HETATM、与主链共价连接的修饰残基和没有重原子的残基。
+4. 若 preset 启用按 resname 的低层排除列表，则排除列表内的水分子并统计 `water_count`。
+5. 按 preset 默认策略排除非特异性 HETATM、与主链共价连接的修饰残基和没有重原子的残基。
 6. 对每个候选配体计算重原子坐标、重心、重原子数、分子量、金属离子标志、标准氨基酸/核苷酸 HETATM 标志、共价连接标志、HETATM 聚合链长度。
 7. `save_candidates_npz()` 压缩保存。
 

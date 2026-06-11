@@ -115,13 +115,13 @@ class ParsedStructure:
 
 
     # ========================= 候选配体数据 / Candidate Ligand data =========================
-    # list[LigandCandidate], 全量候选配体列表（仅排除水分子 + HETATM_EXCLUSION_LIST + 共价连接的修饰残基）
+    # list[LigandCandidate], 全量候选配体列表；低层排除策略由 parse_structure 参数控制
     # 每个候选包含: 坐标、大小(n_heavy_atoms, molecular_weight)、分类标志、共价标志、聚合物链长
     # 注: n_contact_receptor_atoms / n_contact_receptor_residues 由 Part 2 就地填充, 不在此处计算
     ligand_candidates: List[LigandCandidate] = field(default_factory=list)
-    # int, 被永久排除的水分子总数
+    # int, 被当前 resname 排除列表排除的水分子总数
     water_count: int = 0
-    # int, 候选配体数量（不含水）
+    # int, 候选配体数量
     num_candidates: int = 0
 
     # # ========================= [已弃用] 旧配体数据 / [DEPRECATED] Old ligand data =========================
@@ -184,7 +184,10 @@ def parse_structure(
     sample_id: Optional[str] = None,
     require_ligand: bool = True,
     select_first_model: bool = False,
-    allow_incomplete_backbone: bool = False
+    allow_incomplete_backbone: bool = False,
+    use_exclusion_resnames: bool = True,
+    exclusion_resnames: Optional[Set[str]] = None,
+    exclude_covalent_modified_residues: bool = True,
 ) -> Optional[ParsedStructure]:
     """
     统一解析结构文件 (PDB 或 mmCIF)
@@ -199,6 +202,9 @@ def parse_structure(
         - allow_incomplete_backbone: bool, 是否允许主链原子缺失并尝试补全, 建议值 False
             - False: 严格模式, 主链缺失时跳过整个样本 (向后兼容)
             - True: 宽松模式, 尝试补全缺失原子, 并在 backbone_complete_mask 中标记为 False
+        - use_exclusion_resnames: bool, 是否启用按 resname 的低层 HETATM 排除列表
+        - exclusion_resnames: set[str] | None, 需要排除的 HETATM resname；None 时使用候选解析默认列表
+        - exclude_covalent_modified_residues: bool, 是否排除与主链共价连接的修饰残基
 
     输出 / Output:
         - ParsedStructure 或 None, 解析结果；失败返回 None
@@ -254,14 +260,18 @@ def parse_structure(
     # =========================================================================
     # 检测候选配体 / Detect candidate ligands (Part 1: 全量解析)
     # =========================================================================
-    # 使用 ligand_candidates.py 的全量候选配体系统
-    # （排除水分子 + HETATM_EXCLUSION_LIST + 与主链共价连接的 Modified_Residues）
+    # 使用 ligand_candidates.py 的全量候选配体系统；低层排除策略由 AdaLigand-Label preset 透传。
     # 此处计算的属性: coords, center, n_heavy_atoms, molecular_weight, is_metal_ion,
     #                is_peptide_like, is_nucleotide_like, is_covalent, polymer_length
     # 注: n_contact_receptor_atoms / n_contact_receptor_residues 由 Part 2 就地计算
     # list[LigandCandidate], 全量候选列表
     # int, 被排除的水分子总数
-    ligand_candidates, water_count = find_all_hetatm_candidates(model)
+    ligand_candidates, water_count = find_all_hetatm_candidates(
+        model,
+        use_exclusion_resnames=use_exclusion_resnames,
+        exclusion_resnames=exclusion_resnames,
+        exclude_covalent_modified_residues=exclude_covalent_modified_residues,
+    )
     
     if require_ligand and len(ligand_candidates) == 0:
         return_error_info(file_path, -1, ErrorType.NO_LIGAND,
@@ -625,7 +635,7 @@ def parse_structure(
         
 
         # ========================= 候选配体数据 / Candidate ligand data =========================
-        ligand_candidates=ligand_candidates,                               # list[LigandCandidate], 全量候选配体（仅排除水分子）
+        ligand_candidates=ligand_candidates,                               # list[LigandCandidate], 全量候选配体
         water_count=water_count,                                           # int, 被排除的水分子总数
         num_candidates=len(ligand_candidates),                             # int, 候选配体数量
         # ligand_dict 和 num_ligands 将由 Part 2 筛选后填充
