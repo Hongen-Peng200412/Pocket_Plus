@@ -87,8 +87,8 @@ model:
     tversky_alpha: 0.5
     tversky_beta: 0.5
     tversky_smooth: 1.0
-    w_focal: 0.7
-    w_tversky: 0.3
+    w_focal: 0.3
+    w_tversky: 0.7
     w_mse: 0.0
     focal_soft_negative_suppression: false
     tversky_soft_target: false

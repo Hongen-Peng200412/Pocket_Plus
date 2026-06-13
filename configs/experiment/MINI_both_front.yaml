@@ -12,7 +12,7 @@ defaults:
   - override /model/point_backbone: stardard
   - override /model/fusion: e234d4
   - override /model/atom_head: stardard
-  - override /model/task: binary
+  - override /model/task: binary_less
   - override /model/typed_point: "on"
   - override /model/embed_head: clipbig
   - override /model/sparse_refine/candidate_set: binary_adaptive
@@ -48,7 +48,7 @@ model:
     enable_atom_head: true
     # === 消融轴(本文件取值): R / P / F / B ===
     detach_real_point_feat: true        # R
-    detach_pseudo_point_feat: false     # P
+    detach_pseudo_point_feat: true     # P
     enable_atom_head_front: true        # F
     enable_atom_head_back: false        # B
     # === 固定开关(同 detach_main) ===
@@ -56,13 +56,13 @@ model:
     detach_voxel_feat_into_real_point: true
     detach_voxel_feat_into_pseudo_point: true
     refine_receptor_from_voxel: true
-    pseudo_density_residual: false
+    pseudo_density_residual: true
     enable_interface_norm: true
     voxel_backbone:
       ligand_head_hidden_channels: 32
       aux_head_hidden_channels: 32
-      num_conv3d_aux: 1
-      num_conv3d_ligand: 1
+      num_conv3d_aux: 0
+      num_conv3d_ligand: 0
 
   class_names: ${dataset.class_names}
   monitor_metric: val_score/global/refined_F1
@@ -71,13 +71,13 @@ model:
     enabled: true
   ligand_sparse_refine_loss_schedule:
     warmup_ratio: 0.3
-    start_on_ratio: 0.2
+    start_on_ratio: 0.1
 
 train:
   enable_batch_size_tuning: false
   strict_global_batch_size: false
-  global_batch_size: 39
-  batch_size: 3
+  global_batch_size: 40
+  batch_size: 5
   val_per_epoch: 1
   scheduler:
     warmup_ratio: 0.06
