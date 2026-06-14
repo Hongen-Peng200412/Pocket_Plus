@@ -5,14 +5,29 @@ from __future__ import annotations
 
 枚举 6 个 baseline_name × 2 个 system, 对每个组合:
     1. 用 derive_baseline_paths 派生 cache_root / output_root / vis_output_root / error_dir(改这一处规则即可改全部落地目录)。
-    2. 调 build_baseline_cache 为 protein_40 / protein_110 预生成 DL 兼容缓存(含 raw 差图 sidecar MRC)。
-    3. 复用 two_stage_basic.run_two_stage_then_fixed_test 走 40 Stage1 -> 40 Stage2 -> 110 fixed test(model=None, 命中预生成 cache, 绝不 forward)。
+    2. 调 build_baseline_cache 为各 split 预生成 DL 兼容缓存(含 raw 差图 sidecar MRC)。
+    3. 复用 two_stage_basic.run_two_stage_then_fixed_test 走 40 选阈值 -> 固定测试(model=None, 命中预生成 cache, 绝不 forward)。
+
+支持两种运行情况:
+    1. 40 + 110(默认): 用 protein_40 走 Stage1 -> Stage2 选阈值, 再到 protein_110 固定测试。
+       即只给 --val_json / --test_json, 不传 --extra_test_json。
+    2. 40 + 110 + 40(追加固定测试): 在情况 1 之上, 用 --extra_test_json 追加一个或多个固定测试 split
+       (如 nucleic_40), 复用 protein_40 选出的阈值在追加 split 上再做固定测试。
 
 用法:
-    python src/inference/main/run_baseline_two_stage.py \
+    # 情况 1: 40 + 110
+    python /home/penghongen/My_Project/Pocket_Plus/src/inference/main/run_baseline_two_stage.py \
         --base_dir /home/penghongen/My_Project/EVAL_OUT \
         [--systems stardard strict] [--baselines posdiff_clipnorm_DoG1 ...] \
-        [--val_json .../protein_40.json] [--test_json .../protein_110.json] [--device cuda:0]
+        [--val_json /home/penghongen/My_Project/Pocket_Plus/src/inference/utils/protein_40.json] \
+        [--test_json /home/penghongen/My_Project/Pocket_Plus/src/inference/utils/protein_110.json] [--device cuda:0]
+
+    # 情况 2: 40 + 110 + 40(追加固定测试 split, --extra_test_json 可重复传入)
+    python /home/penghongen/My_Project/Pocket_Plus/src/inference/main/run_baseline_two_stage.py \
+        --base_dir /home/penghongen/My_Project/EVAL_OUT \
+        --val_json /home/penghongen/My_Project/Pocket_Plus/src/inference/utils/protein_40.json \
+        --test_json /home/penghongen/My_Project/Pocket_Plus/src/inference/utils/protein_110.json \
+        --extra_test_json nucleic_40=/home/penghongen/My_Project/Pocket_Plus/src/inference/utils/nucleic_40.json
 """
 
 import argparse
