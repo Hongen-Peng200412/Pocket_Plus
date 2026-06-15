@@ -3,29 +3,47 @@ from __future__ import annotations
 """
 固定自动化测试 pipeline 入口: 在验证集(protein_40)上选阈值, 在测试集(protein_110)上固定评估。
 
+支持两种运行情况:
+    1. 40 + 110(默认): 用 protein_40 走 Stage1 -> Stage2 选阈值, 再到 protein_110 固定测试。
+       即只给 --val_config / --test_config, 不传 --extra_test_json。
+    2. 40 + 110 + 40(追加固定测试): 在情况 1 之上, 用 --extra_test_json 追加一个或多个固定测试 split
+       (如 nucleic_40), 复用 protein_40 选出的 Stage2 best 参数在追加 split 上再做固定测试。
+
 用法:
-    python src/inference/main/two_stage_basic.py \
+    # 情况 1: 40 + 110
+    python /home/penghongen/My_Project/Pocket_Plus/src/inference/main/two_stage_basic.py \
         --val_config unet_c1_stardard_40 \
         --test_config unet_c1_stardard \
+        [key=value 覆盖项...]
+
+    # 情况 2: 40 + 110 + 40(追加固定测试 split, --extra_test_json 可重复传入)
+    python /home/penghongen/My_Project/Pocket_Plus/src/inference/main/two_stage_basic.py \
+        --val_config unet_c1_stardard_40 \
+        --test_config unet_c1_stardard \
+        --extra_test_json nucleic_40=/home/penghongen/My_Project/Pocket_Plus/src/inference/utils/nucleic_40.json \
         [key=value 覆盖项...]
 
 命令含义:
     - --val_config: 验证配置名(或 YAML 路径), 对应 protein_40, 用于扫 threshold。
     - --test_config: 测试配置名(或 YAML 路径), 对应 protein_110, 只做固定评估、不扫参。
-    - 末尾 key=value 覆盖项同时套用到两个配置(常见: ckpt_path、device、stage1_objective_expr、stage2_objective_expr、pipeline_vis_enable);
+    - --extra_test_json: 追加固定测试 split, 格式 label=/path/to/raw_pairs.json, 可重复传入(情况 2 专用; 情况 1 省略即可)。
+      其 output_root/cache_root/vis_output_root/error_dir 由 --test_config 的同名字段追加 _{label} 后缀派生, 复用 Stage2 best 参数固定评估。
+    - 末尾 key=value 覆盖项同时套用到 val/test(及追加 split)配置(常见: ckpt_path、device、stage1_objective_expr、stage2_objective_expr、pipeline_vis_enable);
       路径/身份字段(output_root、cache_root、raw_pairs_json、vis_output_root、error_dir)请在各自 YAML 配好, 不要统一覆盖。
 
 固定三段流程(均只加载一次 checkpoint, 验证与测试共用同一模型):
     1. protein_40 Stage 1: 固定 basic / mcv=10 / 7_none / merge_dist=0.0 / vis=false, 只扫 threshold=0.00..1.00, objective=avg_voxel_f1, 不做 instance 运算。
     2. protein_40 Stage 2: 固定 basic / mcv=10 / 7_none / merge_dist=5.0 / vis 由 pipeline_vis_enable 控制, 在 Stage1 best 阈值 ±0.10 内只扫 threshold, objective 含 global instance F1。
     3. protein_110 fixed test: search_space={}, 用 Stage2 best 后处理参数固定评估, vis 由 pipeline_vis_enable 控制, 不扫参。
+       情况 2 下, 每个 --extra_test_json 追加 split 复用同一 Stage2 best 参数, 各自再做一次固定测试。
 
 输出目录:
     - {val_output_root}/stage1_threshold_only: 第一阶段参数搜索产物。
     - {val_output_root}/stage2_threshold_component_policy: 第二阶段参数搜索产物。
-    - {test_output_root}: 第三阶段固定测试产物(直接写测试配置根目录)。
+    - {test_output_root}: 第三阶段(protein_110)固定测试产物(直接写测试配置根目录)。
+    - {test_output_root}_{label}: 情况 2 下每个追加固定测试 split 的产物(如 {test_output_root}_nucleic_40)。
     - {val_output_root}/stage1_best_threshold.txt: 第一阶段最优 threshold 纯文本。
-    - {val_output_root}/two_stage_basic_summary.json: 三段输出目录、Stage1 最优 threshold、Stage2 best 参数与测试侧字段汇总。
+    - {val_output_root}/two_stage_basic_summary.json: 三段输出目录、Stage1 最优 threshold、Stage2 best 参数与测试侧字段汇总(含 fixed_tests 列出全部固定测试 split)。
 """
 
 import argparse

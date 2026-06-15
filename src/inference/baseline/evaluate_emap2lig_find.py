@@ -282,19 +282,24 @@ def evaluate_one_sample(pair: dict[str, Any], args: argparse.Namespace) -> dict[
                 - "eval_shape": tuple[int,int,int], 评估网格形状(D,H,W)
     """
     sample_name = str(pair.get("sample_name") or Path(str(pair["cif_path"])).stem)
-    sample_out = Path(args.output_root) / args.dataset_name / "pocketplus_eval_inputs" / sample_name
-    sample_out.mkdir(parents=True, exist_ok=True)
-    eval_grid = _build_eval_grid(pair, args)
-
-    find_dir = Path(args.raw_find_root) / sample_name
-    status_path = find_dir / "status.json"
-    find_status = {"status": "missing_status", "error": "status.json not found"}
-    if status_path.exists():
-        with open(status_path, "r", encoding="utf-8") as file_obj:
-            find_status = json.load(file_obj)
-
     try:
+        sample_out = Path(args.output_root) / args.dataset_name / "pocketplus_eval_inputs" / sample_name
+        sample_out.mkdir(parents=True, exist_ok=True)
+        eval_grid = _build_eval_grid(pair, args)
+
+        find_dir = Path(args.raw_find_root) / sample_name
+        status_path = find_dir / "status.json"
+        find_status = {"status": "missing_status", "error": "status.json not found"}
+        if status_path.exists():
+            with open(status_path, "r", encoding="utf-8") as file_obj:
+                find_status = json.load(file_obj)
+
         if find_status.get("status") != "ok":
+            print(
+                f"[evaluate_emap2lig_find] sample={sample_name} 使用空预测回退: "
+                f"Find status={find_status.get('status')}, error={find_status.get('error')}",
+                flush=True,
+            )
             metrics = _empty_metrics(eval_grid)
             row = {
                 "sample_name": sample_name,
@@ -340,6 +345,7 @@ def evaluate_one_sample(pair: dict[str, Any], args: argparse.Namespace) -> dict[
             pred_instance_label, _ = ndimage.label(pred_mask, structure=ndimage.generate_binary_structure(3, 3))
             pred_instance_label = _filter_small_components(pred_instance_label.astype(np.int32, copy=False), 32)  # 就是官方 <32 体素过滤(emap2lig main.py:356)
             # 对齐到 eval_grid(我们自己的坐标), 没问题 
+            pred_mask = pred_instance_label > 0
             candidates = _build_candidates(pred_instance_label, score_map, eval_grid["origin"], eval_grid["voxel_size"])
             metrics = _evaluate_arrays(pred_mask, pred_instance_label, score_map, eval_grid, candidates)
             np.savez_compressed(sample_out / "instance_label.npz", instance_label=pred_instance_label)
@@ -358,15 +364,24 @@ def evaluate_one_sample(pair: dict[str, Any], args: argparse.Namespace) -> dict[
                 },
             }
     except Exception as exc:
-        metrics = _empty_metrics(eval_grid)
+        print(
+            f"[evaluate_emap2lig_find] sample={sample_name} 评估异常, 使用可记录失败状态: "
+            f"{type(exc).__name__}: {exc}",
+            flush=True,
+        )
         row = {
             "sample_name": sample_name,
             "status": "failed_empty_prediction",
             "error": f"{type(exc).__name__}: {exc}",
-            "metrics": metrics,
         }
+        if "eval_grid" in locals():
+            row["metrics"] = _empty_metrics(eval_grid)
 
-    _write_json(sample_out / "metrics.json", row["metrics"])
+    if "sample_out" not in locals():
+        sample_out = Path(args.output_root) / args.dataset_name / "pocketplus_eval_inputs" / sample_name
+        sample_out.mkdir(parents=True, exist_ok=True)
+    if "metrics" in row:
+        _write_json(sample_out / "metrics.json", row["metrics"])
     _write_json(sample_out / "status.json", {k: v for k, v in row.items() if k != "metrics"})
     return row
 
@@ -443,7 +458,15 @@ def summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "num_samples": int(len(rows)),
         "num_ok": int(sum(1 for row in rows if row.get("status") == "ok")),
         "num_failed": int(sum(1 for row in rows if row.get("status") != "ok")),
+        "num_with_metrics": int(len(metrics_rows)),
+        "num_without_metrics": int(sum(1 for row in rows if "metrics" not in row)),
     }
+    if summary["num_without_metrics"] > 0:
+        print(
+            f"[evaluate_emap2lig_find] 汇总发现 {summary['num_without_metrics']} 个样本缺少 metrics, "
+            "通常表示评估网格或 GT 构建失败; 这些样本不会参与可计算指标聚合。",
+            flush=True,
+        )
     if not metrics_rows:
         return summary
     for key in ("voxel_precision", "voxel_recall", "voxel_f1", "voxel_iou", "voxel_dice", "num_candidates"):
