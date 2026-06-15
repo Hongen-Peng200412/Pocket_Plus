@@ -9,6 +9,11 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("MKL_NUM_THREADS", "1")
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
+
 import numpy as np
 from scipy import ndimage
 
@@ -532,7 +537,20 @@ def run_dataset(args: argparse.Namespace) -> dict[str, Any]:
         - summary: dict[str, Any], 数据集级汇总指标
     """
     pairs = load_raw_pairs(str(args.raw_pairs_json))
-    rows = [evaluate_one_sample(pair, args) for pair in pairs]
+    eval_n_jobs = int(args.eval_n_jobs)
+    if eval_n_jobs <= 1:
+        rows = [evaluate_one_sample(pair, args) for pair in pairs]
+    else:
+        from joblib import Parallel, delayed
+
+        print(
+            f"[evaluate_emap2lig_find] dataset={args.dataset_name} "
+            f"samples={len(pairs)} eval_n_jobs={eval_n_jobs} eval_backend={args.eval_backend}",
+            flush=True,
+        )
+        rows = Parallel(n_jobs=eval_n_jobs, backend=str(args.eval_backend))(
+            delayed(evaluate_one_sample)(pair, args) for pair in pairs
+        )
     reports_root = Path(args.output_root) / args.dataset_name / "reports"
     summary = summarize(rows)
     _write_json(reports_root / "per_sample_results.json", rows)
@@ -556,6 +574,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--target-voxel-size", type=float, default=1.0, help="Pocket Plus 评估网格目标体素大小")
     parser.add_argument("--ligand-gt-distance-threshold", type=float, default=1.7, help="labels.npz 构造 voxel GT 的距离阈值")
     parser.add_argument("--chunk-depth", type=int, default=256, help="坐标映射时的 z 轴分块深度")
+    parser.add_argument("--eval-n-jobs", type=int, default=1, help="样本级并行 worker 数; 1 表示串行")
+    parser.add_argument("--eval-backend", default="loky", help="joblib backend; 默认 loky")
     return parser.parse_args()
 
 

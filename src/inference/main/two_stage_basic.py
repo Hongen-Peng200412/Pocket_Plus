@@ -12,20 +12,22 @@ from __future__ import annotations
 用法:
     # 情况 1: 40 + 110
     python /home/penghongen/My_Project/Pocket_Plus/src/inference/main/two_stage_basic.py \
-        --val_config unet_c1_stardard_40 \
-        --test_config unet_c1_stardard \
+        --val_config DL/abl1_strict_40 \
+        --test_config DL/abl1_strict \
         [key=value 覆盖项...]
 
     # 情况 2: 40 + 110 + 40(追加固定测试 split, --extra_test_json 可重复传入)
     python /home/penghongen/My_Project/Pocket_Plus/src/inference/main/two_stage_basic.py \
-        --val_config unet_c1_stardard_40 \
-        --test_config unet_c1_stardard \
+        --val_config DL/abl1_strict_40 \
+        --test_config DL/abl1_strict \
         --extra_test_json nucleic_40=/home/penghongen/My_Project/Pocket_Plus/src/inference/utils/nucleic_40.json \
         [key=value 覆盖项...]
 
 命令含义:
     - --val_config: 验证配置名(或 YAML 路径), 对应 protein_40, 用于扫 threshold。
     - --test_config: 测试配置名(或 YAML 路径), 对应 protein_110, 只做固定评估、不扫参。
+    - 配置名按 configs/infer_or_eval/<name>.yaml 解析; DL 配置在 configs/infer_or_eval/DL/ 下,
+      故须带 DL/ 前缀(如 DL/abl1_strict_40), 或直接给绝对 YAML 路径。
     - --extra_test_json: 追加固定测试 split, 格式 label=/path/to/raw_pairs.json, 可重复传入(情况 2 专用; 情况 1 省略即可)。
       其 output_root/cache_root/vis_output_root/error_dir 由 --test_config 的同名字段追加 _{label} 后缀派生, 复用 Stage2 best 参数固定评估。
     - 末尾 key=value 覆盖项同时套用到 val/test(及追加 split)配置(常见: ckpt_path、device、stage1_objective_expr、stage2_objective_expr、pipeline_vis_enable);

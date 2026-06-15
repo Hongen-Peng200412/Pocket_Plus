@@ -1,0 +1,609 @@
+﻿model:
+  name: default
+  _target_: src.wrappers.voxel_point_stage1.VoxelPointStage1Wrapper
+  backbone:
+    _target_: src.model.stage1_model.VolumePointStage1Model
+    atom_logit_dim: 1
+    enable_recycling: true
+    max_recycles: 3
+    randomize_recycles: true
+    detach_recycle_states: true
+    act_layer_name: gelu
+    ffn_type: gated
+    atom_head_ffn_type: gated
+    prior_prob: 0.01
+    prior_probs: null
+    enable_atom_head_front: true
+    enable_atom_head_back: false
+    detach_real_point_feat: true
+    detach_pseudo_point_feat: false
+    detach_voxel_feat_into_real_point: true
+    detach_voxel_feat_into_pseudo_point: true
+    detach_voxel_into_refine: true
+    refine_receptor_from_voxel: true
+    pseudo_density_residual: false
+    enable_interface_norm: true
+    atom_head_concat_receptor_base_logit: false
+    sparse_refine_residual_mode: residual
+    sparse_refine_use_voxel_logits: true
+    voxel_backbone:
+      _target_: src.model.stage1_voxel_backbone.Stage1VoxelBackbone
+      in_channels: null
+      feature_channels: 48
+      planes:
+      - 64
+      - 256
+      - 256
+      - 256
+      - 256
+      - 256
+      - 128
+      - 64
+      - 64
+      gradient_checkpoint: true
+      return_feature_keys: []
+      aux_head_hidden_channels: 32
+      num_conv3d_aux: 0
+      voxel_aux_logit_dim: 1
+      ligand_head_hidden_channels: 32
+      num_conv3d_ligand: 0
+      voxel_ligand_logit_dim: 1
+      prior_probs: null
+    point_backbone:
+      _target_: src.model.stage1_point_backbone.Stage1PointBackbone
+      backend: ptv3
+      atom_feature_dim: 64
+      point_grid_size: 0.25
+      input_embed_dim: 64
+      input_embed_hidden_dim: 128
+      out_channels: 48
+      recycle_feature_dim: 48
+      recycle_in_norm_mode: layernorm
+      typed_point_cfg: ${model.backbone.typed_point_cfg}
+      serialization_orders:
+      - z
+      - z-trans
+      - hilbert
+      - hilbert-trans
+      shuffle_orders: true
+      stride:
+      - 8
+      - 2
+      - 2
+      - 2
+      enc_depths:
+      - 2
+      - 2
+      - 2
+      - 2
+      - 2
+      enc_channels:
+      - 64
+      - 128
+      - 128
+      - 256
+      - 512
+      enc_num_head:
+      - 2
+      - 4
+      - 8
+      - 16
+      - 32
+      enc_patch_size:
+      - 512
+      - 256
+      - 128
+      - 72
+      - 64
+      dec_depths:
+      - 2
+      - 2
+      - 2
+      - 2
+      - 6
+      dec_channels:
+      - 48
+      - 96
+      - 128
+      - 256
+      - 512
+      dec_num_head:
+      - 4
+      - 4
+      - 8
+      - 16
+      - 32
+      dec_patch_size:
+      - 512
+      - 256
+      - 128
+      - 72
+      - 64
+      embedding_kernel_size: 4
+      embedding_impl: pointconv
+      embedding_receptive_field: 4.0
+      pointconv_embed_max_neighbors: 256
+      cpe_impl: pointconv
+      pointconv_block_max_neighbors: 64
+      enc_cpe_kernel_size:
+      - 5
+      - 5
+      - 5
+      - 5
+      - 5
+      dec_cpe_kernel_size:
+      - 5
+      - 5
+      - 5
+      - 5
+      - 5
+      enc_cpe_receptive_field:
+      - 2.0
+      - 3.0
+      - 8.0
+      - 12.0
+      - 16.0
+      dec_cpe_receptive_field:
+      - 2.0
+      - 3.0
+      - 8.0
+      - 12.0
+      - 16.0
+      mlp_ratio: 3
+      qkv_bias: true
+      qk_scale: null
+      attn_drop: 0.1
+      proj_drop: 0.1
+      drop_path: 0.3
+      pre_norm: true
+      enable_rpe: false
+      enable_flash: true
+      upcast_attention: false
+      upcast_softmax: false
+      cls_mode: false
+      pdnorm_bn: false
+      pdnorm_ln: false
+      pdnorm_decouple: true
+      pdnorm_adaptive: false
+      pdnorm_affine: true
+      pdnorm_conditions:
+      - ScanNet
+      - S3DIS
+      - Structured3D
+      act_layer_name: ${model.backbone.act_layer_name}
+      ffn_type: ${model.backbone.ffn_type}
+    point_fusion_map:
+      point_enc2: voxel_ds_2
+      point_enc3: voxel_ds_3
+      point_enc4: voxel_ds_4
+      point_dec4: voxel_c4
+      point_feat: voxel_final
+    point_fusion_modes:
+    - film_plus
+    - film_plus
+    - film_plus
+    - film_plus
+    - film_plus
+    sampler_modes:
+    - weighted_cube
+    - weighted_cube
+    - weighted_cube
+    - weighted_cube
+    - weighted_cube
+    sampler_cube_init:
+    - - 2.0
+      - 1.5
+      - 0.5
+      - 1.0
+    - - 2.0
+      - 1.5
+      - 0.5
+      - 1.0
+    - - 2.0
+      - 1.5
+      - 0.5
+      - 1.0
+    - - 2.0
+      - 1.5
+      - 0.5
+      - 1.0
+    - - 2.0
+      - 1.5
+      - 0.5
+      - 1.0
+    fusion_mlp_ratio: 2.0
+    fusion_proj_drop: 0.2
+    fusion_cube_chunk_size: 32768
+    atom_head_hidden_dim: 128
+    atom_head_num_heads: 4
+    atom_head_patch_size: 256
+    atom_head_num_layers: 5
+    atom_head_serialization_orders:
+    - z
+    - z-trans
+    - hilbert
+    - hilbert-trans
+    atom_head_shuffle_orders: true
+    atom_head_qkv_bias: true
+    atom_head_qk_scale: null
+    atom_head_attn_drop: 0.1
+    atom_head_proj_drop: 0.1
+    atom_head_enable_rpe: false
+    atom_head_enable_flash: true
+    atom_head_upcast_attention: false
+    atom_head_upcast_softmax: false
+    atom_head_mlp_ratio: 3
+    atom_head_pseudo_feature_dim: null
+    atom_head_cpe_impl: pointconv
+    atom_head_cpe_kernel_size: 5
+    atom_head_cpe_receptive_field: 2.0
+    atom_head_pointconv_max_neighbors: 128
+    atom_head_drop_path: 0.2
+    atom_head_pre_norm: true
+    atom_head_append_coord_mask: false
+    pseudo_atom_cfg: null
+    typed_point_cfg:
+      enabled: true
+      separate_qkv: true
+      separate_attn_proj: true
+      separate_ffn: true
+      separate_cpe: true
+      separate_embedding: true
+      separate_pooling_proj: true
+      separate_unpooling_proj: true
+      separate_fusion: true
+      separate_point_input_proj: true
+      separate_atom_token_proj: true
+    candidate_set_cfg:
+      _target_: src.model.sparse_refine.candidate_set.SparseCandidateSetBuilder
+      selection_mode: adaptive_threshold
+      candidate_class_ids: ${sparse_refine_task.candidate_class_ids}
+      warmup_topc_per_class: ${sparse_refine_task.warmup_topc_per_class}
+      adaptive_expand_factor: ${sparse_refine_task.adaptive_expand_factor}
+      max_candidate_voxels_per_class: ${sparse_refine_task.max_candidate_voxels_per_class}
+    anchor_sampler_cfg:
+      _target_: src.model.sparse_refine.anchor_sampler.SparseAnchorSampler
+      mode: unweighted_fps
+      candidate_class_ids: ${sparse_refine_task.candidate_class_ids}
+      max_anchors_per_class: ${sparse_refine_task.max_anchors_per_class}
+      weight_power: 1.0
+      chunk_size: 8192
+      nms_radius_voxel: 2
+      random_start: false
+    real_atom_density_cube: false
+    density_cube_cfg:
+      _target_: src.model.sparse_refine.density_cube.DensityCubeEncoder
+      in_channels: null
+      cube_size: 11
+      hidden_channels: 64
+      num_downsample: 2
+      num_conv: 2
+      out_dim: ${model.backbone.point_backbone.atom_feature_dim}
+      encoder_type: conv_gap
+      norm: group
+      num_groups: 8
+      act: silu
+      chunk_size: 512
+    anchor_to_candidate_cfg:
+      _target_: src.model.sparse_refine.interpolation.AnchorToCandidateKnnSearch
+      mode: knn_message
+      num_neighbors: 4
+      same_class_only: true
+      chunk_size: 8192
+    _recursive_: false
+    sparse_refine_head_cfg:
+      _target_: src.model.sparse_refine.sparse_refine_head.SparseRefineHead
+      edge_weight_activation: sigmoid
+      distance_weight:
+        mode: softmax_negative_squared_distance
+        temperature: 9.0
+        learnable: true
+      message_dim: 128
+      edge_hidden_dim: 128
+      candidate_class_embedding_dim: 16
+      hidden_dim: 128
+      num_layers: 2
+      zero_init_residual: true
+      inputs:
+        use_C_voxel_backbone_feat: true
+        use_P_point_backbone_feat: true
+        use_P_atom_head_feat: true
+        use_P_voxel_backbone_feat: true
+        use_relative_coords: true
+        use_candidate_class_embedding: false
+    anchor_class_conditioning_cfg: null
+    embed_head:
+      _target_: src.model.stage1_embed_head.Stage1EmbedHead
+      atom_feature_dim: 49
+      embed_hidden_dim: 128
+      embed_voxel_out_channels: 49
+      embed_point_out_channels: 64
+      num_trunk_blocks: 0
+      num_voxel_blocks: 3
+      num_point_blocks: 3
+      trunk_buffer_radii: []
+      voxel_buffer_radii:
+      - 8.0
+      - 4.0
+      - 0.0
+      point_buffer_radii:
+      - 8.0
+      - 4.0
+      - 0.0
+      num_heads: 4
+      patch_size: 256
+      serialization_orders:
+      - z
+      - z-trans
+      - hilbert
+      - hilbert-trans
+      shuffle_orders: true
+      qkv_bias: true
+      qk_scale: null
+      attn_drop: 0.1
+      proj_drop: 0.1
+      enable_rpe: false
+      enable_flash: true
+      upcast_attention: false
+      upcast_softmax: false
+      ffn_type: ${model.backbone.ffn_type}
+      mlp_ratio: 3
+      act_layer_name: ${model.backbone.act_layer_name}
+      scatter_reduce: sum
+      point_grid_size: 0.25
+      cpe_impl: pointconv
+      cpe_kernel_size: 5
+      cpe_receptive_field: 2.0
+      pointconv_block_max_neighbors: 64
+      drop_path: 0.2
+      pre_norm: true
+      embed_residual_enabled: true
+      embed_point_gate_enabled: false
+      embed_voxel_gate_enabled: false
+      add_occupancy_channels: true
+      use_soft_splatting: true
+      use_centroid_encoding: true
+    online_pdb_feature: false
+    online_pdb_feature_reduce: sum
+    online_pdb_feature_dim: 49
+    enable_atom_head: true
+  interval: step
+  frequency: 1
+  monitor_metric: val_score/global/refined_F1
+  monitor_mode: max
+  voxel_ligand_pr_auc_thresholds: 1024
+  val_metric_device_policy: auto
+  class_names: ${dataset.class_names}
+  validation_diagnostics:
+    enabled: true
+    num_bins: ${model.voxel_ligand_pr_auc_thresholds}
+    write_local_artifacts: true
+    log_wandb_curves: true
+    wandb_curve_every_n_validation: 1
+    output_subdir: validation_diagnostics
+  ligand_sparse_refine_loss:
+    _target_: src.modules.losses.AdaptiveClassificationCompositeLoss
+    num_classes: 2
+    sigma: 2.0
+    hard_label_threshold: 1.7
+    focal_gamma: 0.0
+    focal_alpha:
+    - 0.5
+    - 0.5
+    focal_alpha_neg: 0.5
+    focal_alpha_pos: 0.5
+    focal_eps: 1.0e-06
+    tversky_alpha: 0.5
+    tversky_beta: 0.5
+    tversky_smooth: 1.0
+    w_focal: 0.3
+    w_tversky: 0.7
+    w_mse: 0.0
+    focal_soft_negative_suppression: false
+    tversky_soft_target: false
+  ligand_sparse_refine_loss_weight: 1.0
+  ligand_sparse_refine_loss_schedule:
+    mode: linear_warmup
+    start_weight: 0.0
+    final_weight: ${model.ligand_sparse_refine_loss_weight}
+    warmup_steps: null
+    warmup_ratio: 0.3
+    start_on_steps: null
+    start_on_ratio: 0.2
+  compile: false
+  atom_loss:
+    _target_: src.modules.losses.AdaptiveClassificationCompositeLoss
+    num_classes: 2
+    sigma: 2.0
+    hard_label_threshold: null
+    focal_gamma: 2.0
+    focal_alpha:
+    - 0.5
+    - 0.5
+    focal_alpha_neg: 0.5
+    focal_alpha_pos: 0.5
+    focal_eps: 1.0e-06
+    tversky_alpha: 0.5
+    tversky_beta: 0.5
+    tversky_smooth: 1.0
+    w_focal: 0.7
+    w_tversky: 0.3
+    w_mse: 0.0
+    focal_soft_negative_suppression: false
+    tversky_soft_target: false
+  atom_loss_front_weight: 0.1
+  atom_loss_back_weight: 0.1
+  voxel_aux_loss:
+    _target_: src.modules.losses.AdaptiveClassificationCompositeLoss
+    num_classes: 2
+    sigma: 2.0
+    hard_label_threshold: null
+    focal_gamma: 2.0
+    focal_alpha:
+    - 0.5
+    - 0.5
+    focal_alpha_neg: 0.5
+    focal_alpha_pos: 0.5
+    focal_eps: 1.0e-06
+    tversky_alpha: 0.5
+    tversky_beta: 0.5
+    tversky_smooth: 1.0
+    w_focal: 0.7
+    w_tversky: 0.3
+    w_mse: 0.0
+    focal_soft_negative_suppression: false
+    tversky_soft_target: false
+  voxel_aux_loss_weight: 0.1
+  voxel_ligand_loss:
+    _target_: src.modules.losses.AdaptiveClassificationCompositeLoss
+    num_classes: 2
+    sigma: 2.0
+    hard_label_threshold: 1.7
+    focal_gamma: 2.0
+    focal_alpha:
+    - 0.5
+    - 0.5
+    focal_alpha_neg: 0.5
+    focal_alpha_pos: 0.5
+    focal_eps: 1.0e-06
+    tversky_alpha: 0.5
+    tversky_beta: 0.5
+    tversky_smooth: 1.0
+    w_focal: 0.7
+    w_tversky: 0.3
+    w_mse: 0.0
+    focal_soft_negative_suppression: false
+    tversky_soft_target: false
+  voxel_ligand_loss_weight: 1.0
+sparse_refine_task:
+  candidate_class_ids:
+  - 1
+  warmup_topc_per_class:
+  - 10000
+  adaptive_expand_factor:
+  - 2.5
+  max_candidate_voxels_per_class:
+  - 10000
+  max_anchors_per_class:
+  - 800
+dataset:
+  _target_: src.datasets.box_point_dataset.BoxPointDataset
+  name: emb_unet
+  all_data_path: /storage/penghongen/Pocket_classic/v2_raw4_10A
+  sample_root_path: /home/penghongen/My_Project/Data/DATA_v2_raw4/parsed_pdb
+  data_folder_names:
+  - emdb_exp_BOX
+  - emdb_sim_BOX
+  - pdb_label_BOX
+  - ligand_dist_BOX
+  class_folder_names:
+  - metal_ion
+  - peptide
+  - nucleic
+  - small_molecule
+  - random_BOX
+  density_channel_config:
+    clip_percentile:
+    - 0.001
+    - 0.999
+    fit_mask_percentile: 0.003
+    enabled_channels:
+    - all
+  class_mapping:
+  - 0
+  - 1
+  - 1
+  - 1
+  - 1
+  class_names:
+  - background
+  - foreground
+  num_task_classes: 2
+  split_train:
+  - /storage/penghongen/Pocket_classic/v2_raw4_10A/split/split_3/metal_ion/train_010.json
+  - /storage/penghongen/Pocket_classic/v2_raw4_10A/split/split_3/peptide/train_010.json
+  - /storage/penghongen/Pocket_classic/v2_raw4_10A/split/split_3/nucleic/train_010.json
+  - /storage/penghongen/Pocket_classic/v2_raw4_10A/split/split_3/small_molecule/train_010.json
+  - /storage/penghongen/Pocket_classic/v2_raw4_10A/split/split_3/random_BOX/train_010.json
+  split_val:
+  - /storage/penghongen/Pocket_classic/v2_raw4_10A/split/split_3/metal_ion/val.json
+  - /storage/penghongen/Pocket_classic/v2_raw4_10A/split/split_3/peptide/val.json
+  - /storage/penghongen/Pocket_classic/v2_raw4_10A/split/split_3/nucleic/val.json
+  - /storage/penghongen/Pocket_classic/v2_raw4_10A/split/split_3/small_molecule/val.json
+  - /storage/penghongen/Pocket_classic/v2_raw4_10A/split/split_3/random_BOX/val.json
+  atom_buffer_radius: 8.0
+  cache_size: 128
+  valid_crop_margin: 0
+  enable_random_rotation: true
+post_process:
+  name: none
+output:
+  save_top_k: 10
+  save_every_n_epochs: 3
+  visualization:
+    enabled: false
+train:
+  global_batch_size: 40
+  enable_batch_size_tuning: false
+  tuning_init_batch_size: 10
+  batch_size: 5
+  batch_size_tuning_safety_factor: 0.9
+  tuning_steps_per_trial: 10
+  strict_global_batch_size: false
+  num_workers: 20
+  dataloader_backend: auto
+  pin_memory: true
+  seed: 3407
+  seed_workers: true
+  dataloader_seed_offsets:
+    train: 0
+    val: 1
+  use_balanced_foreground_sampler: true
+  balanced_foreground_ratio: 0.33
+  data_fault_tolerance:
+    enabled: true
+    stages:
+    - train
+    - val
+    max_resample_attempts: 8
+    sample_timeout_sec: 200
+    log_first_n: 50
+  nnodes: 1
+  devices: 1
+  max_epochs: 20
+  accelerator: auto
+  ddp_find_unused_parameters: false
+  precision: bf16-mixed
+  gradient_clip_val: 0.5
+  check_val_every_n_epoch: 1
+  val_per_epoch: 1
+  log_every_n_steps: 3
+  optimizer:
+    _target_: torch.optim.AdamW
+    _partial_: true
+    lr: 3.0e-05
+    weight_decay: 0.01
+  scheduler:
+    name: warmup_plateau
+    total_steps: null
+    warmup_steps: null
+    warmup_ratio: 0.06
+    warmup_start_factor: 0.33
+    mode: ${model.monitor_mode}
+    factor: 0.5
+    patience: 3
+    threshold: 0.002
+    threshold_mode: abs
+    cooldown: 0
+    min_lr: 0.0
+    eps: 1.0e-08
+name: MINI_real_front
+tag: MINI_real_front
+project_name: PV_detach
+experiment_group: MINI
+wandb_log_LongName: false
+min_duration: 0
+keep_short_runs: true
+offline: false
+migrate_slurm_logs: false
+

@@ -25,3 +25,4 @@ cryatom_output/
 CLAUDE_PLANS/
 CLAUDE/
 docs
+.review*
