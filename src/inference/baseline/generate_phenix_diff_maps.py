@@ -34,6 +34,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+from joblib import Parallel, delayed
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 project_root = str(PROJECT_ROOT)
@@ -351,6 +352,57 @@ def summary_path_for_run(phenix_output_root: str, shard_index: int | None, num_s
     return os.path.join(str(phenix_output_root), "_shard_summaries", f"generate_summary_shard_{shard_index:04d}_of_{num_shards:04d}.json")
 
 
+def run_one_task(
+    task: dict[str, Any],
+    phenix_output_root: str,
+    phenix_bin: str,
+    resolution_table: dict[str, float],
+    skip_existing: bool,
+) -> dict[str, Any]:
+    """
+    生成或跳过单个 phenix 差图任务。
+
+    输入参数:
+        - task: dict[str, Any], 当前任务, 包含 system 和 sample
+        - phenix_output_root: str, phenix 差图输出根目录
+        - phenix_bin: str, phenix.real_space_diff_map 可执行文件路径
+        - resolution_table: dict[str, float], EMDB ID 到分辨率的映射
+        - skip_existing: bool, 已存在输出时是否跳过
+
+    输出:
+        - result: dict[str, Any], 包含:
+            - "status": str, ok/skipped/failed
+            - "system": str, stardard 或 strict
+            - "sample_name": str, 样本名
+            - "out_path": str, 输出差图路径
+            - "stats": dict[str, Any], status=ok 时的生成统计
+            - "error": str, status=failed 时的错误信息
+    """
+    system = str(task["system"])
+    sample = task["sample"]
+    sample_name = str(sample["sample_name"])
+    out_path = derive_phenix_map_path(str(phenix_output_root), system, sample_name)
+    if skip_existing and os.path.exists(out_path):
+        return {"status": "skipped", "system": system, "sample_name": sample_name, "out_path": out_path}
+    try:
+        structure_path = _structure_source_for_system(sample, system)
+        resolution, resolution_source = resolve_sample_resolution(sample, resolution_table)
+        work_dir = str(Path(out_path).parent / "_phenix_work")
+        stats = generate_one_phenix_diff_map(
+            structure_path=structure_path,
+            map_path=str(sample["map_path"]),
+            resolution=resolution,
+            out_path=out_path,
+            phenix_bin=str(phenix_bin),
+            work_dir=work_dir,
+            strip_hetatm=(system == "stardard"),
+        )
+        stats.update({"system": system, "sample_name": sample_name, "resolution": float(resolution), "resolution_source": resolution_source})
+        return {"status": "ok", "stats": stats, "system": system, "sample_name": sample_name, "out_path": out_path}
+    except Exception as exc:
+        return {"status": "failed", "system": system, "sample_name": sample_name, "out_path": out_path, "error": str(exc)}
+
+
 def _structure_source_for_system(sample: dict[str, Any], system: str) -> str:
     """
     按系统选择 phenix model 的结构来源。
@@ -381,6 +433,8 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--no_skip_existing", action="store_true", help="不跳过已存在的对齐差图(默认幂等跳过)。")
     parser.add_argument("--shard_index", type=int, default=None, help="当前分片编号(0-based); 未传时自动读取 SLURM_ARRAY_TASK_ID。")
     parser.add_argument("--num_shards", type=int, default=None, help="分片总数; 未传时自动读取 SLURM_ARRAY_TASK_COUNT。")
+    parser.add_argument("--n_jobs", type=int, default=8, help="joblib 并行 worker 数; 默认 8。")
+    parser.add_argument("--backend", default="loky", help="joblib backend; 默认 loky。")
     args = parser.parse_args(argv)
 
     # bool, 是否幂等跳过已存在产物
@@ -405,46 +459,41 @@ def main(argv: list[str] | None = None) -> None:
         f"shard_index={shard_index} num_shards={num_shards}"
     )
 
+    results = Parallel(n_jobs=int(args.n_jobs), backend=str(args.backend))(
+        delayed(run_one_task)(
+            task=task,
+            phenix_output_root=str(args.phenix_output_root),
+            phenix_bin=str(args.phenix_bin),
+            resolution_table=resolution_table,
+            skip_existing=skip_existing,
+        )
+        for task in selected_tasks
+    )
+
     # list[dict[str, Any]], 全部样本生成统计
     run_rows: list[dict[str, Any]] = []
     # list[dict[str, Any]], 已存在而跳过的样本记录
     skipped_rows: list[dict[str, Any]] = []
     # list[dict[str, Any]], 失败样本记录
     failures: list[dict[str, Any]] = []
-    for task in selected_tasks:
-        # str, 当前系统; dict[str, Any], 当前样本条目
-        system = str(task["system"])
-        sample = task["sample"]
-        # str, 样本名
-        sample_name = str(sample["sample_name"])
-        # str, 对齐差图输出路径(A2 约定派生)
-        out_path = derive_phenix_map_path(str(args.phenix_output_root), system, sample_name)
-        if skip_existing and os.path.exists(out_path):
+    for result in results:
+        status = str(result["status"])
+        system = str(result["system"])
+        sample_name = str(result["sample_name"])
+        out_path = str(result["out_path"])
+        if status == "skipped":
             skipped_rows.append({"system": system, "sample_name": sample_name, "out_path": out_path})
             print(f"[skip] system={system} sample={sample_name} 已存在 {out_path}")
-            continue
-        try:
-            # str, phenix model 结构来源
-            structure_path = _structure_source_for_system(sample, system)
-            # float/str, 分辨率与来源
-            resolution, resolution_source = resolve_sample_resolution(sample, resolution_table)
-            # str, 本样本 phenix 工作目录
-            work_dir = str(Path(out_path).parent / "_phenix_work")
-            stats = generate_one_phenix_diff_map(
-                structure_path=structure_path,
-                map_path=str(sample["map_path"]),
-                resolution=resolution,
-                out_path=out_path,
-                phenix_bin=str(args.phenix_bin),
-                work_dir=work_dir,
-                strip_hetatm=(system == "stardard"),
-            )
-            stats.update({"system": system, "sample_name": sample_name, "resolution": float(resolution), "resolution_source": resolution_source})
+        elif status == "ok":
+            stats = dict(result["stats"])
             run_rows.append(stats)
-            print(f"[ok] system={system} sample={sample_name} resolution={resolution}({resolution_source}) -> {out_path}")
-        except Exception as exc:
-            failures.append({"system": system, "sample_name": sample_name, "out_path": out_path, "error": str(exc)})
-            print(f"[fail] system={system} sample={sample_name}: {exc}")
+            print(
+                f"[ok] system={system} sample={sample_name} "
+                f"resolution={stats.get('resolution')}({stats.get('resolution_source')}) -> {out_path}"
+            )
+        else:
+            failures.append({"system": system, "sample_name": sample_name, "out_path": out_path, "error": result.get("error")})
+            print(f"[fail] system={system} sample={sample_name}: {result.get('error')}")
 
     # 落一份生成统计摘要(便于排查与写进复现说明)
     os.makedirs(str(args.phenix_output_root), exist_ok=True)

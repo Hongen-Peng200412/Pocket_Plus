@@ -10,6 +10,7 @@
 - `sync_code.ps1`：安全同步实现，只上传本地项目到远端目录，不删除远端项目目录。
 - `run_syncWithClean.bat`：删除式同步入口，人类手动专用。
 - `sync_codeWithClean.ps1`：删除式同步实现，会先删除远端目标目录，AI agent 禁止擅自运行。
+- `sync_wandb_remote.bat` / `sync_wandb_remote.ps1`：W&B 离线日志快照同步入口。输入一个服务器目录，脚本递归查找其中的 `wandb/offline-run-*`，默认每个 `wandb/` 父目录只取最新 run，下载到本地临时目录后执行本地 `wandb sync`，最后删除本地临时文件；不会删除服务器日志。
 
 `与服务器交互\other` 放辅助工具和说明：
 
@@ -51,6 +52,35 @@
 4. `D:\msys64`。
 
 同步脚本必须设置 `MSYS2_ARG_CONV_EXCL=*`，否则 MSYS2 可能把远端 `/home/...` 路径改写成 `C:/msys64/home/...`。
+
+## W&B 离线日志同步
+
+常用命令：
+
+```powershell
+& "D:\OneDrive\My_Project\Pocket_Plus\与服务器交互\sync_wandb_remote.bat" "/home/penghongen/My_Project/feedback_plus/logs/CPC/CPC_main____job297517"
+```
+
+在 PowerShell 里，如果可执行文件路径被引号包起来，前面必须加调用运算符 `&`。否则 PowerShell 会把引号内内容当作字符串，后面的 `/home/...` 会被误解析成表达式。
+
+如果当前目录已经是项目根，也可以写成：
+
+```powershell
+& ".\与服务器交互\sync_wandb_remote.bat" "/home/penghongen/My_Project/feedback_plus/logs/CPC/CPC_main____job297517"
+```
+
+脚本规则：
+
+- 默认只处理 `offline-run-*`；如需包含 `wandb/run-*`，加 `-IncludeOnlineRuns`。
+- 默认按同一个 `wandb/` 父目录分组，每组只同步最新 run；如需全部同步，加 `-AllRuns`。
+- 支持运行中训练的 snapshot sync：脚本只读下载远端当前快照，不删除远端日志，重复运行可继续补同步。
+- 服务器路径应使用 Linux 绝对路径，即以 `/` 开头；如果误写成 `home/...`，脚本会自动规范化为 `/home/...` 并提示。
+- 本地 `wandb.exe` 查找顺序：显式 `-WandbExe`、PATH、有限 Conda 环境目录和常见安装根。查找不做全盘递归，目标是 30 秒内结束；当前设备可自动发现 `D:\Anaconda\envs\baseline_env\Scripts\wandb.exe`。
+- 可用 `-DryRun` 只列出将同步的 run，不下载、不上传。
+- 可用 `-KeepTemp` 调试时保留本地临时目录。
+- 通常只需要传服务器目录路径。可选 `-Entity pencounkdual-111 -Project PV_CPC` 只用于强制指定上传目标。
+- 默认传给 `wandb sync` 的是 `--no-mark-synced`，不在下载快照里写 synced 标记；只有明确加 `-MarkSynced` 才标记。
+- 如果某个 run 已经部分同步，W&B 云端在重写同名 `wandb-metadata.json` 时可能返回 403。脚本会自动跳过该 metadata 文件重试一次；如果仍失败，会保留本地临时目录供排查。
 
 ## AI helper 使用纪律
 

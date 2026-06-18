@@ -44,6 +44,16 @@
       "date": "2026-06-08",
       "summary": "Test pipeline docs refreshed to a forward-looking current-flow description, DL configs default to basic postprocess for ligand-only heads, per-sample PR-AUC is written to best output metrics, voxel_single/batch comments use cov03/cov06, and the old Phenix smoke driver is a fail-fast stub. Local py_compile/grep checks pass; server smoke remains pending.",
       "handoff": "CLAUDE/memory/handoffs/2026-06-08-test-pipeline-doc-refresh-minimal-fixes.md"
+    },
+    {
+      "date": "2026-06-15",
+      "summary": "CPC / sparse refine / stage1 refactor: diagnosis doc v2 finalized over two review rounds, implementation plan written (最后重构代码.md) after extensive grilling with locked decisions, then implementation started. Step 1 (detach 2 coupled switches -> 3 orthogonal: into_atomhead x2 + into_refine; refine P feat decoupled from atom-head copy) and Step 2 (new gauss_scatter_to_voxel_grid 27-neighbor isotropic gaussian with occupancy+centroid, wired into online_pdb_feature path, point_clipbig enabled) done and py_compile-verified. Steps 3-5 (P-supervision head + ligand_pseudo_loss, LigandSparseRefineDeltaLoss preservation+ranking, prior schema + default.yaml cleanup), CPC config set (8 experiments + shared sub-config edits + 6 compat pins), contract sync, and subagent tests remain.",
+      "handoff": "CLAUDE/memory/handoffs/2026-06-15-cpc-sparse-refine-stage1-refactor.md"
+    },
+    {
+      "date": "2026-06-16",
+      "summary": "CPC / sparse refine / stage1 refactor implemented end-to-end (Steps 3-5 + config layer + contract sync + tests). New: atom-head back pseudo_logit_head + model front pseudo_logit_head_front + P voxel coords exposed + ligand_pseudo_loss (recall-biased Tversky, front/back 0.4/1.0, missing-front raise); LigandSparseRefineDeltaLoss (preservation on P_keep + symmetric hard-mined ranking Kp=Kn=512, m_rank 0.5, w_pos=w_rank 0.3) folded into compute_sparse_refine_loss_term as L_cls+w_pos*L_pos+w_rank*L_rank; prior schema with master switch prior_prob_init_enabled + 5 named priors threaded through atom/voxel/pseudo/refine heads (voxel aux/ligand priors split 0.1/0.01; multiclass tri still via prior_probs); default.yaml prior block replaced + neutral detach/head defaults deleted (__init__ defaults aligned, detach_residual NOT made mandatory to preserve 6 compat configs). Config layer: binary expand 5.0, binary_less 2.5 (A5), knn_message neighbors 8, loss/sparse_refine rewritten, 8 CPC experiment configs, 6 compat configs pinned prior_prob_init_enabled:false. Verified locally (baseline_env): all source py_compile, Hydra compose of all CPC+compat configs with correct values, 134 pytest passed incl 16 new pure-torch tests (delta loss, gauss scatter, voxel prior split). Remaining failures are env-only (PTV3/torch_cluster absent locally) -> run on Linux server. Not committed. Subagents (theory review + test authoring) hit quota limit and were replaced by inline work.",
+      "handoff": "CLAUDE/memory/handoffs/2026-06-16-cpc-sparse-refine-stage1-refactor-done.md"
     }
   ],
   "blockers": [

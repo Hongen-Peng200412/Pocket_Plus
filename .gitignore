@@ -26,3 +26,4 @@ CLAUDE_PLANS/
 CLAUDE/
 docs
 .review*
+tmp*

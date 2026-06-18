@@ -1,0 +1,77 @@
+# @package _global_
+# ============================================================
+# CPC 消融 A2: 关闭 P(虚拟原子)监督 (最后重构代码.md §3)
+# ============================================================
+# 相对 CPC_main 只改一项: pseudo_loss_front_weight = pseudo_loss_back_weight = 0(P 监督不回传梯度)。
+# 验证最不确定点: 新引入的 P ligand 区域归属监督是否有用。pseudo 头仍构造、仍出 logits, 只是不计入损失。
+# 用法: sbatch sbatch/h200/1gpu.sbatch "+experiment=CPC/CPC_A2_no_pseudo"
+# ============================================================
+defaults:
+  - /model/detach_residual: max_detach
+  - override /model/voxel_backbone: stardard
+  - override /model/point_backbone: stardard
+  - override /model/fusion: e234d4
+  - override /model/atom_head: stardard
+  - override /model/task: binary
+  - override /model/typed_point: "on"
+  - override /model/embed_head: point_clipbig
+  - override /model/sparse_refine/candidate_set: binary_adaptive
+  - override /model/sparse_refine/anchor_sampler: unweighted_fps
+  - override /model/sparse_refine/density_cube: both
+  - override /model/sparse_refine/anchor_to_candidate: knn_message
+  - override /model/sparse_refine/sparse_refine_head: default
+  - override /model/sparse_refine/anchor_class_conditioning: none
+  - override /loss: sparse_refine
+  - override /dataset: MINI_emb_unet
+  - override /train: B40_L3
+
+
+name: CPC_A2_no_pseudo
+tag: "CPC_A2_no_pseudo"
+experiment_group: "CPC"
+project_name: PV_CPC
+
+
+dataset:
+  class_mapping: [0, 1, 1, 1, 1]
+  class_names: [background, foreground]
+  num_task_classes: 2
+
+
+model:
+  backbone:
+    atom_logit_dim: 1
+    enable_recycling: true
+    max_recycles: 3
+    randomize_recycles: true
+    detach_recycle_states: true
+    act_layer_name: "gelu"
+    ffn_type: "gated"
+    atom_head_ffn_type: "gated"
+    enable_atom_head: true
+    enable_pseudo_ligand_head: true
+    enable_interface_norm: true
+    voxel_backbone:
+      ligand_head_hidden_channels: 32
+      aux_head_hidden_channels: 32
+      num_conv3d_aux: 1
+      num_conv3d_ligand: 1
+
+  class_names: ${dataset.class_names}
+  monitor_metric: val_score/global/refined_F1
+  monitor_mode: max
+  validation_diagnostics:
+    enabled: true
+  # === A2 消融轴: 关闭 P 监督(覆盖 loss/sparse_refine.yaml 的 0.4/1.0) ===
+  pseudo_loss_front_weight: 0.0   # float, 前置 pseudo 头 ligand 监督权重(关)
+  pseudo_loss_back_weight: 0.0    # float, 后置 pseudo 头 ligand 监督权重(关)
+
+
+train:
+  enable_batch_size_tuning: false
+  strict_global_batch_size: false
+  global_batch_size: 39
+  batch_size: 3
+  val_per_epoch: 1
+  scheduler:
+    warmup_ratio: 0.06

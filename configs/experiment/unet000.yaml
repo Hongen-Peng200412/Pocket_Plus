@@ -37,6 +37,8 @@ model:
   stop_after_lr_reductions: 4        # int, warmup_plateau 第 4 次实际降低 LR 后结束训练
   backbone:
     # --- atom head 关闭 ---
+    # 关闭全部 logit 先验初始化, 保持本互換 config 行为不变(新命名先验 schema 在 model/default.yaml 默认开启)
+    prior_prob_init_enabled: false   # bool, false=所有头跳过先验 bias 初始化; 见 model/default.yaml prior schema
     enable_atom_head: false          # bool, 关闭 atom head; 不构建 atom_token_proj / atom_attention_stack / atom_logit_head
 
     # --- Logit 输出 ---
