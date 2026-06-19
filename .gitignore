@@ -27,3 +27,4 @@ CLAUDE/
 docs
 .review*
 tmp*
+*old/
