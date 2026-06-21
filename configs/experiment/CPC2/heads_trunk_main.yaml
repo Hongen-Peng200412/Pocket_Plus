@@ -1,0 +1,17 @@
+# @package _global_
+# ============================================================
+# CPC2 阶段二: heads_trunk_main
+# 启动命令:
+#   python /home/penghongen/My_Project/Pocket_Plus/src/train.py +experiment=CPC2/heads_trunk_main init_from=<stage1_run_dir或***>
+# ============================================================
+# 继承 CPC1 同名 trunk 结构, 从 stage1 BEST.ckpt model-only 初始化后训练 cross-attn + real/P 两个分类尾部。
+defaults:
+  - /experiment/CPC1/trunk_main
+  - override /train: small_increment
+  - override /frozen_module: stage2
+  - _self_
+
+name: heads_trunk_main
+tag: "heads_trunk_main"
+experiment_group: "CPC2"
+init_from: "***"

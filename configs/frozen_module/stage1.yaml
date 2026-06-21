@@ -1,0 +1,11 @@
+# @package _global_
+# ============================================================
+# CPC 阶段一冻结名单
+# 目标: 训练 trunk + real/P 分类尾部，锁零 cross-attn 与 refine。
+#   → train.py: _apply_frozen_module() 按参数名 fnmatch 匹配。
+# ============================================================
+frozen_module:
+  patterns:
+    - "backbone.atom_head.real_to_pseudo.*"     # GeometricCrossAttention, query=P source=real，阶段一保持零初始化
+    - "backbone.atom_head.pseudo_to_real.*"     # GeometricCrossAttention, query=real source=P，阶段一保持零初始化
+    - "backbone.sparse_refine_head.*"           # sparse refine head，阶段一不训练

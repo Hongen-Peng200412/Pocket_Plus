@@ -1,0 +1,17 @@
+# @package _global_
+# ============================================================
+# CPC3 阶段三 refine 网格: tversky_91
+# 启动命令:
+#   python /home/penghongen/My_Project/Pocket_Plus/src/train.py +experiment=CPC3/refine_tversky_91 init_from=<stage2_run_dir或***>
+# ============================================================
+defaults:
+  - /experiment/CPC3/refine_tversky_73
+  - _self_
+
+name: refine_tversky_91
+tag: "refine_tversky_91"
+
+model:
+  ligand_sparse_refine_loss:
+    tversky_alpha: 0.1
+    tversky_beta: 0.9

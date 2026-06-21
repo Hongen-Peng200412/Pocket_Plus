@@ -1,0 +1,24 @@
+# @package _global_
+# ============================================================
+# CPC3 阶段三 refine 网格: tversky_bce_73
+# 启动命令:
+#   python /home/penghongen/My_Project/Pocket_Plus/src/train.py +experiment=CPC3/refine_tversky_bce_73 init_from=<stage2_run_dir或***>
+# ============================================================
+defaults:
+  - /experiment/CPC3/refine_tversky_73
+  - _self_
+
+name: refine_tversky_bce_73
+tag: "refine_tversky_bce_73"
+
+model:
+  ligand_sparse_refine_loss:
+    focal_gamma: 0.0
+    focal_alpha_neg: 0.3
+    focal_alpha_pos: 0.7
+    focal_alpha: [0.3, 0.7]
+    tversky_alpha: 0.3
+    tversky_beta: 0.7
+    w_focal: 0.3
+    w_tversky: 0.7
+  ligand_sparse_refine_w_rank: 0.0

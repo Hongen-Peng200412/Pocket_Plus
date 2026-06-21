@@ -1,0 +1,25 @@
+# @package _global_
+# ============================================================
+# CPC 阶段三冻结名单
+# 目标: 固定 trunk、real/P 分类尾部与 cross-attn，仅训练 sparse refine。
+#   → train.py: _apply_frozen_module() 按参数名 fnmatch 匹配。
+#   → patterns 命中 0 个参数会 fail-fast; optional_patterns 命中 0 仅逐条打印, 不报错。
+# ============================================================
+frozen_module:
+  patterns:
+    - "backbone.voxel_backbone.*"               # voxel trunk
+    - "backbone.point_backbone.*"               # point trunk
+    - "backbone.embed_head.*"                   # embed trunk
+    - "backbone.point_fusion_modules.*"         # voxel -> point 融合 trunk
+    - "backbone.interface_norm_fusion.*"        # 融合接口 LayerNorm
+    - "backbone.interface_norm_embed_to_point.*"
+    - "backbone.interface_norm_density_to_point.*"
+    - "backbone.density_cube_encoder.*"         # P anchor density 输入侧
+    - "backbone.cube_weight_params.*"
+    - "backbone.atom_head.*"                    # real/P 分类尾部与 cross-attn 全冻结
+  # real 原子 density 调制 trunk; 仅 real_atom_density_cube=true(density_cube=both)时存在,
+  # no_real_density 消融(density_cube=pseudo)下三个模块均不存在, 此时三条命中 0 被安静跳过。
+  optional_patterns:
+    - "backbone.real_density_cube_encoder.*"             # real density encoder(独立 encoder 时存在)
+    - "backbone.real_density_combine.*"                  # real embed<->density 融合
+    - "backbone.interface_norm_real_density_to_point.*"  # real density -> point 接口 LayerNorm

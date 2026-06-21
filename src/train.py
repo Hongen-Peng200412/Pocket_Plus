@@ -125,34 +125,45 @@ def _apply_frozen_module(model: torch.nn.Module, frozen_cfg: DictConfig, verbose
 
     输入参数:
         - model: torch.nn.Module, 当前 LightningModule
-        - frozen_cfg: DictConfig, 包含 `patterns: list[str]` 的冻结配置
+        - frozen_cfg: DictConfig, 含 `patterns: list[str]`(必选, 命中 0 即报错)与可选
+          `optional_patterns: list[str]`(命中 0 仅打印, 用于消融里可能缺席的模块)
         - verbose: bool, 是否打印冻结摘要
 
     输出:
         - None, 原地设置 requires_grad
     """
-    patterns = tuple(str(pattern) for pattern in frozen_cfg["patterns"])
-    if len(patterns) == 0:
+    # tuple[str, ...], 必须命中的冻结 pattern; 任一命中 0 个参数视为配置/typo 错误
+    required_patterns = tuple(str(pattern) for pattern in frozen_cfg["patterns"])
+    if len(required_patterns) == 0:
         raise ValueError("frozen_module.patterns 不能为空。")
+    # tuple[str, ...], 允许命中 0 的冻结 pattern; 仅在对应模块本次实例化时才存在(如 real density 调制)
+    optional_patterns = tuple(str(pattern) for pattern in (frozen_cfg.get("optional_patterns", None) or ()))
+    # tuple[str, ...], 冻结判定时统一参与匹配的全部 pattern
+    all_patterns = required_patterns + optional_patterns
 
-    matched_by_pattern = {pattern: 0 for pattern in patterns}
+    matched_by_pattern = {pattern: 0 for pattern in all_patterns}
     trainable_count = 0
     frozen_count = 0
     trainable_modules: set[str] = set()
     for name, parameter in model.named_parameters():
-        matched_pattern = next((pattern for pattern in patterns if fnmatch.fnmatch(name, pattern)), None)
-        if matched_pattern is not None:
+        # bool, 该参数是否命中任一 required/optional pattern
+        matched_any = False
+        for pattern in all_patterns:
+            if fnmatch.fnmatch(name, pattern):
+                matched_by_pattern[pattern] += 1
+                matched_any = True
+        if matched_any:
             parameter.requires_grad = False
-            matched_by_pattern[matched_pattern] += 1
             frozen_count += int(parameter.numel())
         else:
             parameter.requires_grad = True
             trainable_count += int(parameter.numel())
             trainable_modules.add(name.rsplit(".", 1)[0] if "." in name else name)
 
-    unmatched = [pattern for pattern, count in matched_by_pattern.items() if count == 0]
-    if unmatched:
-        raise RuntimeError(f"frozen_module 中存在未匹配任何参数的 pattern: {unmatched}")
+    # list[str], required pattern 中命中 0 的项; 非空即 fail-fast(防 typo / 误冻)
+    unmatched_required = [pattern for pattern in required_patterns if matched_by_pattern[pattern] == 0]
+    if unmatched_required:
+        raise RuntimeError(f"frozen_module.patterns 中存在未匹配任何参数的 pattern: {unmatched_required}")
     if trainable_count == 0:
         raise RuntimeError("frozen_module 应用后没有任何可训练参数。")
 
@@ -161,9 +172,14 @@ def _apply_frozen_module(model: torch.nn.Module, frozen_cfg: DictConfig, verbose
         suffix = "" if len(trainable_modules) <= 30 else f", ... (+{len(trainable_modules) - 30})"
         print(
             "[Train] frozen_module applied: "
-            f"patterns={len(patterns)}, trainable_params={trainable_count:,}, frozen_params={frozen_count:,}"
+            f"patterns={len(required_patterns)}, optional_patterns={len(optional_patterns)}, "
+            f"trainable_params={trainable_count:,}, frozen_params={frozen_count:,}"
         )
         print(f"[Train] trainable module preview: {preview}{suffix}")
+        # 逐条提示命中 0 的 optional pattern; 正式实验(模块应在位)里出现即说明 typo 或配置错
+        for pattern in optional_patterns:
+            if matched_by_pattern[pattern] == 0:
+                print(f"[！！Train！！] frozen_module optional pattern matched 0 params (skipped): {pattern}")
 
 
 class LearningRateReductionStopper(Callback):

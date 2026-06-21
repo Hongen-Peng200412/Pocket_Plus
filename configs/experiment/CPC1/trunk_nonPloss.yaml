@@ -1,0 +1,14 @@
+# @package _global_
+# ============================================================
+# CPC1 阶段一消融: trunk_no_real_density
+# 启动命令:
+#   python /home/penghongen/My_Project/Pocket_Plus/src/train.py +experiment=CPC1/trunk_no_real_density
+# ============================================================
+# 相对 trunk_main 仅关闭真实原子 density cube 调制, 保留 P anchor density。
+defaults:
+  - /experiment/CPC1/trunk_main
+  - override /loss: sparse_refine_nonPloss
+  - _self_
+
+name: trunk_nonPloss
+tag: "trunk_nonPloss"
