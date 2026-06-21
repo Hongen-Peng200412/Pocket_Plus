@@ -131,7 +131,7 @@ model:
     w_mse: 0.0
     focal_soft_negative_suppression: false
     tversky_soft_target: false
-  pseudo_loss_weight: 0.05       # float, pseudo loss 权重; P 损失从头开、不走 warmup
+  pseudo_loss_weight: 0.0       # float, pseudo loss 权重; P 损失从头开、不走 warmup
 
 
 

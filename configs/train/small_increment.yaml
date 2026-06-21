@@ -1,0 +1,31 @@
+# ============================================================
+# 小增量阶段训练超参数
+# 此文件覆盖 cfg.train.*，用于冻结 trunk 后只训练少量头部或 refine 参数。
+#   → train.py: LearningRateReductionStopper 读取 scheduler.stop_after_lr_reductions。
+# ============================================================
+defaults:
+  - B40_L3
+  - _self_
+
+enable_batch_size_tuning: false        # bool, 小模块训练直接使用显式 batch_size，避免 tuner 额外消耗
+batch_size: 1                          # int, per-device batch size；具体阶段可在命令行覆盖
+global_batch_size: 1                   # int, 与 batch_size 对齐，避免隐式梯度累积
+strict_global_batch_size: true         # bool, 保持全局 batch 显式可解释
+max_epochs: 20                         # int, 上限保护；实际通常由 LR 衰减停训触发
+val_per_epoch: 3                       # int, 每个 epoch 多次验证，给 plateau 足够触发机会
+
+scheduler:
+  name: warmup_plateau                 # str, 沿用主调度器但关闭 warmup
+  total_steps: null                    # int|null, 由 trainer 估计
+  warmup_steps: 0                      # int, 小增量阶段不做 warmup
+  warmup_ratio: 0.0                    # float, warmup_steps 显式为 0 时仅作记录
+  warmup_start_factor: 1.0             # float, 无 warmup 时保持初始 lr
+  mode: ${model.monitor_mode}          # str, plateau 方向与模型主指标一致
+  factor: 0.5                          # float, 每次 plateau 衰减倍率
+  patience: 1                          # int, 第 2 次 bad validation 触发一次 LR 衰减
+  threshold: 2.0e-3                    # float, 主指标绝对改进阈值
+  threshold_mode: abs                  # str, 绝对改进阈值
+  cooldown: 0                          # int, 衰减后不额外冷却
+  min_lr: 0.0                          # float, 不人为抬高下界
+  eps: 1.0e-8                          # float, ReduceLROnPlateau 最小变化阈值
+  stop_after_lr_reductions: 2          # int, 第 2 次实际 LR 衰减后停止训练

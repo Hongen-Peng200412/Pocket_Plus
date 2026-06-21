@@ -5,6 +5,10 @@
 import sys
 import os
 import random
+import fnmatch
+import shutil
+from collections.abc import Mapping
+from typing import Any
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "max_split_size_mb:256,expandable_segments:True")
 
 import rootutils
@@ -34,7 +38,7 @@ torch.multiprocessing.set_sharing_strategy('file_system')
 import hydra
 from omegaconf import DictConfig, OmegaConf
 import lightning as pl
-from lightning.pytorch.callbacks import ModelCheckpoint, LearningRateMonitor, RichProgressBar
+from lightning.pytorch.callbacks import Callback, ModelCheckpoint, LearningRateMonitor, RichProgressBar
 
 
 from src.utils.wandb_utils import _setup_wandb_mode
@@ -51,6 +55,506 @@ FEEDBACK_ROOT = Path(                # NOTE: 返回结果的存放目录由这�
 from src.utils.experiment_manager import ExperimentManager
 from src.utils.fault_tolerant_dataset import maybe_wrap_dataset
 # 模型、包装器和回调类现在将根据配置动态导入, 无需手动导入
+
+
+def _resolve_init_checkpoint(init_from: str, feedback_root: Path, current_run_dir: Path) -> Path:
+    """
+    解析 model-only 初始化 ckpt 路径。
+
+    输入参数:
+        - init_from: str, `.ckpt` 文件、run 目录，或 `"***"` 作业内上一阶段哨兵
+        - feedback_root: Path, feedback_plus 根目录
+        - current_run_dir: Path, 当前 run 目录; 解析 `"***"` 时用于排除自身
+
+    输出:
+        - ckpt_path: Path, 真实存在的 ckpt 文件路径
+    """
+    init_text = str(init_from).strip()
+    if init_text == "***":
+        from src.utils.ckpt_resolve import resolve_previous_best_checkpoint_by_job
+
+        return resolve_previous_best_checkpoint_by_job(
+            feedback_root=feedback_root,
+            current_run_dir=current_run_dir,
+        )
+
+    init_path = Path(init_text).expanduser()
+    if init_path.is_file():
+        return init_path
+    if init_path.is_dir():
+        ckpt_path = init_path / "checkpoints" / "BEST.ckpt"
+        if ckpt_path.is_file():
+            return ckpt_path
+        raise FileNotFoundError(f"init_from 目录必须包含 checkpoints/BEST.ckpt: {init_path}")
+    raise FileNotFoundError(f"init_from 指向的 ckpt 文件或 run 目录不存在: {init_path}")
+
+
+def _load_model_only_checkpoint(model: torch.nn.Module, ckpt_path: Path, verbose: bool) -> None:
+    """
+    只加载 checkpoint 中的模型权重，不恢复 optimizer、scheduler 与 global_step。
+
+    输入参数:
+        - model: torch.nn.Module, 已实例化并完成 lazy 初始化的 LightningModule
+        - ckpt_path: Path, ckpt 文件路径
+        - verbose: bool, 是否打印加载摘要
+
+    输出:
+        - None, 原地写入模型参数; missing/unexpected 非零时 fail-fast
+    """
+    checkpoint = torch.load(str(ckpt_path), map_location="cpu")
+    state_dict = checkpoint["state_dict"] if isinstance(checkpoint, dict) and "state_dict" in checkpoint else checkpoint
+    load_result = model.load_state_dict(state_dict, strict=False)
+    missing = tuple(load_result.missing_keys)
+    unexpected = tuple(load_result.unexpected_keys)
+    if verbose:
+        print(
+            "[Train] model-only init_from: "
+            f"path={ckpt_path}, loaded_keys={len(state_dict)}, "
+            f"missing={len(missing)}, unexpected={len(unexpected)}"
+        )
+    if missing or unexpected:
+        raise RuntimeError(
+            "model-only checkpoint 加载出现参数名不匹配: "
+            f"missing={len(missing)}, unexpected={len(unexpected)}。"
+        )
+
+
+def _apply_frozen_module(model: torch.nn.Module, frozen_cfg: DictConfig, verbose: bool) -> None:
+    """
+    按显式 name-pattern 冻结参数。
+
+    输入参数:
+        - model: torch.nn.Module, 当前 LightningModule
+        - frozen_cfg: DictConfig, 包含 `patterns: list[str]` 的冻结配置
+        - verbose: bool, 是否打印冻结摘要
+
+    输出:
+        - None, 原地设置 requires_grad
+    """
+    patterns = tuple(str(pattern) for pattern in frozen_cfg["patterns"])
+    if len(patterns) == 0:
+        raise ValueError("frozen_module.patterns 不能为空。")
+
+    matched_by_pattern = {pattern: 0 for pattern in patterns}
+    trainable_count = 0
+    frozen_count = 0
+    trainable_modules: set[str] = set()
+    for name, parameter in model.named_parameters():
+        matched_pattern = next((pattern for pattern in patterns if fnmatch.fnmatch(name, pattern)), None)
+        if matched_pattern is not None:
+            parameter.requires_grad = False
+            matched_by_pattern[matched_pattern] += 1
+            frozen_count += int(parameter.numel())
+        else:
+            parameter.requires_grad = True
+            trainable_count += int(parameter.numel())
+            trainable_modules.add(name.rsplit(".", 1)[0] if "." in name else name)
+
+    unmatched = [pattern for pattern, count in matched_by_pattern.items() if count == 0]
+    if unmatched:
+        raise RuntimeError(f"frozen_module 中存在未匹配任何参数的 pattern: {unmatched}")
+    if trainable_count == 0:
+        raise RuntimeError("frozen_module 应用后没有任何可训练参数。")
+
+    if verbose:
+        preview = ", ".join(sorted(trainable_modules)[:30])
+        suffix = "" if len(trainable_modules) <= 30 else f", ... (+{len(trainable_modules) - 30})"
+        print(
+            "[Train] frozen_module applied: "
+            f"patterns={len(patterns)}, trainable_params={trainable_count:,}, frozen_params={frozen_count:,}"
+        )
+        print(f"[Train] trainable module preview: {preview}{suffix}")
+
+
+class LearningRateReductionStopper(Callback):
+    """
+    通用 LR 衰减计数停训回调。
+
+    输入参数:
+        - stop_after_lr_reductions: int, 任一 optimizer param group 的学习率实际下降达到该次数后停止训练
+
+    行为:
+        - 只观察 optimizer 当前 lr，不关心 scheduler 类型或触发位置。
+        - 在 validation end 和下一次 train batch 前都检查一次，避免依赖 LightningModule 与 Callback 的 hook 顺序。
+        - 计数写入 checkpoint，可用于断点续训；model-only 初始化不会恢复该 callback state。
+    """
+
+    def __init__(self, stop_after_lr_reductions: int) -> None:
+        super().__init__()
+        if int(stop_after_lr_reductions) <= 0:
+            raise ValueError("stop_after_lr_reductions 必须 > 0。")
+        self.stop_after_lr_reductions = int(stop_after_lr_reductions)
+        self.lr_reduction_count = 0
+        self._last_lrs: tuple[float, ...] | None = None
+
+    @staticmethod
+    def _current_lrs(trainer: pl.Trainer) -> tuple[float, ...]:
+        """
+        读取 trainer 当前所有 optimizer param group 的学习率。
+
+        输入参数:
+            - trainer: pl.Trainer, 当前训练器
+
+        输出:
+            - lrs: tuple[float, ...], 展平后的学习率序列
+        """
+        lrs: list[float] = []
+        for optimizer in getattr(trainer, "optimizers", []):
+            for group in optimizer.param_groups:
+                lrs.append(float(group["lr"]))
+        return tuple(lrs)
+
+    def _observe(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
+        """
+        比较当前 LR 与上一次记录值，若发生实际下降则累加并按阈值停训。
+
+        输入参数:
+            - trainer: pl.Trainer, 当前训练器
+            - pl_module: pl.LightningModule, 当前 Lightning 模型，用于记录 runtime 日志
+
+        输出:
+            - None, 原地更新计数或 trainer.should_stop
+        """
+        if bool(getattr(trainer, "sanity_checking", False)):
+            return
+        current_lrs = self._current_lrs(trainer)
+        if not current_lrs:
+            return
+        if self._last_lrs is None or len(self._last_lrs) != len(current_lrs):
+            self._last_lrs = current_lrs
+            return
+        lr_reduced = any(curr < prev for prev, curr in zip(self._last_lrs, current_lrs))
+        self._last_lrs = current_lrs
+        if not lr_reduced:
+            return
+
+        self.lr_reduction_count += 1
+        pl_module.log(
+            "train/runtime/lr_reduction_count",
+            float(self.lr_reduction_count),
+            prog_bar=True,
+            on_step=False,
+            on_epoch=True,
+            sync_dist=False,
+        )
+        if self.lr_reduction_count >= self.stop_after_lr_reductions:
+            if bool(getattr(trainer, "is_global_zero", True)):
+                print(
+                    "[Train] 检测到实际 LR 衰减 "
+                    f"{self.lr_reduction_count} 次，达到 "
+                    f"stop_after_lr_reductions={self.stop_after_lr_reductions}，将在当前流程结束后停止训练。"
+                )
+            trainer.should_stop = True
+
+    def on_train_start(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
+        del pl_module
+        self._last_lrs = self._current_lrs(trainer)
+
+    def on_validation_epoch_end(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
+        self._observe(trainer, pl_module)
+
+    def on_validation_end(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
+        self._observe(trainer, pl_module)
+
+    def on_train_batch_start(
+        self,
+        trainer: pl.Trainer,
+        pl_module: pl.LightningModule,
+        batch: object,
+        batch_idx: int,
+    ) -> None:
+        del batch, batch_idx
+        self._observe(trainer, pl_module)
+
+    def state_dict(self) -> dict[str, object]:
+        return {
+            "lr_reduction_count": int(self.lr_reduction_count),
+            "last_lrs": None if self._last_lrs is None else list(self._last_lrs),
+        }
+
+    def load_state_dict(self, state_dict: dict[str, object]) -> None:
+        self.lr_reduction_count = int(state_dict.get("lr_reduction_count", 0))
+        last_lrs = state_dict.get("last_lrs", None)
+        self._last_lrs = None if last_lrs is None else tuple(float(value) for value in last_lrs)
+
+
+def _resolve_scheduler_warmup_steps(*, trainer: pl.Trainer, sched_cfg: Mapping[str, Any]) -> int:
+    """
+    从 cfg.train.scheduler 解析 warmup step 数。
+
+    输入参数:
+        - trainer: pl.Trainer, 当前训练器; 提供 estimated_stepping_batches
+        - sched_cfg: Mapping[str, Any], scheduler 配置; 必须含 total_steps/warmup_steps/warmup_ratio
+
+    输出:
+        - warmup_steps: int, warmup 覆盖的 optimizer step 数
+    """
+    total_steps = sched_cfg["total_steps"]
+    if total_steps is None:
+        total_steps = getattr(trainer, "estimated_stepping_batches", None)
+    if total_steps is None or int(total_steps) <= 0:
+        raise RuntimeError("warmup_plateau scheduler requires a positive total_steps value.")
+    total_steps = int(total_steps)
+
+    warmup_steps = sched_cfg["warmup_steps"]
+    if warmup_steps is None:
+        warmup_ratio = float(sched_cfg["warmup_ratio"])
+        if not (0.0 <= warmup_ratio < 1.0):
+            raise ValueError(f"warmup_ratio must be in [0, 1), got {warmup_ratio}.")
+        warmup_steps = int(round(total_steps * warmup_ratio))
+    warmup_steps = int(warmup_steps)
+    if warmup_steps < 0 or warmup_steps > total_steps:
+        raise ValueError(
+            f"warmup_steps must be in [0, total_steps], got warmup_steps={warmup_steps}, total_steps={total_steps}."
+        )
+    return warmup_steps
+
+
+class WarmupPlateauController(Callback):
+    """
+    通用 validation 级 ReduceLROnPlateau 控制器。
+
+    输入参数:
+        - sched_cfg: Mapping[str, Any], cfg.train.scheduler 中 warmup_plateau 的完整配置
+        - monitor_metric: str, validation 后已写入 trainer.callback_metrics 的监控指标名
+
+    行为:
+        - step 级 warmup 仍交给 Lightning 原生 lr_scheduler;
+        - plateau 部分在每次 validation 完成后按 monitor_metric 手动推进;
+        - plateau 状态由本 callback 写入 Lightning checkpoint, 不再下沉到 wrapper。
+    """
+
+    def __init__(self, *, sched_cfg: Mapping[str, Any], monitor_metric: str) -> None:
+        super().__init__()
+        self.sched_cfg = dict(sched_cfg)
+        self.monitor_metric = str(monitor_metric)
+        self.warmup_steps: int | None = None
+        self._plateau_schedulers: list[torch.optim.lr_scheduler.ReduceLROnPlateau] = []
+        self._pending_plateau_states: list[dict[str, Any]] | None = None
+        self._last_stepped_validation: tuple[int, int, int] | None = None
+        self._validation_index = 0
+
+    def _build_schedulers(self, trainer: pl.Trainer) -> None:
+        """
+        在 optimizer 已由 LightningModule 构建后创建 plateau scheduler。
+
+        输入参数:
+            - trainer: pl.Trainer, 当前训练器; trainer.optimizers 必须已初始化
+
+        输出:
+            - None, 原地写入 self._plateau_schedulers
+        """
+        optimizers = list(getattr(trainer, "optimizers", []))
+        if not optimizers:
+            return
+        self.warmup_steps = _resolve_scheduler_warmup_steps(trainer=trainer, sched_cfg=self.sched_cfg)
+        self._plateau_schedulers = [
+            torch.optim.lr_scheduler.ReduceLROnPlateau(
+                optimizer,
+                mode=str(self.sched_cfg["mode"]),
+                factor=float(self.sched_cfg["factor"]),
+                patience=int(self.sched_cfg["patience"]),
+                threshold=float(self.sched_cfg["threshold"]),
+                threshold_mode=str(self.sched_cfg["threshold_mode"]),
+                cooldown=int(self.sched_cfg["cooldown"]),
+                min_lr=self.sched_cfg["min_lr"],
+                eps=float(self.sched_cfg["eps"]),
+            )
+            for optimizer in optimizers
+        ]
+        if self._pending_plateau_states is not None:
+            if len(self._pending_plateau_states) != len(self._plateau_schedulers):
+                raise RuntimeError(
+                    "warmup_plateau checkpoint 中的 optimizer 数量与当前训练器不一致: "
+                    f"checkpoint={len(self._pending_plateau_states)}, current={len(self._plateau_schedulers)}。"
+                )
+            for scheduler, state in zip(self._plateau_schedulers, self._pending_plateau_states):
+                scheduler.load_state_dict(state)
+            self._pending_plateau_states = None
+
+    def _monitor_value(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> float | None:
+        """
+        读取当前 validation 的 plateau 监控指标。
+
+        输入参数:
+            - trainer: pl.Trainer, 当前训练器
+            - pl_module: pl.LightningModule, 当前模型; 可提供最近一次 validation payload
+
+        输出:
+            - value: float | None, sanity checking 或指标尚未写入时返回 None
+        """
+        if bool(getattr(trainer, "sanity_checking", False)):
+            return None
+        payload = getattr(pl_module, "_last_validation_payload", {})
+        if self.monitor_metric in payload:
+            metric = payload[self.monitor_metric]
+            if isinstance(metric, torch.Tensor):
+                metric = metric.detach().float().reshape(()).item()
+            return float(metric)
+
+        metrics = getattr(trainer, "callback_metrics", {})
+        if self.monitor_metric not in metrics:
+            raise RuntimeError(f"warmup_plateau scheduler monitor metric {self.monitor_metric!r} is not available after validation.")
+        metric = metrics[self.monitor_metric]
+        if isinstance(metric, torch.Tensor):
+            metric = metric.detach().float().reshape(()).item()
+        return float(metric)
+
+    def _step_if_ready(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
+        """
+        若当前 validation 指标可用，则推进 plateau scheduler。
+
+        输入参数:
+            - trainer: pl.Trainer, 当前训练器
+            - pl_module: pl.LightningModule, 当前模型
+
+        输出:
+            - None, 原地更新 plateau 状态与 optimizer lr
+        """
+        if not self._plateau_schedulers:
+            self._build_schedulers(trainer)
+        if not self._plateau_schedulers:
+            raise RuntimeError("warmup_plateau scheduler 未找到 optimizer, 无法构建 plateau controller。")
+        if int(trainer.global_step) < int(self.warmup_steps or 0):
+            return
+        validation_key = (
+            int(trainer.global_step),
+            int(getattr(trainer, "current_epoch", 0)),
+            int(self._validation_index),
+        )
+        if self._last_stepped_validation == validation_key:
+            return
+        metric_value = self._monitor_value(trainer, pl_module)
+        if metric_value is None:
+            return
+        for scheduler in self._plateau_schedulers:
+            scheduler.step(metric_value)
+        self._last_stepped_validation = validation_key
+        self._validation_index += 1
+
+    def on_fit_start(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
+        del pl_module
+        self._build_schedulers(trainer)
+
+    def on_validation_epoch_end(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
+        del trainer, pl_module
+
+    def on_validation_end(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
+        self._step_if_ready(trainer, pl_module)
+
+    def state_dict(self) -> dict[str, Any]:
+        states = (
+            self._pending_plateau_states
+            if self._pending_plateau_states is not None
+            else [scheduler.state_dict() for scheduler in self._plateau_schedulers]
+        )
+        return {
+            "warmup_steps": self.warmup_steps,
+            "plateau_schedulers": states,
+            "last_stepped_validation": self._last_stepped_validation,
+            "validation_index": int(self._validation_index),
+        }
+
+    def load_state_dict(self, state_dict: dict[str, Any]) -> None:
+        self.warmup_steps = None if state_dict.get("warmup_steps", None) is None else int(state_dict["warmup_steps"])
+        plateau_states = state_dict.get("plateau_schedulers", [])
+        self._pending_plateau_states = [dict(state) for state in plateau_states]
+        last_validation = state_dict.get("last_stepped_validation", None)
+        if last_validation is None:
+            self._last_stepped_validation = None
+        else:
+            last_values = tuple(int(value) for value in last_validation)
+            if len(last_values) != 3:
+                raise RuntimeError("WarmupPlateauController checkpoint 中 last_stepped_validation 长度必须为 3。")
+            self._last_stepped_validation = last_values
+        self._validation_index = int(state_dict.get("validation_index", 0))
+
+
+class BestCheckpointAlias(Callback):
+    """
+    维护 `checkpoints/BEST.ckpt` 稳定别名。
+
+    输入参数:
+        - checkpoint_callback: ModelCheckpoint, 主 TOP checkpoint 回调
+        - alias_path: Path, 固定 BEST.ckpt 输出路径
+    """
+
+    def __init__(self, checkpoint_callback: ModelCheckpoint, alias_path: Path) -> None:
+        super().__init__()
+        self.checkpoint_callback = checkpoint_callback
+        self.alias_path = alias_path
+
+    def _refresh_alias(self, trainer: pl.Trainer) -> None:
+        """
+        若主 checkpoint 已有 best_model_path，则复制为固定 BEST.ckpt。
+
+        输入参数:
+            - trainer: pl.Trainer, 当前训练器
+
+        输出:
+            - None, 仅 rank0 写文件
+        """
+        if not bool(getattr(trainer, "is_global_zero", True)):
+            return
+        best_model_path = str(getattr(self.checkpoint_callback, "best_model_path", "") or "")
+        if not best_model_path:
+            return
+        source_path = Path(best_model_path)
+        if not source_path.is_file():
+            return
+        self.alias_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = self.alias_path.with_suffix(".tmp")
+        shutil.copy2(source_path, tmp_path)
+        tmp_path.replace(self.alias_path)
+
+    def on_validation_end(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
+        del pl_module
+        self._refresh_alias(trainer)
+
+    def on_train_end(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
+        del pl_module
+        self._refresh_alias(trainer)
+
+
+class PeriodicCheckpointSaver(Callback):
+    """
+    按固定 epoch 间隔保存独立的 PERIODIC checkpoint。
+
+    输入参数:
+        - dirpath: Path, checkpoint 输出目录
+        - every_n_epochs: int, 每隔多少个 epoch 保存一次
+        - filename_template: str, 文件名模板, 可使用 `{epoch:02d}` 占位符
+    """
+
+    def __init__(self, dirpath: Path, every_n_epochs: int, filename_template: str) -> None:
+        super().__init__()
+        if int(every_n_epochs) <= 0:
+            raise ValueError("every_n_epochs 必须 > 0。")
+        self.dirpath = dirpath
+        self.every_n_epochs = int(every_n_epochs)
+        self.filename_template = filename_template
+
+    def on_train_epoch_end(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
+        """
+        在 epoch 结束时按间隔保存完整训练断点。
+
+        输入参数:
+            - trainer: pl.Trainer, 当前训练器
+            - pl_module: pl.LightningModule, 当前模型, 此处不直接读取
+
+        输出:
+            - None, 仅 rank0 写 checkpoint 文件
+        """
+        del pl_module
+        if not bool(getattr(trainer, "is_global_zero", True)):
+            return
+        epoch_index = int(trainer.current_epoch)
+        if (epoch_index + 1) % self.every_n_epochs != 0:
+            return
+        self.dirpath.mkdir(parents=True, exist_ok=True)
+        filename = self.filename_template.format(epoch=epoch_index)
+        checkpoint_path = self.dirpath / f"{filename}.ckpt"
+        trainer.save_checkpoint(str(checkpoint_path))
 
 
 def _get_config_name() -> str:
@@ -547,16 +1051,33 @@ def main(cfg: DictConfig):
     )
     compile_requested = bool(cfg.model.get("compile", False))
     compile_deferred = bool(compile_requested and batch_size_tuning_enabled)
-    if compile_deferred and exp_manager.is_rank_zero:
-        print("[Train] 检测到自动 Batch Size 探测已启用; 暂缓 torch.compile, 待 tuner 完成后再编译 backbone")
+    if compile_requested and exp_manager.is_rank_zero:
+        print("[Train] torch.compile 将在 lazy 初始化、model-only 加载与冻结之后执行")
 
     model = hydra.utils.instantiate(
         cfg.model,
         optimizer=cfg.train.optimizer,
         scheduler=cfg.train.scheduler,
-        compile=False if compile_deferred else compile_requested,
+        compile=False,
     )
     _initialize_lazy_modules_before_ddp(model, dm, verbose=exp_manager.is_rank_zero)
+    init_from = cfg.get("init_from", None)
+    if init_from is not None:
+        if str(init_from).strip() == "***" and exp_manager.is_rank_zero:
+            print("[Train] [WARN] init_from='***'，将按当前 SLURM_JOB_ID 自动解析上一阶段 checkpoints/BEST.ckpt。")
+        ckpt_path = _resolve_init_checkpoint(
+            init_from=str(init_from),
+            feedback_root=FEEDBACK_ROOT,
+            current_run_dir=Path(run_dir),
+        )
+        _load_model_only_checkpoint(model=model, ckpt_path=ckpt_path, verbose=exp_manager.is_rank_zero)
+    frozen_cfg = cfg.get("frozen_module", None)
+    if frozen_cfg is not None:
+        _apply_frozen_module(model=model, frozen_cfg=frozen_cfg, verbose=exp_manager.is_rank_zero)
+    if compile_requested and not compile_deferred:
+        if exp_manager.is_rank_zero:
+            print("[Train] 开始执行 torch.compile(backbone)...")
+        model.backbone = torch.compile(model.backbone)
     _fix_gloo_socket_ifname()
     _log_distributed_launch_state("LazyInit完成")
 
@@ -631,20 +1152,21 @@ def main(cfg: DictConfig):
         save_top_k=cfg.output.save_top_k,                # int, number of models to save
         save_last=True,                                  # bool, save last epoch
     )
+    best_alias_callback = BestCheckpointAlias(
+        checkpoint_callback=checkpoint_callback,
+        alias_path=Path(run_dir) / "checkpoints" / "BEST.ckpt",
+    )
     # 建立最初的回调列表
-    callbacks = [checkpoint_callback]
+    callbacks = [checkpoint_callback, best_alias_callback]
 
     # ------ 额外开启周期性保存 ------
     # 从配置中获取 save_every_n_epochs (例如: 10)
     save_every_n_epochs = cfg.output.get("save_every_n_epochs", None)
     if save_every_n_epochs is not None and save_every_n_epochs > 0:
-        periodic_checkpoint = ModelCheckpoint(
-            dirpath=os.path.join(run_dir, "checkpoints"),
-            filename="PERIODIC_epoch_{epoch:02d}",       # str, 带有 PERIODIC_ 前缀的文件名
-            auto_insert_metric_name=False,               # bool, 对于无监控指标的保存机制，关闭指标自动拼接
-            every_n_epochs=save_every_n_epochs,          # int, 每隔这么多个 epoch 保存一次
-            save_top_k=-1,                               # int, 为 -1 时永久保留每个由此机制产出的周期性模型
-            save_last=False,                             # bool, 上面的 checkpoint_callback 已经接手保存 last，避免冲突
+        periodic_checkpoint = PeriodicCheckpointSaver(
+            dirpath=Path(run_dir) / "checkpoints",
+            filename_template="PERIODIC_epoch_{epoch:02d}",  # str, 带有 PERIODIC_ 前缀的文件名
+            every_n_epochs=int(save_every_n_epochs),         # int, 每隔这么多个 epoch 保存一次
         )
         callbacks.append(periodic_checkpoint)
 
@@ -655,6 +1177,21 @@ def main(cfg: DictConfig):
     
     # 将进度条与学习率监控加入 list
     callbacks.extend([lr_monitor, rich_bar])
+    if cfg.train.scheduler.get("name", None) == "warmup_plateau":
+        callbacks.append(
+            WarmupPlateauController(
+                sched_cfg=OmegaConf.to_container(cfg.train.scheduler, resolve=True),
+                monitor_metric=str(cfg.model.monitor_metric),
+            )
+        )
+        if exp_manager.is_rank_zero:
+            print("[Train] warmup_plateau plateau controller enabled in train.py.")
+
+    stop_after_lr_reductions = cfg.train.scheduler.get("stop_after_lr_reductions", None)
+    if stop_after_lr_reductions is not None:
+        callbacks.append(LearningRateReductionStopper(stop_after_lr_reductions=int(stop_after_lr_reductions)))
+        if exp_manager.is_rank_zero:
+            print(f"[Train] LR reduction stopper enabled: stop_after_lr_reductions={int(stop_after_lr_reductions)}")
 
     # --- 每个 epoch 内多次验证: 使用 Lightning 原生 val_check_interval ---
     val_per_epoch = cfg.train.get("val_per_epoch", 1)
@@ -758,6 +1295,7 @@ def main(cfg: DictConfig):
         num_nodes=cfg.train.nnodes,                       # int, number of nodes
         strategy=strategy,                                # str, distributed strategy
         max_epochs=cfg.train.max_epochs,                  # int, max epochs
+        max_steps=cfg.train.get("max_steps", -1),          # int, 可选调试上限; -1 表示按 max_epochs 训练
         logger=logger,                                    # Logger
         callbacks=callbacks,                              # List[Callback]
         precision=cfg.train.precision,                    # str, mixed precision setting
@@ -765,7 +1303,9 @@ def main(cfg: DictConfig):
         accumulate_grad_batches=cfg.train.get("accumulate_grad_batches", 1), # int, 默认 1
         check_val_every_n_epoch=cfg.train.check_val_every_n_epoch, # int
         val_check_interval=val_check_interval,            # float, validate val_per_epoch times per epoch
-        num_sanity_val_steps=2,
+        limit_train_batches=cfg.train.get("limit_train_batches", None), # int|float|None, 调试时限制训练 batch 数
+        limit_val_batches=cfg.train.get("limit_val_batches", None),     # int|float|None, 调试时限制验证 batch 数
+        num_sanity_val_steps=cfg.train.get("num_sanity_val_steps", 2),
         use_distributed_sampler=False,
         log_every_n_steps=cfg.train.get("log_every_n_steps", 10), # int, 控制wandb记录日志的频率
     )
@@ -890,9 +1430,9 @@ def main(cfg: DictConfig):
     try:
         # trainer.fit 触发整个 Lightning 生命周期：
         # 1. dm.setup("fit") → 创建 train/val 数据集
-        # 2. model.configure_optimizers()（Wrapper L194–L246） → 从 self.hparams.optimizer/scheduler（来自 cfg.train）创建优化器和调度器，调度器的 monitor/interval/frequency 来自 self.hparams（来自 cfg.model）
-        # 3. 每个 batch：model.training_step() →  _extract_batch → forward → _compute_loss → log("train/loss")
-        # 4. 每个 epoch 末：model.validation_step() → 计算 PR-AUC → log("val/score") → ModelCheckpoint 检查是否保存
+        # 2. model.configure_optimizers() → 从 cfg.train 创建 optimizer 与 step 级 scheduler
+        # 3. 每个 batch：model.training_step() → _extract_batch → forward → _compute_total_loss → log("train_loss/*")
+        # 4. 每次 validation 结束：wrapper 聚合 payload; train.py 的 callbacks 负责 checkpoint、plateau 与 small-increment 停训
         _fix_gloo_socket_ifname()
         _log_distributed_launch_state("即将调用trainer.fit")
         trainer.fit(model, datamodule=dm)

@@ -4,7 +4,7 @@
 # 此文件写入 cfg.model.backbone.candidate_set_cfg。
 # binary/tri 的类别 ID 与 per-class 预算统一来自 model/task preset 的 sparse_refine_task。
 #   → VolumePointStage1Model.__init__: instantiate(candidate_set_cfg) 构造 SparseCandidateSetBuilder。
-#   → VolumePointStage1Model._prepare_pseudo_batch(): 用 voxel_logits_ligand / voxel_valid_mask 生成候选 C。
+#   → VolumePointStage1Model._prepare_pseudo_batch(): 用 voxel_logits_ligand 在全 BOX 体素上生成候选 C。
 # ============================================================
 # 下面的很多指标在 configs\model\task 里面调
 model:
@@ -17,3 +17,4 @@ model:
       warmup_topc_per_class: ${sparse_refine_task.warmup_topc_per_class}                   # list[int], warmup 阶段每个 BOX/类别的固定 top-C 上限
       adaptive_expand_factor: ${sparse_refine_task.adaptive_expand_factor}                 # list[float], adaptive_threshold 下 best-F1 正例数扩张倍数
       max_candidate_voxels_per_class: ${sparse_refine_task.max_candidate_voxels_per_class} # list[int], 每个 BOX/类别候选 C 行数硬上限
+      min_candidate_voxels_per_class: ${sparse_refine_task.min_candidate_voxels_per_class} # list[int], adaptive_threshold 候选行下限; recorded 模式保留为显式构造参数

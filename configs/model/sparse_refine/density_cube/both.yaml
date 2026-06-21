@@ -33,7 +33,7 @@ model:
     real_density_cube_cfg:
       _target_: src.model.sparse_refine.density_cube.DensityCubeEncoder
       in_channels: null  # int|null, lazy 初始化 raw voxel_grid 通道数
-      cube_size: 9       # int, 真实原子周围 cube 边长(奇数), 与 real_atom_density_cube_size 对齐
+      cube_size: 11       # int, 真实原子周围 cube 边长(奇数), 与 real_atom_density_cube_size 对齐
       hidden_channels: 64 # int, Conv3d hidden 通道数
       num_downsample: 2  # int, stride=2 下采样 Conv3d block 数
       num_conv: 1        # int, 下采样后 stride=1 Conv3d block 数; 真实原子量大, 减为 1 省显存

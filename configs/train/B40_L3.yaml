@@ -66,8 +66,8 @@ optimizer:
 
 # --- LR Scheduler ---
 # scheduler: dict, 训练学习率调度器配置
-#   → VoxelPointStage1Wrapper.configure_optimizers(): name=warmup_plateau 时构建 WarmupThenReduceLROnPlateau
-#   → warmup: Lightning 每个 optimizer step 调用一次; plateau: Wrapper.on_validation_epoch_end() 每次验证后按主指标调用一次
+#   → VoxelPointStage1Wrapper.configure_optimizers(): 构建 optimizer 与 step 级 warmup scheduler
+#   → train.py: WarmupPlateauController 在 validation end 后读取 monitor_metric 并推进 ReduceLROnPlateau
 scheduler:
   name: warmup_plateau        # str, 调度器模式; 先 warmup, 再按验证主指标 plateau 衰减
   total_steps: null           # int|null, 总 optimizer step 数; null 表示使用 trainer.estimated_stepping_batches
@@ -82,6 +82,7 @@ scheduler:
   cooldown: 0                 # int, 衰减后跳过 plateau 计数的 validation 次数
   min_lr: 0.0                 # float|list[float], 学习率下界; 单 float 作用于所有 param group
   eps: 1.0e-8                 # float, ReduceLROnPlateau 判定学习率变化的最小差值
+  stop_after_lr_reductions: null # int|null, 实际 LR 衰减达到该次数后由 train.py 停训; null 表示禁用
 # scheduler:
 #   _target_: torch.optim.lr_scheduler.OneCycleLR
 #   _partial_: true

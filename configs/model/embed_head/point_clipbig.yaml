@@ -65,10 +65,18 @@ model:
       use_soft_splatting: false          # bool, point-only 不执行 per-atom -> voxel scatter
       use_centroid_encoding: false       # bool, centroid-aware 编码要求 embed_voxel_out_channels > 0
 
-    # --- 在线 pdb_feature (从 model/default.yaml 下放至此; point-only 无体素输出, 留 false) ---
-    online_pdb_feature: false           # bool, 是否在线 scatter raw atom_feat 到体素网格
-    online_pdb_feature_reduce: "sum"    # str, scatter 聚合方式
-    online_pdb_feature_dim: 49          # int, 原子原始特征维度
+    # --- 在线 pdb_feature: 体素分支直接投影 raw atom_feat(零可学习参数) ---
+    # 本变体 point-only(embed_voxel_out_channels=0, has_voxel_output=False), embed head 不产 voxel_pdb_embed_grid,
+    # 故 _build_voxel_input 走 online_pdb_feature 分支: 对 raw 49ch 做 3×3×3 各向同性高斯 scatter + occupancy(2) + centroid(3),
+    # 拼到 density 通道喂 voxel backbone。相比三线性消除轴对齐几何偏置, 且投影路径无可学习参数。
+    #   → VolumePointStage1Model._build_voxel_input(): scatter_kernel="gauss27" 时调用 gauss_scatter_to_voxel_grid(...)
+    online_pdb_feature: true                       # bool, 开启在线 scatter raw atom_feat 到体素网格
+    online_pdb_feature_reduce: "sum"               # str, legacy 核聚合方式; gauss27 不消费该值
+    online_pdb_feature_scatter_kernel: "gauss27"   # str, 3×3×3 各向同性高斯 scatter(替三线性)
+    online_pdb_feature_sigma_voxel: 0.7            # float, 高斯核标准差(单位: 体素); 越小越集中于最近体素
+    online_pdb_feature_add_occupancy: true         # bool, 追加 2 维 occupancy 通道(log(1+Σw)、Σw/max)
+    online_pdb_feature_add_centroid: true          # bool, 追加 3 维加权 centroid 通道(原子相对体素中心偏移)
+    online_pdb_feature_dim: 49                     # int, 原子原始特征维度
 
     # embed head 启用时, 点分支 atom_feature_dim = embed_point_out_channels
     point_backbone:

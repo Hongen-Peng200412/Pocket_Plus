@@ -30,10 +30,10 @@ model:
       #   → SparseRefineHead.__init__: 依据开关确定 P content / edge / final head 输入维度
       #   → SparseRefineHead.forward(): 只拼接启用的张量，缺失时 fail-fast
       inputs:
-        # use_voxel_logits 已移交 detach_residual 组: 由 model.backbone.sparse_refine_use_voxel_logits 注入(此处不列出)
+        # use_C_voxel_logits 已移交 detach_residual 组: 由 model.backbone.sparse_refine_use_C_voxel_logits 注入(此处不列出)
         use_C_voxel_backbone_feat: true       # bool, 将 C 位置固定 `voxel_final` 特征用于 edge 与 final head
-        use_P_point_backbone_feat: true       # bool, 将 P 的 final `point_feat` 用于消息内容
-        use_P_atom_head_feat: true            # bool, 将 P 的 `pseudo_feature` 用于消息内容
+        use_P_final_point_feat: true          # bool, 将 P 的 final `point_feat` 用于消息内容
+        use_P_after_interaction_feat: true    # bool, 将 P 经 cross-attn 后的只读特征用于消息内容
         use_P_voxel_backbone_feat: true       # bool, 将 P 位置固定 `voxel_final` 特征用于 edge
         use_relative_coords: true             # bool, 将 centered-world 坐标中的 `C-P` 向量用于 edge
         use_candidate_class_embedding: false  # bool, 随机路由类别 embedding；主方案默认关闭

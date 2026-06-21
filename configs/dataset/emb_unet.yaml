@@ -67,7 +67,6 @@ split_val: [
 
 atom_buffer_radius: 8.0  # A为单位
 cache_size: 128  
-valid_crop_margin: 0     # 体素为单位
 enable_random_rotation: true
 
 

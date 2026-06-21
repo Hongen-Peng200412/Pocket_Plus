@@ -25,6 +25,8 @@ model:
 sparse_refine_task:
   candidate_class_ids: [1]                 # list[int], 候选前景类别 ID; 单通道 sigmoid 只允许 [1]
   warmup_topc_per_class: [25000]            # list[int], warmup 阶段每个 BOX/类别直接 top-k 进入候选 C 的上限
-  adaptive_expand_factor: [7.0]           # list[float], adaptive_threshold 下相对 best-F1 正例数的候选扩张倍数
+  adaptive_expand_factor: [5.0]           # list[float], adaptive_threshold 下相对 best-F1 正例数的候选扩张倍数; CPC 主预算(从 7.0 折中下调, 恢复 C recall 的主杠杆)
   max_candidate_voxels_per_class: [25000]  # list[int], 每个 BOX/类别候选 C 行数硬上限
+  min_candidate_voxels_per_class: [0]   # list[int], 每个 BOX/类别候选 C 行数下限; 仅 adaptive_threshold 生效, 抑制 p_best 抖动导致候选数崩塌; 抬下限后仍受上限与可用体素数钳制(上限优先)
+                                           # → SparseCandidateSetBuilder.__init__: min_candidate_voxels_per_class; 经 candidate_set/binary_adaptive.yaml 插值注入
   max_anchors_per_class: [1024]            # list[int], 每个 BOX/类别 P anchor 采样上限

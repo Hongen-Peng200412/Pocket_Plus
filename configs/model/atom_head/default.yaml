@@ -1,7 +1,7 @@
 # @package _global_
 # ============================================================
-# Stage1 atom head 最小配置
-# 实验若设置 model.backbone.enable_atom_head=false，不会构造 Stage1AtomHead；这些显式字段仍保留用于 Hydra schema 闭合。
+# Stage1 默认 atom head 配置
+# base.yaml 默认加载本文件；实验可 override 为 stardard/none，但字段契约保持一致。
 # ============================================================
 model:
   backbone:

@@ -27,4 +27,5 @@ sparse_refine_task:
   warmup_topc_per_class: [35000]            # list[int], warmup 阶段每个 BOX/类别直接 top-k 进入候选 C 的上限
   adaptive_expand_factor: [8.0]           # list[float], adaptive_threshold 下相对 best-F1 正例数的候选扩张倍数
   max_candidate_voxels_per_class: [35000]  # list[int], 每个 BOX/类别候选 C 行数硬上限
+  min_candidate_voxels_per_class: [0]   # list[int], 每个 BOX/类别候选 C 行数下限; 仅 adaptive_threshold 生效
   max_anchors_per_class: [1224]            # list[int], 每个 BOX/类别 P anchor 采样上限

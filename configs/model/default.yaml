@@ -20,44 +20,35 @@ backbone:
   detach_recycle_states: true
   act_layer_name: "gelu"
   ffn_type: "mlp"
-  atom_head_ffn_type: "mlp"
-  prior_prob: 0.01   # float|null, 单通道 sigmoid 正类先验概率; atom_logit_dim=1 时用于初始化 atom head bias
-                     # → VolumePointStage1Model.__init__: 与 prior_probs 互斥; 多通道 atom head 禁止使用该字段
-  prior_probs: null  # list[float]|null, 多通道 softmax 类别先验概率向量; 长度必须等于 atom_logit_dim 且总和为 1
-                     # → VolumePointStage1Model.__init__: atom_logit_head bias 初始化为 log(prior_probs)
+  # --- 先验 bias 初始化 schema (RetinaNet/Focal 风格: 末层 bias = logit(π)) ---
+  # 下列命名先验透传进 VolumePointStage1Model.__init__, 各单通道 sigmoid 头按对应先验初始化末层 bias。
+  #   → 压制规则: sparse refine residual 模式 / atom 头 refine_receptor_from_voxel 时零初始化跳过先验;
+  #     多通道 softmax 任务(tri)改由 task 配置的 prior_probs 接管, 命名 sigmoid 先验自动忽略。
+  prior_prob_init_enabled: true       # bool, 先验初始化总开关; false 时所有头跳过先验(各头收到 None), 互換 config 用此一行关闭
+  prior_prob_voxel_receptor: 0.1      # float, voxel aux(受体区域)头 sigmoid 正类先验; → 注入 voxel_backbone aux head
+  prior_prob_point_receptor: 0.1      # float, 点云受体原子头 sigmoid 正类先验; → Stage1AtomHead.real_atom_head
+  prior_prob_voxel_ligand: 0.01       # float, dense voxel ligand 头 sigmoid 正类先验; → 注入 voxel_backbone ligand head
+  prior_prob_point_ligand: 0.1        # float, P(虚拟原子) ligand 区域归属头 sigmoid 先验; → Stage1AtomHead.pseudo_atom_head
+  prior_prob_sparse_refine: 0.1       # float, sparse refine 头 sigmoid 先验; 仅 direct 模式生效(residual 零初始化跳过)
+  # NOTE: legacy prior_prob / prior_probs 仍被 __init__ 接受: 多通道任务(tri)由 task 配置传 prior_probs; 单通道命名先验缺省时回退 prior_prob。
 
   # --- 在线 pdb_feature 已下放到 model/embed_head 组(各 embed_head 变体自带 online_pdb_feature*); 此处不再定义 ---
 
-  # --- detach 梯度路由 / 前后置头 / 接口 Norm / density 残差 开关 (中性默认: 复现旧行为) ---
-  # 下列字段透传进 VolumePointStage1Model.__init__; 语义见 src/model/stage1_model.py 顶部契约与 __init__ docstring。
-  # 中性默认刻意保持: 不 detach 任何 point/voxel/refine 路径、只用后置头、不归一化、不加 density 残差。
-  enable_atom_head_front: false       # bool, 是否在 point backbone 末端增设二分类前置头; 与 enable_atom_head/back 正交
-  enable_atom_head_back: true         # bool, 是否构造 atom head 末端后置头; 关时 atom_logits=None
-  detach_real_point_feat: false       # bool, detach point backbone 输出真实原子槽位再喂后置 atom head; 前置头不受影响
-  detach_pseudo_point_feat: false     # bool, detach point backbone 输出 pseudo(P) 槽位(进 atom head 与进 refine 两处)
-  detach_voxel_feat_into_real_point: false   # bool, 真实原子接收采样 voxel 特征是否 detach; 中性默认 false(设计推荐值在实验里开)
-  detach_voxel_feat_into_pseudo_point: false # bool, 伪原子接收采样 voxel 特征是否 detach; 中性默认 false(噪声隔离推荐值 true 在实验里开)
-  detach_voxel_into_refine: true      # bool, 统一 detach refine 吃的三处 voxel 信息(base logits、C/P voxel_final 特征)
-
-  refine_receptor_from_voxel: false   # bool, 前/后置头 logits 加 home 体素 voxel_logits_aux 的 detach 残差 base
-  pseudo_density_residual: false      # bool, atom head 伪原子分支输出加 density cube 直通残差(仅作用于进 refine 的 P_atom_head_feat)
-  enable_interface_norm: false        # bool, 在 voxel→point/embed→point/density→point/sparse refine 源接口先各自 LayerNorm
-  
-  atom_head_concat_receptor_base_logit: false # bool, 前/后置头是否把 home 体素 aux base logit 拼进输入(与 refine_receptor_from_voxel 正交)
-  # refine 头接线开关(归属 detach_residual 组, 延迟实例化时注入 sparse_refine_head; 中性默认):
-  sparse_refine_residual_mode: residual       # str, refine 头 direct/residual 输出模式
-  sparse_refine_use_voxel_logits: true        # bool, refine 头是否把 C 原始 logits 拼进输入(residual 模式需 true)
+  # --- detach 路由 / 前后置头 / 接口 Norm / density 残差 / refine 接线 开关 ---
+  # 上述开关全部由 detach_residual 组(configs/model/detach_residual/*)与各 experiment 决定; 未选组时回退到
+  # VolumePointStage1Model.__init__ 的中性默认(不 detach 任何 point/voxel/refine、
+  # 不归一化、refine=residual 且 use_C_voxel_logits=true), 故此处不再列出以免与子配置重复。
 
 
 
 # --- 调度器与主监控指标 ---
 # interval/frequency 仅用于完全交给 Lightning 管理的 scheduler。
-# warmup_plateau 使用 cfg.train.scheduler 的显式字段: warmup 固定按 step, plateau 固定在每次 validation end 后读取 monitor_metric。
+# warmup_plateau 使用 cfg.train.scheduler 的显式字段: warmup 固定按 step, plateau 由 train.py 的 WarmupPlateauController 读取 monitor_metric。
 interval: "step"                   # str, Lightning-managed scheduler 更新间隔
 frequency: 1                       # int, Lightning-managed scheduler 更新频率
 monitor_metric: val_score/global/atom_PRAUC    # str, 主监控指标
                                    # → train.py: ModelCheckpoint.monitor
-                                   # → VoxelPointStage1Wrapper.on_validation_epoch_end(): warmup_plateau plateau 读取该指标
+                                   # → train.py: WarmupPlateauController plateau 读取该指标
 monitor_mode: max                  # str, 主指标方向, 取值 max/min
                                    # → train.py: ModelCheckpoint.mode
                                    # → configs/train/B40_L3.yaml: scheduler.mode=${model.monitor_mode}
