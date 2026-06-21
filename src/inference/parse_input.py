@@ -500,7 +500,6 @@ def split_volume_to_boxes(
     window_size: int,
     stride: int,
     atom_buffer_radius: float,
-    valid_crop_margin: int,
     num_box_workers: int = 1,
 ) -> list[dict[str, Any]]:
     """
@@ -517,7 +516,6 @@ def split_volume_to_boxes(
         - window_size: int, BOX 窗口大小(voxel)
         - stride: int, 滑窗步长(voxel)
         - atom_buffer_radius: float, 原子 buffer 半径(Å); 依据训练配置 dataset.atom_buffer_radius 决定
-        - valid_crop_margin: int, 监督区域裁边量(voxel); 依据训练配置 dataset.valid_crop_margin 决定
         - num_box_workers: int, BOX 构造线程数; 1 表示串行, >1 时保持输出顺序并行构造
 
     输出:
@@ -526,7 +524,6 @@ def split_volume_to_boxes(
                 - "voxel_grid": torch.Tensor, (C, D_box, H_box, W_box), float32, 当前 BOX 的多通道体素特征
                 - "voxel_label": torch.Tensor, (D_box, H_box, W_box), int64, 全零占位标签
                 - "hardmask": torch.Tensor, (D_box, H_box, W_box), int64, 当前 BOX 的几何 hardmask
-                - "voxel_valid_mask": torch.Tensor, (D_box, H_box, W_box), bool, 当前 BOX 的有效监督区域掩码
                 - "box_origin_world": torch.Tensor, (3,), float32, 当前 BOX 的世界坐标原点(x,y,z)
                 - "voxel_size_world": torch.Tensor, (3,), float32, 当前 BOX 的体素大小(x,y,z)
                 - "box_shape_zyx": torch.Tensor, (3,), int64, 当前 BOX 的体素形状(z,y,x)
@@ -536,7 +533,6 @@ def split_volume_to_boxes(
                 - "atom_feat": torch.Tensor, (N_box, F), float32, 选中原子的特征
                 - "atom_label": torch.Tensor, (N_box,), int64, 全零占位标签
                 - "atom_is_in_core_box": torch.Tensor, (N_box,), bool, 选中原子是否位于 BOX core 区域
-                - "atom_valid_mask": torch.Tensor, (N_box,), bool, 选中原子是否参与监督
             - 2. 元信息字段(Python 原生类型):
                 - "sample_name": str, 形如 "infer_box_0"
                 - "pdb_id": str, 固定为 "infer"
@@ -624,7 +620,6 @@ def split_volume_to_boxes(
             voxel_size_world=voxel_size_f32,
             box_shape_zyx=box_shape_zyx,
             atom_buffer_radius=atom_buffer_radius,
-            valid_crop_margin=valid_crop_margin,
             class_mapping=None,
         )
 
@@ -679,7 +674,6 @@ def prepare_batched_boxes(
                 - "voxel_grid": torch.Tensor, (B, C, D_box, H_box, W_box), float32, 拼接后的 BOX 体素特征
                 - "voxel_label": torch.Tensor, (B, D_box, H_box, W_box), int64, 拼接后的占位标签
                 - "hardmask": torch.Tensor, (B, D_box, H_box, W_box), int64, 拼接后的几何 hardmask
-                - "voxel_valid_mask": torch.Tensor, (B, D_box, H_box, W_box), bool, 拼接后的体素有效掩码
                 - "box_origin_world": torch.Tensor, (B, 3), float32, 各 BOX 的世界坐标原点
                 - "voxel_size_world": torch.Tensor, (B, 3), float32, 各 BOX 的体素大小
                 - "box_shape_zyx": torch.Tensor, (B, 3), int64, 各 BOX 的体素形状
@@ -689,7 +683,6 @@ def prepare_batched_boxes(
                 - "atom_feat": torch.Tensor, (sumN, F), float32, 当前 batch 全部原子的特征
                 - "atom_label": torch.Tensor, (sumN,), int64, 当前 batch 全部原子的占位标签
                 - "atom_is_in_core_box": torch.Tensor, (sumN,), bool, 当前 batch 全部原子的 core 标记
-                - "atom_valid_mask": torch.Tensor, (sumN,), bool, 当前 batch 全部原子的有效监督标记
                 - "atom_batch_index": torch.Tensor, (sumN,), int64, 展平原子属于 batch 内哪个 BOX
                 - "atom_counts": torch.Tensor, (B,), int64, 每个 BOX 的原子数
                 - "atom_offsets": torch.Tensor, (B,), int64, 每个 BOX 在展平原子序列中的结束偏移

@@ -17,9 +17,7 @@ import torch
 from .box_geometry import (
     build_atom_coordinates,
     build_atom_features,
-    build_atom_valid_mask,
     build_hardmask_from_atom_coordinates,
-    build_voxel_valid_mask,
     select_atoms_for_box,
 )
 
@@ -53,7 +51,6 @@ def build_box_point_numpy_sample(
     voxel_size_world: np.ndarray,
     box_shape_zyx: np.ndarray,
     atom_buffer_radius: float,
-    valid_crop_margin: int,
     class_mapping: list[int] | None,
 ) -> dict[str, Any]:
     """
@@ -63,11 +60,9 @@ def build_box_point_numpy_sample(
         1. select_atoms_for_box
         2. build_atom_coordinates
         3. build_hardmask_from_atom_coordinates
-        4. build_voxel_valid_mask
-        5. build_atom_valid_mask
-        6. build_atom_features
-        7. 提取 + class_mapping atom_label
-        8. 组装 sample dict
+        4. build_atom_features
+        5. 提取 + class_mapping atom_label
+        6. 组装 sample dict
 
     输入参数:
         - voxel_grid: np.ndarray, (C, D, H, W), float32, 已拼接并归一化的体素特征
@@ -79,7 +74,6 @@ def build_box_point_numpy_sample(
         - voxel_size_world: np.ndarray, (3,), float32
         - box_shape_zyx: np.ndarray, (3,), int64
         - atom_buffer_radius: float, 标量, 原子 buffer 半径, 建议值 4.0
-        - valid_crop_margin: int, 标量, 边界裁边宽度, 建议值 2
         - class_mapping: list[int] | None, 只作用于 atom_labels_full
 
     输出:
@@ -87,7 +81,6 @@ def build_box_point_numpy_sample(
             - "voxel_grid":              np.ndarray, (C, D, H, W), float32, 直接透传输入
             - "voxel_label":             np.ndarray, (D, H, W), int64, 直接透传输入
             - "hardmask":                np.ndarray, (D, H, W), int64, 几何 hardmask
-            - "voxel_valid_mask":        np.ndarray, (D, H, W), bool, 裁边后的体素监督区域
             - "box_origin_world":        np.ndarray, (3,), float32, 直接透传输入
             - "voxel_size_world":        np.ndarray, (3,), float32, 直接透传输入
             - "box_shape_zyx":           np.ndarray, (3,), int64, 直接透传输入
@@ -96,8 +89,7 @@ def build_box_point_numpy_sample(
             - "atom_coord_centered_world": np.ndarray, (N, 3), float32, 选中原子相对 BOX 中心的世界坐标
             - "atom_feat":               np.ndarray, (N, F), float32, 选中原子的特征
             - "atom_label":              np.ndarray, (N,), int64, 选中原子的标签(经 class_mapping)
-            - "atom_is_in_core_box":     np.ndarray, (N,), bool, 标记选中原子是否处于 BOX core 区域
-            - "atom_valid_mask":         np.ndarray, (N,), bool, 标记选中原子是否参与损失监督
+            - "atom_is_in_core_box":     np.ndarray, (N,), bool, 标记选中原子是否处于 BOX core 区域; 也是原子级损失监督的唯一判据
             - "atom_global_indices":     np.ndarray, (N,), int64, 选中原子在当前结构全局原子数组中的索引, 与 atom_coord_world 一一对应
 
         注意: "ligand_dist_map" 不在本函数输出范围内, 它由调用侧
@@ -133,38 +125,23 @@ def build_box_point_numpy_sample(
         box_shape_zyx=box_shape_zyx,
     )
 
-    # 4. voxel_valid_mask
-    voxel_valid_mask = build_voxel_valid_mask(
-        box_shape_zyx=box_shape_zyx,
-        valid_crop_margin=valid_crop_margin,
-    )
-
-    # 5. atom_valid_mask
-    atom_valid_mask = build_atom_valid_mask(
-        atom_coord_local_voxel=coord_data["atom_coord_local_voxel"],
-        atom_is_in_core_box=atom_is_in_core_box,
-        box_shape_zyx=box_shape_zyx,
-        valid_crop_margin=float(valid_crop_margin),
-    )
-
-    # 6. atom_feat
+    # 4. atom_feat
     atom_feat = build_atom_features(
         atom_features_raw=atom_features_raw_full,
         selected_idx=selected_idx,
     )
 
-    # 7. atom_label + class_mapping
+    # 5. atom_label + class_mapping
     # np.ndarray, (N_selected,), int64
     atom_label = atom_labels_full[selected_idx].astype(np.int64, copy=False)
     if class_mapping is not None:
         atom_label = _apply_class_mapping(atom_label, class_mapping)
 
-    # 8. 组装
+    # 6. 组装
     return {
         "voxel_grid": voxel_grid,
         "voxel_label": voxel_label,
         "hardmask": hardmask,
-        "voxel_valid_mask": voxel_valid_mask,
         "box_origin_world": box_origin_world,
         "voxel_size_world": voxel_size_world,
         "box_shape_zyx": box_shape_zyx,
@@ -174,7 +151,6 @@ def build_box_point_numpy_sample(
         "atom_feat": atom_feat,
         "atom_label": atom_label,
         "atom_is_in_core_box": atom_is_in_core_box,
-        "atom_valid_mask": atom_valid_mask,
         # 当前 BOX 选中原子在全局原子数组中的索引, 训练/推断两侧统一使用
         "atom_global_indices": selected_idx,
     }
@@ -185,7 +161,6 @@ _TENSOR_DTYPE_MAP: dict[str, torch.dtype] = {
     "voxel_grid": torch.float32,
     "voxel_label": torch.int64,
     "hardmask": torch.int64,
-    "voxel_valid_mask": torch.bool,
     "box_origin_world": torch.float32,
     "voxel_size_world": torch.float32,
     "box_shape_zyx": torch.int64,
@@ -195,7 +170,6 @@ _TENSOR_DTYPE_MAP: dict[str, torch.dtype] = {
     "atom_feat": torch.float32,
     "atom_label": torch.int64,
     "atom_is_in_core_box": torch.bool,
-    "atom_valid_mask": torch.bool,
     "atom_global_indices": torch.int64,
     # 可选字段: 由 BoxPointDataset.__getitem__ 追加, 仅在配置了 ligand_dist_BOX 时存在
     "ligand_dist_map": torch.float32,

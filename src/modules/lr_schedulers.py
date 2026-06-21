@@ -23,7 +23,7 @@ class WarmupThenReduceLROnPlateau:
         - eps: float, ReduceLROnPlateau 的最小学习率变化阈值
 
     输出:
-        - 对象本身保存 warmup scheduler 与 plateau scheduler; warmup 交给 Lightning step, plateau 由 wrapper 在 validation end 手动 step
+        - 对象本身保存 warmup scheduler 与 plateau scheduler; warmup 交给 Lightning step, plateau 由调用方在 validation end 手动 step
     """
 
     def __init__(

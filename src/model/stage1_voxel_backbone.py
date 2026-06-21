@@ -21,10 +21,12 @@ class Stage1VoxelBackbone(SimpleUnet):
         num_conv3d_aux: int,
         ligand_head_hidden_channels: int,
         num_conv3d_ligand: int,
-        prior_prob: float | None = None,  # float|None, 单通道 sigmoid 正类先验概率
+        prior_prob: float | None = None,  # float|None, legacy 单通道 sigmoid 正类先验概率; 命名先验缺省时作为 aux/ligand 头兜底
         voxel_aux_logit_dim: int = 1,
         voxel_ligand_logit_dim: int = 1,
         prior_probs: Sequence[float] | None = None,
+        prior_prob_voxel_receptor: float | None = None,  # float|None, voxel aux(受体区域)头单通道 sigmoid 先验; 由 stage1_model 注入
+        prior_prob_voxel_ligand: float | None = None,    # float|None, voxel ligand 头单通道 sigmoid 先验; 由 stage1_model 注入
     ) -> None:
         """
         Stage1 体素主干网络。
@@ -105,23 +107,31 @@ class Stage1VoxelBackbone(SimpleUnet):
         else:
             self.voxel_ligand_head = None
 
-        if prior_prob is not None and prior_probs is not None:
-            raise ValueError("prior_prob 和 prior_probs 不能同时配置")
         if prior_probs is not None:
+            # 多通道 softmax 先验(tri 等): aux/ligand 头统一用 prior_probs 初始化, 单通道命名先验在此路径忽略
             self._init_multiclass_prior_bias(self.voxel_aux_head, self.voxel_aux_logit_dim, prior_probs)
             self._init_multiclass_prior_bias(self.voxel_ligand_head, self.voxel_ligand_logit_dim, prior_probs)
-        elif prior_prob is not None:
-            if self.voxel_aux_logit_dim != 1 or self.voxel_ligand_logit_dim != 1:
-                raise ValueError("多通道 softmax head 请使用 prior_probs，不要使用单通道 prior_prob")
-            _bias_val = -math.log((1.0 - float(prior_prob)) / float(prior_prob))
-            if self.voxel_aux_head is not None:
-                _last_idx = 2 * int(num_conv3d_aux)
-                nn.init.constant_(self.voxel_aux_head[_last_idx].bias, _bias_val)
-            elif self.conv_end.bias is not None:
-                nn.init.constant_(self.conv_end.bias, _bias_val)
-            if self.voxel_ligand_head is not None:
-                _last_idx = 2 * int(num_conv3d_ligand)
-                nn.init.constant_(self.voxel_ligand_head[_last_idx].bias, _bias_val)
+        else:
+            # 单通道 sigmoid 先验: aux(受体)与 ligand 头各自独立; 命名先验缺省时回退 legacy prior_prob; 均为 None 则不初始化
+            # float | None, aux/ligand 头各自有效先验
+            aux_prior = prior_prob_voxel_receptor if prior_prob_voxel_receptor is not None else prior_prob
+            ligand_prior = prior_prob_voxel_ligand if prior_prob_voxel_ligand is not None else prior_prob
+            if aux_prior is not None:
+                if self.voxel_aux_logit_dim != 1:
+                    raise ValueError("多通道 softmax head 请使用 prior_probs，不要使用单通道先验(voxel aux)")
+                # float, aux 头 sigmoid 正类先验对应的输出 bias = logit(prior)
+                aux_bias_val = -math.log((1.0 - float(aux_prior)) / float(aux_prior))
+                if self.voxel_aux_head is not None:
+                    nn.init.constant_(self.voxel_aux_head[2 * int(num_conv3d_aux)].bias, aux_bias_val)
+                elif self.conv_end.bias is not None:
+                    nn.init.constant_(self.conv_end.bias, aux_bias_val)
+            if ligand_prior is not None:
+                if self.voxel_ligand_logit_dim != 1:
+                    raise ValueError("多通道 softmax head 请使用 prior_probs，不要使用单通道先验(voxel ligand)")
+                # float, ligand 头 sigmoid 正类先验对应的输出 bias = logit(prior)
+                ligand_bias_val = -math.log((1.0 - float(ligand_prior)) / float(ligand_prior))
+                if self.voxel_ligand_head is not None:
+                    nn.init.constant_(self.voxel_ligand_head[2 * int(num_conv3d_ligand)].bias, ligand_bias_val)
 
         # nn.Conv3d，`(B, C_final, D, H, W) -> (B, C_recycle, D, H, W)`，体素 voxel_final 的简单投影。
         self.voxel_recycle_proj = nn.Conv3d(

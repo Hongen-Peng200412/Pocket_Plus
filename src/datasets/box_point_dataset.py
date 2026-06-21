@@ -26,8 +26,8 @@ src\datasets 内的调用逻辑:
     - 因此后续若要送入 `grid_sample(align_corners=True)`，必须先减去 `0.5`，把角点语义转成以 voxel 中心索引为基准的采样语义。
 
 输出样本约定:
-    - voxel 侧返回 `voxel_grid / voxel_label / hardmask / voxel_valid_mask` 等字段。
-    - atom 侧返回 `atom_coord_world / atom_coord_local_voxel / atom_coord_centered_world / atom_feat / atom_label / atom_is_in_core_box / atom_valid_mask` 等字段。
+    - voxel 侧返回 `voxel_grid / voxel_label / hardmask` 等字段。
+    - atom 侧返回 `atom_coord_world / atom_coord_local_voxel / atom_coord_centered_world / atom_feat / atom_label / atom_is_in_core_box` 等字段。
     - 元信息保留 `sample_name / pdb_id / class_name / instance_id / is_center_box`。
 
 典型数据目录结构:
@@ -60,10 +60,8 @@ from torch.utils.data import Dataset
 from .box_geometry import (
     build_atom_coordinates,
     build_atom_features,
-    build_atom_valid_mask,
     build_hardmask_from_atom_coordinates,
     build_hardmask_from_world_coordinates,
-    build_voxel_valid_mask,
     select_atoms_for_box,
 )
 from .box_point_collate import box_point_collate
@@ -95,7 +93,6 @@ class BoxPointDataset(Dataset):
         num_task_classes: int | None = None,
         atom_buffer_radius: float = 4.0,
         cache_size: int = 128,
-        valid_crop_margin: int = 2,
         enable_random_rotation: bool = True,
         density_channel_config: Optional[dict | DensityChannelConfig] = None,
         **kwargs: Any,
@@ -124,7 +121,6 @@ class BoxPointDataset(Dataset):
 
 
                 - atom_buffer_radius: float, 在 core box 之外额外保留的原子缓冲半径，单位与世界坐标一致。
-                - valid_crop_margin: int, voxel_valid_mask 默认向内裁掉的边带宽度，单位是 voxel 个数。
                 - cache_size: int, 每个 dataloader worker 内部 LRU cache 的最大容量。
                 - enable_random_rotation: bool, 是否在训练模式下启用 voxel / atom 同步 90 度旋转。
 
@@ -167,14 +163,10 @@ class BoxPointDataset(Dataset):
             )
         self.atom_buffer_radius = float(atom_buffer_radius)         # atom buffer 半径, 单位=世界坐标
         self.cache_size = int(cache_size)                           # 每个 worker 的 cache 容量
-        self.valid_crop_margin = int(valid_crop_margin)             # 边界裁边宽度, 单位=voxel
 
         self.data_folder_names = list(data_folder_names)            # ["emdb_BOX", "pdb_label_BOX"] (pdb_feature_BOX 已不再离线生成)
         self.class_folder_names = list(class_folder_names)          # ["metal_ion", "peptide", "nucleic", "small_molecule"]
         self.collate_fn = box_point_collate                         # 让外部 DataLoader 直接复用项目内 collate
-
-        if self.valid_crop_margin < 0:
-            raise ValueError("valid_crop_margin must be >= 0")
 
         self._validate_folder_layout()
         self.is_train = self._parse_mode(mode)
@@ -637,19 +629,30 @@ class BoxPointDataset(Dataset):
         voxel_grid: np.ndarray,
         voxel_label: np.ndarray,
         hardmask: np.ndarray,
-        voxel_valid_mask: np.ndarray,
         axis1: int,
         axis2: int,
         k: int,
-    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
-        对 4D/3D 体素数组做完全同步的 90 度旋转。
+        对 voxel 侧数组做完全同步的 90 度旋转。
+
+        输入:
+            - voxel_grid: np.ndarray, (C, D, H, W), float32, 多通道体素特征网格
+            - voxel_label: np.ndarray, (D, H, W), int64, 体素分类真值标签
+            - hardmask: np.ndarray, (D, H, W), int64, 体素是否真实存在有效结构的掩码
+            - axis1: int, 第一个旋转所在的空间轴索引 (0=z, 1=y, 2=x)
+            - axis2: int, 第二个旋转所在的空间轴索引 (0=z, 1=y, 2=x)
+            - k: int, 旋转次数 (每次 90 度)
+
+        输出:
+            - rotated_voxel_grid: np.ndarray, (C, D, H, W), float32, 旋转后的体素特征网格
+            - rotated_voxel_label: np.ndarray, (D, H, W), int64, 旋转后的体素标签
+            - rotated_hardmask: np.ndarray, (D, H, W), int64, 旋转后的 hardmask
         """
         rotated_voxel_grid = np.rot90(voxel_grid, k=k, axes=(axis1 + 1, axis2 + 1)).copy()
         rotated_voxel_label = np.rot90(voxel_label, k=k, axes=(axis1, axis2)).copy()
         rotated_hardmask = np.rot90(hardmask, k=k, axes=(axis1, axis2)).copy()
-        rotated_voxel_valid_mask = np.rot90(voxel_valid_mask, k=k, axes=(axis1, axis2)).copy()
-        return rotated_voxel_grid, rotated_voxel_label, rotated_hardmask, rotated_voxel_valid_mask
+        return rotated_voxel_grid, rotated_voxel_label, rotated_hardmask
 
 
     def _rotate_zyx_coords(
@@ -816,12 +819,10 @@ class BoxPointDataset(Dataset):
             sample_dict["voxel_grid"],
             sample_dict["voxel_label"],
             sample_dict["hardmask"],
-            sample_dict["voxel_valid_mask"],
         ) = self._rotate_voxel_arrays(
             voxel_grid=sample_dict["voxel_grid"],
             voxel_label=sample_dict["voxel_label"],
             hardmask=sample_dict["hardmask"],
-            voxel_valid_mask=sample_dict["voxel_valid_mask"],
             axis1=axis1,
             axis2=axis2,
             k=k,
@@ -851,8 +852,9 @@ class BoxPointDataset(Dataset):
             k=k,
         )
 
-        # ---- 3. 重算 atom_coord_world 与 atom_valid_mask ----
+        # ---- 3. 重算 atom_coord_world ----
         # 立方体 + 各向同性体素: box_center_world 旋转前后不变
+        # 注: atom_is_in_core_box 在 90 度旋转下不变 (同一立方体), 无需重算, 它即原子级监督判据
         # np.ndarray, (3,), float32, BOX 中心世界坐标
         box_shape_xyz = box_shape_zyx[[2, 1, 0]].astype(np.float32)
         box_center_world = (
@@ -862,12 +864,6 @@ class BoxPointDataset(Dataset):
         sample_dict["atom_coord_world"] = (
             sample_dict["atom_coord_centered_world"] + box_center_world[None, :]
         ).astype(np.float32, copy=False)
-        sample_dict["atom_valid_mask"] = build_atom_valid_mask(
-            atom_coord_local_voxel=sample_dict["atom_coord_local_voxel"],
-            atom_is_in_core_box=sample_dict["atom_is_in_core_box"],
-            box_shape_zyx=box_shape_zyx,
-            valid_crop_margin=float(self.valid_crop_margin),
-        )
 
         return sample_dict
 
@@ -892,7 +888,6 @@ class BoxPointDataset(Dataset):
                 - `voxel_grid`: torch.Tensor, 形如 (C, D, H, W)，float32 类型的体素特征网格。
                 - `voxel_label`: torch.Tensor, 形如 (D, H, W)，int64 类型的体素分类真值标签。
                 - `hardmask`: torch.Tensor, 形如 (D, H, W)，int64 类型，标记该体素是否真实存在有效的结构。
-                - `voxel_valid_mask`: torch.Tensor, 形如 (D, H, W)，bool 类型，是否在去除边缘 margin 之后的核心监督区域。
                 - `atom_coord_world`: torch.Tensor, 形如 (N_selected, 3)，float32 类型的点云世界坐标。
                 - `atom_feat`: torch.Tensor, 形如 (N_selected, F_raw)，float32 类型的点特征。
                 ...
@@ -967,7 +962,6 @@ class BoxPointDataset(Dataset):
                 voxel_size_world=box_raw["voxel_size_world"],
                 box_shape_zyx=box_shape_zyx,
                 atom_buffer_radius=self.atom_buffer_radius,
-                valid_crop_margin=self.valid_crop_margin,
                 class_mapping=self.class_mapping,
             )
             # 追加元信息

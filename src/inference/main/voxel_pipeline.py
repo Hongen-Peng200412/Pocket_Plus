@@ -82,7 +82,6 @@ def _build_cache_or_forward(
         window_size=int(_get_cfg(cfg_dict, "window_size", True)),
         stride=int(_get_cfg(cfg_dict, "stride", True)),
         atom_buffer_radius=float(_get_cfg(cfg_dict, "atom_buffer_radius", True)),
-        valid_crop_margin=int(_get_cfg(cfg_dict, "valid_crop_margin", True)),
         num_box_workers=int(_get_cfg(cfg_dict, "num_box_workers", False) or 1),
     )
     pred_data = get_voxel_pred(

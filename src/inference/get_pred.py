@@ -214,7 +214,6 @@ A. 训练契约类 —— 应自动从训练 config 的 dataset.* 继承
    │ data_folder_names  │ dataset.data_folder_names │
    │ class_mapping      │ dataset.class_mapping     │
    │ atom_buffer_radius │ dataset.atom_buffer_radius│
-   │ valid_crop_margin  │ dataset.valid_crop_margin │
    │ density_channel_config │ dataset.density_channel_config │
    │ (未来新增参数)      │ dataset.*                 │
    └────────────────────┴──────────────────────────┘

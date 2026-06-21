@@ -1,27 +1,33 @@
 """
-Stage1 atom head 的 real/pseudo 双尾部实现。
+Stage1 最终分类头: 统一几何 cross-attn + real/pseudo 两个轻量分类尾部。
 
 对齐契约（修改时必须全量同步）:
 
-    - 本段、CLAUDE/plans/implement/tri_ligand_sparse_refine/00-master.md、src/model/stage1_model.py::_run_atom_head 和 tests/model/test_stage1_atom_head.py 必须同步更新。
-    - N_all 表示当前 atom head 输入点数; N_real 表示真实原子数; N_pseudo 表示 P anchor 数; C_point=point_channels; C_hidden=hidden_dim。
-    - pseudo_mask is None 表示 real-only 路径, 此时 N_all=N_real 且不产生 pseudo_feature。
+    - 本段、CLAUDE/plans/最后重构代码_v3.md 的 §2、src/model/stage1_model.py::_run_atom_head 和受影响的 tests/model 单测必须同步更新。
+    - N_all 表示本头输入点数; N_real 表示真实原子数; N_pseudo 表示 P anchor 数; C_point=point_channels。
+    - pseudo_mask is None 表示 real-only 路径, 此时 N_all=N_real, pseudo_* 输出全为 None。
 
-    - pseudo_mask: torch.Tensor, (N_all,), bool, True 表示 P anchor, False 表示 real atom; 若非 None 必须与 point_feat 第一维一致。
-    - point_feat: torch.Tensor, (N_all, C_point), floating, 最后一轮 point backbone 输出特征, mixed 路径下按 pseudo_atoms.py 的 mixed layout 排列; 调用方(stage1_model)按 detach 路由开关传入已 detach 的 fused_point_feat。
-    - pseudo_density_feat: torch.Tensor | None, (N_pseudo, C_density), floating, 可选 density cube 特征(anchor 顺序); 仅 pseudo_density_residual=True 时消费, 加到 pseudo 分支输出上。
-    - real_receptor_base_logit: torch.Tensor | None, (N_real, atom_logit_dim), floating, 可选 home 体素 aux base logit(real 顺序); 仅 concat_receptor_base_logit=True 时消费, 拼进后置头首层输入(base 恒由 stage1_model detach)。
-    - point_state["coord"]: torch.Tensor, (N_all, 3), floating, Point/Block 使用的点坐标, 轴顺序 (x, y, z)。
-    - point_state["batch"]: torch.Tensor, (N_all,), int64/long, 每个点所属 BOX 索引。
-    - point_state["offset"]: torch.Tensor, (B,), int64/long, 每个 BOX 在展平点序列中的结束偏移。
-    - point_state["grid_size"]: float, PTV3 序列化/网格化使用的点云 grid size。
-    - point_state["grid_coord"]: torch.Tensor, (N_all, 3), int32/int64, 可选字段, 离散网格坐标。
-    - atom_coord_centered_world: torch.Tensor, (N_all, 3), floating, token 可选拼接的 centered-world 坐标, 轴顺序 (x, y, z)。
-    - atom_valid_mask: torch.Tensor, (N_all,), bool, real atom 监督掩码; P anchor 槽位必须为 False。
-    - outputs["atom_tokens"]: torch.Tensor, (N_all, C_point) 或 (N_all, C_point+4), floating, token projection 前的输入 token; append_coord_mask=True 时追加 xyz 与 valid mask。
-    - outputs["atom_hidden"]: torch.Tensor, (N_all, C_hidden), floating, shared attention stack 输出, 保留 mixed 全点顺序。
-    - outputs["atom_logits"]: torch.Tensor | None, (N_real, atom_logit_dim), floating, 只对 real atom 输出的监督 logits; enable_atom_head_back=False 时为 None。
-    - outputs["pseudo_feature"]: torch.Tensor | None, (N_pseudo, pseudo_feature_dim), floating, 只对 P anchor 输出; real-only 路径为 None; pseudo_density_residual=True 时含 density cube 残差。
+前向输入:
+
+    - point_feat: torch.Tensor, (N_all, C_point), floating, 最后一轮 point backbone 输出特征, mixed 路径下按 pseudo_atoms.py 的 mixed layout 排列; real / P 槽位由 pseudo_mask 区分。
+    - point_state: dict[str, Any], 与 point_feat 同布局的点状态; 本头仅消费 point_state["batch"] (torch.Tensor, (N_all,), int64, 每个点所属 BOX 索引), 用于 cross-attn 的 radius 分组建图。
+    - atom_coord_centered_world: torch.Tensor, (N_all, 3), floating, centered-world 坐标, 轴顺序 (x, y, z); 用于 cross-attn 的 radius 建图与 relative coord。
+    - pseudo_mask: torch.Tensor | None, (N_all,), bool, True 表示 P anchor, False 表示 real atom; None 表示 real-only 路径; 非 None 时第一维必须与 point_feat 一致。
+
+前向输出（dict, 键名固定, 6 项）:
+
+    - "real_feat_before_interaction": torch.Tensor, (N_real, C_point), cross-attn 前的 real 特征。
+    - "real_feat_after_interaction": torch.Tensor, (N_real, C_point), 经 pseudo_to_real 增量后的 real 特征; cross-attn 零初始化/冻结时与 before 逐元素相等。
+    - "pseudo_feat_before_interaction": torch.Tensor | None, (N_pseudo, C_point), cross-attn 前的 P 特征; real-only 路径为 None。
+    - "pseudo_feat_after_interaction": torch.Tensor | None, (N_pseudo, C_point), 经 real_to_pseudo 增量后的 P 特征; cross-attn 零初始化/冻结时与 before 逐元素相等; real-only 路径为 None。
+    - "atom_logits": torch.Tensor, (N_real, atom_logit_dim), real atom 监督 logits。
+    - "pseudo_logits": torch.Tensor | None, (N_pseudo, pseudo_ligand_logit_dim), P anchor ligand 区域归属 logits; real-only 路径为 None。
+
+零初始化契约:
+    两个 cross-attn 的 output_proj 权重和 bias 均零初始化, 且 after 一律以纯残差 feat_after = feat_before + crossattn(...) 加回, 中间不插 LayerNorm 等破坏逐元素恒等的算子。因此 cross-attn 处于零初始化或被冻结态时, *_after_interaction == *_before_interaction 逐元素精确成立。
+
+执行顺序保证无循环依赖:
+    pseudo_to_real 的增量只读 pseudo_before, real_to_pseudo 的增量只读 real_before 与 real_bind_prob(由 atom_logits 的第 0 通道 sigmoid 后 detach)。两条增量各自只依赖对方的 before 特征,不依赖对方的 after 特征, 故无环。
 """
 from __future__ import annotations
 
@@ -31,390 +37,282 @@ from typing import Any, Sequence
 import torch
 from torch import nn
 
-from src.model.typed_point import (
-    TypedPointConfig,
-    apply_type_aware_tensor_module,
-    normalize_typed_point_cfg,
-    validate_pseudo_mask,
-)
+from src.model.typed_point import validate_pseudo_mask
 
-_PTV3_HEAD_IMPORT_ERROR: Exception | None = None
+_TORCH_CLUSTER_IMPORT_ERROR: Exception | None = None
 try:
-    from src.model.PTV3bakcbone.model import Point, Block
+    torch_cluster = __import__("torch_cluster")
 except Exception as exc:  # pragma: no cover - 依赖当前本地环境
-    Point = None
-    Block = None
-    _PTV3_HEAD_IMPORT_ERROR = exc
+    torch_cluster = None
+    _TORCH_CLUSTER_IMPORT_ERROR = exc
+
+_TORCH_SCATTER_IMPORT_ERROR: Exception | None = None
+try:
+    torch_scatter = __import__("torch_scatter")
+except Exception as exc:  # pragma: no cover - 依赖当前本地环境
+    torch_scatter = None
+    _TORCH_SCATTER_IMPORT_ERROR = exc
 
 
+class GeometricCrossAttention(nn.Module):
+    """
+    统一的几何 cross-attn: query 点在 radius 邻域内聚合 source 点特征, 输出零初始化增量。
 
+    两个方向复用本类:
+        - real_to_pseudo: query=P, source=real, 吃 detached real bind prob。
+        - pseudo_to_real: query=real, source=P, 不吃 bind prob。
 
-class Stage1SerializedAttentionStack(nn.Module):
+    输入参数:
+        - query_channels: int, query 点特征通道数, 也是本模块的输出通道数
+        - source_channels: int, source 点特征通道数
+        - num_heads: int, attention 头数; 必须整除 query_channels
+        - radius: float, radius 建图的世界坐标半径
+        - max_neighbors: int, 每个 query 点最多保留的 source 邻居数
+        - detach_source_feat: bool, 取边特征前是否对 source 特征 detach
+        - act_layer: type[nn.Module], 激活函数类
+        - use_source_bind_prob: bool, 是否把 source 侧 bind probability 拼进边特征; True 时边特征维 +1
+
+    前向输入:
+        - query_feat: torch.Tensor, (N_query, query_channels), query 点特征
+        - source_feat: torch.Tensor, (N_source, source_channels), source 点特征
+        - query_coord: torch.Tensor, (N_query, 3), query 点 centered-world 坐标, 轴顺序 (x, y, z)
+        - source_coord: torch.Tensor, (N_source, 3), source 点 centered-world 坐标, 轴顺序 (x, y, z)
+        - query_batch: torch.Tensor, (N_query,), int64, query 点所属 BOX 索引
+        - source_batch: torch.Tensor, (N_source,), int64, source 点所属 BOX 索引
+        - source_bind_prob: torch.Tensor | None, (N_source, 1), use_source_bind_prob=True 时必填, class Stage1AtomHead已经外部detach
+
+    前向输出:
+        - delta: torch.Tensor, (N_query, query_channels), query 侧增量(不含残差); 空 query / 空 source / 空边时返回全零张量。
+    """
+
     def __init__(
         self,
-        channels: int,
+        query_channels: int,
+        source_channels: int,
         num_heads: int,
-        patch_size: int,
-        num_layers: int,
-        serialization_orders: Sequence[str],
-        shuffle_orders: bool,
-        qkv_bias: bool,
-        qk_scale: float | None,
-        attn_drop: float,
-        proj_drop: float,
-        enable_rpe: bool,
-        enable_flash: bool,
-        upcast_attention: bool,
-        upcast_softmax: bool,
-        atom_head_ffn_type: str,
-        mlp_ratio: int,
+        radius: float,
+        max_neighbors: int,
+        detach_source_feat: bool,
         act_layer: type[nn.Module],
-        cpe_impl: str,
-        cpe_kernel_size: int,
-        cpe_receptive_field: float,
-        pointconv_block_max_neighbors: int,
-        drop_path: float,
-        pre_norm: bool,
-        typed_point_cfg: dict[str, Any] | TypedPointConfig | None = None,
+        use_source_bind_prob: bool,
     ) -> None:
-        """
-        用 PTV3 Block 堆叠处理 Stage1 atom token。
-
-        输入参数:
-            - channels: int, forward 时 token 隐藏通道数
-            - num_heads: int, attention 头数
-            - patch_size: int, SerializedAttention patch 点数
-            - num_layers: int, Block 层数
-            - serialization_orders: Sequence[str], 序列化顺序列表
-            - shuffle_orders: bool, forward 时是否打乱序列化顺序列表
-            - qkv_bias: bool, QKV 线性层是否使用 bias
-            - qk_scale: float | None, QK 缩放因子
-            - attn_drop: float, attention dropout 概率
-            - proj_drop: float, 输出投影 dropout 概率
-            - enable_rpe: bool, 是否启用相对位置编码
-            - enable_flash: bool, 是否启用 flash attention
-            - upcast_attention: bool, attention 矩阵乘法前是否上转精度
-            - upcast_softmax: bool, softmax 前是否上转精度
-            - atom_head_ffn_type: str, atom head Block FFN 类型, 取值 "mlp" / "gated" / "none"
-            - mlp_ratio: int, FFN 隐藏层膨胀倍率
-            - act_layer: type[nn.Module], 激活函数类
-            - cpe_impl: str, CPE 实现方式, 取值 "none" / "pointconv"
-            - cpe_kernel_size: int, legacy 字段; pointconv CPE 不消费该值
-            - cpe_receptive_field: float, pointconv CPE 世界坐标感受野半径
-            - pointconv_block_max_neighbors: int, pointconv CPE 每个点最大邻居数
-            - drop_path: float, Block 随机深度概率
-            - pre_norm: bool, 是否使用 pre-norm Block
-
-        forward 输入:
-            - point_state: dict[str, Any], point backbone 输出的点状态, 至少包含 coord/batch/offset/grid_size
-            - token_feat: torch.Tensor, (N, channels), atom token 投影后的隐藏特征
-            - pseudo_mask: torch.Tensor | None, (N,), True 表示 P anchor; None 表示 real-only 路径
-
-        forward 输出:
-            - output_token_feat: torch.Tensor, (N, channels), attention stack 输出特征
-        """
         super().__init__()
-        if Block is None:
-            raise ImportError("Stage1SerializedAttentionStack 需要 PTV3 Block。") from _PTV3_HEAD_IMPORT_ERROR
-        self.channels = int(channels)
-        self.serialization_orders = tuple(str(order_name) for order_name in serialization_orders)
-        if len(self.serialization_orders) == 0:
-            raise ValueError("serialization_orders 不能为空。")
-        self.shuffle_orders = bool(shuffle_orders)
-        # TypedPointConfig, atom head attention stack 使用的 typed point 配置
-        self.typed_point_cfg = normalize_typed_point_cfg(typed_point_cfg)
+        if int(query_channels) <= 0:
+            raise ValueError("query_channels 必须 > 0。")
+        if int(source_channels) <= 0:
+            raise ValueError("source_channels 必须 > 0。")
+        if int(num_heads) <= 0 or int(query_channels) % int(num_heads) != 0:
+            raise ValueError("num_heads 必须 > 0 且整除 query_channels。")
+        if float(radius) <= 0.0:
+            raise ValueError("radius 必须 > 0。")
+        if int(max_neighbors) <= 0:
+            raise ValueError("max_neighbors 必须 > 0。")
 
-        # nn.ModuleList, 长度 num_layers, atom token 的共享 attention Block 序列
-        self.layers = nn.ModuleList(
-            [
-                Block(
-                    channels=self.channels,
-                    num_heads=int(num_heads),
-                    patch_size=int(patch_size),
-                    order_index=int(layer_idx % len(self.serialization_orders)),
-                    cpe_impl=str(cpe_impl),
-                    qkv_bias=bool(qkv_bias),
-                    qk_scale=qk_scale,
-                    attn_drop=float(attn_drop),
-                    proj_drop=float(proj_drop),
-                    enable_rpe=bool(enable_rpe),
-                    enable_flash=bool(enable_flash),
-                    upcast_attention=bool(upcast_attention),
-                    upcast_softmax=bool(upcast_softmax),
-                    ffn_type=str(atom_head_ffn_type),
-                    mlp_ratio=int(mlp_ratio),
-                    act_layer=act_layer,
-                    pre_norm=bool(pre_norm),
-                    drop_path=float(drop_path),
-                    cpe_kernel_size=int(cpe_kernel_size),
-                    cpe_receptive_field=float(cpe_receptive_field),
-                    pointconv_block_max_neighbors=int(pointconv_block_max_neighbors),
-                    separate_qkv=self.typed_point_cfg.use_separate_qkv,
-                    separate_attn_proj=self.typed_point_cfg.use_separate_attn_proj,
-                    separate_ffn=self.typed_point_cfg.use_separate_ffn,
-                    separate_cpe=self.typed_point_cfg.use_separate_cpe,
-                )
-                for layer_idx in range(int(num_layers))
-            ]
+        self.query_channels = int(query_channels)
+        self.source_channels = int(source_channels)
+        self.num_heads = int(num_heads)
+        self.head_dim = self.query_channels // self.num_heads
+        self.radius = float(radius)
+        self.max_neighbors = int(max_neighbors)
+        self.detach_source_feat = bool(detach_source_feat)
+        self.use_source_bind_prob = bool(use_source_bind_prob)
+
+        # int, 边特征输入维: source 特征 + relative coord(3) + 可选 bind prob(1)
+        edge_in_dim = self.source_channels + 3 + (1 if self.use_source_bind_prob else 0)
+        # nn.Linear, (N_query, query_channels) -> (N_query, query_channels), query 投影
+        self.query_proj = nn.Linear(self.query_channels, self.query_channels)
+        # nn.Sequential, (E, edge_in_dim) -> (E, query_channels), 边特征到 key
+        self.key_proj = nn.Sequential(
+            nn.Linear(edge_in_dim, self.query_channels),
+            act_layer(),
+            nn.Linear(self.query_channels, self.query_channels),
         )
-        # nn.LayerNorm, (N, channels), stack 末尾输出归一化
-        self.output_norm = nn.LayerNorm(self.channels)
+        # nn.Sequential, (E, edge_in_dim) -> (E, query_channels), 边特征到 value
+        self.value_proj = nn.Sequential(
+            nn.Linear(edge_in_dim, self.query_channels),
+            act_layer(),
+            nn.Linear(self.query_channels, self.query_channels),
+        )
+        # nn.Sequential, (E, 4) -> (E, num_heads), 由 relative coord 与归一化距离生成的 per-head 几何 bias
+        self.geo_bias = nn.Sequential(nn.Linear(4, self.num_heads), act_layer(), nn.Linear(self.num_heads, self.num_heads))
+        # nn.Linear, (N_query, query_channels) -> (N_query, query_channels), 输出投影; 权重与 bias 零初始化
+        self.output_proj = nn.Linear(self.query_channels, self.query_channels)
+        nn.init.zeros_(self.output_proj.weight)
+        nn.init.zeros_(self.output_proj.bias)
 
     def forward(
         self,
-        point_state: dict[str, Any],
-        token_feat: torch.Tensor,
-        pseudo_mask: torch.Tensor | None = None,
+        *,
+        query_feat: torch.Tensor,
+        source_feat: torch.Tensor,
+        query_coord: torch.Tensor,
+        source_coord: torch.Tensor,
+        query_batch: torch.Tensor,
+        source_batch: torch.Tensor,
+        source_bind_prob: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        if token_feat.shape[0] == 0:
-            return token_feat
-        if Point is None:
-            raise ImportError("Stage1SerializedAttentionStack 需要 PTV3 Point。") from _PTV3_HEAD_IMPORT_ERROR
-        pseudo_mask = validate_pseudo_mask(
-            pseudo_mask,
-            int(token_feat.shape[0]),
-            name="Stage1SerializedAttentionStack.forward",
+        if query_feat.shape[0] == 0:
+            return query_feat.new_zeros((0, self.query_channels))
+        if torch_cluster is None:
+            raise ImportError("GeometricCrossAttention 需要 torch_cluster。") from _TORCH_CLUSTER_IMPORT_ERROR
+        if torch_scatter is None:
+            raise ImportError("GeometricCrossAttention 需要 torch_scatter。") from _TORCH_SCATTER_IMPORT_ERROR
+        if source_feat.shape[0] == 0:
+            return query_feat.new_zeros((int(query_feat.shape[0]), self.query_channels))
+
+        # torch.Tensor, (2, E), radius 邻接; row=query 索引, col=source 索引
+        edge_index = torch_cluster.radius(
+            x=source_coord,
+            y=query_coord,
+            r=self.radius,
+            batch_x=source_batch,
+            batch_y=query_batch,
+            max_num_neighbors=self.max_neighbors,
         )
+        if int(edge_index.shape[1]) == 0:
+            return query_feat.new_zeros((int(query_feat.shape[0]), self.query_channels))
 
-        # dict[str, Any], (N, *), 用 point backbone 状态和 atom token 重建的 Point 输入
-        point_dict = {
-            "feat": token_feat,                # (N, C_atom)
-            "coord": point_state["coord"],     # (N, 3)
-            "batch": point_state["batch"],     # (N,), 每个点的batch索引
-            "offset": point_state["offset"],   # (B,), 每个样本的结束索引
-            "grid_size": point_state["grid_size"],  # float
-        }
-        if "grid_coord" in point_state:
-            point_dict["grid_coord"] = point_state["grid_coord"]
-        if pseudo_mask is not None:
-            point_dict["pseudo_mask"] = pseudo_mask
+        # torch.Tensor, (E,), 每条边的 query 端索引
+        idx_query = edge_index[0]
+        # torch.Tensor, (E,), 每条边的 source 端索引
+        idx_source = edge_index[1]
+        # torch.Tensor, (N_source, source_channels), 取边特征用的 source 特征(可选 detach)
+        source_feat_used = source_feat.detach() if self.detach_source_feat else source_feat
+        # torch.Tensor, (E, 3), source 相对 query 的 centered-world 位移
+        rel_coord = source_coord[idx_source] - query_coord[idx_query]
+        edge_parts = [source_feat_used[idx_source], rel_coord]
+        if self.use_source_bind_prob:
+            if source_bind_prob is None:
+                raise RuntimeError("use_source_bind_prob=True 时必须传入 source_bind_prob。")
+            edge_parts.append(source_bind_prob[idx_source])
+        # torch.Tensor, (E, edge_in_dim), 拼接后的边特征
+        edge_feat = torch.cat(edge_parts, dim=1)
 
-        # Point, (N, channels), atom head attention 的点对象
-        point = Point(point_dict)
-        point.serialization(order=self.serialization_orders, shuffle_orders=self.shuffle_orders)
-
-        for layer in self.layers:
-            point = layer(point)
-
-        # torch.Tensor, (N, channels), 归一化后的 atom hidden
-        return self.output_norm(point.feat)
-
-
+        # torch.Tensor, (N_query, num_heads, head_dim), query 投影后按头切分
+        query = self.query_proj(query_feat).reshape(-1, self.num_heads, self.head_dim)
+        # torch.Tensor, (E, num_heads, head_dim), 边 key
+        key = self.key_proj(edge_feat).reshape(-1, self.num_heads, self.head_dim)
+        # torch.Tensor, (E, num_heads, head_dim), 边 value
+        value = self.value_proj(edge_feat).reshape(-1, self.num_heads, self.head_dim)
+        # torch.Tensor, (E, 4), 归一化 relative coord 与归一化距离, 几何 bias 输入
+        geo_input = torch.cat([rel_coord / self.radius, rel_coord.norm(dim=1, keepdim=True) / self.radius], dim=1)
+        # torch.Tensor, (E, num_heads), per-head 几何 bias
+        geo_bias = self.geo_bias(geo_input)
+        # torch.Tensor, (E, num_heads), 缩放点积 logits 加几何 bias
+        attn_logits = (query[idx_query] * key).sum(dim=-1) / math.sqrt(float(self.head_dim)) + geo_bias
+        # torch.Tensor, (E, num_heads), 以 query 为分组的 softmax 注意力权重
+        attn = torch_scatter.scatter_softmax(attn_logits, idx_query, dim=0)
+        # torch.Tensor, (E, query_channels = num_heads*head_dim), 加权 value
+        weighted_value = (attn.unsqueeze(-1) * value).reshape(-1, self.query_channels)
+        # torch.Tensor, (N_query, query_channels), 按 query 聚合的邻域特征
+        aggregated = torch_scatter.scatter_sum(
+            weighted_value, idx_query, dim=0, dim_size=int(query_feat.shape[0])
+        )
+        return self.output_proj(aggregated)
 
 
 class Stage1AtomHead(nn.Module):
+    """
+    Stage1 最终分类头: real/pseudo 双向几何 cross-attn(纯残差, 零初始化) + 两个轻量分类尾部。
+
+    分类尾部固定结构 LayerNorm -> Linear -> act -> Linear -> logits:
+        - real_atom_head: real 特征 -> atom_logits。
+        - pseudo_atom_head: P 特征 -> pseudo_logits。
+    末层支持 prior bias 初始化(prior_prob / prior_probs / prior_prob_point_ligand)。
+
+    输入参数:
+        - point_channels: int, point backbone 输出通道数, 也是 real/P 特征与 cross-attn 的通道数
+        - hidden_dim: int, 分类尾部隐藏通道数
+        - atom_logit_dim: int, real_atom_head 输出通道数
+        - pseudo_ligand_logit_dim: int, pseudo_atom_head 输出通道数; 1 表示二分类 sigmoid
+        - act_layer: type[nn.Module], 激活函数类
+        - interaction_radius: float, cross-attn radius 建图半径
+        - interaction_max_neighbors: int, cross-attn 每个 query 点最大邻居数
+        - interaction_num_heads: int, cross-attn 头数
+        - interaction_detach_source_feat: bool, cross-attn 是否对 source 特征 detach
+        - prior_prob: float | None, real_atom_head 末层单通道 sigmoid 正类先验; 与 prior_probs 互斥
+        - prior_probs: Sequence[float] | None, real_atom_head 末层多通道 softmax 类别先验
+        - prior_prob_point_ligand: float | None, pseudo_atom_head 末层单通道 sigmoid 正类先验; None 表示跳过 bias 先验初始化
+
+    前向输入与输出: 见模块顶部 Docstring。
+    """
+
     def __init__(
         self,
         point_channels: int,
         hidden_dim: int,
-        num_heads: int,
-        patch_size: int,
-        num_layers: int,
-        serialization_orders: Sequence[str],
-        shuffle_orders: bool,
-        qkv_bias: bool,
-        qk_scale: float | None,
-        attn_drop: float,
-        proj_drop: float,
-        enable_rpe: bool,
-        enable_flash: bool,
-        upcast_attention: bool,
-        upcast_softmax: bool,
         atom_logit_dim: int,
-        pseudo_feature_dim: int | None,
-        atom_head_ffn_type: str,
-        mlp_ratio: int,
+        pseudo_ligand_logit_dim: int,
         act_layer: type[nn.Module],
-        cpe_impl: str,
-        cpe_kernel_size: int,
-        cpe_receptive_field: float,
-        pointconv_block_max_neighbors: int,
-        drop_path: float,
-        pre_norm: bool,
-        append_coord_mask: bool,
-        prior_prob: float | None = None,
-        prior_probs: Sequence[float] | None = None,
-        enable_atom_head_back: bool = True,
-        pseudo_density_residual: bool = False,
-        pseudo_density_in_dim: int | None = None,
-        concat_receptor_base_logit: bool = False,
-        receptor_base_dim: int | None = None,
-        typed_point_cfg: dict[str, Any] | TypedPointConfig | None = None,
+        interaction_radius: float,
+        interaction_max_neighbors: int,
+        interaction_num_heads: int,
+        interaction_detach_source_feat: bool,
+        prior_prob: float | None,
+        prior_probs: Sequence[float] | None,
+        prior_prob_point_ligand: float | None,
     ) -> None:
-        """
-        Stage1 atom head: mixed 点共享 attention, real 输出 atom logits, pseudo 输出 P anchor feature。
-
-        输入参数:
-            - point_channels: int, point backbone 输出通道数
-            - hidden_dim: int, atom head 隐藏通道数
-            - num_heads: int, attention 头数
-            - patch_size: int, SerializedAttention patch 点数
-            - num_layers: int, Block 层数
-            - serialization_orders: Sequence[str], 序列化顺序列表
-            - shuffle_orders: bool, forward 时是否打乱序列化顺序列表
-            - qkv_bias: bool, QKV 线性层是否使用 bias
-            - qk_scale: float | None, QK 缩放因子
-            - attn_drop: float, attention dropout 概率
-            - proj_drop: float, 输出投影 dropout 概率
-            - enable_rpe: bool, 是否启用相对位置编码
-            - enable_flash: bool, 是否启用 flash attention
-            - upcast_attention: bool, attention 矩阵乘法前是否上转精度
-            - upcast_softmax: bool, softmax 前是否上转精度
-            - atom_logit_dim: int, real atom logits 输出通道数
-            - pseudo_feature_dim: int | None, P anchor feature 输出通道数; None 表示等于 hidden_dim
-            - atom_head_ffn_type: str, atom head Block FFN 类型, 取值 "mlp" / "gated" / "none"
-            - mlp_ratio: int, FFN 隐藏层膨胀倍率
-            - act_layer: type[nn.Module], 激活函数类
-            - cpe_impl: str, CPE 实现方式, 取值 "none" / "pointconv"
-            - cpe_kernel_size: int, legacy 字段; pointconv CPE 不消费该值
-            - cpe_receptive_field: float, pointconv CPE 世界坐标感受野半径
-            - pointconv_block_max_neighbors: int, pointconv CPE 每个点最大邻居数
-            - drop_path: float, Block 随机深度概率
-            - pre_norm: bool, 是否使用 pre-norm Block
-            - append_coord_mask: bool, 是否把 centered-world 坐标和 atom_valid_mask(监督标志) 拼入 token
-            - prior_prob: float | None, 单通道 sigmoid 正类先验概率
-            - prior_probs: Sequence[float] | None, 多通道 softmax 类别先验概率
-            - enable_atom_head_back: bool, 是否构造后置头 real_atom_logit_head; 关时 forward 的 atom_logits=None, prior bias 初始化随之跳过
-            - pseudo_density_residual: bool, 是否在 pseudo_feature 上加 density cube 直通残差(LayerNorm->Linear, 末层零初始化)
-            - pseudo_density_in_dim: int | None, density cube 特征通道数; 仅在 pseudo_density_residual=True 时必填, 由 stage1_model 注入为 point_backbone.atom_feature_dim
-            - concat_receptor_base_logit: bool, 后置头是否把 home 体素 aux base logit 拼进首层输入; 与 stage1_model 的"末尾加残差"正交
-            - receptor_base_dim: int | None, concat 时 base logit 通道数(=atom_logit_dim); concat_receptor_base_logit=True 时必填
-
-        前向输入:
-            - point_feat: torch.Tensor, (N_all, point_channels), point backbone 输出点特征
-            - point_state: dict[str, Any], 与 point_feat 同布局的点状态
-            - atom_coord_centered_world: torch.Tensor, (N_all, 3), centered-world 坐标
-            - atom_valid_mask: torch.Tensor, (N_all,), bool, real atom 监督掩码; P anchor 应为 False
-            - pseudo_mask: torch.Tensor | None, (N_all,), True 表示 P anchor; None 表示 real-only 路径
-            - pseudo_density_feat: torch.Tensor | None, (N_pseudo, pseudo_density_in_dim), P 来源 density cube 特征(anchor 顺序); 仅 pseudo_density_residual=True 时消费
-
-        前向输出:
-            - outputs: dict[str, torch.Tensor | None], atom head 输出字典
-                - atom_tokens: torch.Tensor, (N_all, point_channels) 或 (N_all, point_channels + 4), token projection 前输入
-                - atom_hidden: torch.Tensor, (N_all, hidden_dim), shared attention stack 输出
-                - atom_logits: torch.Tensor | None, (N_real, atom_logit_dim), 真实原子的 logits; 后置头关时为 None
-                - pseudo_feature: torch.Tensor | None, (N_pseudo, pseudo_feature_dim), P anchor refined feature; real-only 路径为 None
-        """
         super().__init__()
         self.point_channels = int(point_channels)
         self.hidden_dim = int(hidden_dim)
         self.atom_logit_dim = int(atom_logit_dim)
-        self.append_coord_mask = bool(append_coord_mask)
-        self.pseudo_feature_dim = int(pseudo_feature_dim) if pseudo_feature_dim is not None else self.hidden_dim
-        # TypedPointConfig, atom head 使用的 typed point 配置
-        self.typed_point_cfg = normalize_typed_point_cfg(typed_point_cfg)
+        self.pseudo_ligand_logit_dim = int(pseudo_ligand_logit_dim)
 
-        # int, atom token projection 输入通道数; append_coord_mask=True 时追加 xyz 与 bool mask
-        token_input_dim = self.point_channels + (4 if self.append_coord_mask else 0)
-        if self.typed_point_cfg.use_separate_atom_token_proj:
-            # nn.Sequential, real 点 atom token 输入投影
-            self.atom_token_proj_real = self._build_atom_token_proj(token_input_dim, act_layer)
-            # nn.Sequential, pseudo 点 atom token 输入投影
-            self.atom_token_proj_pseudo = self._build_atom_token_proj(token_input_dim, act_layer)
-            self.atom_token_proj = None
-        else:
-            # nn.Sequential, (N_all, token_input_dim) -> (N_all, hidden_dim), atom token 输入投影
-            self.atom_token_proj = self._build_atom_token_proj(token_input_dim, act_layer)
-            self.atom_token_proj_real = None
-            self.atom_token_proj_pseudo = None
-        # Stage1SerializedAttentionStack, (N_all, hidden_dim), mixed 或 real-only 共享 attention
-        self.atom_attention_stack = Stage1SerializedAttentionStack(
-            channels=self.hidden_dim,
-            num_heads=int(num_heads),
-            patch_size=int(patch_size),
-            num_layers=int(num_layers),
-            serialization_orders=serialization_orders,
-            shuffle_orders=bool(shuffle_orders),
-            qkv_bias=bool(qkv_bias),
-            qk_scale=qk_scale,
-            attn_drop=float(attn_drop),
-            proj_drop=float(proj_drop),
-            enable_rpe=bool(enable_rpe),
-            enable_flash=bool(enable_flash),
-            upcast_attention=bool(upcast_attention),
-            upcast_softmax=bool(upcast_softmax),
-            atom_head_ffn_type=str(atom_head_ffn_type),
-            mlp_ratio=int(mlp_ratio),
+        # GeometricCrossAttention, query=P, source=real, 吃 detached real bind prob
+        self.real_to_pseudo = GeometricCrossAttention(
+            query_channels=self.point_channels,
+            source_channels=self.point_channels,
+            num_heads=int(interaction_num_heads),
+            radius=float(interaction_radius),
+            max_neighbors=int(interaction_max_neighbors),
+            detach_source_feat=bool(interaction_detach_source_feat),
             act_layer=act_layer,
-            cpe_impl=str(cpe_impl),
-            cpe_kernel_size=int(cpe_kernel_size),
-            cpe_receptive_field=float(cpe_receptive_field),
-            pointconv_block_max_neighbors=int(pointconv_block_max_neighbors),
-            drop_path=float(drop_path),
-            pre_norm=bool(pre_norm),
-            typed_point_cfg=self.typed_point_cfg,
+            use_source_bind_prob=True,
         )
-        # bool, 是否构造后置头
-        self.enable_atom_head_back = bool(enable_atom_head_back)
-        # bool, 后置头是否把 home 体素 aux base logit 拼进首层输入(与 stage1_model 末尾加残差正交)
-        self.concat_receptor_base_logit = bool(concat_receptor_base_logit)
-        # int, concat 时 base logit 通道数(=atom_logit_dim); 关时为 0
-        self.receptor_base_dim = int(receptor_base_dim) if self.concat_receptor_base_logit else 0
-        # int, real_atom_logit_head 首层输入维; concat 时扩 receptor_base_dim
-        back_in = self.hidden_dim + self.receptor_base_dim
-        # nn.Sequential | None, (N_real, back_in) -> (N_real, atom_logit_dim), real atom 分类后置头; 关时为 None
-        self.real_atom_logit_head = (
-            nn.Sequential(
-                nn.Linear(back_in, self.hidden_dim),
-                act_layer(),
-                nn.Linear(self.hidden_dim, self.atom_logit_dim),
-            )
-            if self.enable_atom_head_back
-            else None
-        )
-        # nn.Sequential, (N_pseudo, hidden_dim) -> (N_pseudo, pseudo_feature_dim), P anchor feature 尾部
-        self.pseudo_feature_head = nn.Sequential(
-            nn.Linear(self.hidden_dim, self.hidden_dim),
-            act_layer(),
-            nn.Linear(self.hidden_dim, self.pseudo_feature_dim),
+        # GeometricCrossAttention, query=real, source=P, 不吃 bind prob
+        self.pseudo_to_real = GeometricCrossAttention(
+            query_channels=self.point_channels,
+            source_channels=self.point_channels,
+            num_heads=int(interaction_num_heads),
+            radius=float(interaction_radius),
+            max_neighbors=int(interaction_max_neighbors),
+            detach_source_feat=bool(interaction_detach_source_feat),
+            act_layer=act_layer,
+            use_source_bind_prob=False,
         )
 
-        # nn.Sequential | None, (N_pseudo, pseudo_density_in_dim) -> (N_pseudo, pseudo_feature_dim), density cube 直通残差; 关时为 None
-        self.density_residual = None
-        if bool(pseudo_density_residual):
-            if pseudo_density_in_dim is None:
-                raise ValueError("pseudo_density_residual=True 时必须提供 pseudo_density_in_dim。")
-            self.density_residual = nn.Sequential(
-                nn.LayerNorm(int(pseudo_density_in_dim)),
-                nn.Linear(int(pseudo_density_in_dim), self.pseudo_feature_dim),
-            )
-            # 末层 Linear 零初始化, 使残差初值为 0、不改变 pseudo_feature
-            nn.init.zeros_(self.density_residual[-1].weight)
-            nn.init.zeros_(self.density_residual[-1].bias)
+        # nn.Sequential, (N_real, point_channels) -> (N_real, atom_logit_dim), real atom 分类尾部
+        self.real_atom_head = nn.Sequential(
+            nn.LayerNorm(self.point_channels),
+            nn.Linear(self.point_channels, self.hidden_dim),
+            act_layer(),
+            nn.Linear(self.hidden_dim, self.atom_logit_dim),
+        )
+        # nn.Sequential, (N_pseudo, point_channels) -> (N_pseudo, pseudo_ligand_logit_dim), P 分类尾部
+        self.pseudo_atom_head = nn.Sequential(
+            nn.LayerNorm(self.point_channels),
+            nn.Linear(self.point_channels, self.hidden_dim),
+            act_layer(),
+            nn.Linear(self.hidden_dim, self.pseudo_ligand_logit_dim),
+        )
 
         if prior_prob is not None and prior_probs is not None:
             raise ValueError("prior_prob 和 prior_probs 不能同时配置。")
-        if self.real_atom_logit_head is not None:
-            # 后置头关时不构造分类尾部, prior bias 初始化随之跳过
-            if prior_probs is not None:
-                self._init_linear_multiclass_prior_bias(self.real_atom_logit_head[2], self.atom_logit_dim, prior_probs)
-            elif prior_prob is not None:
-                if self.atom_logit_dim != 1:
-                    raise ValueError("多通道 atom head 请使用 prior_probs，不要使用单通道 prior_prob。")
-                # float, sigmoid 正类先验对应的输出 bias
-                bias_val = -math.log((1.0 - float(prior_prob)) / float(prior_prob))
-                nn.init.constant_(self.real_atom_logit_head[2].bias, bias_val)
+        if prior_probs is not None:
+            self._init_linear_multiclass_prior_bias(self.real_atom_head[-1], self.atom_logit_dim, prior_probs)
+        elif prior_prob is not None:
+            if self.atom_logit_dim != 1:
+                raise ValueError("多通道 atom head 请使用 prior_probs，不要使用单通道 prior_prob。")
+            # float, sigmoid 正类先验对应的输出 bias = logit(prior)
+            bias_val = -math.log((1.0 - float(prior_prob)) / float(prior_prob))
+            nn.init.constant_(self.real_atom_head[-1].bias, bias_val)
 
-    def _build_atom_token_proj(
-        self,
-        token_input_dim: int,
-        act_layer: type[nn.Module],
-    ) -> nn.Module:
-        """
-        构造 atom token 输入投影模块。
-
-        输入参数:
-            - token_input_dim: int, atom token 输入通道数
-            - act_layer: type[nn.Module], 激活函数类
-
-        输出:
-            - module: nn.Module, (N_all, token_input_dim) -> (N_all, hidden_dim) 的投影模块
-        """
-        return nn.Sequential(
-            nn.Linear(token_input_dim, self.hidden_dim),
-            nn.LayerNorm(self.hidden_dim),
-            act_layer(),
-        )
+        if prior_prob_point_ligand is not None:
+            if self.pseudo_ligand_logit_dim != 1:
+                raise ValueError("多通道 pseudo head 暂不支持单通道 prior_prob_point_ligand。")
+            # float, P ligand sigmoid 正类先验对应的输出 bias = logit(prior)
+            pseudo_bias_val = -math.log((1.0 - float(prior_prob_point_ligand)) / float(prior_prob_point_ligand))
+            nn.init.constant_(self.pseudo_atom_head[-1].bias, pseudo_bias_val)
 
     @staticmethod
     def _init_linear_multiclass_prior_bias(
@@ -426,7 +324,7 @@ class Stage1AtomHead(nn.Module):
         用 softmax 类别先验初始化 Linear 输出 bias。
 
         输入参数:
-            - layer: nn.Module, atom logits 最后一层, 必须是带 bias 的 nn.Linear
+            - layer: nn.Module, 分类尾部最后一层, 必须是带 bias 的 nn.Linear
             - logit_dim: int, 输出类别通道数
             - prior_probs: Sequence[float], (logit_dim,), softmax 类别先验概率
 
@@ -444,7 +342,7 @@ class Stage1AtomHead(nn.Module):
         if not torch.isclose(probs.sum(), torch.tensor(1.0), rtol=1e-4, atol=1e-6):
             raise ValueError(f"prior_probs 总和必须为 1，实际为 {float(probs.sum())}。")
         if not isinstance(layer, nn.Linear) or layer.bias is None:
-            raise TypeError("多分类先验初始化要求 atom logits 最后一层是带 bias 的 nn.Linear。")
+            raise TypeError("多分类先验初始化要求分类尾部最后一层是带 bias 的 nn.Linear。")
         with torch.no_grad():
             layer.bias.copy_(probs.log().to(device=layer.bias.device, dtype=layer.bias.dtype))
 
@@ -453,69 +351,74 @@ class Stage1AtomHead(nn.Module):
         point_feat: torch.Tensor,
         point_state: dict[str, Any],
         atom_coord_centered_world: torch.Tensor,
-        atom_valid_mask: torch.Tensor,
         pseudo_mask: torch.Tensor | None = None,
-        pseudo_density_feat: torch.Tensor | None = None,
-        real_receptor_base_logit: torch.Tensor | None = None,
     ) -> dict[str, torch.Tensor | None]:
         pseudo_mask = validate_pseudo_mask(pseudo_mask, int(point_feat.shape[0]), name="Stage1AtomHead.forward")
-
-        if self.append_coord_mask:
-            # torch.Tensor, (N_all, point_channels + 4), 点特征 + centered-world xyz + real 监督 mask
-            atom_tokens = torch.cat(
-                [
-                    point_feat,
-                    atom_coord_centered_world,
-                    atom_valid_mask.to(dtype=point_feat.dtype).unsqueeze(-1),
-                ],
-                dim=-1,
-            )
-        else:
-            # torch.Tensor, (N_all, point_channels), 纯 point backbone 特征 token
-            atom_tokens = point_feat
-
-        if self.typed_point_cfg.use_separate_atom_token_proj:
-            # torch.Tensor, (N_all, hidden_dim), type-aware atom token 投影结果
-            atom_hidden = apply_type_aware_tensor_module(
-                atom_tokens,
-                pseudo_mask,
-                self.atom_token_proj_real,
-                self.atom_token_proj_pseudo,
-            )
-        else:
-            # torch.Tensor, (N_all, hidden_dim), shared atom token 投影结果
-            atom_hidden = self.atom_token_proj(atom_tokens)
-        # torch.Tensor, (N_all, hidden_dim), shared attention stack 输出; mixed 路径保留全点顺序
-        atom_hidden = self.atom_attention_stack(
-            point_state=point_state,
-            token_feat=atom_hidden,
-            pseudo_mask=pseudo_mask,
-        )
+        # torch.Tensor, (N_all,), int64, 每个点所属 BOX 索引
+        point_batch = point_state["batch"]
 
         if pseudo_mask is None:
-            # torch.Tensor, (N_all, hidden_dim), real-only 路径下全部点都是真实原子
-            real_hidden = atom_hidden
-            pseudo_feature = None
+            # real-only 路径: 全部点都是真实原子, 无 P 槽位
+            real_before = point_feat
+            real_coord = atom_coord_centered_world
+            real_batch = point_batch
+            pseudo_before = None
         else:
             # torch.Tensor, (N_all,), bool, True 表示真实原子
             real_mask = ~pseudo_mask
-            # torch.Tensor, (N_real, hidden_dim), real atom hidden
-            real_hidden = atom_hidden[real_mask]
-            # torch.Tensor, (N_pseudo, pseudo_feature_dim), P anchor refined feature
-            pseudo_feature = self.pseudo_feature_head(atom_hidden[pseudo_mask])
-            if self.density_residual is not None and pseudo_density_feat is not None:
-                # density cube 直通残差; 末层零初始化使初值不改变 pseudo_feature
-                pseudo_feature = pseudo_feature + self.density_residual(pseudo_density_feat)
+            # torch.Tensor, (N_real, point_channels), cross-attn 前的 real 特征
+            real_before = point_feat[real_mask]
+            # torch.Tensor, (N_real, 3), real 点 centered-world 坐标
+            real_coord = atom_coord_centered_world[real_mask]
+            # torch.Tensor, (N_real,), real 点所属 BOX 索引
+            real_batch = point_batch[real_mask]
+            # torch.Tensor, (N_pseudo, point_channels), cross-attn 前的 P 特征
+            pseudo_before = point_feat[pseudo_mask]
+            # torch.Tensor, (N_pseudo, 3), P 点 centered-world 坐标
+            pseudo_coord = atom_coord_centered_world[pseudo_mask]
+            # torch.Tensor, (N_pseudo,), P 点所属 BOX 索引
+            pseudo_batch = point_batch[pseudo_mask]
 
-        # torch.Tensor, (N_real, back_in), real atom 分类输入; concat 时拼 home 体素 base logit(real 顺序)
-        real_logit_input = real_hidden
-        if self.concat_receptor_base_logit:
-            real_logit_input = torch.cat([real_hidden, real_receptor_base_logit], dim=1)
-        # torch.Tensor | None, (N_real, atom_logit_dim), 真实原子的 logits; 后置头关时为 None
-        atom_logits = self.real_atom_logit_head(real_logit_input) if self.real_atom_logit_head is not None else None
+        # torch.Tensor, (N_real, point_channels), 经 pseudo_to_real 增量后的 real 特征(纯残差)
+        real_after = real_before
+        if pseudo_before is not None:
+            real_after = real_before + self.pseudo_to_real(
+                query_feat=real_before,
+                source_feat=pseudo_before,
+                query_coord=real_coord,
+                source_coord=pseudo_coord,
+                query_batch=real_batch,
+                source_batch=pseudo_batch,
+            )
+
+        # torch.Tensor, (N_real, atom_logit_dim), real atom 监督 logits
+        atom_logits = self.real_atom_head(real_after)
+        # torch.Tensor, (N_real, 1), real bind probability(第 0 通道 sigmoid 后 detach), 喂给 real_to_pseudo
+        real_bind_prob = torch.sigmoid(atom_logits[:, :1]).detach()
+
+        if pseudo_before is None:
+            pseudo_after = None
+            pseudo_logits = None
+        else:
+            # torch.Tensor, (N_pseudo, point_channels), 经 real_to_pseudo 增量后的 P 特征(纯残差)
+            pseudo_after = pseudo_before
+            pseudo_after = pseudo_before + self.real_to_pseudo(
+                query_feat=pseudo_before,
+                source_feat=real_before,
+                query_coord=pseudo_coord,
+                source_coord=real_coord,
+                query_batch=pseudo_batch,
+                source_batch=real_batch,
+                source_bind_prob=real_bind_prob,
+            )
+            # torch.Tensor, (N_pseudo, pseudo_ligand_logit_dim), P anchor ligand 区域归属 logits
+            pseudo_logits = self.pseudo_atom_head(pseudo_after)
+
         return {
-            "atom_tokens": atom_tokens,
-            "atom_hidden": atom_hidden,
+            "real_feat_before_interaction": real_before,
+            "real_feat_after_interaction": real_after,
+            "pseudo_feat_before_interaction": pseudo_before,
+            "pseudo_feat_after_interaction": pseudo_after,
             "atom_logits": atom_logits,
-            "pseudo_feature": pseudo_feature,
+            "pseudo_logits": pseudo_logits,
         }

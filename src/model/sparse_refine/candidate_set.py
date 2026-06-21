@@ -15,11 +15,11 @@ class SparseCandidateSetBuilder(nn.Module):
         - warmup_topc_per_class: Sequence[int], (K,), warmup 阶段每个 BOX/类别固定 topc
         - adaptive_expand_factor: Sequence[float], (K,), adaptive_threshold 阶段相对 best-F1 体素数的扩张倍数
         - max_candidate_voxels_per_class: Sequence[int], (K,), 每个 BOX/类别候选行上限; 正式 topk 模式也作为 top-k 请求数
+        - min_candidate_voxels_per_class: Sequence[int], (K,), 每个 BOX/类别候选行下限; 仅 adaptive_threshold 模式生效, 用于抑制 p_best 抖动导致候选数崩塌; 抬高下限后仍受 max 与可用体素数钳制
         - selection_mode: str, 候选选择模式, 取值 adaptive_threshold、recorded_threshold 或 topk
 
     forward 输入:
         - voxel_logits_ligand: torch.Tensor, (B,1,D,H,W) 或 (B,C,D,H,W), ligand head logits
-        - voxel_valid_mask: torch.Tensor, (B,D,H,W) 或 (B,1,D,H,W), 有效体素掩码
         - p_best_by_class: torch.Tensor | None, (K,), adaptive_threshold 使用的 best-F1 阈值
         - p_sampling_by_class: torch.Tensor | None, (K,), recorded_threshold 使用的 sampling 阈值
         - use_fixed_warmup: bool, True 时忽略阈值并使用 warmup topc
@@ -47,6 +47,7 @@ class SparseCandidateSetBuilder(nn.Module):
         warmup_topc_per_class: Sequence[int],
         adaptive_expand_factor: Sequence[float],
         max_candidate_voxels_per_class: Sequence[int],
+        min_candidate_voxels_per_class: Sequence[int],
         selection_mode: str,
     ) -> None:
         super().__init__()
@@ -58,6 +59,8 @@ class SparseCandidateSetBuilder(nn.Module):
         expand_factor = tuple(float(factor) for factor in adaptive_expand_factor)
         # tuple[int, ...], (K,), 每类最大候选行数
         max_per_class = tuple(int(max_count) for max_count in max_candidate_voxels_per_class)
+        # tuple[int, ...], (K,), 每类候选行下限
+        min_per_class = tuple(int(min_count) for min_count in min_candidate_voxels_per_class)
         if len(class_ids) == 0:
             raise ValueError("candidate_class_ids 不能为空。")
         if not (len(class_ids) == len(warmup_topc) == len(expand_factor) == len(max_per_class)):
@@ -70,6 +73,10 @@ class SparseCandidateSetBuilder(nn.Module):
             raise ValueError("adaptive_expand_factor 每项必须 > 0。")
         if any(max_count < 0 for max_count in max_per_class):
             raise ValueError("max_candidate_voxels_per_class 每项必须 >= 0。")
+        if len(min_per_class) != len(class_ids):
+            raise ValueError("min_candidate_voxels_per_class 长度必须与 candidate_class_ids 一致。")
+        if any(min_count < 0 for min_count in min_per_class):
+            raise ValueError("min_candidate_voxels_per_class 每项必须 >= 0。")
         if selection_mode not in {"adaptive_threshold", "recorded_threshold", "topk"}:
             raise ValueError("selection_mode 只允许 adaptive_threshold、recorded_threshold 或 topk。")
 
@@ -77,28 +84,8 @@ class SparseCandidateSetBuilder(nn.Module):
         self.warmup_topc_per_class = warmup_topc
         self.adaptive_expand_factor = expand_factor
         self.max_candidate_voxels_per_class = max_per_class
+        self.min_candidate_voxels_per_class = min_per_class
         self.selection_mode = str(selection_mode)
-
-    def _normalize_valid_mask(self, voxel_valid_mask: torch.Tensor, logits_shape: torch.Size) -> torch.Tensor:
-        """
-        规范化 voxel_valid_mask 到 `(B,D,H,W)`。
-
-        输入参数:
-            - voxel_valid_mask: torch.Tensor, (B,D,H,W) 或 (B,1,D,H,W), 有效体素掩码
-            - logits_shape: torch.Size, voxel logits 形状, 用于校验空间维度
-
-        输出:
-            - valid_mask: torch.Tensor, (B,D,H,W), bool 有效体素掩码
-        """
-        if voxel_valid_mask.ndim == 5 and voxel_valid_mask.shape[1] == 1:
-            valid_mask = voxel_valid_mask.squeeze(1)
-        elif voxel_valid_mask.ndim == 4:
-            valid_mask = voxel_valid_mask
-        else:
-            raise ValueError(f"voxel_valid_mask 期望为 (B,D,H,W) 或 (B,1,D,H,W)，实际 {tuple(voxel_valid_mask.shape)}")
-        if tuple(valid_mask.shape) != (int(logits_shape[0]), int(logits_shape[2]), int(logits_shape[3]), int(logits_shape[4])):
-            raise ValueError(f"voxel_valid_mask 形状 {tuple(valid_mask.shape)} 与 logits {tuple(logits_shape)} 不匹配。")
-        return valid_mask.bool()
 
     def _prob_by_candidate_class(self, voxel_logits_ligand: torch.Tensor) -> torch.Tensor:
         """
@@ -234,7 +221,6 @@ class SparseCandidateSetBuilder(nn.Module):
     def forward(
         self,
         voxel_logits_ligand: torch.Tensor,
-        voxel_valid_mask: torch.Tensor,
         p_best_by_class: torch.Tensor | None,
         p_sampling_by_class: torch.Tensor | None,
         use_fixed_warmup: bool,
@@ -244,7 +230,6 @@ class SparseCandidateSetBuilder(nn.Module):
 
         输入参数:
             - voxel_logits_ligand: torch.Tensor, (B,1,D,H,W) 或 (B,C,D,H,W), ligand head logits
-            - voxel_valid_mask: torch.Tensor, (B,D,H,W) 或 (B,1,D,H,W), 有效体素掩码
             - p_best_by_class: torch.Tensor | None, (K,), adaptive_threshold 使用的 best-F1 阈值
             - p_sampling_by_class: torch.Tensor | None, (K,), recorded_threshold 使用的 sampling 阈值
             - use_fixed_warmup: bool, True 时忽略阈值并使用 warmup topc
@@ -264,8 +249,12 @@ class SparseCandidateSetBuilder(nn.Module):
         with torch.no_grad():
             # torch.Tensor, (B,C,D,H,W), detach 后仅用于候选筛选和诊断输出
             logits = voxel_logits_ligand.detach()
-            # torch.Tensor, (B,D,H,W), bool 有效体素掩码
-            valid_mask = self._normalize_valid_mask(voxel_valid_mask=voxel_valid_mask, logits_shape=logits.shape)
+            # torch.Tensor, (B,D,H,W), bool, 体素网格即 BOX 本体, 全部体素参与候选选择
+            valid_mask = torch.ones(
+                (int(logits.shape[0]), int(logits.shape[2]), int(logits.shape[3]), int(logits.shape[4])),
+                device=logits.device,
+                dtype=torch.bool,
+            )
             # torch.Tensor, (B,K,D,H,W), 与 candidate_class_ids 对齐的候选概率
             prob_by_class = self._prob_by_candidate_class(logits)
             batch_size = int(logits.shape[0])
@@ -322,8 +311,10 @@ class SparseCandidateSetBuilder(nn.Module):
                         n_best_box = int((prob_valid > p_best[class_pos]).sum().item())
                         # int, 按扩张倍数得到的目标提名数, 尚未受 max_count 限制
                         target_before_cap = int(torch.ceil(prob_valid.new_tensor(n_best_box * self.adaptive_expand_factor[class_pos])).item())
-                        # int, adaptive_threshold 实际保留的候选行数
-                        target_count = min(target_before_cap, max_count, int(prob_valid.numel()))
+                        # int, adaptive_threshold 候选行下限
+                        min_count = self.min_candidate_voxels_per_class[class_pos]
+                        # int, adaptive_threshold 实际保留的候选行数; 先抬到下限, 再受 max_count 与可用体素数钳制(上限优先)
+                        target_count = min(max(target_before_cap, min_count), max_count, int(prob_valid.numel()))
                         # torch.Tensor, (target_count,), adaptive topk 选中的局部有效体素下标
                         selected_order = torch.topk(prob_valid, k=target_count).indices if target_count > 0 else torch.empty((0,), device=logits.device, dtype=torch.long)
                         output["candidate_target_counts_by_class"][batch_idx, class_pos] = target_before_cap

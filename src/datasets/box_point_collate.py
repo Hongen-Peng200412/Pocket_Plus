@@ -22,7 +22,6 @@ _VOXEL_STACK_FIELDS = (
     "voxel_grid",
     "voxel_label",
     "hardmask",
-    "voxel_valid_mask",
     "box_origin_world",
     "voxel_size_world",
     "box_shape_zyx",
@@ -35,7 +34,6 @@ _ATOM_CONCAT_FIELDS = (
     "atom_feat",
     "atom_label",
     "atom_is_in_core_box",
-    "atom_valid_mask",
     "atom_global_indices",
 )
 
@@ -54,7 +52,6 @@ def box_point_collate(batch: list[dict[str, Any]]) -> dict[str, Any]:
                - "voxel_grid":       torch, (B, C, D, H, W), float32, 拼接后的多通道体素特征网格
                - "voxel_label":      torch, (B, D, H, W),    int64,   拼接后的体素分类真值标签
                - "hardmask":         torch, (B, D, H, W),    int64,   标记该体素是否物理空间真实存在有效结构的掩码
-               - "voxel_valid_mask": torch, (B, D, H, W),    bool,    去除边缘 margin 之后参与 loss 计算的核心监督区域掩码
                - "box_origin_world": torch, (B, 3),          float32, 各样本 BOX 在世界坐标系下的基准原点 (x, y, z)
                - "voxel_size_world": torch, (B, 3),          float32, 各样本 BOX 每个体素在世界坐标系下的物理空间大小 (x, y, z)
                - "box_shape_zyx":    torch, (B, 3),          int64,   各样本 BOX 的网格形状，顺序为 (Z, Y, X) 对应 (depth, height, width)
@@ -65,8 +62,7 @@ def box_point_collate(batch: list[dict[str, Any]]) -> dict[str, Any]:
                - "atom_coord_centered_world": torch, (sumN, 3), float32, 展平后的全部点云相对于各自 BOX 中心原点的世界坐标 (x, y, z)
                - "atom_feat":                 torch, (sumN, F), float32, 展平后的全部原子的特征向量
                - "atom_label":                torch, (sumN,),   int64,   展平后的全部原子的分类真值标签
-               - "atom_is_in_core_box":       torch, (sumN,),   bool,    标记每个原子是否处于各自的 BOX 内(另一部分是buffer扩展区域)
-               - "atom_valid_mask":           torch, (sumN,),   bool,    标记每个原子在训练期间是否参与损失监督
+               - "atom_is_in_core_box":       torch, (sumN,),   bool,    标记每个原子是否处于各自的 BOX core 内(另一部分是buffer扩展区域); 也是原子级损失监督的唯一判据
 
             3. 索引辅助字段:
                - "atom_batch_index": torch, (sumN,), long,  指明展平的点云序列中，每个点属于当前 batch 内哪个样本 (0 ~ B-1)
@@ -118,7 +114,6 @@ def _stack_voxel_fields(batch: list[dict[str, Any]]) -> dict[str, torch.Tensor]:
         #   - voxel_grid       : (B, C, D, H, W)
         #   - voxel_label      : (B, D, H, W)
         #   - hardmask         : (B, D, H, W)
-        #   - voxel_valid_mask : (B, D, H, W)
         #   - box_origin_world : (B, 3)
         #   - voxel_size_world : (B, 3)
         #   - box_shape_zyx    : (B, 3)

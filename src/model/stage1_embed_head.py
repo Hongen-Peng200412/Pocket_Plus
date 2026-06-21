@@ -393,6 +393,130 @@ def soft_scatter_to_voxel_grid(
     return voxel_sum.view(batch_size, d_val, h_val, w_val, final_channels).permute(0, 4, 1, 2, 3).contiguous()
 
 
+def gauss_scatter_to_voxel_grid(
+    point_feat: torch.Tensor,
+    atom_coord_local_voxel: torch.Tensor,
+    point_batch: torch.Tensor,
+    box_shape_zyx: torch.Tensor,
+    batch_size: int,
+    sigma_voxel: float,
+    add_occupancy_channels: bool,
+    add_centroid_channels: bool,
+) -> torch.Tensor:
+    """
+    用 3×3×3=27 邻域各向同性高斯距离加权, 把 per-atom 特征 scatter 到体素网格。
+
+    相比三线性(8 角点、逐轴可分离权重, 几何各向异性), 本函数对每个原子 floor 体素周围 27 个体素,
+    按"原子到体素中心"的欧氏距离施加各向同性高斯权重, 并逐原子归一化(每个原子总贡献=1, 保持质量守恒),
+    从而消除三线性的轴对齐几何偏置。坐标采用 corner 语义: 体素索引 i 对应中心 i+0.5。
+
+    输入参数:
+        - point_feat: torch.Tensor, (N, C), per-atom 特征
+        - atom_coord_local_voxel: torch.Tensor, (N, 3), 连续体素坐标 (x, y, z), corner 语义
+        - point_batch: torch.Tensor, (N,), 每个原子所属 BOX 的 batch 索引
+        - box_shape_zyx: torch.Tensor, (B, 3), 体素网格尺寸 (Z, Y, X)
+        - batch_size: int, batch 内 BOX 数
+        - sigma_voxel: float, 高斯核标准差(单位: 体素); 越小越集中于最近体素, 推荐值 0.7
+        - add_occupancy_channels: bool, 是否追加 2 维 occupancy 通道
+        - add_centroid_channels: bool, 是否追加 3 维加权 centroid 通道
+
+    输出:
+        - voxel_grid: torch.Tensor, (B, C_out, D, H, W), scatter 结果
+          C_out = C + (2 if add_occupancy_channels else 0) + (3 if add_centroid_channels else 0)
+          通道顺序: [特征 C] ++ [occupancy 2: log(1+Σw)、Σw/max] ++ [centroid 3: Σw·offset / Σw, offset 为原子相对体素中心的 (x,y,z) 偏移]
+    """
+    # int, 体素网格 z/y/x 三维大小(假设 batch 内形状一致)
+    d_val = int(box_shape_zyx[0, 0].item())
+    h_val = int(box_shape_zyx[0, 1].item())
+    w_val = int(box_shape_zyx[0, 2].item())
+    # int, per-atom 特征通道数
+    channels = int(point_feat.shape[1])
+    # int, 输出通道数 = 特征 + 可选 occupancy(2) + 可选 centroid(3)
+    out_channels = channels + (2 if add_occupancy_channels else 0) + (3 if add_centroid_channels else 0)
+    total_voxels = batch_size * d_val * h_val * w_val
+    if point_feat.shape[0] == 0:
+        return point_feat.new_zeros((batch_size, out_channels, d_val, h_val, w_val))
+
+    # torch.Tensor, (27, 3), float32, floor 体素周围 {-1,0,1}^3 的 (x,y,z) 邻域偏移
+    offsets = torch.stack(
+        torch.meshgrid(
+            torch.arange(-1, 2, device=point_feat.device, dtype=torch.float32),
+            torch.arange(-1, 2, device=point_feat.device, dtype=torch.float32),
+            torch.arange(-1, 2, device=point_feat.device, dtype=torch.float32),
+            indexing="ij",
+        ),
+        dim=-1,
+    ).reshape(-1, 3)
+    # torch.Tensor, (N, 3), float32, 原子所在 floor 体素的 (x,y,z) 索引
+    voxel_idx_floor = atom_coord_local_voxel.floor().to(torch.float32)
+    # torch.Tensor, (N, 27, 3), float32, 27 个邻域体素的 (x,y,z) 索引
+    neighbor_xyz = voxel_idx_floor[:, None, :] + offsets[None, :, :]
+    # torch.Tensor, (N, 27, 3), float32, 邻域体素中心(索引+0.5)相对原子的偏移
+    center_minus_atom = (neighbor_xyz + 0.5) - atom_coord_local_voxel[:, None, :].to(torch.float32)
+    # torch.Tensor, (N, 27), float32, 原子到邻域体素中心的平方距离(单位: 体素^2)
+    squared_distance = (center_minus_atom * center_minus_atom).sum(dim=-1)
+    # torch.Tensor, (N, 27), bool, 邻域体素是否落在网格内
+    valid_mask = (
+        (neighbor_xyz[..., 0] >= 0) & (neighbor_xyz[..., 0] < w_val)
+        & (neighbor_xyz[..., 1] >= 0) & (neighbor_xyz[..., 1] < h_val)
+        & (neighbor_xyz[..., 2] >= 0) & (neighbor_xyz[..., 2] < d_val)
+    )
+    # torch.Tensor, (N, 27), float32, 各向同性高斯权重(越近越大), 越界邻域置 0
+    weight = torch.exp(-squared_distance / (2.0 * float(sigma_voxel) ** 2)) * valid_mask.to(torch.float32)
+    # torch.Tensor, (N, 27), float32, 逐原子归一化权重(每原子总贡献=1; 全越界原子归一化后仍为 0)
+    weight = weight / weight.sum(dim=1, keepdim=True).clamp(min=1e-8)
+    # AMP 下统一 dtype, 防止 scatter_add_ 报错
+    weight = weight.to(dtype=point_feat.dtype)
+
+    # torch.Tensor, (N, 27, 3), int64, clamp 到合法范围的邻域索引(越界已由 weight=0 屏蔽)
+    neighbor_xyz_long = neighbor_xyz.long()
+    neighbor_xyz_long[..., 0].clamp_(0, w_val - 1)
+    neighbor_xyz_long[..., 1].clamp_(0, h_val - 1)
+    neighbor_xyz_long[..., 2].clamp_(0, d_val - 1)
+    # torch.Tensor, (N, 27), int64, 邻域体素在展平 (B*D*H*W) 空间的线性索引
+    linear_idx = (
+        point_batch.long()[:, None] * (d_val * h_val * w_val)
+        + neighbor_xyz_long[..., 2] * (h_val * w_val)
+        + neighbor_xyz_long[..., 1] * w_val
+        + neighbor_xyz_long[..., 0]
+    )
+    # torch.Tensor, (N*27,), int64, 展平线性索引
+    linear_idx_flat = linear_idx.reshape(-1)
+
+    # torch.Tensor, (total_voxels, C), 高斯加权特征累加
+    voxel_sum = point_feat.new_zeros((total_voxels, channels))
+    # torch.Tensor, (N*27, C), 每条边的加权特征
+    weighted_feat_flat = (point_feat[:, None, :] * weight[:, :, None]).reshape(-1, channels)
+    voxel_sum.scatter_add_(dim=0, index=linear_idx_flat[:, None].expand(-1, channels), src=weighted_feat_flat)
+
+    # torch.Tensor, (total_voxels, 1), 每个体素累计的高斯权重(软占据)
+    voxel_weight_sum = point_feat.new_zeros((total_voxels, 1))
+    voxel_weight_sum.scatter_add_(dim=0, index=linear_idx_flat[:, None], src=weight.reshape(-1, 1))
+
+    # list[torch.Tensor], 输出通道分块, 顺序: 特征 -> occupancy -> centroid
+    out_parts: list[torch.Tensor] = [voxel_sum]
+    if add_occupancy_channels:
+        # torch.Tensor, (total_voxels, 1), log(1+软占据)
+        log_weight = torch.log1p(voxel_weight_sum)
+        # torch.Tensor, (total_voxels, 1), 软占据按全局最大值归一化
+        normalized_weight = voxel_weight_sum / voxel_weight_sum.max().clamp(min=1.0)
+        out_parts.extend([log_weight, normalized_weight])
+    if add_centroid_channels:
+        # torch.Tensor, (N, 27, 3), 原子相对邻域体素中心的偏移
+        atom_minus_center = (-center_minus_atom).to(dtype=point_feat.dtype)
+        # torch.Tensor, (total_voxels, 3), 加权偏移累加
+        voxel_offset_sum = point_feat.new_zeros((total_voxels, 3))
+        weighted_offset_flat = (atom_minus_center * weight[:, :, None]).reshape(-1, 3)
+        voxel_offset_sum.scatter_add_(dim=0, index=linear_idx_flat[:, None].expand(-1, 3), src=weighted_offset_flat)
+        # torch.Tensor, (total_voxels, 3), 每体素加权质心偏移 = Σw·offset / Σw
+        voxel_centroid = voxel_offset_sum / voxel_weight_sum.clamp(min=1e-8)
+        out_parts.append(voxel_centroid)
+
+    # torch.Tensor, (total_voxels, C_out), 拼接后的体素特征
+    voxel_out = torch.cat(out_parts, dim=1) if len(out_parts) > 1 else voxel_sum
+    return voxel_out.view(batch_size, d_val, h_val, w_val, out_channels).permute(0, 4, 1, 2, 3).contiguous()
+
+
 def compute_voxel_centroids(
     atom_coord_local_voxel: torch.Tensor,
     point_batch: torch.Tensor,

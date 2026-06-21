@@ -21,7 +21,6 @@ pseudo_dict 字段契约:
 inject_pseudo_atoms 输出契约:
     - mixed_batch["real_mask"]: torch.Tensor, (N_all,), bool, True 表示 real atom。
     - mixed_batch["pseudo_mask"]: torch.Tensor, (N_all,), bool, True 表示 P anchor。
-    - mixed_batch["atom_valid_mask"]: torch.Tensor, (N_all,), bool, P anchor 槽位固定为 False, 不参与 real atom 监督。
     - mixed_batch["atom_label"]: torch.Tensor, (N_all,), long, P anchor 槽位固定为 0, 仅作占位。
     - mixed_batch["atom_global_indices"]: torch.Tensor, (N_all,), long, P anchor 槽位固定为 -1, 表示无真实原子全局索引。
 """
@@ -301,8 +300,6 @@ def inject_pseudo_atoms(
     )
     mixed_batch["atom_feat"] = _interleave_required_field(real_batch, pseudo_dict, layout, "atom_feat", "pseudo_feat")
 
-    # torch.Tensor, (sumP,), bool, P anchor 不参与 real atom 监督
-    pseudo_valid_mask = torch.zeros(total_pseudo, dtype=torch.bool, device=device)
     # torch.Tensor, (sumP,), long, P anchor 的占位 atom label
     pseudo_label = torch.zeros(total_pseudo, dtype=real_batch["atom_label"].dtype, device=device)
     # torch.Tensor, (sumP,), bool, P anchor 默认视为 core 内点; 后续 anchor pipeline 可显式覆盖
@@ -318,9 +315,6 @@ def inject_pseudo_atoms(
         device=device,
     )
 
-    mixed_batch["atom_valid_mask"] = interleave_real_and_pseudo_tensor(
-        real_batch["atom_valid_mask"], layout, pseudo_valid_mask
-    )
     mixed_batch["atom_label"] = interleave_real_and_pseudo_tensor(real_batch["atom_label"], layout, pseudo_label)
     mixed_batch["atom_is_in_core_box"] = interleave_real_and_pseudo_tensor(
         real_batch["atom_is_in_core_box"], layout, pseudo_core
@@ -368,7 +362,6 @@ def remove_pseudo_atoms(
         "atom_coord_local_voxel",
         "atom_coord_world",
         "atom_feat",
-        "atom_valid_mask",
         "atom_label",
         "atom_is_in_core_box",
         "atom_global_indices",

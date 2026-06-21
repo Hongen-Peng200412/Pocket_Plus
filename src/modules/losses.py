@@ -1140,3 +1140,79 @@ class AdaptiveClassificationCompositeLoss(nn.Module):
         else:
             mse = logits.new_tensor(0.0)
         return self.w_focal * focal_loss + self.w_tversky * tversky_loss + self.w_mse * mse
+
+
+class LigandSparseRefineDeltaLoss(nn.Module):
+    """
+    sparse refine 头"相对 base 改进"的 pairwise ranking 辅助损失。
+
+    设计意图:
+        - ranking(L_rank): 对称难例挖掘——每个 BOX 取 base_prob 最低的若干正例(最难)与 base_prob 最高的若干负例(最难), 配对要求 refined 正例 logit 高于负例 logit 至少 m_rank。选择口径统一用 base_prob(静态,不随被优化的 refined logit 漂移)。
+        - base_prob 来源恒由调用方 detach(candidate_set 已 detach), 梯度只经 refined logit 回流。
+
+    输入参数:
+        - m_rank: float, ranking 的 margin; 建议值 0.5
+        - topk: int, ranking 每个 BOX 各取的难正例数 Kp 与难负例数 Kn(对称); 建议值 512
+
+    前向输入:
+        - refined_logit: torch.Tensor, (sumC,), refine 头输出 logit(需要梯度)
+        - base_prob: torch.Tensor, (sumC,), base ligand 概率(已 detach), 用于难例挖掘
+        - target: torch.Tensor, (sumC,), C 级 ligand 硬标签(0/1)
+        - valid: torch.Tensor, (sumC,), bool, C 级有效监督掩码
+        - batch_index: torch.Tensor, (sumC,), 每个 C 行所属 BOX 索引
+
+    前向输出:
+        - result: dict[str, torch.Tensor], 包含:
+            - "rank": torch.Tensor, (), ranking 标量损失; 无有效正负对时为 0
+    """
+
+    def __init__(self, m_rank: float, topk: int, m_pos: float = 0.0) -> None:
+        super().__init__()
+        del m_pos
+        self.m_rank = float(m_rank)
+        self.topk = int(topk)
+
+    def forward(
+        self,
+        *,
+        refined_logit: torch.Tensor,
+        base_prob: torch.Tensor,
+        target: torch.Tensor,
+        valid: torch.Tensor,
+        batch_index: torch.Tensor,
+        base_logit: torch.Tensor | None = None,
+        p_best: float | None = None,
+    ) -> dict[str, torch.Tensor]:
+        del base_logit, p_best
+        # torch.Tensor, (), 与 refined_logit 同 device/dtype 的零标量(空集合时返回, 不连图)
+        zero = refined_logit.new_zeros(())
+        # torch.Tensor, (sumC,), bool, 正例/负例有效掩码
+        pos_valid = valid & (target > 0.5)
+        neg_valid = valid & (target <= 0.5)
+
+        # --- ranking: 逐 BOX 对称难例挖掘 ---
+        # torch.Tensor, (), 所有配对 hinge 的累加; int, 配对总数
+        rank_sum = zero
+        rank_count = 0
+        for box_id in torch.unique(batch_index):
+            # torch.Tensor, (n_pos_box,)/(n_neg_box,), 当前 BOX 内有效正例/负例的全局行号
+            pos_idx = torch.nonzero(pos_valid & (batch_index == box_id), as_tuple=False).flatten()
+            neg_idx = torch.nonzero(neg_valid & (batch_index == box_id), as_tuple=False).flatten()
+            if pos_idx.numel() == 0 or neg_idx.numel() == 0:
+                continue
+            # int, 当前 BOX 实际取用的难正例/难负例数(不足则取全部)
+            kp = min(self.topk, int(pos_idx.numel()))
+            kn = min(self.topk, int(neg_idx.numel()))
+            # torch.Tensor, (kp,), base_prob 最低的难正例行号(最易被排到负例之下)
+            sel_pos = pos_idx[torch.topk(base_prob[pos_idx], kp, largest=False).indices]
+            # torch.Tensor, (kn,), base_prob 最高的难负例行号
+            sel_neg = neg_idx[torch.topk(base_prob[neg_idx], kn, largest=True).indices]
+            # torch.Tensor, (kp, kn), 每对 max(0, m_rank - refined_pos + refined_neg)
+            pair_hinge = torch.clamp(
+                self.m_rank - refined_logit[sel_pos][:, None] + refined_logit[sel_neg][None, :], min=0.0
+            )
+            rank_sum = rank_sum + pair_hinge.sum()
+            rank_count += int(pair_hinge.numel())
+        rank = rank_sum / rank_count if rank_count > 0 else zero
+
+        return {"rank": rank}

@@ -7,13 +7,13 @@
 # ============================================================
 #SBATCH -o /home/penghongen/My_Project/feedback_plus/logs/_temp_slurm/%x_%j.out
 #SBATCH -e /home/penghongen/My_Project/feedback_plus/logs/_temp_slurm/%x_%j.err
-#SBATCH -p h100
-#SBATCH --qos=h100g2
-#SBATCH --job-name=train
+#SBATCH -p nvlink
+#SBATCH --qos=nvlinkg8
+#SBATCH --job-name=main
 #SBATCH --nodes=1
-#SBATCH --gres=gpu:h100:1
+#SBATCH --gres=gpu:a800:1
 #SBATCH --ntasks-per-node=1
-#SBATCH --cpus-per-task=24
+#SBATCH --cpus-per-task=16
 
 SBATCH_ROOT="${POCKET_PLUS_SBATCH_ROOT:-/home/penghongen/My_Project/Pocket_Plus/sbatch}"
 export POCKET_PLUS_LOCAL_CACHE_ENABLED="${POCKET_PLUS_LOCAL_CACHE_ENABLED:-0}"
@@ -49,7 +49,7 @@ write_custom_run_cmd_hook() {
     cat << EOF > "${TARGET_FILE}"
 
 #!/bin/bash
-python /home/penghongen/My_Project/Pocket_Plus/src/train.py "+experiment=MINI_sparse_refine002"
+python /home/penghongen/My_Project/Pocket_Plus/src/train.py "+experiment=CPC1/trunk_main"
 
 EOF
 }

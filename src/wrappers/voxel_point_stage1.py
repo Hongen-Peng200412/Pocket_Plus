@@ -9,7 +9,7 @@ import torch
 from hydra.utils import instantiate
 from torch import nn
 
-from src.modules.losses import AdaptiveClassificationCompositeLoss
+from src.modules.losses import AdaptiveClassificationCompositeLoss, LigandSparseRefineDeltaLoss
 from src.wrappers.voxel_point_stage1_diagnostics import (
     CpcDiagnosticsConfig,
     CpcValidationDiagnostics,
@@ -18,6 +18,7 @@ from src.wrappers.voxel_point_stage1_logging import log_scalar_payload, log_wand
 from src.wrappers.voxel_point_stage1_losses import (
     LossTerm,
     compute_atom_loss_term,
+    compute_pseudo_loss_term,
     compute_receptor_loss_term,
     compute_sparse_refine_loss_term,
     compute_voxel_ligand_loss_term,
@@ -35,17 +36,19 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
         voxel_aux_loss: nn.Module | None = None,
         voxel_ligand_loss: nn.Module | None = None,
         ligand_sparse_refine_loss: nn.Module | None = None,
+        ligand_sparse_refine_delta_loss: nn.Module | None = None,
+        ligand_pseudo_loss: nn.Module | None = None,
         optimizer: Any = None,
         scheduler: Any = None,
-        atom_loss_front_weight: float = 0.0,
-        atom_loss_back_weight: float = 1.0,
+        ligand_sparse_refine_w_rank: float = 0.0,
+        atom_loss_weight: float = 1.0,
         voxel_aux_loss_weight: float = 0.0,
         voxel_ligand_loss_weight: float = 0.0,
         ligand_sparse_refine_loss_weight: float = 0.0,
         ligand_sparse_refine_loss_schedule: Mapping[str, Any] | None = None,
+        pseudo_loss_weight: float = 1.0,
         monitor_metric: str = "val_score/global/atom_PRAUC",
         monitor_mode: str = "max",
-        stop_after_lr_reductions: int | None = None,
         voxel_ligand_pr_auc_thresholds: int | None = 1024,
         val_metric_device_policy: str = "auto",
         initial_p_best_by_class: Sequence[float] | None = None,
@@ -70,12 +73,15 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
                 - atom_loss: nn.Module | None, 原子级监督损失
                 - voxel_aux_loss: nn.Module | None, receptor 对外语义的体素辅助监督损失
                 - voxel_ligand_loss: nn.Module | None, dense ligand 体素监督损失
-                - ligand_sparse_refine_loss: nn.Module | None, C 级 sparse refine 监督损失
-                - atom_loss_front_weight: float, 前置头(point backbone 末端) atom loss 静态权重
-                - atom_loss_back_weight: float, 后置头(atom head 末端) atom loss 静态权重
+                - ligand_sparse_refine_loss: nn.Module | None, C 级 sparse refine 分类监督损失(L_cls)
+                - ligand_sparse_refine_delta_loss: nn.Module | None, LigandSparseRefineDeltaLoss(ranking-only); None 或 w_rank=0 时退化为纯分类
+                - ligand_sparse_refine_w_rank: float, ranking(L_rank)权重
+                - ligand_pseudo_loss: nn.Module | None, P(虚拟原子) ligand 区域归属监督损失(单通道 sigmoid composite); None 表示不计算 P 监督
+                - atom_loss_weight: float, 最终 atom loss 静态权重
                 - voxel_aux_loss_weight: float, receptor loss 静态权重
                 - voxel_ligand_loss_weight: float, voxel ligand loss 静态权重
                 - ligand_sparse_refine_loss_weight: float, sparse refine loss 最终权重
+                - pseudo_loss_weight: float, 最终 pseudo loss 静态权重
 
             - 优化器和调度器
                 - optimizer: Any, Hydra optimizer 配置、callable 或 None
@@ -87,7 +93,6 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
             - 性能度量
                 - monitor_metric: str, scheduler/checkpoint 监控指标 key
                 - monitor_mode: str, scheduler/checkpoint 监控方向, 由 train.py 同步消费
-                - stop_after_lr_reductions: int | None, warmup_plateau 实际降低学习率达到该次数后停止训练; None 或 <=0 表示关闭
                 - voxel_ligand_pr_auc_thresholds: int | None, dense ligand AP 阈值配置(默认1024)
 
             - other
@@ -99,7 +104,7 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
         super().__init__()
         if class_names is None:
             raise ValueError("VoxelPointStage1Wrapper 必须显式传入 class_names。")
-        self.save_hyperparameters(ignore=["backbone", "atom_loss", "voxel_aux_loss", "voxel_ligand_loss", "ligand_sparse_refine_loss"])
+        self.save_hyperparameters(ignore=["backbone", "atom_loss", "voxel_aux_loss", "voxel_ligand_loss", "ligand_sparse_refine_loss", "ligand_sparse_refine_delta_loss", "ligand_pseudo_loss"])
         self.model_name = str(name)
         self.monitor_mode = str(monitor_mode)
         self.backbone = backbone if isinstance(backbone, nn.Module) else instantiate(backbone)
@@ -113,6 +118,20 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
         )
         if self.ligand_sparse_refine_loss is not None and not isinstance(self.ligand_sparse_refine_loss, AdaptiveClassificationCompositeLoss):
             raise TypeError("ligand_sparse_refine_loss 必须为 AdaptiveClassificationCompositeLoss。")
+        self.ligand_pseudo_loss = (
+            ligand_pseudo_loss
+            if (ligand_pseudo_loss is None or isinstance(ligand_pseudo_loss, nn.Module))
+            else instantiate(ligand_pseudo_loss)
+        )
+        if self.ligand_pseudo_loss is not None and not isinstance(self.ligand_pseudo_loss, AdaptiveClassificationCompositeLoss):
+            raise TypeError("ligand_pseudo_loss 必须为 AdaptiveClassificationCompositeLoss。")
+        self.ligand_sparse_refine_delta_loss = (
+            ligand_sparse_refine_delta_loss
+            if (ligand_sparse_refine_delta_loss is None or isinstance(ligand_sparse_refine_delta_loss, nn.Module))
+            else instantiate(ligand_sparse_refine_delta_loss)
+        )
+        if self.ligand_sparse_refine_delta_loss is not None and not isinstance(self.ligand_sparse_refine_delta_loss, LigandSparseRefineDeltaLoss):
+            raise TypeError("ligand_sparse_refine_delta_loss 必须为 LigandSparseRefineDeltaLoss。")
         if compile:
             self.backbone = torch.compile(self.backbone)
 
@@ -132,10 +151,8 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
         self._candidate_warmup_steps = 0
         # int, validation epoch end 序号
         self._validation_index = 0
-        self._warmup_plateau_scheduler = None
-        self._pending_warmup_plateau_state: Mapping[str, Any] | None = None
-        # int, 已发生的实际 LR 衰减次数; 只统计 ReduceLROnPlateau 真正降低学习率的 validation
-        self._lr_reduction_count = 0
+        # dict[str, torch.Tensor], 最近一次 validation end 聚合出的标量; train.py 的通用 scheduler callback 消费它
+        self._last_validation_payload: dict[str, torch.Tensor] = {}
 
         # ValidationMetricManager, 管理 atom/receptor/voxel_ligand 常规 AP/PRAUC
         self.val_metrics = ValidationMetricManager(
@@ -225,12 +242,9 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
         输出:
             - specs: tuple[MetricBranchSpec, ...], 可启用 metric 分支配置
         """
-        # bool, 后置头/前置头是否启用(从 backbone 读取, 缺失时回退默认 True/False)
-        back_on = bool(getattr(self._unwrap_backbone(), "enable_atom_head_back", True))
-        front_on = bool(getattr(self._unwrap_backbone(), "enable_atom_head_front", False))
         return (
-            MetricBranchSpec("atom", self.atom_loss is not None and back_on, int(getattr(self.atom_loss, "num_classes", 2)), self.class_names, None),
-            MetricBranchSpec("atom_front", self.atom_loss is not None and front_on, int(getattr(self.atom_loss, "num_classes", 2)), self.class_names, None),
+            MetricBranchSpec("atom", self.atom_loss is not None, int(getattr(self.atom_loss, "num_classes", 2)), self.class_names, None),
+            MetricBranchSpec("pseudo", self.ligand_pseudo_loss is not None, int(getattr(self.ligand_pseudo_loss, "num_classes", 2)), self.class_names, voxel_ligand_pr_auc_thresholds),
             MetricBranchSpec("receptor", self.voxel_aux_loss is not None, int(getattr(self.voxel_aux_loss, "num_classes", 2)), self.class_names, None),
             MetricBranchSpec("voxel_ligand", self.voxel_ligand_loss is not None, int(getattr(self.voxel_ligand_loss, "num_classes", 2)), self.class_names, voxel_ligand_pr_auc_thresholds),
         )
@@ -352,24 +366,6 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
         """
         return self.backbone(batch)
 
-    @staticmethod
-    def _normalize_voxel_valid_mask(voxel_valid_mask: torch.Tensor, spatial_shape_zyx: tuple[int, int, int]) -> torch.Tensor:
-        """
-        将 voxel_valid_mask 规范化为 `(B,D,H,W)` bool 掩码。
-
-        输入参数:
-            - voxel_valid_mask: torch.Tensor, (B,D,H,W) 或 (B,1,D,H,W), 有效体素掩码
-            - spatial_shape_zyx: tuple[int, int, int], 期望空间形状 `(D,H,W)`
-
-        输出:
-            - mask: torch.Tensor, (B,D,H,W), bool 有效体素掩码
-        """
-        # torch.Tensor, (B,D,H,W), bool, 规范化后的有效体素掩码
-        mask = voxel_valid_mask.squeeze(1).bool() if voxel_valid_mask.ndim == 5 and voxel_valid_mask.shape[1] == 1 else voxel_valid_mask.bool()
-        if tuple(mask.shape[-3:]) != spatial_shape_zyx:
-            raise ValueError(f"voxel_valid_mask 空间形状 {tuple(mask.shape[-3:])} 与 dense target {spatial_shape_zyx} 不一致。")
-        return mask
-
     def _ligand_target_from_dist(self, ligand_dist_map: torch.Tensor, logit_dim: int, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
         """
         从 voxel ligand loss 配置生成 dense hard target。
@@ -393,7 +389,7 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
 
         输入参数:
             - outputs: dict[str, Any], backbone 输出, 包含 ligand_refine_logits_C/candidate_batch_index/candidate_voxel_zyx
-            - batch: dict[str, Any], 当前 batch, 包含 ligand_dist_map/voxel_valid_mask
+            - batch: dict[str, Any], 当前 batch, 包含 ligand_dist_map
 
         输出:
             - supervision: dict[str, torch.Tensor], dense 级(全局) target/mask 与 C 级 target/mask
@@ -407,11 +403,8 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
             device=logits_C.device,
             dtype=logits_C.dtype,
         )
-        # torch.Tensor, (B,D,H,W), bool, dense ligand 有效监督掩码
-        dense_valid_mask = self._normalize_voxel_valid_mask(
-            batch["voxel_valid_mask"],
-            spatial_shape_zyx=tuple(int(value) for value in dense_target.shape[-3:]),
-        ).to(device=logits_C.device)
+        # torch.Tensor, (B,D,H,W), bool, 体素网格即 BOX 本体, dense ligand 全体素有效
+        dense_valid_mask = torch.ones_like(dense_target, dtype=torch.bool, device=logits_C.device)
         # torch.Tensor, (sumC,), long, C 中每个候选 voxel 所属 BOX index
         idx_b = outputs["candidate_batch_index"].to(device=logits_C.device, dtype=torch.long)
         # torch.Tensor, (sumC,3), long, C 中每个候选 voxel 的 z/y/x index
@@ -426,6 +419,46 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
             "ligand_dense_valid_mask": dense_valid_mask,
             "ligand_refine_target_C": target_C,
             "ligand_refine_valid_mask_C": valid_C,
+        }
+        outputs.update(supervision)
+        return supervision
+
+    def _sample_ligand_pseudo_supervision(self, outputs: dict[str, Any], batch: dict[str, Any]) -> dict[str, torch.Tensor]:
+        """
+        从 dense ligand 距离图采样 P(虚拟原子)级 ligand 区域归属监督。
+
+        输入参数:
+            - outputs: dict[str, Any], backbone 输出, 包含 pseudo_logits/pseudo_voxel_zyx/pseudo_batch_index
+            - batch: dict[str, Any], 当前 batch, 包含 ligand_dist_map
+
+        输出:
+            - supervision: dict[str, torch.Tensor], 包含:
+                - "pseudo_ligand_target": torch.Tensor, (N_pseudo,), P 级 ligand 区域硬标签
+                - "pseudo_ligand_valid_mask": torch.Tensor, (N_pseudo,), bool, P 级有效监督掩码
+        """
+        # torch.Tensor, (N_pseudo, pseudo_ligand_logit_dim), P 后置 ligand logits
+        pseudo_logits = outputs["pseudo_logits"]
+        # torch.Tensor, (B,D,H,W), dense ligand hard-label target
+        dense_target = self.ligand_pseudo_loss.target_from_ligand_dist_map(
+            ligand_dist_map=batch["ligand_dist_map"],
+            logit_dim=int(pseudo_logits.shape[1]),
+            device=pseudo_logits.device,
+            dtype=pseudo_logits.dtype,
+        )
+        # torch.Tensor, (B,D,H,W), bool, 体素网格即 BOX 本体, P home 体素监督全有效
+        dense_valid_mask = torch.ones_like(dense_target, dtype=torch.bool, device=pseudo_logits.device)
+        # torch.Tensor, (N_pseudo,), long, P home 体素所属 BOX index
+        idx_b = outputs["pseudo_batch_index"].to(device=pseudo_logits.device, dtype=torch.long)
+        # torch.Tensor, (N_pseudo,3), long, P home 体素 z/y/x index
+        idx_zyx = outputs["pseudo_voxel_zyx"].to(device=pseudo_logits.device, dtype=torch.long)
+        # torch.Tensor, (N_pseudo,), P 级 ligand 区域硬标签
+        target_P = dense_target[idx_b, idx_zyx[:, 0], idx_zyx[:, 1], idx_zyx[:, 2]]
+        # torch.Tensor, (N_pseudo,), bool, P 级有效监督掩码
+        valid_P = dense_valid_mask[idx_b, idx_zyx[:, 0], idx_zyx[:, 1], idx_zyx[:, 2]]
+        # dict[str, torch.Tensor], P 级 pseudo 监督字段(前后置头共用同一 target/valid)
+        supervision = {
+            "pseudo_ligand_target": target_P,
+            "pseudo_ligand_valid_mask": valid_P,
         }
         outputs.update(supervision)
         return supervision
@@ -536,11 +569,7 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
             if outputs.get("atom_logits") is not None:
                 loss_terms.append(compute_atom_loss_term(
                     outputs=outputs, batch=batch, loss_module=self.atom_loss,
-                    weight=float(self.hparams.atom_loss_back_weight), logits_key="atom_logits", name="atom"))
-            if outputs.get("atom_logits_front") is not None:
-                loss_terms.append(compute_atom_loss_term(
-                    outputs=outputs, batch=batch, loss_module=self.atom_loss,
-                    weight=float(self.hparams.atom_loss_front_weight), logits_key="atom_logits_front", name="atom_front"))
+                    weight=float(self.hparams.atom_loss_weight)))
         if self.voxel_aux_loss is not None:
             term = compute_receptor_loss_term(outputs=outputs, batch=batch, loss_module=self.voxel_aux_loss, weight=float(self.hparams.voxel_aux_loss_weight))
             if term is not None:
@@ -549,21 +578,41 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
             term = compute_voxel_ligand_loss_term(outputs=outputs, batch=batch, loss_module=self.voxel_ligand_loss, weight=float(self.hparams.voxel_ligand_loss_weight))
             if term is not None:
                 loss_terms.append(term)
+        if self.ligand_pseudo_loss is not None and outputs.get("pseudo_logits") is not None:
+            # dict[str, torch.Tensor], P 级 ligand 区域归属监督字段(前后置头共用 target/valid); P 损失从头开、不走 warmup
+            pseudo_supervision = self._sample_ligand_pseudo_supervision(outputs=outputs, batch=batch)
+            if float(self.hparams.pseudo_loss_weight) > 0.0:
+                loss_terms.append(compute_pseudo_loss_term(
+                    outputs=outputs, loss_module=self.ligand_pseudo_loss,
+                    weight=float(self.hparams.pseudo_loss_weight),
+                    target=pseudo_supervision["pseudo_ligand_target"],
+                    valid_mask=pseudo_supervision["pseudo_ligand_valid_mask"]))
         if self.ligand_sparse_refine_loss is not None and outputs.get("ligand_refine_logits_C") is not None:
             # dict[str, torch.Tensor], sparse refine dense/C 级监督字段
             supervision = self._sample_ligand_refine_supervision(outputs=outputs, batch=batch)
             # torch.Tensor, (), 当前 step 的 sparse refine loss 有效权重
             effective_weight = self._compute_sparse_refine_loss_effective_weight()
-            term, logged_weight = compute_sparse_refine_loss_term(
+            # bool, 是否启用 delta 损失(模块存在、ranking 权重>0 且 base_prob 齐备)
+            delta_on = (
+                self.ligand_sparse_refine_delta_loss is not None
+                and float(self.hparams.ligand_sparse_refine_w_rank) > 0.0
+                and outputs.get("candidate_prob") is not None
+            )
+            term, logged_weight, component_logs = compute_sparse_refine_loss_term(
                 logits_C=outputs["ligand_refine_logits_C"],
                 target_C=supervision["ligand_refine_target_C"],
                 valid_C=supervision["ligand_refine_valid_mask_C"],
                 loss_module=self.ligand_sparse_refine_loss,
                 weight=float(self.hparams.ligand_sparse_refine_loss_weight),
                 effective_weight=effective_weight,
+                delta_loss_module=self.ligand_sparse_refine_delta_loss if delta_on else None,
+                base_prob_C=outputs.get("candidate_prob") if delta_on else None,
+                batch_index_C=outputs.get("candidate_batch_index") if delta_on else None,
+                w_rank=float(self.hparams.ligand_sparse_refine_w_rank),
             )
             loss_terms.append(term)
             extra_logs["ligand_sparse_refine_weight_effective"] = logged_weight
+            extra_logs.update(component_logs)
             # torch.Tensor, (), 当前 refine 距离 softmax 的正温度; 监控可学温度往尖锐/平缓哪个方向走
             extra_logs["sparse_refine_temperature"] = self._unwrap_backbone().sparse_refine_head.log_temperature.exp().detach()
         for term in loss_terms:
@@ -618,19 +667,16 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
             - config: Any, Lightning configure_optimizers 返回值
         """
         # Any, Lightning optimizer/scheduler 配置返回值
-        config, warmup_steps, plateau_scheduler, pending_state = configure_stage1_optimizers(
+        config, warmup_steps = configure_stage1_optimizers(
             module=self,
             optimizer_config=self.hparams.optimizer,
             scheduler_config=self.hparams.scheduler,
             interval=str(self.hparams.interval),
             frequency=int(self.hparams.frequency),
             monitor_metric=str(self.hparams.monitor_metric),
-            pending_warmup_plateau_state=self._pending_warmup_plateau_state,
         )
         # int, candidate fixed-topk warmup step 数
         self._candidate_warmup_steps = int(warmup_steps)
-        self._warmup_plateau_scheduler = plateau_scheduler
-        self._pending_warmup_plateau_state = pending_state
         self._sync_sparse_candidate_runtime_to_backbone()
         return config
 
@@ -741,22 +787,25 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
         # torch.Tensor/list[LossTerm]/dict[str, torch.Tensor], 当前 batch 总损失、分支损失和额外日志
         total_loss, loss_terms, extra_logs = self._compute_total_loss(outputs=outputs, batch=batch_dict)
         if self.atom_loss is not None and outputs.get("atom_logits") is not None:
-            # torch.Tensor, (N,), 后置头 atom 分支有效统计掩码
-            atom_mask = outputs.get("atom_valid_mask", batch_dict.get("atom_valid_mask", torch.ones_like(batch_dict["atom_label"], dtype=torch.bool)))
+            # torch.Tensor, (N,), atom 分支有效统计掩码; core-box 内原子参与统计
+            atom_mask = outputs.get("atom_is_in_core_box", batch_dict["atom_is_in_core_box"])
             self.val_metrics.update_branch(branch_name="atom", logits=outputs["atom_logits"], target=outputs.get("atom_target", batch_dict["atom_label"]), mask=atom_mask)
-        if self.atom_loss is not None and outputs.get("atom_logits_front") is not None:
-            # torch.Tensor, (N,), 前置头 atom 分支有效统计掩码
-            front_mask = outputs.get("atom_valid_mask", batch_dict.get("atom_valid_mask", torch.ones_like(batch_dict["atom_label"], dtype=torch.bool)))
-            self.val_metrics.update_branch(branch_name="atom_front", logits=outputs["atom_logits_front"], target=outputs.get("atom_target", batch_dict["atom_label"]), mask=front_mask)
+        if self.ligand_pseudo_loss is not None and outputs.get("pseudo_logits") is not None and "pseudo_ligand_target" in outputs:
+            self.val_metrics.update_branch(
+                branch_name="pseudo",
+                logits=outputs["pseudo_logits"],
+                target=outputs["pseudo_ligand_target"],
+                mask=outputs["pseudo_ligand_valid_mask"],
+            )
         if self.voxel_aux_loss is not None and "voxel_logits_aux" in outputs:
-            # torch.Tensor, (B,D,H,W), receptor 分支 hardmask 与 valid mask 交集
-            receptor_mask = (batch_dict["hardmask"].bool() & batch_dict["voxel_valid_mask"].bool()).squeeze(1)
+            # torch.Tensor, (B,D,H,W), receptor 分支只使用几何 hardmask
+            receptor_mask = batch_dict["hardmask"].bool().squeeze(1)
             self.val_metrics.update_branch(branch_name="receptor", logits=outputs["voxel_logits_aux"], target=batch_dict["voxel_label"], mask=receptor_mask)
         if self.voxel_ligand_loss is not None and "voxel_logits_ligand" in outputs and "ligand_dist_map" in batch_dict:
             # torch.Tensor, (B,D,H,W), dense ligand hard-label target
             ligand_target = self._ligand_target_from_dist(batch_dict["ligand_dist_map"], int(outputs["voxel_logits_ligand"].shape[1]), outputs["voxel_logits_ligand"].device, outputs["voxel_logits_ligand"].dtype)
-            # torch.Tensor, (B,D,H,W), dense ligand 有效统计掩码
-            ligand_valid = self._normalize_voxel_valid_mask(batch_dict["voxel_valid_mask"], tuple(int(value) for value in ligand_target.shape[-3:]))
+            # torch.Tensor, (B,D,H,W), dense ligand 全体素有效统计掩码
+            ligand_valid = torch.ones_like(ligand_target, dtype=torch.bool, device=ligand_target.device)
             self.val_metrics.update_branch(branch_name="voxel_ligand", logits=outputs["voxel_logits_ligand"], target=ligand_target, mask=ligand_valid)
             # bool, 当前 validation 是否启用 CPC diagnostics
             diagnostics_enabled = bool(self.cpc_diagnostics.config.enabled)
@@ -817,6 +866,7 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
             cpc_payload = self.cpc_diagnostics.compute_payload(sync_fn=self._all_reduce_sum)
             payload.update(cpc_payload.scalars)
             self._update_candidate_threshold_cache_from_payload(payload)
+        self._last_validation_payload = {key: value.detach() for key, value in payload.items()}
         self._sync_sparse_candidate_runtime_to_backbone()
         log_scalar_payload(module=self, payload=payload, monitor_metric=str(self.hparams.monitor_metric), sync_dist=True)
         # pl.Trainer, 当前 Lightning trainer
@@ -830,7 +880,6 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
         self.val_metrics.reset()
         if self.cpc_diagnostics.config.enabled:
             self.cpc_diagnostics.reset()
-        self._step_warmup_plateau_scheduler(payload)
 
     # ------------------------------------------ 第三类工具函数(浅显;非钩子) ------------------------------------------
     def _all_reduce_sum(self, tensor: torch.Tensor) -> torch.Tensor:
@@ -919,47 +968,6 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
         log_dir = getattr(logger, "save_dir", None) or getattr(trainer, "default_root_dir", ".")
         return Path(log_dir)
 
-    def _step_warmup_plateau_scheduler(self, computed_metrics: Mapping[str, torch.Tensor]) -> None:
-        """
-        validation end 后根据 self.hparams.monitor_metric 进行 warmup_plateau scheduler。
-
-        输入参数:
-            - computed_metrics: Mapping[str, torch.Tensor], 当前 validation scalar payload
-        """
-        if self._warmup_plateau_scheduler is None or self.trainer.sanity_checking:
-            return
-        # str, warmup_plateau scheduler 监控的 validation metric key
-        monitor_name = str(self.hparams.monitor_metric)
-        if monitor_name not in computed_metrics:
-            raise RuntimeError(f"warmup_plateau scheduler monitor metric {monitor_name!r} is not available after validation.")
-        # torch.Tensor, (), 当前 validation monitor metric 值
-        metric_value = computed_metrics[monitor_name].detach().to(self.device).float().reshape(())
-        lr_reduced = self._warmup_plateau_scheduler.step_plateau(metric_value, global_step=int(self.global_step))
-        if not lr_reduced:
-            return
-        self._lr_reduction_count += 1
-        self.log("train/runtime/lr_reduction_count", float(self._lr_reduction_count), prog_bar=True, on_step=False, on_epoch=True, sync_dist=False)
-        stop_after = self.hparams.get("stop_after_lr_reductions", None)
-        if stop_after is None or int(stop_after) <= 0:
-            return
-        if self._lr_reduction_count >= int(stop_after):
-            if bool(getattr(self.trainer, "is_global_zero", True)):
-                print(
-                    "[Train] warmup_plateau 已触发 "
-                    f"{self._lr_reduction_count} 次实际 LR 衰减, 达到 stop_after_lr_reductions={int(stop_after)}, "
-                    "将在当前 validation/checkpoint 流程结束后停止训练。"
-                )
-            self.trainer.should_stop = True
-
-
-
-
-
-
-
-
-
-
     # ------------------------------------------ 第四类工具函数(浅显;非钩子) ------------------------------------------
     def _normalize_candidate_checkpoint_tensor(self, value: Any, value_name: str) -> torch.Tensor:
         """
@@ -1003,14 +1011,10 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
             - checkpoint: dict[str, Any], Lightning checkpoint 字典
 
         原地写入:
-            - lr_reduction_count
             - voxel_ligand_candidate_class_ids
             - voxel_ligand_p_best_by_class; voxel_ligand_p_sampling_by_class
             - voxel_ligand_best_f1_before_refine_by_class
         """
-        if self._warmup_plateau_scheduler is not None:
-            checkpoint["warmup_plateau_reduce_on_plateau_state"] = self._warmup_plateau_scheduler.state_dict()
-        checkpoint["lr_reduction_count"] = int(self._lr_reduction_count)
         if self._sparse_candidate_class_ids is None:
             return
         checkpoint["voxel_ligand_candidate_class_ids"] = self._sparse_candidate_class_ids
@@ -1035,7 +1039,7 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
             - checkpoint: dict[str, Any], Lightning checkpoint 字典
 
         输出:
-            - None, 原地恢复 scheduler、LR 衰减计数和 candidate cache
+            - None, 原地恢复 candidate cache
         """
         if self._sparse_candidate_class_ids is not None:
             # Any | None, checkpoint 中保存的 candidate class id 列表
@@ -1054,9 +1058,5 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
             if "voxel_ligand_best_f1_before_refine_by_class" in checkpoint:
                 self._cached_voxel_ligand_best_f1_before_refine_by_class = self._load_candidate_checkpoint_finite_tensor(checkpoint["voxel_ligand_best_f1_before_refine_by_class"], "voxel_ligand_best_f1_before_refine_by_class")
             self._sync_sparse_candidate_runtime_to_backbone()
-        if "warmup_plateau_reduce_on_plateau_state" in checkpoint:
-            self._pending_warmup_plateau_state = checkpoint["warmup_plateau_reduce_on_plateau_state"]
-        if "lr_reduction_count" in checkpoint:
-            self._lr_reduction_count = int(checkpoint["lr_reduction_count"])
 
 

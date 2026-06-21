@@ -20,14 +20,15 @@ class SparseRefineHead(nn.Module):
         num_layers: int,
         logit_dim: int,
         C_voxel_backbone_dim: int,
-        P_point_backbone_dim: int,
-        P_atom_head_dim: int,
+        P_final_point_dim: int,
+        P_after_interaction_dim: int,
         P_voxel_backbone_dim: int,
         inputs: Mapping[str, bool],
         candidate_class_ids: Sequence[int],
         candidate_class_embedding_dim: int,
         zero_init_residual: bool,
         enable_interface_norm: bool = False,
+        prior_prob: float | None = None,
     ) -> None:
         """
         将 P anchor 内容沿稀疏邻居边聚合回唯一候选 C，并输出 refined ligand logits。
@@ -42,20 +43,21 @@ class SparseRefineHead(nn.Module):
             - num_layers: int, C 输出 MLP 线性层数
             - logit_dim: int, refined logits 输出通道数；二分类为 1，多分类为类别数
             - C_voxel_backbone_dim: int, C 位置 `voxel_final` 通道数
-            - P_point_backbone_dim: int, P 的 point backbone 特征通道数
-            - P_atom_head_dim: int, P 的 atom head 特征通道数
+            - P_final_point_dim: int, P 的 final point 特征通道数
+            - P_after_interaction_dim: int, P 经 cross-attn 后的特征通道数
             - P_voxel_backbone_dim: int, P 位置 `voxel_final` 通道数
             - inputs: Mapping[str, bool], 输入源开关字典，控制 logits、P/C 特征、相对坐标与类别 embedding
             - candidate_class_ids: Sequence[int], (K,), 可用路由类别 ID
             - candidate_class_embedding_dim: int, 类别 embedding 通道数；仅在 use_candidate_class_embedding=true 时使用
             - zero_init_residual: bool, residual 输出增量末层是否零初始化
             - enable_interface_norm: bool, 是否对 P/edge 学习特征源在拼接前各自 LayerNorm；几何量、类别 embedding 与末层 head 的 C_voxel 不归一化
+            - prior_prob: float | None, direct 模式末层单通道 sigmoid 正类先验; None 表示跳过 bias 先验初始化; residual 模式忽略本值(走 zero_init_residual)
 
         前向输入:
             - voxel_logits: torch.Tensor | None, (sumC, logit_dim), C 位置原始 ligand logits
             - C_voxel_backbone_feat: torch.Tensor | None, (sumC, C_voxel), C 位置 `voxel_final` 特征
-            - P_point_backbone_feat: torch.Tensor | None, (sumP, C_point), P 的 final point backbone 特征
-            - P_atom_head_feat: torch.Tensor | None, (sumP, C_pseudo), P 的 atom head `pseudo_feature`
+            - P_final_point_feat: torch.Tensor | None, (sumP, C_point), P 的 final point 特征
+            - P_after_interaction_feat: torch.Tensor | None, (sumP, C_point), P 经 cross-attn 后的只读特征
             - P_voxel_backbone_feat: torch.Tensor | None, (sumP, C_voxel), P 位置 `voxel_final` 特征
             - anchor_class: torch.Tensor, (sumP,), P 继承的路由类别 ID
             - candidate_neighbor_index: torch.Tensor, (sumC, K_nn), 每个 C 的 P 邻居行号
@@ -98,20 +100,20 @@ class SparseRefineHead(nn.Module):
         self.message_dim = int(message_dim)
         self.logit_dim = int(logit_dim)
         self.inputs = {str(key): bool(value) for key, value in inputs.items()}
-        if not (self.inputs.get("use_P_point_backbone_feat", False) or self.inputs.get("use_P_atom_head_feat", False)):
-            raise ValueError("P content 至少启用 use_P_point_backbone_feat 或 use_P_atom_head_feat。")
-        # 第 2a 点: 删除 mode==residual 与 use_voxel_logits 的耦合约束, 使四种组合均合法
+        if not (self.inputs.get("use_P_final_point_feat", False) or self.inputs.get("use_P_after_interaction_feat", False)):
+            raise ValueError("P content 至少启用 use_P_final_point_feat 或 use_P_after_interaction_feat。")
+        # 第 2a 点: 删除 mode==residual 与 use_C_voxel_logits 的耦合约束, 使四种组合均合法
 
         self.enable_interface_norm = bool(enable_interface_norm)
         # nn.LayerNorm | None, 各学习特征源在拼接前的接口归一化; 关或对应输入源关时为 None 走恒等
-        self.interface_norm_P_point = (
-            nn.LayerNorm(int(P_point_backbone_dim))
-            if self.enable_interface_norm and self.inputs.get("use_P_point_backbone_feat", False)
+        self.interface_norm_P_final = (
+            nn.LayerNorm(int(P_final_point_dim))
+            if self.enable_interface_norm and self.inputs.get("use_P_final_point_feat", False)
             else None
         )
-        self.interface_norm_P_atom = (
-            nn.LayerNorm(int(P_atom_head_dim))
-            if self.enable_interface_norm and self.inputs.get("use_P_atom_head_feat", False)
+        self.interface_norm_P_after = (
+            nn.LayerNorm(int(P_after_interaction_dim))
+            if self.enable_interface_norm and self.inputs.get("use_P_after_interaction_feat", False)
             else None
         )
         self.interface_norm_P_voxel = (
@@ -127,8 +129,8 @@ class SparseRefineHead(nn.Module):
         )
 
         p_content_dim = (
-            int(P_point_backbone_dim) * int(self.inputs.get("use_P_point_backbone_feat", False))
-            + int(P_atom_head_dim) * int(self.inputs.get("use_P_atom_head_feat", False))
+            int(P_final_point_dim) * int(self.inputs.get("use_P_final_point_feat", False))
+            + int(P_after_interaction_dim) * int(self.inputs.get("use_P_after_interaction_feat", False))
         )
         self.P_content_mlp = nn.Sequential(
             nn.Linear(p_content_dim, self.message_dim),
@@ -159,13 +161,21 @@ class SparseRefineHead(nn.Module):
             self.edge_mlp = None
 
         final_input_dim = self.message_dim
-        final_input_dim += self.logit_dim * int(self.inputs.get("use_voxel_logits", False))
+        final_input_dim += self.logit_dim * int(self.inputs.get("use_C_voxel_logits", False))
         final_input_dim += int(C_voxel_backbone_dim) * int(self.inputs.get("use_C_voxel_backbone_feat", False))
         self.output_mlp = self._build_output_mlp(final_input_dim, int(hidden_dim), self.logit_dim, int(num_layers))
         if self.mode == "residual" and bool(zero_init_residual):
             final_linear = next(module for module in reversed(self.output_mlp) if isinstance(module, nn.Linear))
             nn.init.zeros_(final_linear.weight)
             nn.init.zeros_(final_linear.bias)
+        elif self.mode == "direct" and prior_prob is not None:
+            if int(self.logit_dim) != 1:
+                raise ValueError("多通道 refine 头暂不支持单通道 prior_prob。")
+            # nn.Linear, output_mlp 末层
+            final_linear = next(module for module in reversed(self.output_mlp) if isinstance(module, nn.Linear))
+            # float, direct 模式 sigmoid 正类先验对应的输出 bias = logit(prior)
+            refine_bias_val = -math.log((1.0 - float(prior_prob)) / float(prior_prob))
+            nn.init.constant_(final_linear.bias, refine_bias_val)
 
     @staticmethod
     def _build_output_mlp(input_dim: int, hidden_dim: int, output_dim: int, num_layers: int) -> nn.Sequential:
@@ -211,8 +221,8 @@ class SparseRefineHead(nn.Module):
         self,
         voxel_logits: torch.Tensor | None,
         C_voxel_backbone_feat: torch.Tensor | None,
-        P_point_backbone_feat: torch.Tensor | None,
-        P_atom_head_feat: torch.Tensor | None,
+        P_final_point_feat: torch.Tensor | None,
+        P_after_interaction_feat: torch.Tensor | None,
         P_voxel_backbone_feat: torch.Tensor | None,
         anchor_class: torch.Tensor,
         candidate_neighbor_index: torch.Tensor,
@@ -226,8 +236,8 @@ class SparseRefineHead(nn.Module):
         输入参数:
             - voxel_logits: torch.Tensor | None, (sumC, logit_dim), C 位置原始 ligand logits
             - C_voxel_backbone_feat: torch.Tensor | None, (sumC, C_voxel), C 位置 `voxel_final` 特征
-            - P_point_backbone_feat: torch.Tensor | None, (sumP, C_point), P 的 final point backbone 特征
-            - P_atom_head_feat: torch.Tensor | None, (sumP, C_pseudo), P 的 atom head `pseudo_feature`
+            - P_final_point_feat: torch.Tensor | None, (sumP, C_point), P 的 final point 特征
+            - P_after_interaction_feat: torch.Tensor | None, (sumP, C_point), P 经 cross-attn 后的只读特征
             - P_voxel_backbone_feat: torch.Tensor | None, (sumP, C_voxel), P 位置 `voxel_final` 特征
             - anchor_class: torch.Tensor, (sumP,), P 继承的路由类别 ID
 
@@ -243,17 +253,17 @@ class SparseRefineHead(nn.Module):
         """
         # list[torch.Tensor], 组成 P content 的启用特征分块
         p_content_parts: list[torch.Tensor] = []
-        if self.inputs.get("use_P_point_backbone_feat", False):
-            if P_point_backbone_feat is None:
-                raise RuntimeError("启用了 use_P_point_backbone_feat，但输入为空。")
+        if self.inputs.get("use_P_final_point_feat", False):
+            if P_final_point_feat is None:
+                raise RuntimeError("启用了 use_P_final_point_feat，但输入为空。")
             p_content_parts.append(
-                self.interface_norm_P_point(P_point_backbone_feat) if self.interface_norm_P_point is not None else P_point_backbone_feat
+                self.interface_norm_P_final(P_final_point_feat) if self.interface_norm_P_final is not None else P_final_point_feat
             )
-        if self.inputs.get("use_P_atom_head_feat", False):
-            if P_atom_head_feat is None:
-                raise RuntimeError("启用了 use_P_atom_head_feat，但输入为空。")
+        if self.inputs.get("use_P_after_interaction_feat", False):
+            if P_after_interaction_feat is None:
+                raise RuntimeError("启用了 use_P_after_interaction_feat，但输入为空。")
             p_content_parts.append(
-                self.interface_norm_P_atom(P_atom_head_feat) if self.interface_norm_P_atom is not None else P_atom_head_feat
+                self.interface_norm_P_after(P_after_interaction_feat) if self.interface_norm_P_after is not None else P_after_interaction_feat
             )
         # torch.Tensor, (sumP, H_msg), 每个 P 的消息内容特征
         p_content = self.P_content_mlp(torch.cat(p_content_parts, dim=1))
@@ -322,23 +332,23 @@ class SparseRefineHead(nn.Module):
         # list[torch.Tensor], 输出 head 的输入特征分块
         final_parts = [candidate_message_delta]
         # bool, 是否把 base_logits 拼进 MLP 输入
-        use_voxel_logits = self.inputs.get("use_voxel_logits", False)
-        # bool, 是否需要取出 base_logits: use_voxel_logits(进 MLP) 或 residual(末尾加残差) 任一为真
-        need_base = use_voxel_logits or self.mode == "residual"
+        use_C_voxel_logits = self.inputs.get("use_C_voxel_logits", False)
+        # bool, 是否需要取出 base_logits: use_C_voxel_logits(进 MLP) 或 residual(末尾加残差) 任一为真
+        need_base = use_C_voxel_logits or self.mode == "residual"
         base_logits: torch.Tensor | None = None
         if need_base:
             if voxel_logits is None:
-                raise RuntimeError("use_voxel_logits 或 residual 模式要求 voxel_logits 非空。")
+                raise RuntimeError("use_C_voxel_logits 或 residual 模式要求 voxel_logits 非空。")
             # torch.Tensor, (sumC, logit_dim), residual base 或 direct head 可选输入 logits; detach 由调用方 _run_sparse_refine_head 负责
             base_logits = voxel_logits
-        if use_voxel_logits:
+        if use_C_voxel_logits:
             final_parts.insert(0, base_logits)
         if self.inputs.get("use_C_voxel_backbone_feat", False):
             if C_voxel_backbone_feat is None:
                 raise RuntimeError("启用了 use_C_voxel_backbone_feat，但输入为空。")
-            # 插入下标按 base_logits 是否已进 final_parts(即 use_voxel_logits)判断, 而非 base_logits 是否非空:
+            # 插入下标按 base_logits 是否已进 final_parts(即 use_C_voxel_logits)判断, 而非 base_logits 是否非空:
             # residual-only 时 base_logits 非空但不进 MLP
-            final_parts.insert(1 if use_voxel_logits else 0, C_voxel_backbone_feat)
+            final_parts.insert(1 if use_C_voxel_logits else 0, C_voxel_backbone_feat)
         # torch.Tensor, (sumC, logit_dim), 输出 MLP 产生的 refined logits 或 logits 增量
         output_logits = self.output_mlp(torch.cat(final_parts, dim=1))
         if self.mode == "residual":

@@ -368,8 +368,12 @@ def postprocess_ligand_probability_map(
     # np.ndarray, (D,H,W), bool, advanced 体素级过滤掩码
     score_mask = base_label > 0
     score_mask &= score_map >= float(voxel_score_min)
-    # np.ndarray, (D,H,W), int32, 沿用初步 instance 标签但去掉低分体素
+    # np.ndarray, (D,H,W), int32, 沿用初步 instance 标签但去掉低分体素。
+    # 当前为了节省算力，第二次连通域分析暂停；因此 x_y 与 x_none 同义。
     score_instance_label = np.where(score_mask, base_label, 0).astype(np.int32)
+    # 如需恢复第二次连通域分析，可重新启用下面的分支。
+    # if second_conn != "none":
+    #     score_instance_label = _label_connected_components(score_mask, second_conn)
     filtered_label = _filter_instances_by_score(
         instance_label=score_instance_label,
         score_map=score_map,
