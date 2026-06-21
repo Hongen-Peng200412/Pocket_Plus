@@ -22,9 +22,9 @@ output/
 cryatom_output/
 *.txt
 *.csv
-CLAUDE_PLANS/
-CLAUDE/
-docs
+# CLAUDE_PLANS/
+# CLAUDE/
+# docs
 .review*
 tmp*
 *old/
