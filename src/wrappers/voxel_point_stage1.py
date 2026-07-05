@@ -25,6 +25,7 @@ from src.wrappers.voxel_point_stage1_losses import (
 )
 from src.wrappers.voxel_point_stage1_metrics import MetricBranchSpec, ValidationMetricManager
 from src.wrappers.voxel_point_stage1_scheduler import configure_stage1_optimizers
+from src.utils.module_freeze import set_fully_frozen_submodules_eval
 
 
 class VoxelPointStage1Wrapper(pl.LightningModule):
@@ -659,6 +660,25 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
      on_validation_epoch_end	 每次 validation loop 结束
      on_save_checkpoint	         每次写 checkpoint 时
     """
+    def train(self, mode: bool = True) -> VoxelPointStage1Wrapper:
+        """
+        覆写 train, 在进入 train 模式后把完全冻结的子树重新切回 eval。
+
+        Lightning 每个 train epoch 会调用 model.train() 把全部子模块设回 training=True, 撤销之前的冻结
+        eval 状态; 这里在 super().train() 之后重新固定冻结子树, 保证其 BN/Dropout 前向不随训练漂移。
+        无冻结参数时 set_fully_frozen_submodules_eval 为 no-op。
+
+        输入参数:
+            - mode: bool, True 进入 train, False 进入 eval
+
+        输出:
+            - self: VoxelPointStage1Wrapper, 与 nn.Module.train 一致返回自身
+        """
+        super().train(mode)
+        if mode:
+            set_fully_frozen_submodules_eval(self)
+        return self
+
     def configure_optimizers(self) -> Any:
         """
         配置 optimizer 与 scheduler。

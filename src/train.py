@@ -25,6 +25,7 @@ from src.utils.slurm_utils import (
     fix_gloo_socket_ifname as _fix_gloo_socket_ifname,
     log_distributed_launch_state as _log_distributed_launch_state,
 )
+from src.utils.module_freeze import set_fully_frozen_submodules_eval
 
 # 统一使用 slurm_utils 中的网卡推导逻辑，避免本地旧实现与 sbatch helper 出现分叉。
 _fix_gloo_socket_ifname()
@@ -167,6 +168,11 @@ def _apply_frozen_module(model: torch.nn.Module, frozen_cfg: DictConfig, verbose
     if trainable_count == 0:
         raise RuntimeError("frozen_module 应用后没有任何可训练参数。")
 
+    # 冻结仅设 requires_grad=False 不会停住 BN 的 running stats 与 Dropout; 让完全冻结子树进入 eval, 固定其前向。
+    # wrapper.train() 覆写会在每个 epoch 后重复维持; 这里做一次初始 eval 并取计数用于日志/自检。
+    # int, int: 被切到 eval 的极大冻结子树数; 其中带 running 统计的 BN 数(本会漂移、现已固定)
+    num_frozen_subtrees, num_frozen_bn = set_fully_frozen_submodules_eval(model)
+
     if verbose:
         preview = ", ".join(sorted(trainable_modules)[:30])
         suffix = "" if len(trainable_modules) <= 30 else f", ... (+{len(trainable_modules) - 30})"
@@ -176,6 +182,7 @@ def _apply_frozen_module(model: torch.nn.Module, frozen_cfg: DictConfig, verbose
             f"trainable_params={trainable_count:,}, frozen_params={frozen_count:,}"
         )
         print(f"[Train] trainable module preview: {preview}{suffix}")
+        print(f"[Train] frozen→eval: {num_frozen_subtrees} 个完全冻结子树切到 eval(含 {num_frozen_bn} 个带 running 统计的 BN)")
         # 逐条提示命中 0 的 optional pattern; 正式实验(模块应在位)里出现即说明 typo 或配置错
         for pattern in optional_patterns:
             if matched_by_pattern[pattern] == 0:
