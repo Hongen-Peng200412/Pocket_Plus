@@ -668,7 +668,7 @@ class SelectorDataset(Dataset[dict[str, Any]]):
         candidate_offsets = np.asarray(centered["candidate_offsets"], dtype=np.int64)
         candidate_begin, candidate_end = _slice_offsets(candidate_offsets, entry)
         candidate_node_id = np.asarray(centered["candidate_node_id"][candidate_begin:candidate_end], dtype=np.int64)
-        candidate_threshold_index = np.asarray(
+        candidate_threshold_grid_index = np.asarray(
             centered["candidate_threshold_grid_index"][candidate_begin:candidate_end], dtype=np.int64
         )
         source_begin, source_end = _slice_offsets(np.asarray(clg["candidate_offsets"], dtype=np.int64), source_clg_row)
@@ -733,7 +733,7 @@ class SelectorDataset(Dataset[dict[str, Any]]):
             covariance_eigenvalue = np.sort(np.linalg.eigvalsh(covariance)).astype(np.float32)
             candidate_attributes[candidate_index] = np.asarray(
                 [
-                    candidate_threshold_index[candidate_index] / 32768.0,
+                    candidate_threshold_grid_index[candidate_index] / 32768.0,
                     float(forest["threshold_value"][forest_row]),
                     np.log1p(voxel_count),
                     voxel_count / oldest_voxel_count,
@@ -758,7 +758,11 @@ class SelectorDataset(Dataset[dict[str, Any]]):
                     [
                         depth_by_id[left_id] - depth_by_id[lca],
                         depth_by_id[right_id] - depth_by_id[lca],
-                        (candidate_threshold_index[right] - candidate_threshold_index[left]) / 32768.0,
+                        (
+                            candidate_threshold_grid_index[right]
+                            - candidate_threshold_grid_index[left]
+                        )
+                        / 32768.0,
                         *relative_xyz.tolist(),
                         math.sqrt(sum(float(value) ** 2 for value in relative_xyz)),
                         math.log(

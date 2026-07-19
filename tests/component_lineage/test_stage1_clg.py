@@ -176,12 +176,12 @@ def test_seed_order_is_f1_first_then_lower_layers_by_probability_mean() -> None:
         (10, 1.0),
     )
     trees = []
-    for tree_id, (threshold_index, probability_mean) in enumerate(specs):
+    for tree_id, (threshold_grid_index, probability_mean) in enumerate(specs):
         node = ComponentNode(
             tree_id=tree_id,
             node_id=0,
-            threshold_grid_index=threshold_index,
-            threshold_value=threshold_index / 10.0,
+            threshold_grid_index=threshold_grid_index,
+            threshold_value=threshold_grid_index / 10.0,
             voxel_global_linear_index=np.asarray([tree_id], dtype=np.int64),
             bbox_min_zyx=np.asarray([0, 0, tree_id], dtype=np.int32),
             bbox_max_zyx=np.asarray([0, 0, tree_id], dtype=np.int32),
