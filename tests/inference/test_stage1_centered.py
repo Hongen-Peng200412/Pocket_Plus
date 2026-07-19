@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import numpy as np
@@ -119,7 +120,7 @@ def test_f1_and_clg_keep_global_source_identity_and_memberships() -> None:
     }
 
 
-def test_selected_status_codes_and_refined_blob_semantics() -> None:
+def test_selected_status_codes_and_refined_blob_semantics(caplog) -> None:
     nodes = [
         _node(0, [(10, 10, 10), (10, 10, 11), (10, 10, 12)]),
         _node(1, [(20, 20, 20)]),
@@ -145,21 +146,29 @@ def test_selected_status_codes_and_refined_blob_semantics() -> None:
             probability[0, 0, 0] = 0.9
         return _payload(probability)
 
-    entries = produce_selected_refined_entries(
-        selected_nodes=nodes,
-        geometry=geometry,
-        stage1_model_name="unet_c1",
-        split="validation",
-        pdb_id="sample_002",
-        resolve_box_start=lambda centroid, shape: (0, 0, 0),
-        full_forward=callback,
-    )
+    with caplog.at_level(logging.ERROR, logger="src.inference.centered"):
+        entries = produce_selected_refined_entries(
+            selected_nodes=nodes,
+            geometry=geometry,
+            stage1_model_name="unet_c1",
+            split="validation",
+            pdb_id="sample_002",
+            resolve_box_start=lambda centroid, shape: (0, 0, 0),
+            full_forward=callback,
+        )
     arrays = pack_centered_entries(entries, "Selected_Refined_Centered")
     assert arrays["refine_status"].tolist() == [0, 1, 2, 3]
     assert arrays["voxel_offsets"].tolist() == [0, 1, 1, 1, 1]
+    assert arrays["feature_entry_index"].tolist() == [0]
+    assert arrays["voxel_ds_2"].shape == (1, 256, 20, 20, 20)
+    assert arrays["voxel_ds_3"].shape == (1, 256, 10, 10, 10)
+    assert arrays["voxel_ds_4"].shape == (1, 256, 5, 5, 5)
+    assert arrays["voxel_c4"].shape == (1, 256, 5, 5, 5)
     success_voxels = arrays["voxel_index_local_zyx"]
     assert success_voxels.tolist() == [[10, 10, 10]]
     assert arrays["source_node_id"].tolist() == [0, 1, 2, 3]
+    assert "pdb_id=sample_002" in caplog.text
+    assert "source_node_id=3" in caplog.text
 
 
 def test_find_centered_masks_probability_and_exports_only_10A_core_atoms() -> None:

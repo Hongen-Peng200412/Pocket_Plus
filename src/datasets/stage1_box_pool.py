@@ -254,11 +254,6 @@ def build_pdb_box_pool(
         full_shape_zyx=grid_shape_zyx,
         rng=rng,
     )
-    if int(contexts.shape[0]) < 3:
-        raise ValueError(
-            f"{pdb_id}: context 生成耗尽后只有 {int(contexts.shape[0])} 个合法起点，"
-            "不足以支持每个 occurrence 的 3 个 context。"
-        )
     return {
         "pdb_id": np.asarray(pdb_id),
         **occurrence_rows,
@@ -298,8 +293,7 @@ def freeze_validation_selection(
     for pdb_index, pool in enumerate(pools):
         occurrence_count = int(pool.occurrence_id.shape[0])
         selected_rows = rng.choice(occurrence_count, size=min(50, occurrence_count), replace=False)
-        if int(pool.context_start_zyx.shape[0]) < 3:
-            raise ValueError(f"{pool.pdb_id}: validation pool 至少需要 3 个 context 起点。")
+        context_count = int(pool.context_start_zyx.shape[0])
         for occurrence_row in selected_rows.tolist():
             occurrence_id = int(pool.occurrence_id[occurrence_row])
             center_pdb_index.append(pdb_index)
@@ -308,9 +302,12 @@ def freeze_validation_selection(
                 bias_pdb_index.append(pdb_index)
                 bias_occurrence_id.append(occurrence_id)
                 bias_candidate_index.append(int(candidate_index))
-            for candidate_index in rng.choice(pool.context_start_zyx.shape[0], size=3, replace=False).tolist():
-                context_pdb_index.append(pdb_index)
-                context_candidate_index.append(int(candidate_index))
+            if context_count > 0:
+                for candidate_index in rng.choice(
+                    context_count, size=3, replace=context_count < 3
+                ).tolist():
+                    context_pdb_index.append(pdb_index)
+                    context_candidate_index.append(int(candidate_index))
 
     max_pdb_width = max(1, max(len(value.encode("utf-8")) for value in pdb_ids))
     arrays = {
@@ -358,8 +355,19 @@ def build_stage1_box_pools(
     (root / "validation_selection.npz").unlink(missing_ok=True)
     summary: dict[str, object] = {
         "seed": int(seed),
-        "train": {"requested_pdb": len(train_ids), "published_pdb": 0, "short_map_count": 0},
-        "validation": {"requested_pdb": len(validation_ids), "published_pdb": 0},
+        "train": {
+            "requested_pdb": len(train_ids),
+            "published_pdb": 0,
+            "short_map_count": 0,
+            "zero_context_pdb_count": 0,
+            "underfilled_context_pdb_count": 0,
+        },
+        "validation": {
+            "requested_pdb": len(validation_ids),
+            "published_pdb": 0,
+            "zero_context_pdb_count": 0,
+            "underfilled_context_pdb_count": 0,
+        },
     }
     manifest_entries: dict[str, list[dict[str, str]]] = {"train": [], "validation": []}
     for split_name, pdb_ids in (("train", train_ids), ("validation", validation_ids)):
@@ -374,6 +382,11 @@ def build_stage1_box_pools(
                     continue
                 raise
             _atomic_save_npz(output_directory / f"{pdb_id}.npz", **pool)
+            context_count = int(pool["context_start_zyx"].shape[0])
+            if context_count == 0:
+                summary[split_name]["zero_context_pdb_count"] += 1  # type: ignore[index]
+            elif context_count < 3:
+                summary[split_name]["underfilled_context_pdb_count"] += 1  # type: ignore[index]
             manifest_entries[split_name].append(
                 {"pdb_id": pdb_id, "path": (Path(split_name) / f"{pdb_id}.npz").as_posix()}
             )

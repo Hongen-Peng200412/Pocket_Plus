@@ -133,8 +133,13 @@ def _apply_synced_rotation(sample: dict[str, Any]) -> dict[str, Any]:
     voxel_size = sample["voxel_size_world"]
     if not (int(box_shape[0]) == int(box_shape[1]) == int(box_shape[2])):
         raise ValueError("Stage1 90° 旋转只支持立方体 BOX。")
-    if not np.allclose(voxel_size, float(voxel_size[0]), rtol=3.0e-2, atol=3.0e-4):
-        raise ValueError(f"Stage1 90° 旋转要求近似各向同性 voxel，实际 {voxel_size.tolist()}。")
+    voxel_size_zyx = np.asarray(voxel_size, dtype=np.float32)[[2, 1, 0]].copy()
+    if k % 2 == 1:
+        voxel_size_zyx[[axis1, axis2]] = voxel_size_zyx[[axis2, axis1]]
+    rotated_voxel_size = voxel_size_zyx[[2, 1, 0]].astype(
+        np.float32, copy=False
+    )
+    sample["voxel_size_world"] = rotated_voxel_size
 
     sample["density_input"] = np.rot90(
         sample["density_input"], k=k, axes=(axis1 + 1, axis2 + 1)
@@ -157,7 +162,9 @@ def _apply_synced_rotation(sample: dict[str, Any]) -> dict[str, Any]:
         centered_zyx[:, axis2] = old[:, axis1]
     sample["atom_coord_centered_world"] = centered_zyx[:, [2, 1, 0]].astype(np.float32, copy=False)
     box_shape_xyz = box_shape[[2, 1, 0]].astype(np.float32)
-    box_center_world = sample["box_origin_world"] + 0.5 * box_shape_xyz * voxel_size
+    box_center_world = (
+        sample["box_origin_world"] + 0.5 * box_shape_xyz * rotated_voxel_size
+    )
     sample["atom_coord_world"] = (
         sample["atom_coord_centered_world"] + box_center_world[None, :]
     ).astype(np.float32, copy=False)

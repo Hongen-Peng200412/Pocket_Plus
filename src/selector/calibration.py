@@ -9,6 +9,7 @@ from typing import Any, Sequence
 
 import numpy as np
 import torch
+from omegaconf import OmegaConf
 
 from src.artifacts import Stage1ArtifactPaths, atomic_write_json, load_npz_strict
 from src.evaluation import (
@@ -130,19 +131,40 @@ def _build_pdb_calibration_table(
     }
     clg_offsets = np.asarray(clg["candidate_offsets"], dtype=np.int64)
     clg_row_by_candidate = np.searchsorted(clg_offsets[1:], candidate_rows, side="right")
-    pred_sizes = np.empty(candidate_rows.size, dtype=np.int64)
-    intersections = np.zeros((candidate_rows.size, occurrence_sizes.size), dtype=np.int64)
-    selected_identity: set[tuple[int, int]] = set()
-    for prediction_row, (candidate_row, clg_row) in enumerate(
-        zip(candidate_rows.tolist(), clg_row_by_candidate.tolist(), strict=True)
+    unique_rows: list[int] = []
+    unique_gate_probability: list[float] = []
+    unique_clg_rows: list[int] = []
+    prediction_by_identity: dict[tuple[int, int], int] = {}
+    for candidate_row, clg_row, probability in zip(
+        candidate_rows.tolist(),
+        clg_row_by_candidate.tolist(),
+        gate_probability.tolist(),
+        strict=True,
     ):
         identity = (
             int(clg["tree_id"][clg_row]),
             int(clg["candidate_node_id"][candidate_row]),
         )
-        if identity in selected_identity:
-            raise ValueError(f"多个 CLG 重复选择同一 forest node: {identity}")
-        selected_identity.add(identity)
+        existing = prediction_by_identity.get(identity)
+        if existing is not None:
+            unique_gate_probability[existing] = max(
+                unique_gate_probability[existing], float(probability)
+            )
+            continue
+        prediction_by_identity[identity] = len(unique_rows)
+        unique_rows.append(int(candidate_row))
+        unique_clg_rows.append(int(clg_row))
+        unique_gate_probability.append(float(probability))
+
+    pred_sizes = np.empty(len(unique_rows), dtype=np.int64)
+    intersections = np.zeros((len(unique_rows), occurrence_sizes.size), dtype=np.int64)
+    for prediction_row, (candidate_row, clg_row) in enumerate(
+        zip(unique_rows, unique_clg_rows, strict=True)
+    ):
+        identity = (
+            int(clg["tree_id"][clg_row]),
+            int(clg["candidate_node_id"][candidate_row]),
+        )
         forest_row = forest_rows[identity]
         pred_sizes[prediction_row] = int(forest["voxel_count"][forest_row])
         begin = int(overlap_offsets[candidate_row])
@@ -156,7 +178,7 @@ def _build_pdb_calibration_table(
 
     return _PdbCalibrationTable(
         pdb_id=str(pdb_id),
-        gate_probability=gate_probability,
+        gate_probability=np.asarray(unique_gate_probability, dtype=np.float32),
         pred_sizes=pred_sizes,
         intersections=intersections,
         gt_sizes=occurrence_sizes,
@@ -213,7 +235,6 @@ def calibrate_tau_g(
     stage1_outputs_root: str | Path,
     input_clg_list_path: str | Path,
     stage1_model_name: str,
-    lambda_count: float,
     split: str = "calibration",
 ) -> dict[str, Any]:
     """
@@ -224,7 +245,6 @@ def calibrate_tau_g(
         - stage1_outputs_root: str | Path, Stage1 producer 正式输出根
         - input_clg_list_path: str | Path, 当前 run 冻结的 input_CLG_list.json
         - stage1_model_name: str, Find_0/Find_1/unet_c1
-        - lambda_count: float, 与训练/selection 一致的反链计数惩罚
         - split: str, 校正 split；正式为 calibration
 
     输出:
@@ -233,19 +253,27 @@ def calibrate_tau_g(
     frozen = json.loads(Path(input_clg_list_path).read_text(encoding="utf-8"))
     if frozen.get("stage1_model_name") != stage1_model_name:
         raise ValueError("input_CLG_list.json 与请求的 stage1_model_name 不一致。")
-    pdb_ids: list[str] = []
-    seen_pdb: set[str] = set()
-    for item in frozen["items"]:
-        if str(item["split"]) != str(split):
-            continue
-        pdb_id = str(item["pdb_id"])
-        if pdb_id not in seen_pdb:
-            pdb_ids.append(pdb_id)
-            seen_pdb.add(pdb_id)
+    pdb_ids_by_split = frozen.get("pdb_ids_by_split")
+    if not isinstance(pdb_ids_by_split, dict) or split not in pdb_ids_by_split:
+        raise ValueError("input_CLG_list.json 缺少 calibration split 的 PDB inventory。")
+    pdb_ids = [str(value) for value in pdb_ids_by_split[split]]
     if not pdb_ids:
         raise ValueError(f"冻结清单中没有 split={split!r} 的 Selector calibration PDB。")
 
     run_dir = Path(selector_run_dir)
+    resolved_config_path = run_dir / "resolved_config.yaml"
+    if not resolved_config_path.is_file():
+        raise FileNotFoundError(
+            f"Selector calibration 必须读取训练 run 的 resolved config: {resolved_config_path}"
+        )
+    resolved_config = OmegaConf.to_container(
+        OmegaConf.load(resolved_config_path), resolve=True
+    )
+    if not isinstance(resolved_config, dict):
+        raise TypeError("Selector resolved_config.yaml 必须解析为 mapping。")
+    if str(resolved_config.get("stage1_model_name")) != str(stage1_model_name):
+        raise ValueError("Selector resolved config 与 calibration producer 不一致。")
+    lambda_count = float(resolved_config["data"]["lambda_count"])
     tables = tuple(
         _build_pdb_calibration_table(
             pdb_id=pdb_id,

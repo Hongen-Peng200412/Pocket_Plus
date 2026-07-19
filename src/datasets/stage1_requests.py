@@ -351,8 +351,7 @@ class Stage1TrainingRequestSet:
             if n_occ == 0:
                 continue
             selected_occ_rows = rng.choice(n_occ, size=min(50, n_occ), replace=False)
-            if int(pool.context_start_zyx.shape[0]) < 3:
-                raise ValueError(f"{pool.pdb_id}: 每个训练 PDB 至少需要 3 个 context 起点。")
+            context_count = int(pool.context_start_zyx.shape[0])
             for occ_row in selected_occ_rows.tolist():
                 occurrence_id = int(pool.occurrence_id[occ_row])
                 requests.append(
@@ -377,18 +376,21 @@ class Stage1TrainingRequestSet:
                             int(candidate_index),
                         )
                     )
-                context_indices = rng.choice(pool.context_start_zyx.shape[0], size=3, replace=False)
-                for candidate_index in context_indices.tolist():
-                    requests.append(
-                        ResolvedStage1Crop(
-                            pool.pdb_id,
-                            tuple(pool.context_start_zyx[candidate_index].tolist()),
-                            True,
-                            "context",
-                            occurrence_id,
-                            int(candidate_index),
-                        )
+                if context_count > 0:
+                    context_indices = rng.choice(
+                        context_count, size=3, replace=context_count < 3
                     )
+                    for candidate_index in context_indices.tolist():
+                        requests.append(
+                            ResolvedStage1Crop(
+                                pool.pdb_id,
+                                tuple(pool.context_start_zyx[candidate_index].tolist()),
+                                True,
+                                "context",
+                                occurrence_id,
+                                int(candidate_index),
+                            )
+                        )
         self.requests = tuple(requests)
         self.epoch = epoch
 

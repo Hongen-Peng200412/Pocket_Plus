@@ -127,7 +127,7 @@ def produce_scores(
         - device_name: str, 显式 cpu 或 cuda
 
     输出:
-        - score_paths: tuple[Path,...]，按 pdb_id 排序的正式 scores.npz 路径
+        - score_paths: tuple[Path,...]，按冻结 PDB inventory 顺序的正式 scores.npz 路径
     """
     if device_name not in {"cpu", "cuda"}:
         raise ValueError("device_name 只允许 cpu 或 cuda。")
@@ -146,6 +146,14 @@ def produce_scores(
         density_clip_percentile=tuple(float(value) for value in config["data"]["density_clip_percentile"]),
         pdb_cache_size=int(config["data"]["pdb_cache_size"]),
     )
+    frozen = json.loads(Path(input_clg_list_path).read_text(encoding="utf-8"))
+    if frozen.get("stage1_model_name") != str(config["stage1_model_name"]):
+        raise ValueError("input_CLG_list.json 与 Selector checkpoint producer 不一致。")
+    pdb_ids_by_split = frozen.get("pdb_ids_by_split")
+    if not isinstance(pdb_ids_by_split, dict) or split not in pdb_ids_by_split:
+        raise ValueError("input_CLG_list.json 缺少当前 split 的 PDB inventory。")
+    frozen_pdb_ids = tuple(str(value) for value in pdb_ids_by_split[split])
+
     by_pdb: dict[str, dict[int, dict[str, np.ndarray | float]]] = defaultdict(dict)
     with torch.no_grad():
         for index in range(len(dataset)):
@@ -162,7 +170,7 @@ def produce_scores(
     stage1_root = Path(stage1_outputs_root)
     output_root = Path(selector_run_dir)
     stage1_model_name = str(config["stage1_model_name"])
-    for pdb_id in sorted(by_pdb):
+    for pdb_id in frozen_pdb_ids:
         source_path = stage1_root / stage1_model_name / split / pdb_id / "components" / "clg.npz"
         with np.load(source_path, allow_pickle=False) as source:
             source_clg_id = np.asarray(source["CLG_id"], dtype=np.int32)
@@ -191,8 +199,16 @@ def produce_scores(
                 "CLG_logit": np.asarray(clg_logits, dtype=np.float32),
                 "CLG_valid_probability": np.asarray(clg_probabilities, dtype=np.float32),
                 "candidate_offsets": source_offsets,
-                "predicted_max_iou": np.concatenate(predicted_values).astype(np.float32, copy=False),
-                "selection_logit": np.concatenate(selection_values).astype(np.float32, copy=False),
+                "predicted_max_iou": (
+                    np.concatenate(predicted_values).astype(np.float32, copy=False)
+                    if predicted_values
+                    else np.empty(0, dtype=np.float32)
+                ),
+                "selection_logit": (
+                    np.concatenate(selection_values).astype(np.float32, copy=False)
+                    if selection_values
+                    else np.empty(0, dtype=np.float32)
+                ),
             },
             validator=_validate_scores_arrays,
         )
@@ -330,7 +346,7 @@ def load_selected_nodes_for_pdb(
             absolute_row = candidate_begin + int(local_index)
             identity = (int(clg["tree_id"][clg_row]), int(clg["candidate_node_id"][absolute_row]))
             if identity in identities:
-                raise ValueError(f"selection 重复引用同一 forest node: {identity}")
+                continue
             identities.add(identity)
             nodes.append(forest.node(*identity))
     return tuple(nodes)
@@ -366,7 +382,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         required=True,
         choices=("Find_0", "Find_1", "unet_c1"),
     )
-    calibrate_parser.add_argument("--lambda-count", required=True, type=float)
     calibrate_parser.add_argument("--split", default="calibration")
 
     selection_parser = subparsers.add_parser("selection")
@@ -393,7 +408,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             stage1_outputs_root=arguments.stage1_outputs_root,
             input_clg_list_path=arguments.input_clg_list,
             stage1_model_name=arguments.stage1_model_name,
-            lambda_count=arguments.lambda_count,
             split=arguments.split,
         )
         print(f"tau_G={payload['tau_G']}")

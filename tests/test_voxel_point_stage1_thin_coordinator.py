@@ -6,9 +6,11 @@ from types import SimpleNamespace
 import torch
 from torch import nn
 
+import src.wrappers.voxel_point_stage1 as stage1_wrapper_module
 from src.modules.losses import AdaptiveClassificationCompositeLoss
 from src.wrappers.voxel_point_stage1 import VoxelPointStage1Wrapper
 from src.wrappers.voxel_point_stage1_diagnostics import CpcValidationDiagnostics
+from src.wrappers.voxel_point_stage1_losses import LossTerm
 from src.wrappers.voxel_point_stage1_metrics import ValidationMetricManager
 
 
@@ -180,6 +182,30 @@ def test_wrapper_does_not_restore_old_metric_private_api() -> None:
 
     for name in forbidden_names:
         assert not hasattr(VoxelPointStage1Wrapper, name)
+
+
+def test_zero_weight_non_sparse_nan_does_not_poison_total_loss(monkeypatch) -> None:
+    """CPC2 关闭的辅助项即使诊断值为 NaN，也不得经 0*NaN 污染总损失。"""
+
+    nan = torch.tensor(float("nan"))
+    monkeypatch.setattr(
+        stage1_wrapper_module,
+        "compute_voxel_ligand_loss_term",
+        lambda **_kwargs: LossTerm(
+            name="voxel_ligand",
+            value=nan,
+            weight=0.0,
+            logged_value=nan,
+        ),
+    )
+    wrapper = _wrapper()
+
+    total_loss, terms, _ = wrapper._compute_total_loss(outputs={}, batch={})
+
+    assert len(terms) == 1
+    assert torch.isnan(terms[0].logged_value)
+    assert torch.isfinite(total_loss)
+    assert total_loss.item() == 0.0
 
 
 def test_validation_step_keeps_readable_time_order() -> None:

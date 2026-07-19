@@ -21,6 +21,7 @@ from src.inference.assembly import (
     build_production_tasks,
     load_pdb_id_list,
 )
+from src.inference.centered import CenteredRequest
 from src.inference.cli import DEFAULT_MAX_VOXELS, build_parser, main
 from src.inference.runner import (
     ProductionTask,
@@ -188,8 +189,22 @@ def test_runtime_assembly_uses_in_memory_dataset_and_find_full_hardmask(
     task = ProductionTask("Find_0", "calibration", "1abc")
     inputs = runtime.full_map_input(task)
     batch = inputs.window_batch_builder([(0, 0, 0)])
+    centered_batch = runtime.centered_batch_builder(task)(
+        CenteredRequest(
+            stage1_model_name="Find_0",
+            split="calibration",
+            pdb_id="1abc",
+            centered_role="F1_centered",
+            centered_box_index=0,
+            box_start_zyx=(0, 0, 0),
+            source_tree_id=0,
+            source_node_id=0,
+            source_threshold_grid_index=16384,
+        )
+    )
 
     assert batch["density_input"].shape == (1, 56, *SHAPE)
+    assert centered_batch["density_input"].shape == (1, 56, *SHAPE)
     assert batch["atom_global_indices"].tolist() == [0]
     assert bool(inputs.receptor_hardmask_full[0, 0, 0])
     assert grid_loads.count("exp.npz") == 1

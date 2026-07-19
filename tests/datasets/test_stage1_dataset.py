@@ -8,6 +8,7 @@ import numpy as np
 import pytest
 import torch
 
+import src.datasets.stage1_dataset as stage1_dataset_module
 from src.datasets.density_channel_builder import ALL_CHANNEL_NAMES
 from src.datasets.stage1_collate import Stage1BatchCollator
 from src.datasets.stage1_dataset import Stage1Dataset
@@ -341,6 +342,46 @@ def test_training_pool_rebuilds_fixed_1_5_3_ratio(tmp_path: Path) -> None:
     assert tuple(source_again.requests) == tuple(source.requests)
 
 
+@pytest.mark.parametrize("context_count", (0, 1, 2))
+def test_training_pool_context_underflow_does_not_abort(
+    tmp_path: Path,
+    context_count: int,
+) -> None:
+    """context 尝试耗尽后保留真实池；1–2 个可复用，0 个则只省略 context。"""
+
+    pool_dir = tmp_path / "train"
+    pool_dir.mkdir()
+    context = np.zeros((context_count, 3), dtype=np.int32)
+    np.savez(
+        pool_dir / "1abc.npz",
+        occurrence_id=np.asarray([7], dtype=np.int32),
+        center_start_zyx=np.asarray([[0, 0, 0]], dtype=np.int32),
+        bias_start_zyx=np.zeros((1, 30, 3), dtype=np.int32),
+        context_start_zyx=context,
+    )
+    (tmp_path / "manifest.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "splits": {
+                    "train": [{"pdb_id": "1abc", "path": "train/1abc.npz"}],
+                    "validation": [],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    (tmp_path / "_COMPLETE").write_text("", encoding="utf-8")
+
+    requests = tuple(Stage1TrainingRequestSet(pool_dir, seed=7).requests)
+
+    context_requests = [request for request in requests if request.role == "context"]
+    assert len(context_requests) == (3 if context_count else 0)
+    assert all(0 <= request.candidate_index < context_count for request in context_requests)
+    assert sum(request.role == "center" for request in requests) == 1
+    assert sum(request.role == "bias" for request in requests) == 5
+
+
 def test_context_generator_uses_core_atom_count_and_stable_legal_starts() -> None:
     """验证 context 只按合法起点与 core receptor 重原子数筛选。"""
 
@@ -369,6 +410,59 @@ def test_context_generator_uses_core_atom_count_and_stable_legal_starts() -> Non
     assert first.shape == (5, 3)
     assert np.array_equal(first, second)
     assert np.array_equal(first, np.zeros((5, 3), dtype=np.int32))
+
+
+def test_synced_rotation_swaps_anisotropic_voxel_axes_and_keeps_alignment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """90° 旋转必须同步置换轴尺度、体素监督和 Find 原子坐标。"""
+
+    side = 4
+    origin = np.asarray([10.0, 20.0, 30.0], dtype=np.float32)
+    voxel_size = np.asarray([1.0, 2.0, 3.0], dtype=np.float32)
+    local_xyz = np.asarray([[0.5, 1.5, 2.5]], dtype=np.float32)
+    center = origin + 0.5 * side * voxel_size
+    world = origin[None, :] + local_xyz * voxel_size[None, :]
+    label = np.zeros((side, side, side), dtype=np.bool_)
+    label[2, 1, 0] = True
+    sample = {
+        "density_input": label[None].astype(np.float32),
+        "hardmask": label.copy(),
+        "voxel_label": label.copy(),
+        "ligand_area_target": label.copy(),
+        "box_shape_zyx": np.asarray([side, side, side], dtype=np.int64),
+        "box_origin_world": origin,
+        "voxel_size_world": voxel_size,
+        "atom_coord_local_voxel": local_xyz,
+        "atom_coord_centered_world": world - center[None, :],
+        "atom_coord_world": world,
+    }
+    monkeypatch.setattr(
+        stage1_dataset_module.np.random,
+        "choice",
+        lambda *_args, **_kwargs: np.asarray([0, 1]),
+    )
+    monkeypatch.setattr(stage1_dataset_module.random, "randint", lambda *_args: 1)
+
+    rotated = stage1_dataset_module._apply_synced_rotation(sample)
+
+    np.testing.assert_array_equal(rotated["voxel_size_world"], [1.0, 3.0, 2.0])
+    label_position = np.argwhere(rotated["voxel_label"])[0]
+    atom_position = np.floor(rotated["atom_coord_local_voxel"][0]).astype(np.int64)[
+        [2, 1, 0]
+    ]
+    np.testing.assert_array_equal(atom_position, label_position)
+    np.testing.assert_allclose(
+        rotated["atom_coord_world"],
+        origin[None, :]
+        + rotated["atom_coord_local_voxel"]
+        * rotated["voxel_size_world"][None, :],
+    )
+    rotated_center = origin + 0.5 * side * rotated["voxel_size_world"]
+    np.testing.assert_allclose(
+        rotated["atom_coord_centered_world"],
+        rotated["atom_coord_world"] - rotated_center[None, :],
+    )
 
 
 def test_box_pool_one_click_entry_publishes_train_validation_and_selection(tmp_path: Path) -> None:

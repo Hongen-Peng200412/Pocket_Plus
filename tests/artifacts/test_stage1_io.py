@@ -79,3 +79,28 @@ def test_empty_centered_role_remains_publishable(centered_role: str) -> None:
     assert arrays["centered_box_index"].shape == (0,)
     assert arrays["voxel_offsets"].tolist() == [0]
     assert arrays["voxel_ds_2"].shape == (0, 256, 20, 20, 20)
+
+
+@pytest.mark.parametrize(
+    "missing_field",
+    (
+        "centered_probability",
+        "voxel_final",
+        "voxel_aux_probability",
+        "voxel_ds_2",
+    ),
+)
+def test_centered_validator_rejects_missing_required_payload(
+    missing_field: str,
+) -> None:
+    """概率、稀疏特征、辅助概率和固定 V grid 都是强制契约字段。"""
+
+    arrays = pack_centered_entries((), "F1_centered", stage1_model_name="unet_c1")
+    arrays.pop(missing_field)
+
+    with pytest.raises(KeyError, match="缺少共同字段"):
+        validate_centered_archive(
+            arrays,
+            "F1_centered",
+            stage1_model_name="unet_c1",
+        )

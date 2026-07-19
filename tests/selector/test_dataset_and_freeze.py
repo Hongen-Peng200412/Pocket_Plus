@@ -15,6 +15,31 @@ from src.selector.dataset import (
 )
 
 
+def _write_zero_clg_unet_pdb(root: Path, split: str, pdb_id: str) -> None:
+    """写出已完整发布但不含任何 CLG 的最小 PDB。"""
+
+    pdb_root = root / "unet_c1" / split / pdb_id
+    (pdb_root / "status" / "CLG_centered").mkdir(parents=True)
+    (pdb_root / "status" / "CLG_centered" / "_COMPLETE").write_text(
+        "", encoding="utf-8"
+    )
+    (pdb_root / "centered").mkdir(parents=True)
+    (pdb_root / "components").mkdir(parents=True)
+    np.savez_compressed(
+        pdb_root / "centered" / "CLG_centered.npz",
+        centered_box_index=np.empty(0, dtype=np.int32),
+    )
+    np.savez_compressed(
+        pdb_root / "components" / "clg.npz",
+        CLG_id=np.empty(0, dtype=np.int32),
+        candidate_offsets=np.zeros(1, dtype=np.int64),
+    )
+    np.savez_compressed(
+        pdb_root / "components" / "forest.npz",
+        tree_id=np.empty(0, dtype=np.int32),
+    )
+
+
 def _write_unet_pdb(root: Path, upstream: Path, split: str, pdb_id: str) -> None:
     """写出一个字段完整、数值极小的 unet_c1 CLG_centered 测试 PDB。"""
     pdb_root = root / "unet_c1" / split / pdb_id
@@ -224,3 +249,30 @@ def test_formal_run_requires_all_expected_validation_pdbs(tmp_path: Path) -> Non
             formal_run=True,
             expected_validation_pdb_ids_path=expected,
         )
+
+
+def test_zero_clg_pdb_remains_in_frozen_inventory_and_satisfies_formal_run(
+    tmp_path: Path,
+) -> None:
+    """零 CLG 是完整 PDB 结果，不能从正式 validation 完整性检查中消失。"""
+
+    outputs = tmp_path / "stage1_outputs"
+    _write_zero_clg_unet_pdb(outputs, "validation", "empty")
+    expected = tmp_path / "validation.json"
+    expected.write_text(json.dumps(["empty"]), encoding="utf-8")
+
+    frozen = freeze_input_clg_list(
+        stage1_outputs_root=outputs,
+        selector_run_dir=tmp_path / "run",
+        stage1_model_name="unet_c1",
+        split_order=("validation",),
+        input_clg_list_path=None,
+        formal_run=True,
+        expected_validation_pdb_ids_path=expected,
+    )
+
+    payload = json.loads(frozen.read_text(encoding="utf-8"))
+    assert payload["items"] == []
+    assert payload["split_counts"] == {"validation": 0}
+    assert payload["pdb_ids_by_split"] == {"validation": ["empty"]}
+    assert payload["split_pdb_counts"] == {"validation": 1}

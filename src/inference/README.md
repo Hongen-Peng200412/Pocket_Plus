@@ -46,4 +46,4 @@ python -m src.inference.cli selected-refined \
 
 每个 PDB 只有一个 `_RUNNING` 目录作为互斥租约。下游仅在不存在 `_RUNNING/_BLOB_EXCEED`，且所需 `status/<role>/_COMPLETE` 全部存在时读取。`_BLOB_EXCEED` 表示 `t_F1` 层 eligible component 超过 200，是可识别终态而不是失败重跑信号。payload 先原子写入，再发布 role 完成标志。
 
-`Selected_Refined_Centered` 只重跑并匹配 Selector 已选定的来源节点：局部新增的无关组件不会成为新节点，也不会改写完整图组件森林。其 NPZ 仍保存来源节点对应关系、BOX 几何、A/P/V 和各类概率。
+`Selected_Refined_Centered` 只重跑并匹配 Selector 已选定的来源节点：局部新增的无关组件不会成为新节点，也不会改写完整图组件森林。其 NPZ 保存来源节点对应关系、BOX 几何、A/P/V 和各类概率；失败 entry 的 ragged 段为空，四张固定 V grid 只保存 success 行，并由 `feature_entry_index` 映射，不能用全零网格伪造特征。

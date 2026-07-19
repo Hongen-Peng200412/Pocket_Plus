@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import logging
 from typing import Any, Callable, Mapping, Sequence
 
 import numpy as np
@@ -25,6 +26,9 @@ from .probability import (
     logits_to_probability,
     postprocess_ligand_probability,
 )
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -556,6 +560,15 @@ def produce_selected_refined_entries(
             entry["refine_status"] = "success"
             entries.append(entry)
         except Exception:
+            LOGGER.exception(
+                "Selected-refined 生成失败: producer=%s split=%s pdb_id=%s "
+                "source_tree_id=%s source_node_id=%s",
+                stage1_model_name,
+                split,
+                pdb_id,
+                source.tree_id,
+                source.node_id,
+            )
             entries.append(_empty_selected_entry(base, "failed"))
     return _normalize_selected_payloads(entries, stage1_model_name)
 
@@ -576,11 +589,15 @@ def publish_centered_entries(
     输出:
         - None, 最终只有一个 `{centered_role}.npz`，完成标记最后写入
     """
-    arrays = pack_centered_entries(entries, centered_role)
+    arrays = pack_centered_entries(
+        entries, centered_role, stage1_model_name=paths.stage1_model_name
+    )
     atomic_savez_compressed(
         paths.centered_npz(centered_role),
         arrays,
-        validator=lambda value: validate_centered_archive(value, centered_role),
+        validator=lambda value: validate_centered_archive(
+            value, centered_role, stage1_model_name=paths.stage1_model_name
+        ),
     )
     mark_role_complete(paths, centered_role)
 
@@ -878,19 +895,11 @@ def _normalize_selected_payloads(
     entries: list[dict[str, Any]],
     stage1_model_name: str,
 ) -> list[dict[str, Any]]:
-    """让失败 Selected entry 具有可聚合的空 ragged 表与固定网格占位。"""
+    """让失败 Selected entry 只具有可聚合的空 ragged 表，不伪造固定特征。"""
     successful = next((entry for entry in entries if entry["refine_status"] == "success"), None)
-    fixed_shapes = {
-        "voxel_ds_2": (256, 20, 20, 20),
-        "voxel_ds_3": (256, 10, 10, 10),
-        "voxel_ds_4": (256, 5, 5, 5),
-        "voxel_c4": (256, 5, 5, 5),
-    }
     for entry in entries:
         if entry["refine_status"] == "success":
             continue
-        for field, shape in fixed_shapes.items():
-            entry[field] = np.zeros(shape, dtype=np.float16)
         if successful is not None:
             for group_fields in (
                 ("P_coord_local_xyz", "P_probability", "P_feat_L2", "P_feat_L3", "P_feat_L4"),

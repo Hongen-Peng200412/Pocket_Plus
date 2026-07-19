@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import math
 import os
 import random
 import uuid
@@ -13,7 +14,7 @@ from typing import Any
 import numpy as np
 import torch
 from omegaconf import DictConfig, OmegaConf
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Sampler
 
 from .dataset import SelectorDataset, freeze_input_clg_list
 from .wrapper import SelectorWrapper, build_selector_wrapper_from_config
@@ -98,6 +99,44 @@ def _build_dataset(config: Mapping[str, Any], frozen_path: Path, split: str, req
         density_clip_percentile=tuple(float(value) for value in config["data"]["density_clip_percentile"]),
         pdb_cache_size=int(config["data"]["pdb_cache_size"]),
     )
+
+
+class PdbGroupedBatchSampler(Sampler[list[int]]):
+    """按 PDB 成组打乱 CLG，避免小缓存反复解压同一聚合归档。"""
+
+    def __init__(
+        self,
+        records: Sequence[Any],
+        batch_size: int,
+        seed: int,
+    ) -> None:
+        if int(batch_size) <= 0:
+            raise ValueError("Selector batch_size 必须为正。")
+        groups: dict[tuple[str, str], list[int]] = {}
+        for index, record in enumerate(records):
+            groups.setdefault((str(record.split), str(record.pdb_id)), []).append(index)
+        self.groups = tuple(tuple(indices) for indices in groups.values())
+        self.batch_size = int(batch_size)
+        self.seed = int(seed)
+        self.epoch = 0
+
+    def set_epoch(self, epoch: int) -> None:
+        """设置当前 epoch，使 PDB 顺序与 PDB 内 CLG 顺序可复现地变化。"""
+        self.epoch = int(epoch)
+
+    def __iter__(self):
+        """逐 PDB 产出 batch；一个 batch 不跨 PDB。"""
+        rng = np.random.default_rng(np.random.SeedSequence([self.seed, self.epoch]))
+        group_order = rng.permutation(len(self.groups)).tolist()
+        for group_index in group_order:
+            indices = np.asarray(self.groups[group_index], dtype=np.int64)
+            indices = indices[rng.permutation(indices.size)]
+            for begin in range(0, indices.size, self.batch_size):
+                yield indices[begin : begin + self.batch_size].tolist()
+
+    def __len__(self) -> int:
+        """返回每个 PDB 独立切 batch 后的 batch 总数。"""
+        return sum(math.ceil(len(indices) / self.batch_size) for indices in self.groups)
 
 
 def _validate_source_dimensions(
@@ -221,21 +260,26 @@ def run_training(config: DictConfig) -> dict[str, Any]:
 
     generator = torch.Generator().manual_seed(seed)
     loader_arguments = {
-        "batch_size": int(resolved["train"]["batch_size"]),
         "num_workers": int(resolved["train"]["num_workers"]),
         "collate_fn": SelectorDataset.collate_fn,
         "worker_init_fn": _seed_worker,
         "generator": generator,
         "pin_memory": bool(resolved["train"]["pin_memory"]),
     }
+    train_batch_sampler = PdbGroupedBatchSampler(
+        train_dataset.records,
+        batch_size=int(resolved["train"]["batch_size"]),
+        seed=seed,
+    )
     train_loader = DataLoader(
         train_dataset,
-        shuffle=True,
+        batch_sampler=train_batch_sampler,
         persistent_workers=int(resolved["train"]["num_workers"]) > 0,
         **loader_arguments,
     )
     validation_loader = DataLoader(
         validation_dataset,
+        batch_size=int(resolved["train"]["batch_size"]),
         shuffle=False,
         persistent_workers=int(resolved["train"]["num_workers"]) > 0,
         **loader_arguments,
@@ -259,6 +303,7 @@ def run_training(config: DictConfig) -> dict[str, Any]:
     checkpoint_name = "BEST.ckpt" if bool(resolved["data"]["formal_run"]) else "TRIAL_BEST.ckpt"
     best_path = run_dir / "checkpoints" / checkpoint_name
     for epoch in range(int(resolved["train"]["max_epochs"])):
+        train_batch_sampler.set_epoch(epoch)
         wrapper.train()
         for batch in train_loader:
             samples = move_sample_to_device(batch, device)

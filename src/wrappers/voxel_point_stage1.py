@@ -668,7 +668,8 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
             else:
                 # torch.Tensor, (), 当前 loss term 实际参与总损失的权重
                 weight = term.value.new_tensor(term.weight)
-                total_loss = total_loss + weight * term.value
+                if float(term.weight) != 0.0:
+                    total_loss = total_loss + weight * term.value
         return total_loss, loss_terms, extra_logs
 
     def _log_loss_terms(self, prefix: str, total_loss: torch.Tensor, loss_terms: Sequence[LossTerm], extra_logs: Mapping[str, torch.Tensor]) -> None:

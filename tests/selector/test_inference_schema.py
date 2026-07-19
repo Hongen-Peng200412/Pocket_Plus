@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 
+import src.selector.inference as selector_inference_module
 from src.component_lineage import ComponentForest, ComponentNode, ComponentTree
 from src.selector.inference import load_selected_nodes_for_pdb, produce_selection_for_pdb
 
@@ -92,3 +95,123 @@ def test_selection_schema_uses_gate_and_clg_local_candidate_indices(tmp_path: Pa
 
     selected_nodes = load_selected_nodes_for_pdb(selection_path, forest_path, clg_path)
     assert [(value.tree_id, value.node_id) for value in selected_nodes] == [(0, 11), (0, 12)]
+
+
+def test_selected_node_loader_merges_same_node_across_clgs_in_first_order(
+    tmp_path: Path,
+) -> None:
+    """同一 forest node 可属于多个 CLG；下游只接收首次出现的一份。"""
+
+    node = ComponentNode(
+        tree_id=0,
+        node_id=7,
+        threshold_grid_index=100,
+        threshold_value=100 / 32768,
+        voxel_global_linear_index=np.asarray([0], dtype=np.int64),
+        bbox_min_zyx=np.asarray([0, 0, 0], dtype=np.int32),
+        bbox_max_zyx=np.asarray([0, 0, 0], dtype=np.int32),
+        centroid_zyx=np.asarray([0.5, 0.5, 0.5], dtype=np.float32),
+        probability_mean=0.8,
+        probability_max=0.8,
+        candidate_eligible=True,
+        ineligible_reason_code=0,
+    )
+    forest_path = tmp_path / "forest.npz"
+    clg_path = tmp_path / "clg.npz"
+    selection_path = tmp_path / "selection.npz"
+    _save_npz(
+        forest_path,
+        **ComponentForest((ComponentTree(0, (node,)),)).to_arrays(),
+    )
+    _save_npz(
+        clg_path,
+        CLG_id=np.asarray([10, 11], dtype=np.int32),
+        tree_id=np.asarray([0, 0], dtype=np.int32),
+        candidate_offsets=np.asarray([0, 1, 2], dtype=np.int64),
+        candidate_node_id=np.asarray([7, 7], dtype=np.int32),
+    )
+    _save_npz(
+        selection_path,
+        CLG_id=np.asarray([10, 11], dtype=np.int32),
+        CLG_gate_pass=np.asarray([True, True], dtype=np.bool_),
+        selected_candidate_offsets=np.asarray([0, 1, 2], dtype=np.int64),
+        selected_candidate_index=np.asarray([0, 0], dtype=np.int16),
+    )
+
+    selected = load_selected_nodes_for_pdb(selection_path, forest_path, clg_path)
+
+    assert [(value.tree_id, value.node_id) for value in selected] == [(0, 7)]
+
+
+def test_produce_scores_publishes_empty_archive_for_zero_clg_pdb(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """冻结 inventory 中的零 CLG PDB 也必须得到可消费的空 scores.npz。"""
+
+    stage1_root = tmp_path / "stage1"
+    clg_path = stage1_root / "unet_c1" / "calibration" / "empty" / "components" / "clg.npz"
+    _save_npz(
+        clg_path,
+        CLG_id=np.empty(0, dtype=np.int32),
+        candidate_offsets=np.zeros(1, dtype=np.int64),
+    )
+    frozen_path = tmp_path / "input_CLG_list.json"
+    frozen_path.write_text(
+        json.dumps(
+            {
+                "stage1_model_name": "unet_c1",
+                "split_order": ["calibration"],
+                "split_counts": {"calibration": 0},
+                "split_pdb_counts": {"calibration": 1},
+                "pdb_ids_by_split": {"calibration": ["empty"]},
+                "items": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    class _EmptyDataset:
+        """绕过模型输入，只验证零 CLG PDB 的发布边界。"""
+
+        def __init__(self, **_kwargs) -> None:
+            pass
+
+        def __len__(self) -> int:
+            return 0
+
+    monkeypatch.setattr(selector_inference_module, "SelectorDataset", _EmptyDataset)
+    monkeypatch.setattr(
+        selector_inference_module,
+        "load_selector_checkpoint",
+        lambda *_args, **_kwargs: (
+            SimpleNamespace(model=None),
+            {
+                "resolved_config": {
+                    "stage1_model_name": "unet_c1",
+                    "data": {
+                        "lambda_count": 0.05,
+                        "density_clip_percentile": [0.001, 0.999],
+                        "pdb_cache_size": 1,
+                    },
+                }
+            },
+        ),
+    )
+
+    paths = selector_inference_module.produce_scores(
+        checkpoint_path=tmp_path / "unused.ckpt",
+        input_clg_list_path=frozen_path,
+        stage1_outputs_root=stage1_root,
+        upstream_root=tmp_path / "upstream",
+        selector_run_dir=tmp_path / "selector_run",
+        split="calibration",
+        device_name="cpu",
+    )
+
+    assert len(paths) == 1
+    with np.load(paths[0], allow_pickle=False) as scores:
+        assert scores["CLG_id"].shape == (0,)
+        assert scores["candidate_offsets"].tolist() == [0]
+        assert scores["predicted_max_iou"].shape == (0,)
+        assert scores["selection_logit"].shape == (0,)

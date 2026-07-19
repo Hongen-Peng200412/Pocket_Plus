@@ -9,7 +9,7 @@ import uuid
 from collections import OrderedDict
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Mapping, Sequence
 
 import numpy as np
 import torch
@@ -138,6 +138,7 @@ def _validate_frozen_records(
     records: Sequence[SelectorInputRecord],
     stage1_outputs_root: Path,
     stage1_model_name: str,
+    pdb_ids_by_split: Mapping[str, Sequence[str]],
 ) -> None:
     """
     逐条验证冻结清单中的 CLG 仍属于同一 producer 且完整存在。
@@ -148,22 +149,64 @@ def _validate_frozen_records(
         - stage1_model_name: str, 清单声明的唯一 producer
 
     输出:
-        - None；任何缺失、重复或来源 CLG 不存在都会 fail-fast
+        - None；任何缺失、重复、PDB inventory 漂移或来源 CLG 不存在都会 fail-fast
     """
     identities = [(record.split, record.pdb_id, record.CLG_id) for record in records]
     if len(set(identities)) != len(identities):
         raise ValueError("input_CLG_list.json 含重复 (split,pdb_id,CLG_id)。")
-    clg_id_cache: dict[tuple[str, str], set[int]] = {}
+    expected_records: list[SelectorInputRecord] = []
+    inventory_identities: set[tuple[str, str]] = set()
+    for split, pdb_ids in pdb_ids_by_split.items():
+        for pdb_id in pdb_ids:
+            key = (str(split), str(pdb_id))
+            if key in inventory_identities:
+                raise ValueError(f"input_CLG_list.json 含重复 PDB identity: {key}")
+            inventory_identities.add(key)
+            pdb_root = _pdb_output_root(
+                stage1_outputs_root, stage1_model_name, key[0], key[1]
+            )
+            if not _is_complete_clg_centered(pdb_root):
+                raise FileNotFoundError(f"冻结 PDB 的 CLG_centered 未完整发布: {key}")
+            with np.load(pdb_root / "components" / "clg.npz", allow_pickle=False) as source:
+                clg_ids = np.asarray(source["CLG_id"], dtype=np.int64)
+            if np.unique(clg_ids).size != clg_ids.size:
+                raise ValueError(f"来源 clg.npz 含重复 CLG_id: {key}")
+            expected_records.extend(
+                SelectorInputRecord(split=key[0], pdb_id=key[1], CLG_id=int(clg_id))
+                for clg_id in clg_ids.tolist()
+            )
+    if tuple(expected_records) != tuple(records):
+        raise ValueError(
+            "input_CLG_list.json.items 必须逐 PDB 完整复制来源 CLG 顺序；"
+            "零 CLG PDB 只保留在 pdb_ids_by_split。"
+        )
     for record in records:
         key = (record.split, record.pdb_id)
+        if key not in inventory_identities:
+            raise ValueError(f"冻结 CLG 不属于 pdb_ids_by_split: {record}")
         pdb_root = _pdb_output_root(stage1_outputs_root, stage1_model_name, *key)
         if not _is_complete_clg_centered(pdb_root):
             raise FileNotFoundError(f"冻结 CLG 样本未完整发布: {record}")
-        if key not in clg_id_cache:
-            with np.load(pdb_root / "components" / "clg.npz", allow_pickle=False) as source:
-                clg_id_cache[key] = set(np.asarray(source["CLG_id"], dtype=np.int64).tolist())
-        if record.CLG_id not in clg_id_cache[key]:
-            raise KeyError(f"冻结 CLG_id 不在来源 clg.npz: {record}")
+
+
+def _pdb_inventory_from_frozen_payload(
+    payload: Mapping[str, Any],
+    split_order: Sequence[str],
+) -> dict[str, tuple[str, ...]]:
+    """解析可表示零 CLG PDB 的固定 split→PDB inventory。"""
+    source = payload.get("pdb_ids_by_split")
+    if not isinstance(source, Mapping) or set(source) != set(split_order):
+        raise ValueError("input_CLG_list.json.pdb_ids_by_split 必须覆盖全部 split_order。")
+    result: dict[str, tuple[str, ...]] = {}
+    for split in split_order:
+        values = tuple(str(value) for value in source[split])
+        if len(set(values)) != len(values):
+            raise ValueError(f"pdb_ids_by_split[{split!r}] 含重复 PDB。")
+        result[str(split)] = values
+    expected_counts = {split: len(values) for split, values in result.items()}
+    if payload.get("split_pdb_counts") != expected_counts:
+        raise ValueError("input_CLG_list.json.split_pdb_counts 与 PDB inventory 不一致。")
+    return result
 
 
 def _records_from_frozen_payload(
@@ -188,7 +231,7 @@ def _records_from_frozen_payload(
         raise ValueError("指定 input_CLG_list.json 来自不同 producer。")
     if tuple(str(value) for value in payload.get("split_order", ())) != tuple(split_order):
         raise ValueError("input_CLG_list.json 的 split_order 与当前 run 配置不一致。")
-    return tuple(
+    records = tuple(
         SelectorInputRecord(
             split=str(item["split"]),
             pdb_id=str(item["pdb_id"]),
@@ -196,6 +239,15 @@ def _records_from_frozen_payload(
         )
         for item in payload["items"]
     )
+    if any(record.split not in split_order for record in records):
+        raise ValueError("input_CLG_list.json.items 含 split_order 之外的 split。")
+    expected_counts = {
+        str(split): sum(record.split == str(split) for record in records)
+        for split in split_order
+    }
+    if payload.get("split_counts") != expected_counts:
+        raise ValueError("input_CLG_list.json.split_counts 与 CLG items 不一致。")
+    return records
 
 
 def freeze_input_clg_list(
@@ -243,8 +295,12 @@ def freeze_input_clg_list(
             stage1_model_name=stage1_model_name,
             split_order=split_values,
         )
+        pdb_ids_by_split = _pdb_inventory_from_frozen_payload(payload, split_values)
     else:
         records_list: list[SelectorInputRecord] = []
+        pdb_ids_by_split_lists: dict[str, list[str]] = {
+            split: [] for split in split_values
+        }
         for split in split_values:
             split_root = outputs_root / stage1_model_name / split
             if not split_root.is_dir():
@@ -256,6 +312,7 @@ def freeze_input_clg_list(
             for pdb_root in pdb_roots:
                 if not _is_complete_clg_centered(pdb_root):
                     continue
+                pdb_ids_by_split_lists[split].append(pdb_root.name)
                 with np.load(pdb_root / "components" / "clg.npz", allow_pickle=False) as source:
                     clg_ids = np.asarray(source["CLG_id"], dtype=np.int64)
                 records_list.extend(
@@ -263,13 +320,18 @@ def freeze_input_clg_list(
                     for clg_id in clg_ids.tolist()
                 )
         records = tuple(records_list)
+        pdb_ids_by_split = {
+            split: tuple(values) for split, values in pdb_ids_by_split_lists.items()
+        }
 
-    _validate_frozen_records(records, outputs_root, stage1_model_name)
+    _validate_frozen_records(
+        records, outputs_root, stage1_model_name, pdb_ids_by_split
+    )
     if formal_run:
         if expected_validation_pdb_ids_path is None:
             raise ValueError("formal_run=True 时必须显式提供固定 validation PDB 清单。")
         expected = set(_read_expected_pdb_ids(Path(expected_validation_pdb_ids_path)))
-        available = {record.pdb_id for record in records if record.split == "validation"}
+        available = set(pdb_ids_by_split.get("validation", ()))
         missing = sorted(expected - available)
         if missing:
             raise FileNotFoundError(f"正式 Selector run 的 validation 尚未全部可读: missing={missing[:20]}")
@@ -283,6 +345,12 @@ def freeze_input_clg_list(
         "stage1_model_name": stage1_model_name,
         "split_order": list(split_values),
         "split_counts": split_counts,
+        "split_pdb_counts": {
+            split: len(pdb_ids_by_split[split]) for split in split_values
+        },
+        "pdb_ids_by_split": {
+            split: list(pdb_ids_by_split[split]) for split in split_values
+        },
         "items": [asdict(record) for record in records],
     }
     if existing_payload is not None:
@@ -293,6 +361,11 @@ def freeze_input_clg_list(
         )
         if existing_records != records:
             raise ValueError("同一 selector_run_dir 的 input_CLG_list.json 已冻结，禁止替换。")
+        existing_pdb_ids = _pdb_inventory_from_frozen_payload(
+            existing_payload, split_values
+        )
+        if existing_pdb_ids != pdb_ids_by_split:
+            raise ValueError("同一 selector_run_dir 的 PDB inventory 已冻结，禁止替换。")
         return frozen_path
 
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -427,6 +500,8 @@ class SelectorDataset(Dataset[dict[str, Any]]):
         super().__init__()
         payload = json.loads(Path(input_clg_list_path).read_text(encoding="utf-8"))
         self.stage1_model_name = str(payload["stage1_model_name"])
+        split_order = tuple(str(value) for value in payload["split_order"])
+        pdb_inventory = _pdb_inventory_from_frozen_payload(payload, split_order)
         self.records = tuple(
             SelectorInputRecord(str(item["split"]), str(item["pdb_id"]), int(item["CLG_id"]))
             for item in payload["items"]
@@ -446,7 +521,12 @@ class SelectorDataset(Dataset[dict[str, Any]]):
             fit_mask_percentile=0.003,
             enabled_channels=["exp_clipnorm_nopost"],
         )
-        _validate_frozen_records(self.records, self.stage1_outputs_root, self.stage1_model_name)
+        _validate_frozen_records(
+            self.records,
+            self.stage1_outputs_root,
+            self.stage1_model_name,
+            {self.split: pdb_inventory[self.split]},
+        )
 
     def _load_pdb_bundle(self, record: SelectorInputRecord) -> dict[str, Any]:
         """

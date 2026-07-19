@@ -320,6 +320,8 @@ class Stage1RuntimeAssembly:
             wrapper_loader=wrapper_loader,
         )
         self.occurrence_loader = AGOccurrenceVoxelLoader(self.data_root)
+        self._active_materializer_task: ProductionTask | None = None
+        self._active_materializer: _TaskDatasetMaterializer | None = None
 
     def full_map_input(self, task: ProductionTask) -> FullMapTaskInput:
         """构造一张 A—G 完整图的滑窗 Dataset、Find hardmask 与 wrapper。"""
@@ -367,15 +369,19 @@ class Stage1RuntimeAssembly:
         return self.occurrence_loader(task.pdb_id, full_shape_zyx)
 
     def _materializer(self, task: ProductionTask) -> _TaskDatasetMaterializer:
-        """构造只在当前 role callback 生命周期内存在的 per-PDB materializer。"""
-        return _TaskDatasetMaterializer(
-            data_root=self.data_root,
-            task=task,
-            density_channel_config=self.density_channel_config,
-            atom_buffer_radius=self.atom_buffer_radius,
-            cache_max_bytes=self.cache_max_bytes,
-            device=self.device,
-        )
+        """在同一 PDB 的连续 roles 之间复用 materializer，切换 task 时释放旧引用。"""
+        if task != self._active_materializer_task:
+            self._active_materializer_task = task
+            self._active_materializer = _TaskDatasetMaterializer(
+                data_root=self.data_root,
+                task=task,
+                density_channel_config=self.density_channel_config,
+                atom_buffer_radius=self.atom_buffer_radius,
+                cache_max_bytes=self.cache_max_bytes,
+                device=self.device,
+            )
+        assert self._active_materializer is not None
+        return self._active_materializer
 
     def _check_task(self, task: ProductionTask) -> None:
         """阻止一个 runtime assembly 跨 producer 使用。"""
