@@ -232,7 +232,9 @@ def test_adaligand_direct_union_target_has_priority_over_legacy_distance_map() -
     """验证 schema-v3 union target 直接进入 loss，不被 hardmask 或旧距离图替换。"""
 
     wrapper = _wrapper()
-    direct = torch.tensor([[[[False, True], [True, False]]]])
+    direct = torch.tensor(
+        [[[[[False, True], [True, False]], [[True, False], [False, True]]]]]
+    )
     legacy = torch.full((1, 2, 2, 2), 99.0)
 
     target = wrapper._ligand_target_from_batch(

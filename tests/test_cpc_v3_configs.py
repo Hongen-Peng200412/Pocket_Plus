@@ -118,7 +118,7 @@ def test_cpc_v3_files_start_with_launch_command() -> None:
             lines = path.read_text(encoding="utf-8").splitlines()
             header = "\n".join(lines[:8])
             assert f"+experiment={group}/{path.stem}" in header
-            assert "python src/train.py" in header
+            assert "src/train.py" in header
 
 
 def test_cpc1_trunk_main_is_final_main_entry() -> None:

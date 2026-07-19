@@ -1024,7 +1024,10 @@ class Stage1EmbedHead(nn.Module):
         core_feat = atom_feat[core_keep]
         core_local = atom_coord_local_voxel[core_keep]
         core_batch = atom_batch_index.long()[core_keep]
-        hidden = self.input_proj(core_feat)
+        # 与完整 forward 保持相同的矩阵形状和算子顺序：先投影 core+8 Å 全表，
+        # 再截取 core。若先截取后投影，BLAS 会因矩阵行数不同选择另一 kernel，
+        # 在服务器上可产生约 1e-7 的舍入差，破坏逐元素等价契约。
+        hidden = self.input_proj(atom_feat)[core_keep]
 
         if hidden.shape[0] == 0:
             voxel_value = hidden.new_zeros((0, self.embed_voxel_out_channels))

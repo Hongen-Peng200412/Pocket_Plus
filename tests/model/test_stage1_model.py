@@ -791,7 +791,9 @@ def test_find1_voxel_only_matches_three_recycle_eval_forward_and_skips_point_pat
     model._run_voxel_backbone = counted_voxel  # type: ignore[method-assign]
     with torch.no_grad():
         full_logits = model(batch)["voxel_logits_ligand"]
-    assert embed_point_calls == 1
+    # 完整训练 forward 每次 recycle 都重跑 embed/point 路；最短入口才把
+    # producer-specific voxel 构造提到 recycle 外并彻底跳过 point blocks。
+    assert embed_point_calls == 3
     assert point_backbone_calls == 3
     assert voxel_calls == 3
 
