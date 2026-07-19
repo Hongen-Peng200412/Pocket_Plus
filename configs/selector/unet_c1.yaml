@@ -1,0 +1,80 @@
+# ============================================================
+# AdaLigand Stage1 Selector：unet_c1 / CCLN + V5+D（V-only）
+# src/selector/train.py 直接读取本文件；启动后保存完整 resolved_config.yaml
+# ============================================================
+
+stage1_model_name: unet_c1
+selector_variant: ccln_v5d_oracle
+
+paths:
+  stage1_outputs_root: "/path/to/stage1_outputs"
+  upstream_root: "/path/to/Ori_Data"
+  selector_run_dir: "/path/to/selector_outputs/unet_c1/ccln_v5d_oracle/run_001"
+  input_CLG_list_path: null
+  expected_validation_pdb_ids_path: null
+
+data:
+  split_order: [train, validation, calibration]
+  formal_run: false                               # false 只写 TRIAL_BEST.ckpt；正式 run 必须改 true 并给 validation 清单
+  selector_seed: 20260720
+  lambda_count: 0.05
+  density_clip_percentile: [0.001, 0.999]
+  pdb_cache_size: 1
+
+model:
+  modalities: [V]                                # unet_c1 只消费真实 V，不创建 P/A 占位
+  A_source_order: []
+  P_source_order: []
+  hidden_dim: 128
+  num_heads: 4
+  tree_layers: 2
+  tree_ffn_hidden_dim: 256
+  candidate_attribute_dim: 16
+  modality_projected_dim: 64                     # 无 P/A 时不实例化对应 adapter
+  modality_gate_hidden_dim: 128
+  dropout: 0.1
+  probability_epsilon: 1.0e-6
+
+  V_output_dim: 48
+  V_grid_source_order: [voxel_ds_2, voxel_ds_3, voxel_ds_4, voxel_c4]
+  V_grid_source_dims:
+    voxel_ds_2: 256
+    voxel_ds_3: 256
+    voxel_ds_4: 256
+    voxel_c4: 256
+  V_meta_dim: 2
+  V_fusion_projected_dim: 48
+  V_fusion_gate_hidden_dim: 96
+  V_correction_gate_hidden_dim: 128
+  use_V_multiscale: true
+  use_density_context: true
+
+  density_input_shape_zyx: [80, 80, 80]
+  density_channels: [32, 64, 64, 128]
+  density_bottleneck_heads: 4
+  density_bottleneck_layers: 1
+  density_bottleneck_ffn_dim: 256
+
+loss:
+  condition_weighting: oracle
+  gamma_focal: 0.0
+  w_CLG: 1.0
+  w_blob: 1.0                                    # L_blob 对正、负 CLG 始终训练
+  w_antichain: 1.0
+  smooth_l1_beta: 1.0
+
+optimizer:
+  learning_rate: 3.0e-4
+  weight_decay: 0.01
+  gradient_clip_norm: 1.0
+  plateau_factor: 0.3
+  plateau_patience: 3
+  plateau_threshold: 0.001
+
+train:
+  device: cuda
+  batch_size: 1
+  num_workers: 2
+  pin_memory: true
+  max_epochs: 20
+

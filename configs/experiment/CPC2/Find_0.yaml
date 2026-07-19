@@ -1,0 +1,13 @@
+# @package _global_
+# AdaLigand Find_0 / CPC2：从同名 CPC1 BEST 严格 model-only 初始化。
+defaults:
+  - /experiment/CPC1/Find_0
+  - override /loss: stage1_find_cpc2
+  - override /train: stage1_cpc2
+  - override /frozen_module: adaligand_stage2
+  - _self_
+
+name: Find_0_CPC2
+tag: "Find_0/CPC2"
+experiment_group: "AdaLigand_Stage1/Find_0/CPC2"
+init_from: "***"

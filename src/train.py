@@ -104,19 +104,13 @@ def _load_model_only_checkpoint(model: torch.nn.Module, ckpt_path: Path, verbose
     """
     checkpoint = torch.load(str(ckpt_path), map_location="cpu")
     state_dict = checkpoint["state_dict"] if isinstance(checkpoint, dict) and "state_dict" in checkpoint else checkpoint
-    load_result = model.load_state_dict(state_dict, strict=False)
-    missing = tuple(load_result.missing_keys)
-    unexpected = tuple(load_result.unexpected_keys)
+    model.load_state_dict(state_dict, strict=True)
+    if isinstance(checkpoint, dict) and hasattr(model, "on_load_checkpoint"):
+        model.on_load_checkpoint(checkpoint)
     if verbose:
         print(
             "[Train] model-only init_from: "
-            f"path={ckpt_path}, loaded_keys={len(state_dict)}, "
-            f"missing={len(missing)}, unexpected={len(unexpected)}"
-        )
-    if missing or unexpected:
-        raise RuntimeError(
-            "model-only checkpoint 加载出现参数名不匹配: "
-            f"missing={len(missing)}, unexpected={len(unexpected)}。"
+            f"path={ckpt_path}, loaded_keys={len(state_dict)}, strict=True, lifecycle=restored"
         )
 
 
@@ -637,9 +631,11 @@ def _extract_input_tensor(sample):
     if torch.is_tensor(sample):
         return sample
     if isinstance(sample, dict):
+        if "density_input" in sample and torch.is_tensor(sample["density_input"]):
+            return sample["density_input"]
         if "voxel_grid" in sample and torch.is_tensor(sample["voxel_grid"]):
             return sample["voxel_grid"]
-        raise TypeError("Unsupported dict sample format; expected key 'voxel_grid' with Tensor value.")
+        raise TypeError("Unsupported dict sample format; expected density_input or voxel_grid Tensor.")
     if isinstance(sample, (list, tuple)) and len(sample) > 0 and torch.is_tensor(sample[0]):
         return sample[0]
     raise TypeError(
@@ -805,6 +801,9 @@ class SeededEpochRandomSampler(Sampler[int]):
 
     def set_epoch(self, epoch: int) -> None:
         self.epoch = int(epoch)
+        set_dataset_epoch = getattr(self.data_source, "set_epoch", None)
+        if callable(set_dataset_epoch):
+            set_dataset_epoch(self.epoch)
 
     def __iter__(self):
         generator = torch.Generator()
@@ -814,6 +813,47 @@ class SeededEpochRandomSampler(Sampler[int]):
 
     def __len__(self) -> int:
         return len(self.data_source)
+
+
+class EpochAwareDistributedSampler(DistributedSampler):
+    """在 DDP sampler epoch 切换时同步刷新动态 Stage1 请求源。"""
+
+    def set_epoch(self, epoch: int) -> None:
+        super().set_epoch(epoch)
+        set_dataset_epoch = getattr(self.dataset, "set_epoch", None)
+        if callable(set_dataset_epoch):
+            set_dataset_epoch(int(epoch))
+
+
+class DatasetEpochController(Callback):
+    """在每个训练 epoch 开始前同步动态请求源与 sampler 的 epoch。"""
+
+    @staticmethod
+    def _set_epoch(trainer: pl.Trainer, epoch: int) -> None:
+        """同步 DataModule 持有的 Dataset 与当前 train DataLoader sampler。"""
+
+        datamodule = getattr(trainer, "datamodule", None)
+        train_dataset = getattr(datamodule, "train_ds", None)
+        set_dataset_epoch = getattr(train_dataset, "set_epoch", None)
+        if callable(set_dataset_epoch):
+            set_dataset_epoch(int(epoch))
+        train_loader = getattr(trainer, "train_dataloader", None)
+        sampler = getattr(train_loader, "sampler", None)
+        set_sampler_epoch = getattr(sampler, "set_epoch", None)
+        if callable(set_sampler_epoch):
+            set_sampler_epoch(int(epoch))
+
+    def on_train_epoch_start(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
+        """在当前 epoch 消费前刷新；普通 Dataset 无副作用。"""
+
+        del pl_module
+        self._set_epoch(trainer, int(trainer.current_epoch))
+
+    def on_train_epoch_end(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
+        """预先发布下一 epoch 请求，覆盖 DataLoader 可能提前创建 iterator 的实现差异。"""
+
+        del pl_module
+        self._set_epoch(trainer, int(trainer.current_epoch) + 1)
 
 
 def _seed_worker(worker_id: int) -> None:
@@ -992,7 +1032,7 @@ def main(cfg: DictConfig):
                 )
 
             if world_size > 1:
-                return DistributedSampler(ds, shuffle=(stage == "train" and shuffle), seed=stage_seed)
+                return EpochAwareDistributedSampler(ds, shuffle=(stage == "train" and shuffle), seed=stage_seed)
             if stage == "train" and shuffle:
                 return SeededEpochRandomSampler(ds, seed=stage_seed)
             return None
@@ -1180,7 +1220,7 @@ def main(cfg: DictConfig):
         alias_path=Path(run_dir) / "checkpoints" / "BEST.ckpt",
     )
     # 建立最初的回调列表
-    callbacks = [checkpoint_callback, best_alias_callback]
+    callbacks = [checkpoint_callback, best_alias_callback, DatasetEpochController()]
 
     # ------ 额外开启周期性保存 ------
     # 从配置中获取 save_every_n_epochs (例如: 10)

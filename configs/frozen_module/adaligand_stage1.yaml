@@ -1,0 +1,6 @@
+# @package _global_
+# AdaLigand CPC1：训练 embed/scatter、voxel/point trunk 与 A/P 尾部；冻结双向 interaction。
+frozen_module:
+  patterns:
+    - "backbone.atom_head.real_to_pseudo.*"
+    - "backbone.atom_head.pseudo_to_real.*"

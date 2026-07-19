@@ -107,6 +107,33 @@ def trim_buffer_atoms(
             "keep_mask": atom_is_in_core_box,
         }
 
+    # 半径 0 的科学语义是严格 core-only；不能把恰落在上边界、但 core_mask=False
+    # 的原子因几何距离等于 0 而重新纳入。
+    if float(allowed_buffer_radius_world) <= 0.0:
+        keep_mask = atom_is_in_core_box.bool()
+        kept_feat = point_feat[keep_mask]
+        kept_coord = point_coord[keep_mask]
+        kept_batch = point_batch[keep_mask]
+        kept_core = atom_is_in_core_box[keep_mask]
+        kept_local_voxel = atom_coord_local_voxel[keep_mask]
+        batch_size = int(point_offset.shape[0])
+        new_counts = torch.zeros(batch_size, dtype=torch.long, device=point_feat.device)
+        if kept_batch.numel() > 0:
+            new_counts.scatter_add_(
+                dim=0,
+                index=kept_batch.long(),
+                src=torch.ones_like(kept_batch, dtype=torch.long),
+            )
+        return {
+            "point_feat": kept_feat,
+            "point_coord": kept_coord,
+            "point_batch": kept_batch,
+            "point_offset": new_counts.cumsum(dim=0),
+            "atom_is_in_core_box": kept_core,
+            "atom_coord_local_voxel": kept_local_voxel,
+            "keep_mask": keep_mask,
+        }
+
     # 对于无限半径或全部 core 原子的情况, 直接返回
     if allowed_buffer_radius_world == float("inf") or atom_is_in_core_box.all():
         # torch.Tensor, (N,), bool, 全 True 掩码
@@ -966,6 +993,86 @@ class Stage1EmbedHead(nn.Module):
         return point, cur_coord, cur_batch, cur_offset, cur_core, cur_local_voxel, global_keep_mask
 
 
+    def forward_voxel_only(
+        self,
+        atom_feat: torch.Tensor,
+        atom_coord_local_voxel: torch.Tensor,
+        atom_batch_index: torch.Tensor,
+        box_shape_zyx: torch.Tensor,
+        atom_is_in_core_box: torch.Tensor,
+    ) -> torch.Tensor:
+        """只执行 Find_1 所需的非块式 voxel MLP/centroid/residual/scatter。
+
+        参数:
+            atom_feat: ``float[N,49]``，Dataset 直接加载的 core+8 Å原子特征。
+            atom_coord_local_voxel: ``float[N,3]``，corner 语义 XYZ 连续体素坐标。
+            atom_batch_index: ``long[N]``，每个原子所属 BOX。
+            box_shape_zyx: ``long[B,3]``，当前 Stage1 固定为 80³。
+            atom_is_in_core_box: ``bool[N]``，voxel scatter 的唯一筛选。
+
+        返回:
+            ``float[B,51,80,80,80]``；49D value 加 2D occupancy。该入口不构造
+            PTV3 ``Point``，也不会调用 trunk、voxel 或 point Transformer blocks。
+        """
+
+        if not self.has_voxel_output:
+            raise RuntimeError("forward_voxel_only 需要 embed_voxel_out_channels > 0。")
+        if self.num_trunk_blocks != 0 or self.num_voxel_blocks != 0:
+            raise RuntimeError("forward_voxel_only 仅支持无 trunk/voxel Transformer 的 Find_1 配置。")
+        batch_size = int(box_shape_zyx.shape[0])
+        core_keep = atom_is_in_core_box.bool()
+        core_feat = atom_feat[core_keep]
+        core_local = atom_coord_local_voxel[core_keep]
+        core_batch = atom_batch_index.long()[core_keep]
+        hidden = self.input_proj(core_feat)
+
+        if hidden.shape[0] == 0:
+            voxel_value = hidden.new_zeros((0, self.embed_voxel_out_channels))
+        elif self.use_centroid_encoding:
+            voxel_centroids = compute_voxel_centroids(
+                atom_coord_local_voxel=core_local,
+                point_batch=core_batch,
+                box_shape_zyx=box_shape_zyx,
+                batch_size=batch_size,
+            )
+            d_val = int(box_shape_zyx[0, 0].item())
+            h_val = int(box_shape_zyx[0, 1].item())
+            w_val = int(box_shape_zyx[0, 2].item())
+            voxel_idx_xyz = core_local.floor().long()
+            voxel_idx_xyz[:, 0].clamp_(0, w_val - 1)
+            voxel_idx_xyz[:, 1].clamp_(0, h_val - 1)
+            voxel_idx_xyz[:, 2].clamp_(0, d_val - 1)
+            linear_idx = (
+                core_batch * (d_val * h_val * w_val)
+                + voxel_idx_xyz[:, 2] * (h_val * w_val)
+                + voxel_idx_xyz[:, 1] * w_val
+                + voxel_idx_xyz[:, 0]
+            )
+            atom_voxel_centroids = voxel_centroids[linear_idx]
+            atom_offset_from_centroid = core_local - atom_voxel_centroids
+            centroid_offset_from_center = atom_voxel_centroids - (voxel_idx_xyz.float() + 0.5)
+            voxel_value = self.voxel_out_proj_with_offset(
+                torch.cat(
+                    [hidden, atom_offset_from_centroid, centroid_offset_from_center],
+                    dim=1,
+                )
+            )
+        else:
+            voxel_value = self.voxel_out_proj(hidden)
+
+        if self.embed_voxel_add_proj is not None:
+            voxel_value = self.embed_voxel_add_proj(core_feat) + self.embed_voxel_gate * voxel_value
+        scatter_fn = soft_scatter_to_voxel_grid if self.use_soft_splatting else scatter_to_voxel_grid
+        return scatter_fn(
+            point_feat=voxel_value,
+            atom_coord_local_voxel=core_local,
+            point_batch=core_batch,
+            box_shape_zyx=box_shape_zyx,
+            batch_size=batch_size,
+            reduce=self.scatter_reduce,
+            add_occupancy_channels=self.add_occupancy_channels,
+        )
+
     def forward(
         self,
         atom_feat: torch.Tensor,
@@ -1122,8 +1229,24 @@ class Stage1EmbedHead(nn.Module):
                     global_keep_mask=v_global_keep,
                 )
 
+            # AdaLigand 的无 voxel-block 路径固定只把 core 原子送入 voxel scatter。
+            # point 分支仍从 trunk 快照独立运行 [8,4,0]，因此这里不能改动 point view。
+            if voxel_point is not None and self.num_voxel_blocks == 0:
+                core_keep = v_core.bool()
+                active_positions = v_global_keep.nonzero(as_tuple=True)[0]
+                v_global_keep[active_positions[~core_keep]] = False
+                voxel_point_feat = voxel_point.feat[core_keep]
+                v_batch = v_batch[core_keep]
+                v_local_voxel = v_local_voxel[core_keep]
+                v_coord = v_coord[core_keep]
+                v_core = v_core[core_keep]
+            elif voxel_point is None:
+                voxel_point_feat = hidden.new_zeros((0, self.embed_hidden_dim))
+            else:
+                voxel_point_feat = voxel_point.feat
+
             # 体素输出投影 + scatter
-            if voxel_point is None:
+            if voxel_point_feat.shape[0] == 0:
                 voxel_feat_per_atom = hidden.new_zeros((0, self.embed_voxel_out_channels))
             elif self.use_centroid_encoding:
                 # 计算体素质心和偏移编码
@@ -1158,7 +1281,7 @@ class Stage1EmbedHead(nn.Module):
 
                 # 拼接偏移到特征
                 voxel_feat_with_offset = torch.cat([
-                    voxel_point.feat,
+                    voxel_point_feat,
                     atom_offset_from_centroid,
                     centroid_offset_from_center
                 ], dim=1)
@@ -1167,7 +1290,7 @@ class Stage1EmbedHead(nn.Module):
                 voxel_feat_per_atom = self.voxel_out_proj_with_offset(voxel_feat_with_offset)
             else:
                 # 标准投影
-                voxel_feat_per_atom = self.voxel_out_proj(voxel_point.feat)
+                voxel_feat_per_atom = self.voxel_out_proj(voxel_point_feat)
         else:
             # has_voxel_output=False: 跳过体素路径
             voxel_feat_per_atom = None

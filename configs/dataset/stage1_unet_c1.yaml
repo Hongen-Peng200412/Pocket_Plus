@@ -1,0 +1,19 @@
+_target_: src.datasets.stage1_dataset.Stage1Dataset
+name: stage1_unet_c1
+
+all_data_path: ${oc.env:ADALIGAND_DATA_ROOT,/storage/penghongen/AdaLigand/Ori_Data}
+box_pool_root: ${oc.env:ADALIGAND_STAGE1_PREPARATION_ROOT,/storage/penghongen/AdaLigand/Ori_Data/stage1_preparation}/box_pool
+split_train: ${dataset.box_pool_root}/train
+split_val: ${dataset.box_pool_root}/validation_selection.npz
+
+stage1_model_name: unet_c1
+class_names: [background, foreground]
+atom_buffer_radius: 8.0             # 只用于构造 hardmask/voxel_label；原子表不返回给模型。
+request_seed: 3407
+cache_max_bytes: 536870912
+enable_random_rotation: true
+
+density_channel_config:
+  clip_percentile: [0.001, 0.999]
+  fit_mask_percentile: 0.003
+  enabled_channels: [exp_clipnorm_nopost]

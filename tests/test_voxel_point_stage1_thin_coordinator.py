@@ -96,6 +96,11 @@ class _ThinBackbone(nn.Module):
         """
         return batch["outputs"]
 
+    def forward_voxel_probability(self, batch: dict[str, torch.Tensor]) -> torch.Tensor:
+        """返回测试预置的 voxel-only logits。"""
+
+        return batch["voxel_logits"]
+
 
 def _loss(num_classes: int) -> AdaptiveClassificationCompositeLoss:
     """
@@ -221,3 +226,33 @@ def test_threshold_checkpoint_cache_remains_wrapper_runtime_state() -> None:
     torch.testing.assert_close(restored._cached_voxel_ligand_best_f1_before_refine_by_class, torch.tensor([0.75]))
     assert not any("val_metrics" in key for key in checkpoint)
     assert not any("cpc_diagnostics" in key for key in checkpoint)
+
+
+def test_adaligand_direct_union_target_has_priority_over_legacy_distance_map() -> None:
+    """验证 schema-v3 union target 直接进入 loss，不被 hardmask 或旧距离图替换。"""
+
+    wrapper = _wrapper()
+    direct = torch.tensor([[[[False, True], [True, False]]]])
+    legacy = torch.full((1, 2, 2, 2), 99.0)
+
+    target = wrapper._ligand_target_from_batch(
+        {"ligand_area_target": direct, "ligand_dist_map": legacy},
+        logit_dim=1,
+        device=torch.device("cpu"),
+        dtype=torch.float32,
+    )
+
+    assert target.dtype == torch.long
+    assert target.shape == (1, 2, 2, 2)
+    assert torch.equal(target, direct[:, 0].long())
+
+
+def test_wrapper_voxel_only_entry_is_a_thin_logit_delegation() -> None:
+    """验证 wrapper 不重复模型、checkpoint、sigmoid 或阈值逻辑。"""
+
+    wrapper = _wrapper()
+    logits = torch.randn(1, 1, 2, 2, 2)
+
+    returned = wrapper.forward_voxel_probability({"voxel_logits": logits})
+
+    assert returned is logits

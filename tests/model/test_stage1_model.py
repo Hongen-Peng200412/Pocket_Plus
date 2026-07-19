@@ -12,6 +12,7 @@ from src.model.sparse_refine.candidate_set import SparseCandidateSetBuilder
 from src.model.sparse_refine.density_cube import DensityCubeEncoder
 from src.model.sparse_refine.interpolation import AnchorToCandidateKnnSearch
 from src.model.sparse_refine.sparse_refine_head import SparseRefineHead
+from src.model.stage1_embed_head import Stage1EmbedHead
 from src.model.stage1_model import VolumePointStage1Model
 
 
@@ -111,6 +112,90 @@ class _PointBackboneStub(nn.Module):
             "point_state": point_state,
             "point_recycle_out": point_feat,
             "point_feature_dict": {"point_feat": point_feat},
+        }
+
+
+class _VoxelFeatureBackboneStub(_VoxelBackboneStub):
+    """返回 centered 契约五路 V 特征的轻量 voxel stub。"""
+
+    def __init__(self) -> None:
+        super().__init__(channels=2, ligand_logit_dim=3)
+        self.return_feature_keys = (
+            "voxel_ds_2",
+            "voxel_ds_3",
+            "voxel_ds_4",
+            "voxel_c4",
+            "voxel_final",
+        )
+        self.feature_channels_by_name = {key: 2 for key in self.return_feature_keys}
+
+    def forward(
+        self,
+        voxel_grid: torch.Tensor,
+        recycle_in: torch.Tensor | None,
+        return_feature_keys: tuple[str, ...],
+    ) -> dict[str, Any]:
+        batch_size = int(voxel_grid.shape[0])
+        final = voxel_grid.new_zeros((batch_size, 2, 2, 2, 2))
+        features = {
+            "voxel_ds_2": voxel_grid.new_zeros((batch_size, 2, 2, 2, 2)),
+            "voxel_ds_3": voxel_grid.new_zeros((batch_size, 2, 1, 1, 1)),
+            "voxel_ds_4": voxel_grid.new_zeros((batch_size, 2, 1, 1, 1)),
+            "voxel_c4": voxel_grid.new_zeros((batch_size, 2, 1, 1, 1)),
+            "voxel_final": final,
+        }
+        return {
+            "voxel_features": {key: features[key] for key in return_feature_keys},
+            "voxel_logits_aux": voxel_grid.new_zeros((batch_size, 1, 2, 2, 2)),
+            "voxel_logits_ligand": voxel_grid.new_zeros((batch_size, 3, 2, 2, 2)),
+            "voxel_recycle_out": voxel_grid.new_zeros((batch_size, 1, 2, 2, 2)),
+        }
+
+
+class _InputSensitiveVoxelBackboneStub(_VoxelFeatureBackboneStub):
+    """让 logits 同时依赖 voxel 输入与 recycle 的等价性测试 stub。"""
+
+    def forward(
+        self,
+        voxel_grid: torch.Tensor,
+        recycle_in: torch.Tensor | None,
+        return_feature_keys: tuple[str, ...],
+    ) -> dict[str, Any]:
+        base = voxel_grid.sum(dim=1, keepdim=True)
+        if recycle_in is not None:
+            base = base + recycle_in
+        final = base.repeat(1, 2, 1, 1, 1)
+        features = {key: final for key in return_feature_keys}
+        return {
+            "voxel_features": features,
+            "voxel_logits_aux": base,
+            "voxel_logits_ligand": base.repeat(1, 3, 1, 1, 1),
+            "voxel_recycle_out": base,
+        }
+
+
+class _EmbedHeadStub(nn.Module):
+    """保持行对齐并显式提供 A L1 的 point-side embed stub。"""
+
+    has_point_output = True
+    has_voxel_output = False
+
+    def forward(self, **batch: torch.Tensor) -> dict[str, Any]:
+        atom_feat = batch["atom_feat"]
+        keep = batch["atom_is_in_core_box"].bool()
+        kept_batch = batch["atom_batch_index"][keep]
+        batch_size = int(batch["atom_offsets"].shape[0])
+        counts = torch.bincount(kept_batch, minlength=batch_size)
+        return {
+            "voxel_pdb_embed_grid": None,
+            "embed_point_feat": atom_feat[keep],
+            "atom_feat": atom_feat[keep],
+            "atom_coord_centered_world": batch["atom_coord_centered_world"][keep],
+            "atom_batch_index": kept_batch,
+            "atom_offsets": counts.cumsum(dim=0),
+            "atom_coord_local_voxel": batch["atom_coord_local_voxel"][keep],
+            "atom_is_in_core_box": batch["atom_is_in_core_box"][keep],
+            "global_keep_mask": keep,
         }
 
 
@@ -497,3 +582,251 @@ def test_atom_supervision_outputs_are_real_only_aligned() -> None:
     assert outputs["atom_target"].shape[0] == 3
     assert outputs["atom_is_in_core_box"].shape[0] == 3
     assert outputs["pseudo_feat_after_interaction"].shape[0] == 2
+
+
+def test_full_forward_publishes_centered_v_a_p_features_from_true_sources() -> None:
+    """验证完整 Find forward 的 V/A/P 直键来自既有真实层出口且逐实体对齐。"""
+
+    model = _make_model(
+        voxel_backbone=_VoxelFeatureBackboneStub(),
+        embed_head=_EmbedHeadStub(),
+        enable_atom_head=True,
+        max_recycles=3,
+    )
+    model.candidate_set_builder = _candidate_builder([1, 2], [1, 1], [1, 1])
+    model.anchor_sampler = SparseAnchorSampler([1, 2], [1, 1], "topk_nms", 1.0, 8192, 0, False)
+    model.density_cube_encoder = DensityCubeEncoder(1, 3, 4, 1, 2, "conv_gap", "group", 2, "silu", 2, 0)
+    model.set_sparse_candidate_runtime(global_step=0, candidate_warmup_steps=10, allow_warmup_fixed_topk=True)
+    model.eval()
+
+    outputs = model(_make_batch())
+
+    assert outputs["voxel_features"] is outputs["voxel_outputs"]["voxel_features"]
+    assert tuple(outputs["voxel_features"]) == (
+        "voxel_ds_2",
+        "voxel_ds_3",
+        "voxel_ds_4",
+        "voxel_c4",
+        "voxel_final",
+    )
+    assert outputs["voxel_features"]["voxel_final"].shape == (1, 2, 2, 2, 2)
+
+    assert outputs["A_feat_L1"].shape == (2, 2)
+    assert outputs["A_feat_L2"] is outputs["A_feat_L1"]
+    assert outputs["A_feat_L3"] is outputs["real_feat_before_interaction"]
+    assert outputs["A_feat_L4"] is outputs["real_feat_after_interaction"]
+    assert outputs["A_feat_L3"].shape == outputs["A_feat_L4"].shape == (2, 4)
+    assert outputs["atom_global_indices"].shape == (2,)
+
+    pseudo_count = int(outputs["anchor_counts"].sum().item())
+    assert outputs["P_feat_L2"] is outputs["pseudo_density_feat"]
+    assert outputs["P_feat_L3"] is outputs["pseudo_feat_before_interaction"]
+    assert outputs["P_feat_L4"] is outputs["pseudo_feat_after_interaction"]
+    assert outputs["P_feat_L2"].shape == (pseudo_count, 2)
+    assert outputs["P_feat_L3"].shape == outputs["P_feat_L4"].shape == (pseudo_count, 4)
+    assert outputs["anchor_coord_local_voxel"].shape == (pseudo_count, 3)
+    assert outputs["anchor_batch_index"].shape == (pseudo_count,)
+    assert outputs["pseudo_logits"].shape[0] == pseudo_count
+
+
+def test_unet_full_forward_publishes_only_five_v_features() -> None:
+    """验证纯 voxel producer 导出五路 V，同时不伪造任何 A/P 字段。"""
+
+    model = _make_model(
+        voxel_backbone=_VoxelFeatureBackboneStub(),
+        point_backbone=None,
+        embed_head=None,
+        enable_atom_head=False,
+        max_recycles=3,
+    )
+    model.eval()
+    outputs = model({"density_input": torch.zeros(1, 1, 2, 2, 2)})
+
+    assert outputs["voxel_features"] is outputs["voxel_outputs"]["voxel_features"]
+    assert set(outputs["voxel_features"]) == {
+        "voxel_ds_2",
+        "voxel_ds_3",
+        "voxel_ds_4",
+        "voxel_c4",
+        "voxel_final",
+    }
+    assert not any(key.startswith("A_feat_") or key.startswith("P_feat_") for key in outputs)
+
+
+def test_find0_voxel_only_matches_eval_forward_and_skips_point_path() -> None:
+    """验证 Find_0 最短入口逐元素等价、固定三次 recycle 且不运行 point backbone。"""
+
+    model = _make_model(
+        voxel_backbone=_InputSensitiveVoxelBackboneStub(),
+        embed_head=_EmbedHeadStub(),
+        enable_atom_head=False,
+        online_pdb_feature=True,
+        online_pdb_feature_reduce="sum",
+        online_pdb_feature_dim=2,
+        max_recycles=3,
+    )
+    model.eval()
+    batch = _make_batch()
+    batch["density_input"] = batch.pop("voxel_grid").requires_grad_(True)
+    batch["atom_offsets"] = torch.tensor([0, 3], dtype=torch.long)
+    point_calls = 0
+    original_point_forward = model.point_backbone.build_zeros_output
+
+    def counted_point_forward(**kwargs: Any) -> dict[str, Any]:
+        nonlocal point_calls
+        point_calls += 1
+        return original_point_forward(**kwargs)
+
+    model.point_backbone.build_zeros_output = counted_point_forward  # type: ignore[method-assign]
+    full_logits = model(batch)["voxel_logits_ligand"]
+    assert point_calls == 3
+    point_calls = 0
+    short_logits = model.forward_voxel_probability(batch)
+
+    torch.testing.assert_close(short_logits, full_logits, rtol=0.0, atol=0.0)
+    assert point_calls == 0
+    short_logits.sum().backward()
+    assert batch["density_input"].grad is not None
+    assert torch.isfinite(batch["density_input"].grad).all()
+
+
+def test_find1_voxel_only_matches_three_recycle_eval_forward_and_skips_point_path() -> None:
+    """验证 Find_1 完整模型等价、三次 recycle 及短入口 point 分支零调用。"""
+
+    torch.manual_seed(29)
+    embed_head = Stage1EmbedHead(
+        atom_feature_dim=49,
+        embed_hidden_dim=128,
+        embed_voxel_out_channels=49,
+        embed_point_out_channels=64,
+        num_trunk_blocks=0,
+        num_voxel_blocks=0,
+        num_point_blocks=3,
+        trunk_buffer_radii=(),
+        voxel_buffer_radii=(),
+        point_buffer_radii=(8.0, 4.0, 0.0),
+        num_heads=4,
+        patch_size=16,
+        serialization_orders=("z",),
+        shuffle_orders=False,
+        qkv_bias=True,
+        qk_scale=None,
+        attn_drop=0.0,
+        proj_drop=0.0,
+        enable_rpe=False,
+        enable_flash=False,
+        upcast_attention=False,
+        upcast_softmax=False,
+        scatter_reduce="sum",
+        ffn_type="gated",
+        mlp_ratio=3,
+        act_layer_name="gelu",
+        point_grid_size=0.25,
+        cpe_impl="none",
+        cpe_kernel_size=5,
+        cpe_receptive_field=2.0,
+        pointconv_block_max_neighbors=16,
+        drop_path=0.0,
+        pre_norm=True,
+        embed_residual_enabled=True,
+        embed_point_gate_enabled=False,
+        embed_voxel_gate_enabled=False,
+        add_occupancy_channels=True,
+        use_soft_splatting=True,
+        use_centroid_encoding=True,
+    )
+    model = _make_model(
+        voxel_backbone=_InputSensitiveVoxelBackboneStub(),
+        embed_head=embed_head,
+        enable_atom_head=False,
+        max_recycles=3,
+    )
+    model.eval()
+    density_input = torch.randn(1, 1, 16, 16, 16, requires_grad=True)
+    atom_feat = torch.randn(4, 49, requires_grad=True)
+    atom_coord_local = torch.tensor(
+        [[1.25, 1.50, 1.75], [1.80, 1.20, 1.40], [15.50, 8.0, 8.0], [18.0, 8.0, 8.0]],
+        dtype=torch.float32,
+    )
+    batch = {
+        "density_input": density_input,
+        "box_origin_world": torch.zeros(1, 3),
+        "box_shape_zyx": torch.tensor([[16, 16, 16]], dtype=torch.long),
+        "voxel_size_world": torch.ones(1, 3),
+        "atom_feat": atom_feat,
+        "atom_coord_centered_world": atom_coord_local - 8.0,
+        "atom_coord_local_voxel": atom_coord_local,
+        "atom_coord_world": atom_coord_local,
+        "atom_batch_index": torch.zeros(4, dtype=torch.long),
+        "atom_offsets": torch.tensor([0, 4], dtype=torch.long),
+        "atom_counts": torch.tensor([4], dtype=torch.long),
+        "atom_is_in_core_box": torch.tensor([True, True, True, False]),
+        "atom_global_indices": torch.arange(4),
+    }
+
+    embed_point_calls = 0
+    point_backbone_calls = 0
+    voxel_calls = 0
+    original_embed_point = embed_head._run_blocks_with_trim
+    original_point_backbone = model.point_backbone.build_zeros_output
+    original_voxel = model._run_voxel_backbone
+
+    def counted_embed_point(*args: Any, **kwargs: Any) -> Any:
+        nonlocal embed_point_calls
+        embed_point_calls += 1
+        return original_embed_point(*args, **kwargs)
+
+    def counted_point_backbone(**kwargs: Any) -> dict[str, Any]:
+        nonlocal point_backbone_calls
+        point_backbone_calls += 1
+        return original_point_backbone(**kwargs)
+
+    def counted_voxel(voxel_input: torch.Tensor, recycle_in: torch.Tensor | None) -> dict[str, Any]:
+        nonlocal voxel_calls
+        voxel_calls += 1
+        return original_voxel(voxel_input, recycle_in)
+
+    embed_head._run_blocks_with_trim = counted_embed_point  # type: ignore[method-assign]
+    model.point_backbone.build_zeros_output = counted_point_backbone  # type: ignore[method-assign]
+    model._run_voxel_backbone = counted_voxel  # type: ignore[method-assign]
+    with torch.no_grad():
+        full_logits = model(batch)["voxel_logits_ligand"]
+    assert embed_point_calls == 1
+    assert point_backbone_calls == 3
+    assert voxel_calls == 3
+
+    embed_point_calls = 0
+    point_backbone_calls = 0
+    voxel_calls = 0
+    short_logits = model.forward_voxel_probability(batch)
+
+    torch.testing.assert_close(short_logits, full_logits, rtol=0.0, atol=0.0)
+    assert embed_point_calls == 0
+    assert point_backbone_calls == 0
+    assert voxel_calls == 3
+    short_logits.square().mean().backward()
+    assert density_input.grad is not None and torch.isfinite(density_input.grad).all()
+    assert atom_feat.grad is not None and torch.isfinite(atom_feat.grad).all()
+
+
+def test_unet_voxel_only_matches_eval_forward_and_backpropagates() -> None:
+    """验证 unet_c1 最短入口与完整纯 voxel forward 的最终 logits 完全一致。"""
+
+    model = _make_model(
+        voxel_backbone=_InputSensitiveVoxelBackboneStub(),
+        point_backbone=None,
+        embed_head=None,
+        enable_atom_head=False,
+        max_recycles=3,
+    )
+    model.eval()
+    density_input = torch.randn(1, 1, 2, 2, 2, requires_grad=True)
+    batch = {"density_input": density_input}
+
+    full_logits = model(batch)["voxel_logits_ligand"]
+    short_logits = model.forward_voxel_probability(batch)
+
+    torch.testing.assert_close(short_logits, full_logits, rtol=0.0, atol=0.0)
+    short_logits.square().mean().backward()
+    assert density_input.grad is not None
+    assert torch.isfinite(density_input.grad).all()

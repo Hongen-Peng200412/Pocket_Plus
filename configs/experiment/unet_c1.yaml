@@ -1,74 +1,53 @@
 # @package _global_
-# ============================================================
-# 实验: 模型上, 只用单纯的unet(embed head、点云分支、atom head、伪原子全部关闭); 数据上, 模型只吃一个通道的密度图本身
-# ============================================================
-# 搭配 plus.yaml embed head + unfused_embed 数据集:
-#   voxel_backbone 看到 EMDB + embed 49ch + occupancy 2ch
-#   (pdb_feature 由 embed head 的 voxel_pdb_embed_grid 在线生成,
-#    model.backbone.online_pdb_feature 被 elif 自动跳过)
-#
-# 基于新版数据 (emdb_exp_BOX)
-# ============================================================
-# 用法:
-#   sbatch sbatch/h200/1gpu.sbatch "+experiment=exp000_baseline0"
-# ============================================================
-
+# AdaLigand unet_c1：单通道 density-only RAUNet64，从头训练。
 defaults:
-  - override /model/voxel_backbone: stardard       # 体素分支: RAUNet-64
-  - override /model/point_backbone: zeros       # 点云分支: PTV3 Dense
-  - override /model/fusion: none                 # 融合: 4 层级全融合
-  - override /model/atom_head: none            # Atom Head: 4 层
-  - override /model/pseudo_atom: none            # 伪原子
-  - override /model/typed_point: "on"              # typed point real/pseudo 分参
-  - override /model/embed_head: passthrough               # 完全没有
-  - override /loss: unet                  # 损失
-  - override /dataset: unet_c1               # 数据集: 无离线 pdb_feature, embed head 在线生成
-  - override /train: B40_L3                        # 训练: H200 参数
+  - override /model/voxel_backbone: stardard
+  - override /model/point_backbone: none
+  - override /model/fusion: none
+  - override /model/atom_head: none
+  - override /model/pseudo_atom: none
+  - override /model/typed_point: "on"
+  - override /model/task: binary
+  - override /model/embed_head: none
+  - override /model/sparse_refine/candidate_set: none
+  - override /model/sparse_refine/anchor_sampler: none
+  - override /model/sparse_refine/density_cube: none
+  - override /model/sparse_refine/anchor_to_candidate: none
+  - override /model/sparse_refine/sparse_refine_head: none
+  - override /model/sparse_refine/anchor_class_conditioning: none
+  - override /loss: stage1_unet_c1
+  - override /dataset: stage1_unet_c1
+  - override /train: stage1_cpc1
+  - override /frozen_module: none
+  - _self_
 
-
-# --- 实验标识 ---
 name: unet_c1
 tag: "unet_c1"
-experiment_group: "unet000"              # str, run_dir 父文件夹名称
-project_name: PV_unet000                 # wandb 的项目名称
+experiment_group: "AdaLigand_Stage1/unet_c1"
+project_name: AdaLigand_Stage1
+init_from: null
 
-# --- 模型总体参数 ---
 model:
-  stop_after_lr_reductions: 4        # int, warmup_plateau 第 4 次实际降低 LR 后结束训练
   backbone:
-    # --- atom head 关闭 ---
-    # 关闭全部 logit 先验初始化, 保持本互換 config 行为不变(新命名先验 schema 在 model/default.yaml 默认开启)
-    prior_prob_init_enabled: false   # bool, false=所有头跳过先验 bias 初始化; 见 model/default.yaml prior schema
-    enable_atom_head: false          # bool, 关闭 atom head; 不构建 atom_token_proj / atom_attention_stack / atom_logit_head
-
-    # --- Logit 输出 ---
-    atom_logit_dim: 1                # int, atom 分类 logit 维度; 二分类=1
-
-    # --- Recycle 机制 ---
-    enable_recycling: true           # bool, 启用 recycle 循环(多轮迭代精化)
-    max_recycles: 3                  # int, 最大 recycle 轮数
-    randomize_recycles: true         # bool, 训练时在 [1, max_recycles] 内随机
-    detach_recycle_states: true      # bool, 跨轮截断梯度
-
-    # --- 统一激活函数 (全局源头, 子模块通过插值引用) ---
-    act_layer_name: "gelu"           # str, "gelu"/"silu"/"relu"/"leakyrelu"
-    ffn_type: "gated"                # str, PTV3 Block FFN: "mlp" / "gated"
-    atom_head_ffn_type: "gated"      # str, atom head 可选 FFN: "mlp" / "gated" / "none"
-
-    
+    prior_prob_init_enabled: false
+    atom_logit_dim: 1
+    enable_atom_head: false
+    enable_interface_norm: false
+    enable_recycling: true
+    max_recycles: 3
+    randomize_recycles: true
+    detach_recycle_states: true
+    act_layer_name: "gelu"
+    ffn_type: "gated"
     voxel_backbone:
+      # centered V 契约要求最终 recycle 同时导出四张 native 低分辨率网格与 final。
+      return_feature_keys: [voxel_ds_2, voxel_ds_3, voxel_ds_4, voxel_c4, voxel_final]
+      aux_head_hidden_channels: 32
       ligand_head_hidden_channels: 32
-      aux_head_hidden_channels: 1
-      num_conv3d_aux: 0              # int, aux_head 中 Conv3d(3x3)+ReLU 的对数
-      num_conv3d_ligand: 2           # int, ligand_head 中 Conv3d(3x3)+ReLU 的对数
-
-  monitor_metric: val_score/global/voxel_ligand_PRAUC
-  monitor_mode: max
+      num_conv3d_aux: 0
+      num_conv3d_ligand: 0
+  class_names: ${dataset.class_names}
+  monitor_metric: val_loss/global/total
+  monitor_mode: min
   validation_diagnostics:
     enabled: false
-
-
-train:
-  enable_batch_size_tuning: false 
-  batch_size: 10
-  val_per_epoch: 5

@@ -1,0 +1,13 @@
+# @package _global_
+# unet_c1 不构造 Stage1EmbedHead。
+model:
+  backbone:
+    embed_head: null
+    online_pdb_feature: false
+    online_pdb_feature_reduce: "sum"
+    online_pdb_feature_use_soft_splatting: false
+    online_pdb_feature_scatter_kernel: "legacy"
+    online_pdb_feature_sigma_voxel: 0.7
+    online_pdb_feature_add_occupancy: false
+    online_pdb_feature_add_centroid: false
+    online_pdb_feature_dim: 49

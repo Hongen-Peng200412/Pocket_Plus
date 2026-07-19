@@ -1,0 +1,9 @@
+# @package _global_
+# AdaLigand Find CPC2：只让 L_atom + 0.1 L_P 进入 validation/train total loss。
+defaults:
+  - stage1_find_cpc1
+  - _self_
+
+model:
+  voxel_aux_loss_weight: 0.0
+  voxel_ligand_loss_weight: 0.0
