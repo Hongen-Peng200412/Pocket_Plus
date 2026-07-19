@@ -908,23 +908,21 @@ def _normalize_selected_payloads(
 
 def _as_numpy(value: Any, dtype: Any) -> np.ndarray:
     """把 NumPy 或 torch.Tensor 输出搬到 CPU 并转换为契约 dtype。"""
-    try:
-        import torch
-
-        if torch.is_tensor(value):
-            return value.detach().cpu().numpy().astype(dtype, copy=False)
-    except ImportError:
-        pass
-    return np.asarray(value, dtype=dtype)
+    return np.asarray(_to_numpy(value), dtype=dtype)
 
 
 def _to_numpy(value: Any) -> np.ndarray:
-    """把 NumPy 或 torch.Tensor 输出搬到 CPU，保留原 dtype 以避免稠密特征复制。"""
+    """把 NumPy 或 torch.Tensor 搬到 CPU；BF16 以 float32 作为 NumPy 桥接类型。"""
     try:
         import torch
 
         if torch.is_tensor(value):
-            return value.detach().cpu().numpy()
+            tensor = value.detach().cpu()
+            # NumPy 没有原生 bfloat16 dtype；只在桥接时提升，正式 learning feature
+            # 仍由调用方按契约压成 float16，不改变模型内部 BF16 计算。
+            if tensor.dtype == torch.bfloat16:
+                tensor = tensor.to(dtype=torch.float32)
+            return tensor.numpy()
     except ImportError:
         pass
     return np.asarray(value)

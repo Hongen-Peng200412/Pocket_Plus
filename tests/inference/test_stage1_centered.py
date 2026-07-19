@@ -6,6 +6,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+import torch
 
 from src.artifacts.io import pack_centered_entries
 from src.component_lineage.structures import CLG, ComponentNode
@@ -276,3 +277,32 @@ def test_formal_centered_adapter_reads_named_unet_and_find_outputs() -> None:
     assert find["A_probability"].tolist() == pytest.approx([0.5])
     assert find["P_probability"].tolist() == pytest.approx([0.5])
     assert find["A_coord_centered_world"].tolist() == [[0.0, 0.0, 0.0]]
+
+
+def test_formal_centered_adapter_bridges_bfloat16_features_to_numpy() -> None:
+    """验证 BF16 autocast 特征可进入 centered adapter，并保持后续可压缩的数值。"""
+
+    shape = (2, 2, 2)
+    voxel_features = {
+        "voxel_final": torch.ones((1, 48, *shape), dtype=torch.bfloat16),
+        "voxel_ds_2": torch.ones((1, 256, 1, 1, 1), dtype=torch.bfloat16),
+        "voxel_ds_3": torch.ones((1, 256, 1, 1, 1), dtype=torch.bfloat16),
+        "voxel_ds_4": torch.ones((1, 256, 1, 1, 1), dtype=torch.bfloat16),
+        "voxel_c4": torch.ones((1, 256, 1, 1, 1), dtype=torch.bfloat16),
+    }
+    output = {
+        "voxel_logits_ligand": torch.zeros((1, 1, *shape), dtype=torch.bfloat16),
+        "voxel_logits_aux": torch.zeros((1, 1, *shape), dtype=torch.bfloat16),
+        "voxel_features": voxel_features,
+    }
+    batch = {
+        "hardmask": torch.zeros((1, *shape), dtype=torch.bool),
+        "box_shape_zyx": torch.tensor([[2, 2, 2]], dtype=torch.long),
+        "voxel_size_world": torch.ones((1, 3), dtype=torch.float32),
+    }
+
+    payload = adapt_stage1_centered_output(output, batch, "unet_c1")
+
+    assert payload["voxel_final_grid"].dtype == np.float32
+    assert payload["voxel_final_grid"].shape == (48, *shape)
+    np.testing.assert_array_equal(payload["voxel_final_grid"], 1.0)
