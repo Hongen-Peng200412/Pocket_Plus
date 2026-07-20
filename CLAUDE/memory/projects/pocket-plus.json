@@ -59,6 +59,121 @@
       "date": "2026-06-22",
       "summary": "Project working directory migrated out of OneDrive to Desktop. Desktop repo C:\\Users\\15919\\Desktop\\Pocket_Plus is now the intended main dev repo on branch 大重构 at f4c3e5c/origin; CLAUDE and docs were versioned. OneDrive and Desktop project files were SHA256-identical excluding .git, but OneDrive remains a non-recommended Git workdir. Current uncommitted training change adds frozen-subtree eval maintenance for frozen_module; static review says CPC stage1 should be numerically unchanged (frozen cross-attn/refine have no BN/Dropout) and stage2/3 direction is correct, pending smoke tests.",
       "handoff": "CLAUDE/memory/handoffs/2026-06-22-desktop-migration-and-frozen-eval-review.md"
+    },
+    {
+      "date": "2026-07-21",
+      "summary": "AdaLigand Stage1 formal end-to-end execution started: strict filter found 20,483 PDB; CPU inventory/split Job 321104 and producer allocations Find_1=321108 (2xH200), Find_0=321106 (1xH100), unet_c1=321107 (1xH100) are RUNNING, with GPU jobs held safely at run-scoped pre_lock until formal BOX/smoke readiness.",
+      "handoff": "CLAUDE/memory/handoffs/2026-07-21-adaligand-stage1正式执行启动.md"
+    },
+    {
+      "date": "2026-07-21",
+      "summary": "AdaLigand Stage1 formal data/BOX/smoke and memory trials completed; global batch 48 frozen, three unlimited sbatch training chains launched, Find_0 CPC1 and unet_c1 online in W&B/Trainer, Find_1 CPC1 still under monitored dual-H200 cold initialization.",
+      "handoff": "CLAUDE/memory/handoffs/2026-07-21-adaligand-stage1正式训练已启动.md"
+    },
+    {
+      "date": "2026-07-21",
+      "summary": "AdaLigand Stage1 Find recovery milestone: two DDP CPU/NCCL validation boundaries minimally fixed and verified by 15 focused tests plus successful dual-H200 run nj97r8mc; unsafe Find_0 micro4 was preserved and replaced by verified micro2/accum24, with formal recovery dispatched while unet remains healthy.",
+      "handoff": "CLAUDE/memory/handoffs/2026-07-21-adaligand-stage1-find恢复并稳定训练.md"
+    },
+    {
+      "date": "2026-07-21",
+      "summary": "AdaLigand Stage1 batch policy corrected: memory percentages are preflight guidance only, both Find producers are explicitly fixed at micro6 with global batch 48, Find_1 formal micro6 was relaunched on 2xH200, and Find_0 micro6 five-step smoke is in progress before immediate formal launch.",
+      "handoff": "CLAUDE/memory/handoffs/2026-07-21-adaligand-stage1双find固定micro6.md"
+    },
+    {
+      "date": "2026-07-21",
+      "summary": "AdaLigand Stage1 formal restart now uses val_per_epoch 25 and warmup_ratio 0.005 for all three from-scratch producers; Find_0 micro6 smoke passed five steps at 99.226% without OOM, Find_0/Find_1 are advancing online, and an old unet setsid orphan was precisely removed while preserving the new run.",
+      "handoff": "CLAUDE/memory/handoffs/2026-07-21-adaligand-stage1-warmup0005正式重启.md"
+    },
+    {
+      "date": "2026-07-21",
+      "summary": "AdaLigand Stage1 validation timing was corrected from step about 526 to step about 1579/1580 after accounting for W&B log_every_n_steps=3 and the real 315,903 micro-batches per epoch; old unet step 968 correctly had no formal validation, all three current runs remain healthy, and the Find_0 dual-H100 switch is fully revoked.",
+      "handoff": "CLAUDE/memory/handoffs/2026-07-21-adaligand-stage1-validation窗口纠正.md"
+    },
+    {
+      "date": "2026-07-21",
+      "summary": "AdaLigand Stage1 Find_2 implementation is locally complete: Find_1 now uses Gaussian scatter, Find_2 uses a 56D Gaussian density tune, four-producer downstream enumeration is centralized, independent audit passed after one config-test classification fix, and two single-H200 smoke/formal launchers are ready while old Job 321108 remains healthy pending actual replacement capacity.",
+      "handoff": "CLAUDE/memory/handoffs/2026-07-21-adaligand-stage1-find2实现与单h200交接.md"
+    },
+    {
+      "date": "2026-07-21",
+      "summary": "AdaLigand Stage1 new Find_1/Find_2 single-H200 five-step smokes passed at micro6/global48/accum8 with 72.116%/69.359% peaks and falling losses; formal CPC1 runs are launched under Jobs 321388/321373 with online W&B gates passing, while Find_0/unet remain healthy and external AlphaFold must not be touched.",
+      "handoff": "CLAUDE/memory/handoffs/2026-07-21-adaligand-stage1-find2正式smoke通过.md"
+    },
+    {
+      "date": "2026-07-21",
+      "summary": "AdaLigand Stage1 four formal jobs remain RUNNING; a fixed-scope read-only offline W&B one-click sync entry was added and dry-run verified, H200/H100 apparent throughput difference was attributed to uncontrolled Gaussian/node factors rather than hardware regression, and the three-hour heartbeat was restored on the current thread.",
+      "handoff": "CLAUDE/memory/handoffs/2026-07-21-adaligand-stage1-wandb灾备与heartbeat恢复.md"
+    },
+    {
+      "date": "2026-07-21",
+      "summary": "AdaLigand Stage1 was reconfigured to lr5e-5, CPC1 patience2, val30 and doubled Find density chunks; Find_2 passed a 2xH100 micro6 smoke and entered online CPC1 Job 321540, while H200 probes were reduced to one 24-CPU self-releasing candidate at a time and the three-hour heartbeat now owns the single-to-dual Find_0 upgrade state machine.",
+      "handoff": "CLAUDE/memory/handoffs/2026-07-21-adaligand-stage1-h200收缩与find2双h100.md"
+    },
+    {
+      "date": "2026-07-21",
+      "summary": "AdaLigand Stage1 formal scope returned from seven to five stages after Find_2 was scientifically withdrawn at step53; its 2xH100 allocation Job 321540 was preserved and directly restarted as Find_1 CPC1 with micro6/global48/val30, a five-minute external audit found correct config and no explicit errors, and future training changes now require an independent reason/evidence/restart-cost review before execution.",
+      "handoff": "CLAUDE/memory/handoffs/2026-07-21-adaligand-stage1-find2撤回与find1双h100.md"
+    },
+    {
+      "date": "2026-07-21",
+      "summary": "AdaLigand Stage1 heartbeat was corrected from stale Job/val25 text to a 15-minute current-state monitor; Find_1 Job321540 is online at run qqmuqyxk/step86, and the compact H200 probe captured clean Job321718 and dispatched Find_0 single-H200 micro8/global48 while preserving a one-probe dual-H200 upgrade policy.",
+      "handoff": "CLAUDE/memory/handoffs/2026-07-21-adaligand-stage1-heartbeat纠偏与find0单h200.md"
+    },
+    {
+      "date": "2026-07-21",
+      "summary": "AdaLigand Stage1 captured clean dual-H200 Job321743 and switched Find_0 from single Job321718 to devices2/micro8/accum3 after fixing the compact probe to distinguish active training from pre_lock candidates; Find_1 reached step119 and unet step746 without explicit errors, while heartbeat now monitors startup without requesting more H200.",
+      "handoff": "CLAUDE/memory/handoffs/2026-07-21-adaligand-stage1-find0双h200切换.md"
+    },
+    {
+      "date": "2026-07-21",
+      "summary": "AdaLigand Stage1 Find_0 Job321743 passed its 2xH200 micro8/global48 five-step smoke without OOM (97.346%/99.387% peaks) and entered formal CPC1 cold initialization; Find_1 reached step149, all three jobs had zero explicit errors, and the 15-minute heartbeat remains only until Find_0 online/step stability is confirmed.",
+      "handoff": "CLAUDE/memory/handoffs/2026-07-21-adaligand-stage1-find0双h200-smoke通过.md"
+    },
+    {
+      "date": "2026-07-21",
+      "summary": "AdaLigand Stage1 three-producer startup is stable: unet run0yy28kmj reached step587, Find_1 run qqmuqyxk step173, and dual-H200 Find_0 run w21l8dof step20 with correct micro8/global48/val30 config; all jobs and locks are healthy with zero explicit errors, so heartbeat returned to a three-hour cadence.",
+      "handoff": "CLAUDE/memory/handoffs/2026-07-21-adaligand-stage1-三producer稳定.md"
+    },
+    {
+      "date": "2026-07-22",
+      "summary": "AdaLigand Stage1 remains healthy at unet/Find_1/Find_0 steps 1316/653/485 with all exact jobs and locks healthy and zero strict stderr matches; unet W&B stream and 97-100% GPU activity show it is executing the first val30 window at the expected step rather than stalled, and the monitor cadence is reduced to six hours.",
+      "handoff": "CLAUDE/memory/handoffs/2026-07-22-adaligand-stage1-unet首个val30窗口.md"
+    },
+    {
+      "date": "2026-07-22",
+      "summary": "AdaLigand Stage1 unet first formal val30 validation is confirmed at W&B history step3944 with val loss 0.2606383 and TOP/last checkpoints present; the W&B audit tool was fixed to scan validation and LR fields separately, regression-tested, and the low-output probe now reports TOP and last checkpoints with fixed run roots.",
+      "handoff": "CLAUDE/memory/handoffs/2026-07-22-adaligand-stage1-unet-validation已确认.md"
+    },
+    {
+      "date": "2026-07-22",
+      "summary": "AdaLigand Stage1 all three producers completed formal first validation without errors: unet has 2 epoch0 validations and Find_1/Find_0 have 1 each, all have TOP/last checkpoints and LR-reduction count zero, while the three exact jobs and locks remain healthy.",
+      "handoff": "CLAUDE/memory/handoffs/2026-07-22-adaligand-stage1-three-first-validations.md"
+    },
+    {
+      "date": "2026-07-24",
+      "summary": "Stage1 此前56项工作区冲突已合并为实现端点 ebadbea；本轮从 de6a89f 按阅读顺序重建学习历史，为11个生产Python文件补充学习注释，并确认配置、测试和可执行AST与实现端点等价。当前环境可加载的15个相关测试在两端均为96 passed；完整收集仍缺 torch_cluster。",
+      "handoff": "CLAUDE/memory/handoffs/2026-07-24-stage1-git-learning-rebuild.md"
+    },
+    {
+      "date": "2026-07-26",
+      "summary": "以用户调整后的 Find_0.sh 为金标准统一了 Find_1.sh 与 unet_c1.sh 的学习版式；保留各自训练身份和参数，通过 Bash 语法、差异格式及无实例化 Hydra 配置组合检查，未运行训练或修改 Git 历史。",
+      "handoff": "CLAUDE/memory/handoffs/2026-07-26-stage1-readable-training-scripts-aligned.md"
+    },
+    {
+      "date": "2026-07-27",
+      "summary": "通用 submit_task.sh 新增 simple 模式：仍使用 Slurm 和四锁，但不创建 release/launch，控制文件与 Slurm 日志集中到 $HOME/SIMPLE_RUN；--sh 的非文件名写法改为原样执行。已完成无提交参数检查和临时 HOME 四锁生命周期检查，未提交真实 Job。",
+      "handoff": "CLAUDE/memory/handoffs/2026-07-27-simple-task-submission.md"
+    },
+    {
+      "date": "2026-07-27",
+      "summary": "BoxPointDataset 历史管线已从工作区删除：移除4个专属数据模块、6份数据集配置、40份递归实验配置和3份专属测试；当前Find与unet_c1继续统一使用Stage1Dataset，57项相关测试通过。改动留在codex/remove-boxpoint-history工作区供用户审阅提交。",
+      "handoff": "CLAUDE/memory/handoffs/2026-07-27-boxpoint-history-removed.md"
+    },
+    {
+      "date": "2026-08-01",
+      "summary": "Stage1 centered 推理改为完整 wrapper 的真实批量直连，CLI 默认 batch 12；V/A/P 按 batch、atom_counts、anchor_batch_index 拆分，删除 FullForwardCallback 和测试 adapter，Selected 异常不再伪造 failed 状态；同步代码注释、Pocket Plus/AdaLigand 契约和长期代码习惯，定向回归通过。",
+      "handoff": "CLAUDE/memory/handoffs/2026-08-01-stage1-centered-batch12-direct-pipeline.md"
     }
   ],
   "blockers": [

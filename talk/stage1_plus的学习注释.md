@@ -18,7 +18,22 @@
 
 本轮允许相对实现终点新增普通注释、Docstring、YAML 注释以及 `talk/注释规则.md` 和本文。其它代码与配置差异均视为学习线错误。
 
-## 3. 里程碑与内部提交
+## 3.1 本轮行动总逻辑与双线周期
+
+本轮把实现线的正确结果转换成一条可阅读的学习线，而不是再实现一次功能：先从共同基点建立学习分支，按数据流和模块依赖恢复实现终点的文件与配置，再在同一提交中补充对应学习注释，最后把这些逻辑提交整理成线性里程碑。删除文件和测试快照按约定的前两个提交集中归位；测试内容不进入阅读范围。
+
+长期保留两条平行时间线：实现线保存真实开发、调试和修复过程，学习线保存按逻辑重排后的正确代码与注释。学习分支完成时，除注释和学习文档白名单外，必须与实现线终点逐文件、逐配置值一致；任何其它差异都视为学习线 bug。下一轮实现从当前 `Learn/model-cumulative` 继续，下一轮实现结束后，再从新的实现终点整理出下一轮学习线。当前学习线的最新提交到未来实现结束点，构成下一段实现线；该段再产生新的学习线，形成“实现周期 → 学习周期 → 下一实现周期”的循环。
+
+```text
+当前实现线终点 ──整理/注释──> 当前学习线里程碑
+      ▲                              │
+      │                              └─ Learn/model-cumulative 同步到学习线终点
+      └──── 下一轮实现从累计学习终点继续；结束后再生成下一轮学习线
+```
+
+这套双线周期只改变阅读组织和 Git 历史，不改变生产代码逻辑；实现线上的调试记录也不移植成学习线的独立“修复”提交，而是归入对应逻辑模块的学习提交。
+
+## 4. 里程碑与内部提交
 
 ```text
 4d798c9
@@ -43,7 +58,7 @@
 
 实现线中的数值等价、BF16 桥接、边界校验和命名修复不会作为独立修复提交重演，而是直接进入各自所属层。
 
-## 4. 系统总览
+## 5. 系统总览
 
 三个 Stage1 producer 是 `Find_0`、`Find_1` 和 `unet_c1`。它们共享 80³ 请求与物化路径，输出完整图 ligand probability；随后由阈值校准、component forest/CLG、三类 centered artifact 和 Selector 逐层消费。
 
@@ -74,7 +89,7 @@ Stage G keep-list
 | 完整图 | `src/inference/`、`src/evaluation/` | 滑窗融合、阈值冻结、centered 生产和续跑编排 |
 | Selector | `src/selector/` | 冻结 CLG 输入、V5+D/CCLN、精确反链选择和校准 |
 
-## 5. 数据请求与冻结池
+## 6. 数据请求与冻结池
 
 ### 5.1 身份划分
 
@@ -100,6 +115,16 @@ resolved\_start_a=\operatorname{clamp}(requested\_start_a,0,L_a-80).
 $$
 
 因此请求只会向图内平移，不做图外补零。数组索引与 shape 使用 ZYX；世界坐标使用 XYZ。
+
+本项目中最容易混淆的三类位置字段固定按下表阅读：
+
+| 位置语义 | 轴序与数值 | 参照系 | 典型字段 |
+| --- | --- | --- | --- |
+| 世界坐标 | 连续 XYZ，单位 Å | full-map 原点或 BOX 中心 | `atom_coord_world`、`atom_coord_centered_world`、`origin_xyz` |
+| voxel 坐标 | 连续 XYZ；corner 表示网格角点，`voxel-center` 表示索引加 0.5 | BOX-local 或 full-map | `atom_coord_local_voxel` |
+| voxel 索引 | 离散整数；字段若为 ZYX 则按数组轴序访问 | BOX-local 或 full-map 的离散网格 | `box_start_zyx`、`candidate_voxel_zyx`、`idx_zyx` |
+
+`box_shape_zyx` 只是离散网格尺寸 `(D,H,W)`，不是一个坐标；`linear index` 则是明确声明为 full-map 或 BOX-local 后按 ZYX C-order 展平的整数索引。任何从世界坐标换算到 voxel 坐标的注释都必须同时写出原点、voxel 间距和中心/角点约定。
 
 ### 5.3 BOX pool
 
@@ -155,7 +180,7 @@ Find 额外返回 core+8 Å 原子表：`atom_feat (N_A,49)`、三套 XYZ 坐标
 
 因此模型既能连续处理整张原子表，又能用 offsets 或 batch index 恢复样本边界。
 
-## 6. Producer 模型主链
+## 7. Producer 模型主链
 
 ### 6.1 三个 producer
 
@@ -230,7 +255,7 @@ CPC2 只能读取同名 CPC1 BEST。`src/train.py::_load_model_only_checkpoint()
 
 `src/inference/checkpoint.py::load_stage1_wrapper()` 与 CPC2 初始化不同：它从相邻 resolved config 实例化完整 wrapper，strict 加载完整 `state_dict`，执行 `on_load_checkpoint()` 并切到 eval。推理入口因此不依赖旧的裸 backbone loader。
 
-## 7. Artifact 协议
+## 8. Artifact 协议
 
 ### 7.1 路径身份
 
@@ -274,7 +299,7 @@ JSON 和 NPZ 都先写同目录临时文件。NPZ 发布前后均以 `allow_pick
 
 `Selected_Refined_Centered` 的失败 entry 不伪造全零固定 V grid。只有 `refine_status=success` 的 entry 保存 V grid，并由 `feature_entry_index` 映射回全部 entry 表。
 
-## 8. Component 谱系对象
+## 9. Component 谱系对象
 
 ### 8.1 阈值方向
 
@@ -343,7 +368,7 @@ depth1/depth2 分别由 split/merge 预算和 32/64 node cap 控制。超过 nod
 
 IoU、online oracle 和 Selector loss 在下游根据交集、candidate voxel count 与 occurrence voxel count计算；谱系层不提前做选择。
 
-## 9. 完整图概率与指标
+## 10. 完整图概率与指标
 
 ### 9.1 窗口覆盖
 
@@ -402,7 +427,7 @@ $$
 
 阈值选择和 fitted 报告都只使用 calibration，不反向选择训练 epoch 或 checkpoint。
 
-## 10. Centered 生产
+## 11. Centered 生产
 
 ### 10.1 三类 role
 
@@ -445,12 +470,60 @@ A-pocket 固定为“当前 core BOX 内原子”与“来源 blob voxel centers
 
 Selected entry 可以是 `success/empty/no_overlap/failed`。非 success entry 保留 source identity 和几何，但 ragged payload 为空；不能用全零固定 V grid 冒充一次真实 forward。`feature_entry_index` 只把成功特征行映射回全部 entry。
 
-## 11. 当前阅读进度
+## 12. 生产装配与续跑
 
-- 已完成：旧链清理、数据层、producer、artifact、谱系、完整图/calibration 和三类 centered payload。
-- 下一层：runner 如何按 role 状态续跑，以及 assembly/CLI 如何装配真实数据与模型。
+### 11.1 Task 和 provider
+
+`ProductionTask` 只包含 `(stage1_model_name, split, pdb_id)`。runner 不直接知道如何推理；它接收 `role -> producer callback` 映射，每个 callback 负责发布自己的 payload 和 `_COMPLETE`。
+
+`Stage1RuntimeAssembly` 把以下对象装成 providers：
+
+- A—G 数据根目录。
+- 调用者指定的 checkpoint 与 resolved config。
+- 当前 producer 的 density channel recipe 和固定 8 Å buffer。
+- worker 内缓存的完整 wrapper。
+- 单 PDB 复用的 `Stage1Dataset` materializer。
+- schema-v3 occurrence sparse mask loader。
+
+### 11.2 单 PDB role 顺序
+
+```text
+probability
+  → components
+  → F1_centered
+  → CLG_centered
+
+selection 冻结后：
+  → Selected_Refined_Centered
+```
+
+runner 先检查 `_BLOB_EXCEED` 和已有 role `_COMPLETE`，再抢占 PDB `_RUNNING`。持锁后逐 role 跳过已完成项、调用缺失 producer，并要求 callback 返回前已经发布对应 `_COMPLETE`。无论成功或异常，租约都在同一上下文中释放。
+
+### 11.3 Calibration-first
+
+生产分两阶段：
+
+1. `cal-probability` 只生成 calibration probability。
+2. `freeze-thresholds` 冻结 producer 阈值。
+3. `cal-produce-f1-clg` 给 calibration 补 components/F1/CLG。
+4. validation/train 才按完整四 role 顺序连续生产。
+
+因此 components 入口必须先冷读 producer 级 calibration 完成标记和 `thresholds.json`。重复的七个阈值 j 会自然折叠为实际 forest 层，不制造重复节点。
+
+### 11.4 固定清单与分片
+
+PDB 清单保持文件内顺序且禁止重复。`shard_index/shard_count` 按行号取模得到互斥、完备分片；增加或减少 worker 时可以用新分片重新扫描，因为 role 完成状态会跳过已有产物。
+
+### 11.5 CLI 边界
+
+`python -m src.inference.cli` 只做参数解析与 provider 装配。它不猜 checkpoint、resolved config 或阈值，也不把完整图、谱系、保存和指标重新混入一个函数。
+
+## 13. 当前阅读进度
+
+- 已完成：从数据准备到完整图、谱系、centered 和可续跑生产 CLI 的整条 Stage1 producer 链。
+- 下一层：Selector 如何冻结 CLG 输入、构造 V5+D/CCLN，并做精确反链选择。
 - 暂不修改：目标差异之外的既有 geometry、density builder 和 backbone 注释。
 
-## 12. 留给实现线
+## 14. 留给实现线
 
 当前没有需要移交的事项。
