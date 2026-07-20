@@ -33,6 +33,8 @@
   * EMDB map、模拟 map、体素标签、ligand 距离图和 BOX 训练样本。
 * `src/model/notes_of_network.md`
   * Stage1 模型、wrapper、dataset、collate、loss 的阅读路径和检查点。
+* `src/datasets/README_STAGE1.md`
+  * AdaLigand Stage1 的 BOX pool、Dataset、请求比例与训练数据边界。
 
 关键代码入口通常包括：
 
@@ -45,18 +47,20 @@
 * `configs/loss/`
 * `configs/train/`
 
-## 4. 推理链路（有过期的风险）
+## 4. AdaLigand Stage1 推理、评估与 Selector
 
 推理和评估相关问题优先读：
 
-* `src/inference/notes_of_infereval.md`
-  * 当前推理/评估代码的阅读路径、检查点和未来拆分边界。
-* `src/inference/`
-  * 当前可用的推理、缓存、后处理、评估、可视化实现。
-* `configs/infer_or_eval/`
-  * 当前推理/评估配置入口。
+* `src/inference/README.md`
+  * 完整图概率、阈值冻结、组件森林、CLG 与三类 centered 产物的入口和发布顺序。
+* `src/evaluation/`
+  * 体素、coverage、固定连续分数 Hungarian、top-K 与报告实现。
+* `src/selector/README.md`
+  * Selector 冻结输入、训练、校正、selection 与 Selected-refined 的边界。
+* `configs/selector/`
+  * Find_0、Find_1、unet_c1 三个 producer 的 Selector 配置。
 
-注意：当前 `src/inference` 代码仍可用，但推理、评估、阈值搜索和可视化可能混在同一运行链路中。未来重构时建议代码层面拆分 inference 与 evaluation，组合入口可以保留。
+旧的混合式推理、评估、保存与可视化管线不属于本分支接口；不要根据 Git 历史中的旧入口补回兼容层。
 
 ## 5. 下游分子对接链路（暂时不需要考虑）
 
@@ -81,4 +85,6 @@
   * `Ligand/notes_of_dataset.md`
 * 代码链路说明允许随实现演进重写，但应保持克制，只写阅读路径和检查点：
   * `src/model/notes_of_network.md`
-  * `src/inference/notes_of_infereval.md`
+  * `src/datasets/README_STAGE1.md`
+  * `src/inference/README.md`
+  * `src/selector/README.md`

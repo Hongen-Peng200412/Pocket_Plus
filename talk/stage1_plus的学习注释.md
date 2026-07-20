@@ -51,7 +51,7 @@
                           └─ 06 runner/assembly/CLI  [Learn/06-stage1-centered-runtime]
                               ├─ 07 反链 DP/oracle
                               ├─ 07 Selector 输入
-                              ├─ 07 V5+D/CCLN
+                              ├─ 07 V48+D/CCLN
                               └─ 07 训练/校准/推理    [Learn/07-stage1-selector]
                                                      [Learn/model-cumulative]
 ```
@@ -87,7 +87,7 @@ Stage G keep-list
 | artifact | `src/artifacts/` | 路径、原子发布、完成状态和无 pickle NPZ schema |
 | 谱系 | `src/component_lineage/` | 多阈值连通组件森林、CLG 和 occurrence overlap |
 | 完整图 | `src/inference/`、`src/evaluation/` | 滑窗融合、阈值冻结、centered 生产和续跑编排 |
-| Selector | `src/selector/` | 冻结 CLG 输入、V5+D/CCLN、精确反链选择和校准 |
+| Selector | `src/selector/` | 冻结 CLG 输入、V48+D/CCLN、精确反链选择和校准 |
 
 ## 6. 数据请求与冻结池
 
@@ -297,7 +297,7 @@ JSON 和 NPZ 都先写同目录临时文件。NPZ 发布前后均以 `allow_pick
 
 主要分组包括 voxel values、voxel auxiliary values、P values、A values，以及 CLG candidate membership。每个 offsets 字段必须从 0 开始、单调不减，并以对应 value 表长度结束。
 
-`Selected_Refined_Centered` 的失败 entry 不伪造全零固定 V grid。只有 `refine_status=success` 的 entry 保存 V grid，并由 `feature_entry_index` 映射回全部 entry 表。
+`Selected_Refined_Centered` 的非成功归档项只保留来源身份、几何和状态，所有变长体素与 P/A 数据段为空。centered 归档仅保存稀疏 `voxel_final`，不保存固定多尺度 V 网格。
 
 ## 9. Component 谱系对象
 
@@ -399,7 +399,7 @@ $$
 ### 9.4 指标分工
 
 - voxel AP：每个 PDB 在完整网格上计算，再对含 GT 正 voxel 的 PDB 做 macro 平均。
-- semantic Dice：在冻结阈值上统计完整图 TP/FP/FN。
+- semantic Dice：`semantic_dice_micro_t_F1` 先跨 calibration PDB 汇总完整图 TP/FP/FN 再计算；`semantic_dice_macro_t_F1` 先逐 PDB 计算 Dice 再等权平均。单个或汇总分母为 0 时 Dice 均定义为 0.0。
 - coverage：允许多预测对同一 GT 或多 GT 对同一预测，只问双向覆盖是否达标。
 - one-to-one：先对连续分数 `sqrt(c_pred*c_GT)` 做一次固定 Hungarian，再在同一配对上应用多个 coverage 阈值。
 - top-K：按连续候选质量分取前 K，只问是否存在任一双向 coverage 达标 pair，不做 Hungarian。
@@ -433,42 +433,47 @@ $$
 
 | role | entry 来源 | BOX 中的权威 voxel |
 | --- | --- | --- |
-| `F1_centered` | `t_F1` 层每个 eligible component | 该 source component mask |
-| `CLG_centered` | 每个 CLG 的 oldest node | oldest node mask，并附全部 candidate membership |
-| `Selected_Refined_Centered` | Selector 最终选择的 source node | 在选定局部阈值重算后与 source node 匹配的组件 |
+| `F1_centered` | 原始滑窗融合概率在 `t_F1` 层形成的每个 eligible component | 该来源 forest 组件的成员坐标；坐标上的概率和特征来自当前 centered 重算 |
+| `CLG_centered` | 每个 CLG 的 oldest node | oldest forest node 的成员坐标，并附全部 candidate membership；概率和特征来自当前 centered 重算 |
+| `Selected_Refined_Centered` | Selector 最终选择的 source node | 用当前 centered 重算概率和来源节点阈值重新构建后，与原来源组件相交且 IoU 最大的局部组件 |
 
 三者都用 source centroid 调用统一起点解析器，并要求 source bbox 完整落入真实 80³ BOX。
 
-### 10.2 回调装配
+`source_tree_id` 与树内局部 `source_node_id` 共同确定 forest 节点；CLG 的 seed、oldest 和 candidate node ID 也都只在该 `source_tree_id` 内解释。`source_threshold_grid_index=j` 与 `source_threshold_value=j/denominator` 标识来源节点所在阈值层，不是成员体素概率。
+
+`voxel_index_local_zyx` 是当前 80³ BOX 内的离散 ZYX 坐标。`candidate_voxel_index` 不是坐标：它只引用所属 CLG 条目 `voxel_offsets` 段内的局部行，先换算成归档级行号后才能读取对应的 `voxel_index_local_zyx`。
+
+### 10.2 批量直连装配
 
 ```text
 ComponentNode / selection
-  → CenteredRequest
-  → Stage1Dataset.materialize_request()
-  → Stage1BatchCollator
-  → 完整 wrapper forward
-  → adapt_stage1_centered_output()
-  → source mask 对齐的 entry payload
+  → 有序 CenteredRequest 列表
+  → 按 centered_batch_size 切片，正式默认 12
+  → Stage1Dataset.materialize_request() 逐 BOX 物化
+  → Stage1BatchCollator 堆叠 dense V、拼接 ragged A
+  → 完整 wrapper 每批一次 forward
+  → V 按 batch 维、A 按 atom_counts、P 按 anchor_batch_index 拆分
+  → 与请求同序的 source mask entry payload
 ```
 
-centered 必须走完整 forward，因为它需要 V/P/A 特征；不能复用只返回 ligand logits 的 voxel-only 入口。
+centered 必须走完整 forward，因为它需要 V/P/A 特征；不能复用只返回 ligand logits 的 voxel-only 入口。领域函数直接接收完整 wrapper、批量 builder 和批量大小，不再用单请求 `FullForwardCallback` 隐藏这些真实依赖。
 
 ### 10.3 V/P/A
 
-- V：五张具名 channel-first feature grids；`voxel_final` 在 source mask rows 上稀疏抽取为 `(K_source,48)`。
-- P：Find 的全部 P anchor 坐标、概率与 L2–L4 特征，逐行对齐。
-- A：Find 的真实 receptor atom identity、坐标、概率与 L1–L4 特征。
+- V：只把 `voxel_final` 在来源掩码体素上稀疏抽取为 `(K_source,C_voxel)`；通道宽度由实际 checkpoint 决定，固定多尺度 V 网格不落盘。
+- P：Find 的全部 P anchor 坐标、概率与 L2–L3 特征，逐行对齐。
+- A：Find 的真实 receptor atom identity、坐标、概率、float32 原始 49 维 L0 与 float16 L1–L3 特征；L0 直接保存在 centered NPZ，Selector 不再二次读取原始受体表。
 - `unet_c1`：只有 V，不伪造 P/A 表。
 
-A-pocket 固定为“当前 core BOX 内原子”与“来源 blob voxel centers 的 10 Å欧氏包络”交集。`A_global_index` 继续回指每 PDB 唯一 receptor 表。
+A-pocket 固定为“当前 core BOX 内原子”与“来源 blob voxel centers 的 10 Å 欧氏包络”交集。`A_global_index` 继续回指每 PDB 唯一 receptor 表，用于身份追踪；`A_feat_L0` 直接携带同序原始特征。
 
 ### 10.4 BF16 桥接
 
 模型内部 feature 可以是 BF16，但 NumPy 没有原生 BF16 dtype。`_to_numpy()` 只在 CPU 桥接时提升为 float32；artifact 打包层随后按契约把学习特征压为 float16。这个转换不改变模型内部计算路径。
 
-### 10.5 Selected 失败状态
+### 10.5 Selected 状态与异常
 
-Selected entry 可以是 `success/empty/no_overlap/failed`。非 success entry 保留 source identity 和几何，但 ragged payload 为空；不能用全零固定 V grid 冒充一次真实 forward。`feature_entry_index` 只把成功特征行映射回全部 entry。
+Selected 归档项的领域状态只有 `success/empty/no_overlap`。非 success 归档项保留来源身份和几何，但变长数据段为空。模型 forward 或实现异常直接向上传播，当前角色不发布 `_COMPLETE`，不再伪造 `failed` 状态。
 
 ## 12. 生产装配与续跑
 
@@ -520,8 +525,8 @@ PDB 清单保持文件内顺序且禁止重复。`shard_index/shard_count` 按�
 
 ## 13. 当前阅读进度
 
-- 已完成：从数据准备到完整图、谱系、centered 和可续跑生产 CLI 的整条 Stage1 producer 链。
-- 下一层：Selector 如何冻结 CLG 输入、构造 V5+D/CCLN，并做精确反链选择。
+- 已完成：从数据准备到完整图、谱系、centered、可续跑生产 CLI，以及 Selector 的冻结输入、V48+D/CCLN、精确反链选择、校准和 Selected-refined 回接。
+- 学习线终点：`Learn/07-stage1-selector`；`Learn/model-cumulative` 与其指向同一提交。
 - 暂不修改：目标差异之外的既有 geometry、density builder 和 backbone 注释。
 
 ## 14. 留给实现线
