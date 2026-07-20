@@ -1,0 +1,89 @@
+# @package _global_
+# AdaLigand Find CPC1：L_atom + 0.1 L_aux + L_ligand + 0.1 L_P。
+model:
+  atom_loss:
+    _target_: src.modules.losses.AdaptiveClassificationCompositeLoss
+    num_classes: 2
+    sigma: 2.0
+    hard_label_threshold: null
+    focal_gamma: 2.0
+    focal_alpha: [0.5, 0.5]
+    focal_alpha_neg: 0.5
+    focal_alpha_pos: 0.5
+    focal_eps: 1.0e-6
+    tversky_alpha: 0.5
+    tversky_beta: 0.5
+    tversky_smooth: 1.0
+    w_focal: 0.7
+    w_tversky: 0.3
+    w_mse: 0.0
+    focal_soft_negative_suppression: false
+    tversky_soft_target: false
+  atom_loss_weight: 1.0
+
+  voxel_aux_loss:
+    _target_: src.modules.losses.AdaptiveClassificationCompositeLoss
+    num_classes: 2
+    sigma: 2.0
+    hard_label_threshold: null
+    focal_gamma: 2.0
+    focal_alpha: [0.5, 0.5]
+    focal_alpha_neg: 0.5
+    focal_alpha_pos: 0.5
+    focal_eps: 1.0e-6
+    tversky_alpha: 0.5
+    tversky_beta: 0.5
+    tversky_smooth: 1.0
+    w_focal: 0.7
+    w_tversky: 0.3
+    w_mse: 0.0
+    focal_soft_negative_suppression: false
+    tversky_soft_target: false
+  voxel_aux_loss_weight: 0.1
+
+  voxel_ligand_loss:
+    _target_: src.modules.losses.AdaptiveClassificationCompositeLoss
+    num_classes: 2
+    sigma: 2.0
+    hard_label_threshold: null
+    focal_gamma: 2.0
+    focal_alpha: [0.5, 0.5]
+    focal_alpha_neg: 0.5
+    focal_alpha_pos: 0.5
+    focal_eps: 1.0e-6
+    tversky_alpha: 0.5
+    tversky_beta: 0.5
+    tversky_smooth: 1.0
+    w_focal: 0.7
+    w_tversky: 0.3
+    w_mse: 0.0
+    focal_soft_negative_suppression: false
+    tversky_soft_target: false
+  voxel_ligand_loss_weight: 1.0
+
+  ligand_pseudo_loss:
+    _target_: src.modules.losses.AdaptiveClassificationCompositeLoss
+    num_classes: 2
+    sigma: 2.0
+    hard_label_threshold: null
+    focal_gamma: 2.0
+    focal_alpha: [0.5, 0.5]
+    focal_alpha_neg: 0.5
+    focal_alpha_pos: 0.5
+    focal_eps: 1.0e-6
+    tversky_alpha: 0.5
+    tversky_beta: 0.5
+    tversky_smooth: 1.0
+    w_focal: 0.7
+    w_tversky: 0.3
+    w_mse: 0.0
+    focal_soft_negative_suppression: false
+    tversky_soft_target: false
+  pseudo_loss_weight: 0.1
+
+  # 当前五套训练不实例化 refine/ranking；通用 wrapper 能力仍保留。
+  ligand_sparse_refine_loss: null
+  ligand_sparse_refine_delta_loss: null
+  ligand_sparse_refine_w_rank: 0.0
+  ligand_sparse_refine_loss_weight: 0.0
+  ligand_sparse_refine_loss_schedule: null

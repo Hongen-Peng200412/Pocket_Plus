@@ -203,10 +203,37 @@ Find_1 必须先对 core+8 Å完整原子表执行 feature projection，再筛�
 
 完整 forward 通过 `_publish_stage1_feature_hooks()` 把内部多尺度输出发布为稳定直键：voxel 层形成 V 特征，Find 另外形成 P/A 特征。这里只建立模型到 artifact 层的接口；具体 NPZ 对齐与 ragged schema 在后续 artifact/centered 里阅读。
 
+### 6.5 Wrapper 与四类监督
+
+`VoxelPointStage1Wrapper` 是 Lightning 生命周期的 thin coordinator。它把 backbone 输出交给四类可选监督：
+
+| loss | target 来源 | CPC1 权重 | CPC2 权重 |
+| --- | --- | ---: | ---: |
+| `L_atom` | `binding_atom` 对齐真实 receptor atom | 1.0 | 1.0 |
+| `L_voxel_aux` | `voxel_label`，仅在 `hardmask` home voxels 计算 | 0.1 | 0.0 |
+| `L_voxel_ligand` | schema-v3 union `ligand_area_target` | 1.0 | 0.0 |
+| `L_P` | P anchor home voxel 采样同一 ligand target | 0.1 | 0.1 |
+
+`hardmask` 只限定 auxiliary receptor loss；ligand target 本身不乘 hardmask。通用 Pocket_Plus 的旧 `ligand_dist_map` 路径仍保留，但 AdaLigand Dataset 直接提供 union mask crop。
+
+### 6.6 五套训练配置
+
+```text
+unet_c1                  从头训练
+Find_0/CPC1 → Find_0/CPC2
+Find_1/CPC1 → Find_1/CPC2
+```
+
+CPC2 只能读取同名 CPC1 BEST。`src/train.py::_load_model_only_checkpoint()` 加载完整 `state_dict` 并调用 `on_load_checkpoint()`，但不恢复 optimizer、scheduler、epoch 或 global step。随后 `adaligand_stage2.yaml` 冻结 CPC1 的 voxel/point/embed 主干，只训练 interaction 与 A/P 尾部。
+
+### 6.7 正式推理恢复
+
+`src/inference/checkpoint.py::load_stage1_wrapper()` 与 CPC2 初始化不同：它从相邻 resolved config 实例化完整 wrapper，strict 加载完整 `state_dict`，执行 `on_load_checkpoint()` 并切到 eval。推理入口因此不依赖旧的裸 backbone loader。
+
 ## 7. 当前阅读进度
 
-- 已完成：旧链清理、数据层、三个 producer 的模型主路径、Find voxel scatter 差异与 voxel-only 入口。
-- 下一层：wrapper 如何把模型输出接入 loss、CPC 阶段、checkpoint 和五套配置。
+- 已完成：旧链清理、数据层、producer 模型、四类监督、五套训练配置、CPC 与 checkpoint 接缝。
+- 下一层：正式 artifact 的目录身份、完成状态和聚合 NPZ schema。
 - 暂不修改：目标差异之外的既有 geometry、density builder 和 backbone 注释。
 
 ## 8. 留给实现线

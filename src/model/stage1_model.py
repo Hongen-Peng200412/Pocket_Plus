@@ -10,8 +10,8 @@ Stage1 体素-点云联合模型的清理后主流程。
 关键输入字段:
     - voxel_grid: torch.Tensor, (B,C_in,D,H,W), voxel backbone 输入密度/特征体。
     - atom_feat: torch.Tensor, (N_real,F_atom) 或 mixed 路径下 (N_all,F_atom), 点分支输入特征。
-    - atom_coord_centered_world: torch.Tensor, (N,3), 以 BOX 中心为原点的世界坐标，轴顺序 (x,y,z)。
-    - atom_coord_local_voxel: torch.Tensor, (N,3), corner 语义连续局部体素坐标，轴顺序 (x,y,z)。
+    - atom_coord_centered_world: torch.Tensor, (N,3), 以 BOX 中心为原点的连续世界坐标，XYZ 轴序，单位 Å；不是 voxel 坐标。
+    - atom_coord_local_voxel: torch.Tensor, (N,3), BOX-local 连续 voxel 坐标，XYZ 轴序，corner 语义；不是世界坐标或离散索引。
     - atom_label: torch.Tensor, (N_real,) 或 (N_all,), real atom 监督标签；P anchor 槽位只作为占位。
     - atom_is_in_core_box: torch.Tensor, (N_real,) 或 (N_all,), bool，real atom 是否参与 atom 监督。
     - real_mask / pseudo_mask: torch.Tensor, (N_all,), mixed-only 点类型掩码。
@@ -71,7 +71,8 @@ except Exception as exc:  # pragma: no cover - 依赖当前本地环境
 
 
 class VolumePointStage1Model(nn.Module):
-    """组合 voxel、point、候选与 refine 子系统的 Stage1 顶层模型。
+    """
+    组合 voxel、point、候选与 refine 子系统的 Stage1 顶层模型。
 
     AdaLigand 的三个 producer 复用本类，但通过配置关闭不同分支:
         - ``unet_c1``: 只运行单通道 density 与 voxel backbone。
@@ -80,6 +81,14 @@ class VolumePointStage1Model(nn.Module):
 
     完整 :meth:`forward` 还会运行共同的 point 路径并发布 centered 所需特征；
     :meth:`forward_voxel_probability` 只复现完整图推理所需的 voxel 前半段。
+    输入参数:
+        - 初始化参数: 见 `__init__` 的完整参数契约
+
+    前向输入:
+        - batch: dict[str,Any], canonical Stage1 batch; 坐标字段同时保留 centered 连续世界 XYZ 与 BOX-local 连续 voxel XYZ
+
+    前向输出:
+        - outputs: dict[str,Any], 最后一轮 voxel/point/atom 输出及 centered 生产所需的稳定特征出口
     """
 
     def __init__(
@@ -802,18 +811,18 @@ class VolumePointStage1Model(nn.Module):
 
         输入参数:
             - voxel_logits_aux: torch.Tensor, (B, C_aux, D, H, W), 体素辅助(receptor)预测 logits
-            - atom_coord_local_voxel: torch.Tensor, (N, 3), 连续体素 corner 坐标, 轴顺序 x/y/z
+            - atom_coord_local_voxel: torch.Tensor, (N, 3), BOX-local 连续 voxel 坐标 XYZ，corner 语义
             - atom_batch_index: torch.Tensor, (N,), 每个原子所属 BOX 索引
-            - box_shape_zyx: torch.Tensor, (B, 3), 每个 BOX 体素尺寸, 轴顺序 z/y/x
+            - box_shape_zyx: torch.Tensor, (B, 3), 每个 BOX 离散 voxel 网格尺寸 ZYX
 
         输出:
             - base: torch.Tensor, (N, C_aux), home 体素处的 voxel aux logits, 已 detach
         """
-        # torch.Tensor, (N, 3), home 体素离散下标, 轴顺序 x/y/z
+        # torch.Tensor[int64], (N,3), BOX-local 连续 voxel XYZ floor 后得到的离散 home voxel-index XYZ
         idx_xyz = torch.floor(atom_coord_local_voxel).to(torch.long)
-        # torch.Tensor, (N, 3), home 体素离散下标, 轴顺序 z/y/x
+        # torch.Tensor[int64], (N,3), 离散 home voxel-index 转换后的 ZYX 轴序
         idx_zyx = idx_xyz[:, [2, 1, 0]].clamp(min=0)
-        # torch.Tensor, (N, 3), 每个原子所属 BOX 的体素尺寸, 轴顺序 z/y/x
+        # torch.Tensor[int64], (N,3), 每个 atom 所属 BOX 的离散 voxel 网格尺寸 ZYX
         shape_zyx = box_shape_zyx.to(idx_zyx.device)[atom_batch_index]
         idx_zyx = torch.minimum(idx_zyx, shape_zyx - 1)
         # torch.Tensor, (N, C_aux), home 体素处采样到的 aux logits
@@ -899,11 +908,18 @@ class VolumePointStage1Model(nn.Module):
 
     @staticmethod
     def _canonicalize_stage1_batch(batch: dict[str, Any]) -> dict[str, Any]:
-        """把 AdaLigand 外部字段适配为现有模型内部字段。
+        """
+        把 AdaLigand 外部字段适配为现有模型内部字段。
 
         外部统一使用 ``density_input`` 与 ``atom_offsets[B+1]``；现有 PTV3 内核仍
         使用 ``voxel_grid`` 与 ``B`` 个累计结束偏移。适配只创建浅拷贝，不改写
         Dataset/Collator 对外契约。
+
+        输入参数:
+            - batch: dict[str,Any], 外部 Stage1 batch; `density_input` 为 `(B,C,D,H,W)` voxel 网格，`atom_offsets` 为外部 `(B+1,)` ragged 边界
+
+        输出:
+            - result: dict[str,Any], 浅拷贝后的内部 batch; `voxel_grid` 与 `atom_offsets` 分别转换为内部别名和 `(B,)` 结束偏移
         """
 
         result = {**batch}
@@ -1000,9 +1016,9 @@ class VolumePointStage1Model(nn.Module):
         计算每个原子 home 体素离散下标(z/y/x)。
 
         输入参数:
-            - atom_coord_local_voxel: torch.Tensor, (N, 3), 连续体素 corner 坐标(x/y/z)
+            - atom_coord_local_voxel: torch.Tensor, (N,3), BOX-local 连续 voxel 坐标 XYZ，corner 语义
             - atom_batch_index: torch.Tensor, (N,), 每个原子所属 BOX 索引
-            - box_shape_zyx: torch.Tensor, (B, 3), 每个 BOX 体素尺寸(z/y/x)
+            - box_shape_zyx: torch.Tensor, (B,3), 每个 BOX 离散 voxel 网格尺寸 ZYX
 
         输出:
             - idx_zyx: torch.Tensor, (N, 3), long, home 体素离散下标(z/y/x), 已 clamp 到合法范围
@@ -1034,7 +1050,7 @@ class VolumePointStage1Model(nn.Module):
         batch = {**batch}
         # nn.Module, 共享或独立 density encoder
         encoder = self.density_cube_encoder if self.real_atom_density_share_encoder else self.real_density_cube_encoder
-        # torch.Tensor, (N_real, 3), home 体素离散下标(z/y/x), 全分辨率 voxel_grid 坐标系
+        # torch.Tensor[int64], (N_real,3), 全分辨率 BOX-local 离散 home voxel-index ZYX
         home_zyx = self._atom_home_voxel_zyx(
             batch["atom_coord_local_voxel"], batch["atom_batch_index"], batch["box_shape_zyx"]
         )
@@ -1066,10 +1082,10 @@ class VolumePointStage1Model(nn.Module):
 
         输入参数:
             - voxel_feat: torch.Tensor, (B, C, D, H, W), 体素特征图
-            - point_coord_centered_world: torch.Tensor, (N, 3), 当前点坐标(centered-world, x/y/z)
+            - point_coord_centered_world: torch.Tensor, (N,3), centered 连续世界坐标 XYZ，单位 Å
             - point_batch_index: torch.Tensor, (N,), 当前点所属 BOX 索引
-            - voxel_size_world: torch.Tensor, (B, 3), 每个 BOX voxel 世界尺寸(x/y/z)
-            - box_shape_zyx: torch.Tensor, (B, 3), 每个 BOX 体素尺寸(z/y/x)
+            - voxel_size_world: torch.Tensor, (B,3), 世界坐标 XYZ 各轴的 voxel 间距，单位 Å/voxel
+            - box_shape_zyx: torch.Tensor, (B,3), 每个 BOX 离散 voxel 网格尺寸 ZYX
             - fusion_mode: str, 仅兼容无意义
             - sampler_mode: str, voxel 采样模式, 取值 trilinear / nearest
 
@@ -1088,7 +1104,7 @@ class VolumePointStage1Model(nn.Module):
         # torch.Tensor, (N, 3), 每点全分辨率 box 尺寸(x/y/z)与 voxel 世界尺寸(x/y/z)
         box_shape_xyz = box_shape_zyx.to(device=device, dtype=point_coord_centered_world.dtype)[point_batch_index][:, [2, 1, 0]]
         voxel_size_xyz = voxel_size_world.to(device=device, dtype=point_coord_centered_world.dtype)[point_batch_index]
-        # torch.Tensor, (N, 3), 连续体素 corner 坐标(x/y/z)
+        # torch.Tensor, (N,3), 由 centered 连续世界 XYZ 换算得到的 BOX-local 连续 voxel XYZ corner 坐标
         point_local_xyz = point_coord_centered_world / voxel_size_xyz + 0.5 * box_shape_xyz
         # torch.Tensor, (N, 3), grid_sample [-1,1] 归一化坐标(align_corners=True)
         grid_xyz = (2.0 * (point_local_xyz - 0.5) / torch.clamp(box_shape_xyz - 1.0, min=1.0)) - 1.0
@@ -1136,8 +1152,8 @@ class VolumePointStage1Model(nn.Module):
 
         输入参数:
             - voxel_feat: torch.Tensor, (B, C, D_l, H_l, W_l), 当前 hook 这一级体素特征(空间尺寸可小于全分辨率)
-            - point_like: Any, 当前 Point 对象, 用到 point_like.coord(centered-world, x/y/z) 与 point_like.batch
-            - batch: dict[str, Any], 提供 voxel_size_world(B,3) 与 box_shape_zyx(B,3, 全分辨率)
+            - point_like: Any, 当前 Point 对象, `point_like.coord` 为 centered 连续世界坐标 XYZ，`point_like.batch` 为 BOX 索引
+            - batch: dict[str, Any], 提供世界坐标 XYZ voxel 间距 `voxel_size_world(B,3)` 与离散网格尺寸 `box_shape_zyx(B,3)`
             - feature_name: str, 当前 point 变量名, 用于取 weighted_cube 的 per-hook 参数
             - pseudo_mask: torch.Tensor | None, (N,), True=P anchor; None=real-only(全部计入占据)
             - fusion_mode: str, 仅兼容无意义
@@ -1156,7 +1172,7 @@ class VolumePointStage1Model(nn.Module):
         channels = int(voxel_feat.shape[1])
         if num_points == 0:
             return voxel_feat.new_empty((0, channels))
-        # torch.Tensor, (N, 3), centered-world 坐标(x/y/z); torch.Tensor, (N,), 所属 BOX
+        # torch.Tensor, (N,3), centered 连续世界坐标 XYZ；torch.Tensor, (N,), 所属 BOX 索引
         point_coord = point_like.coord
         point_batch = point_like.batch.to(torch.long)
         device = voxel_feat.device
@@ -1167,16 +1183,16 @@ class VolumePointStage1Model(nn.Module):
         level_shape_xyz = torch.tensor([dim_x, dim_y, dim_z], device=device, dtype=point_coord.dtype)[None, :]
         # torch.Tensor, (3,), long, 该级 grid 尺寸(z/y/x)
         level_shape_zyx = torch.tensor([dim_z, dim_y, dim_x], device=device, dtype=torch.long)
-        # torch.Tensor, (N, 3), 全分辨率 box 尺寸(x/y/z), 每点取自所属 BOX
+        # torch.Tensor, (N,3), 每点所属 BOX 的离散全分辨率 voxel 网格尺寸 XYZ
         box_shape_xyz = batch["box_shape_zyx"].to(device=device, dtype=point_coord.dtype)[point_batch][:, [2, 1, 0]]
         # torch.Tensor, (N, 3), 每个点 voxel 世界尺寸(x/y/z)
         voxel_size_xyz = batch["voxel_size_world"].to(device=device, dtype=point_coord.dtype)[point_batch]
 
-        # torch.Tensor, (N, 3), 全分辨率连续 corner 坐标(x/y/z): centered-world -> 全分辨率 voxel
+        # torch.Tensor, (N,3), centered 连续世界 XYZ -> BOX-local 连续 voxel XYZ corner 坐标
         p_full_xyz = point_coord / voxel_size_xyz + 0.5 * box_shape_xyz
-        # torch.Tensor, (N, 3), 缩放到该级 grid 的连续 corner 坐标(x/y/z)
+        # torch.Tensor, (N,3), 按层级尺寸缩放后的连续 voxel XYZ corner 坐标
         p_level_xyz = p_full_xyz * (level_shape_xyz / box_shape_xyz)
-        # torch.Tensor, (N, 3), home 体素离散下标(x/y/z)
+        # torch.Tensor[int64], (N,3), 当前层级离散 home voxel-index XYZ
         home_xyz = torch.floor(p_level_xyz).to(torch.long)
         # torch.Tensor, (N, 3), home 下标转 z/y/x 并裁剪到合法范围
         home_zyx = torch.minimum(torch.clamp(home_xyz[:, [2, 1, 0]], min=0), level_shape_zyx[None, :] - 1)
@@ -1834,15 +1850,14 @@ class VolumePointStage1Model(nn.Module):
 
 
     def forward_voxel_probability(self, batch: dict[str, Any]) -> torch.Tensor:
-        """运行三个 producer 与完整 forward 等价的最短 voxel-only 路径。
+        """
+        运行三个 producer 与完整 forward 等价的最短 voxel-only 路径。
 
-        参数:
-            batch: ``Stage1BatchCollator`` 输出。Find 包含 core+8 Å原子表；
-                ``unet_c1`` 只需共同 dense 字段。
+        输入参数:
+            - batch: dict[str,Any], `Stage1BatchCollator` 输出; Find 含 core+8 Å real atom 表，unet_c1 只需共同 dense voxel 字段
 
-        返回:
-            ``voxel_logits_ligand``，形状 ``[B,1,80,80,80]``。方法名沿用
-            推理契约，但返回的是 sigmoid 前 logits，由推理层统一转 probability。
+        输出:
+            - voxel_logits_ligand: torch.Tensor, (B,1,80,80,80), BOX-local 离散 ZYX voxel 网格上的 ligand logits; 仍为 sigmoid 前值
 
         该入口固定执行三次 recycle，并跳过 point blocks、point backbone、候选 C、
         P、A/P heads 与 sparse-refine。它不调用完整 ``forward``，也不抽取共享
@@ -1910,14 +1925,13 @@ class VolumePointStage1Model(nn.Module):
     # ================================================================================================================================================
     def forward(self, batch: dict[str, Any]) -> dict[str, Any]:
         """
-        执行前向。
+        执行完整 Stage1 前向并发布最后一轮 voxel、point、atom、candidate 与 refine 输出。
 
         输入参数:
-            - batch: dict[str, Any], box_point_collate 输出的 real-only batch
+            - batch: dict[str,Any], `Stage1BatchCollator` 输出的 real-only batch; 坐标字段包括 centered 连续世界 XYZ 与 BOX-local 连续 voxel XYZ
 
         输出:
-            - outputs: dict[str, Any], 最后一轮 voxel/point/atom 输出, 部分包含:
-                - "point_feat_raw"、"fused_point_feat": 二者都是 point_output_dict["point_feat"], 但后者经过可选的 detach
+            - outputs: dict[str,Any], 最后一轮结构化输出，包含 `voxel_outputs`、`point_outputs`、real-only supervision 字段，以及按配置追加的 atom/candidate/refine 字段
         """
         batch = self._canonicalize_stage1_batch(batch)
         if not self.enable_recycling:

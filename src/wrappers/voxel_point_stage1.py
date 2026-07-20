@@ -29,6 +29,22 @@ from src.utils.module_freeze import set_fully_frozen_submodules_eval
 
 
 class VoxelPointStage1Wrapper(pl.LightningModule):
+    """
+    协调 Stage1 backbone、监督、指标、调度和 checkpoint 生命周期。
+
+    wrapper 不重新实现 producer 网络；普通 ``forward`` 和 voxel-only 调用都转发给
+    backbone。它的主要职责是把同一输出字典按当前 CPC 配置组合成 total loss，并
+    保存下一阶段 model-only 恢复仍需继承的候选阈值状态。
+    输入参数:
+        - 初始化参数: 见 `__init__` 的完整参数契约
+
+    前向输入:
+        - batch: dict[str,Any], Stage1Dataset/Collator 生成的 batch，坐标字段由 backbone 解释
+
+    前向输出:
+        - outputs: dict[str,Any], backbone 输出字典，包含 voxel/point/atom 预测及监督字段
+    """
+
     def __init__(
         self,
         backbone: nn.Module,
@@ -367,6 +383,24 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
         """
         return self.backbone(batch)
 
+    def forward_voxel_probability(self, batch: dict[str, Any]) -> torch.Tensor:
+        """
+        把正式 Stage1 wrapper 的 voxel-only 调用原样转发给 backbone。
+
+        输入参数:
+            - batch: dict[str,Any], Stage1 batch; voxel 网格为 BOX-local 离散 ZYX 体素，atom 坐标字段仍按 backbone 契约提供
+
+        输出:
+            - voxel_logits_ligand: torch.Tensor, (B,1,D,H,W), BOX-local 离散 ZYX voxel 网格上的 sigmoid 前 ligand logits
+
+        推理层负责 sigmoid、Find hardmask 与整图融合；wrapper 不重复 checkpoint 或阈值逻辑。
+        """
+
+        backbone = self._unwrap_backbone()
+        if not hasattr(backbone, "forward_voxel_probability"):
+            raise AttributeError("当前 Stage1 backbone 未实现 forward_voxel_probability。")
+        return backbone.forward_voxel_probability(batch)
+
     def _ligand_target_from_dist(self, ligand_dist_map: torch.Tensor, logit_dim: int, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
         """
         从 voxel ligand loss 配置生成 dense hard target。
@@ -384,6 +418,46 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
             raise TypeError("voxel_ligand_loss 必须支持 target_from_ligand_dist_map()。")
         return self.voxel_ligand_loss.target_from_ligand_dist_map(ligand_dist_map=ligand_dist_map, logit_dim=logit_dim, device=device, dtype=dtype)
 
+    def _ligand_target_from_batch(
+        self,
+        batch: Mapping[str, Any],
+        logit_dim: int,
+        device: torch.device,
+        dtype: torch.dtype,
+    ) -> torch.Tensor:
+        """
+        读取 AdaLigand 直接 union target，并保留旧距离图配置兼容。
+
+        ``ligand_area_target`` 是 schema v3 ``union_mask`` 的 80³ crop，不乘
+        ``hardmask``。旧 ``ligand_dist_map`` 只服务未迁移的通用 Pocket_Plus 配置。
+
+        输入参数:
+            - batch: Mapping[str,Any], 含 `(B,D,H,W)` 或 `(B,1,D,H,W)` BOX-local 离散 ZYX ligand target
+            - logit_dim: int, 当前 ligand logits 通道数
+            - device: torch.device, target 输出设备
+            - dtype: torch.dtype, 旧距离图转换时使用的计算 dtype
+
+        输出:
+            - target: torch.Tensor, (B,D,H,W), BOX-local 离散 ZYX voxel 的 hard-label target
+        """
+
+        direct_target = batch.get("ligand_area_target")
+        if direct_target is not None:
+            target = direct_target.to(device=device)
+            if int(logit_dim) == 1:
+                if target.ndim == 5 and int(target.shape[1]) == 1:
+                    target = target[:, 0]
+                if target.ndim != 4:
+                    raise ValueError("二分类 ligand_area_target 必须为 (B,D,H,W)。")
+                return target.to(dtype=torch.long)
+            if target.ndim != 4:
+                raise ValueError("多分类 ligand_area_target 必须为 (B,D,H,W) 类别索引。")
+            return target.to(dtype=torch.long)
+        ligand_dist_map = batch.get("ligand_dist_map")
+        if ligand_dist_map is None:
+            raise KeyError("batch 缺少 ligand_area_target。")
+        return self._ligand_target_from_dist(ligand_dist_map, logit_dim, device, dtype)
+
     def _sample_ligand_refine_supervision(self, outputs: dict[str, Any], batch: dict[str, Any]) -> dict[str, torch.Tensor]:
         """
         从 dense ligand 距离图采样 C 级 sparse refine 监督。
@@ -398,8 +472,8 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
         # torch.Tensor, (sumC,C_logits), C 级 refined logits
         logits_C = outputs["ligand_refine_logits_C"]
         # torch.Tensor, (B,D,H,W), dense ligand hard-label target
-        dense_target = self.ligand_sparse_refine_loss.target_from_ligand_dist_map(
-            ligand_dist_map=batch["ligand_dist_map"],
+        dense_target = self._ligand_target_from_batch(
+            batch=batch,
             logit_dim=int(logits_C.shape[1]),
             device=logits_C.device,
             dtype=logits_C.dtype,
@@ -408,7 +482,7 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
         dense_valid_mask = torch.ones_like(dense_target, dtype=torch.bool, device=logits_C.device)
         # torch.Tensor, (sumC,), long, C 中每个候选 voxel 所属 BOX index
         idx_b = outputs["candidate_batch_index"].to(device=logits_C.device, dtype=torch.long)
-        # torch.Tensor, (sumC,3), long, C 中每个候选 voxel 的 z/y/x index
+        # torch.Tensor[int64], (sumC,3), C 候选的 BOX-local 离散 voxel-index ZYX
         idx_zyx = outputs["candidate_voxel_zyx"].to(device=logits_C.device, dtype=torch.long)
         # torch.Tensor, (sumC,), C 级 hard-label target
         target_C = dense_target[idx_b, idx_zyx[:, 0], idx_zyx[:, 1], idx_zyx[:, 2]]
@@ -440,8 +514,8 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
         # torch.Tensor, (N_pseudo, pseudo_ligand_logit_dim), P 后置 ligand logits
         pseudo_logits = outputs["pseudo_logits"]
         # torch.Tensor, (B,D,H,W), dense ligand hard-label target
-        dense_target = self.ligand_pseudo_loss.target_from_ligand_dist_map(
-            ligand_dist_map=batch["ligand_dist_map"],
+        dense_target = self._ligand_target_from_batch(
+            batch=batch,
             logit_dim=int(pseudo_logits.shape[1]),
             device=pseudo_logits.device,
             dtype=pseudo_logits.dtype,
@@ -450,7 +524,7 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
         dense_valid_mask = torch.ones_like(dense_target, dtype=torch.bool, device=pseudo_logits.device)
         # torch.Tensor, (N_pseudo,), long, P home 体素所属 BOX index
         idx_b = outputs["pseudo_batch_index"].to(device=pseudo_logits.device, dtype=torch.long)
-        # torch.Tensor, (N_pseudo,3), long, P home 体素 z/y/x index
+        # torch.Tensor[int64], (N_pseudo,3), P home 的 BOX-local 离散 voxel-index ZYX
         idx_zyx = outputs["pseudo_voxel_zyx"].to(device=pseudo_logits.device, dtype=torch.long)
         # torch.Tensor, (N_pseudo,), P 级 ligand 区域硬标签
         target_P = dense_target[idx_b, idx_zyx[:, 0], idx_zyx[:, 1], idx_zyx[:, 2]]
@@ -626,7 +700,8 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
             else:
                 # torch.Tensor, (), 当前 loss term 实际参与总损失的权重
                 weight = term.value.new_tensor(term.weight)
-                total_loss = total_loss + weight * term.value
+                if float(term.weight) != 0.0:
+                    total_loss = total_loss + weight * term.value
         return total_loss, loss_terms, extra_logs
 
     def _log_loss_terms(self, prefix: str, total_loss: torch.Tensor, loss_terms: Sequence[LossTerm], extra_logs: Mapping[str, torch.Tensor]) -> None:
@@ -760,7 +835,10 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
 
     def _using_candidate_warmup(self) -> bool:
         """
-        判断当前 validation 是否处于 candidate warmup fixed-topk 阶段: int(self.global_step) < int(self._candidate_warmup_steps)
+        判断当前 validation 是否处于 candidate warmup fixed-topk 阶段。
+
+        输出:
+            - using_warmup: bool, `global_step < _candidate_warmup_steps` 时为 True
         """
         return int(self.global_step) < int(self._candidate_warmup_steps)
 
@@ -821,9 +899,18 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
             # torch.Tensor, (B,D,H,W), receptor 分支只使用几何 hardmask
             receptor_mask = batch_dict["hardmask"].bool().squeeze(1)
             self.val_metrics.update_branch(branch_name="receptor", logits=outputs["voxel_logits_aux"], target=batch_dict["voxel_label"], mask=receptor_mask)
-        if self.voxel_ligand_loss is not None and "voxel_logits_ligand" in outputs and "ligand_dist_map" in batch_dict:
+        if (
+            self.voxel_ligand_loss is not None
+            and "voxel_logits_ligand" in outputs
+            and ("ligand_area_target" in batch_dict or "ligand_dist_map" in batch_dict)
+        ):
             # torch.Tensor, (B,D,H,W), dense ligand hard-label target
-            ligand_target = self._ligand_target_from_dist(batch_dict["ligand_dist_map"], int(outputs["voxel_logits_ligand"].shape[1]), outputs["voxel_logits_ligand"].device, outputs["voxel_logits_ligand"].dtype)
+            ligand_target = self._ligand_target_from_batch(
+                batch_dict,
+                int(outputs["voxel_logits_ligand"].shape[1]),
+                outputs["voxel_logits_ligand"].device,
+                outputs["voxel_logits_ligand"].dtype,
+            )
             # torch.Tensor, (B,D,H,W), dense ligand 全体素有效统计掩码
             ligand_valid = torch.ones_like(ligand_target, dtype=torch.bool, device=ligand_target.device)
             self.val_metrics.update_branch(branch_name="voxel_ligand", logits=outputs["voxel_logits_ligand"], target=ligand_target, mask=ligand_valid)

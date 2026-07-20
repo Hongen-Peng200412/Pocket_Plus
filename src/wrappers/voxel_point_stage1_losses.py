@@ -187,18 +187,33 @@ def compute_voxel_ligand_loss_term(
 
     输入参数:
         - outputs: Mapping[str, Any], backbone 输出; 可包含 voxel_logits_ligand
-        - batch: Mapping[str, Any], 当前 batch; 可包含 ligand_dist_map
+        - batch: Mapping[str, Any], 当前 batch; AdaLigand 使用 ligand_area_target，旧配置可含 ligand_dist_map
         - loss_module: nn.Module, voxel ligand 损失模块
         - weight: float, voxel ligand 损失权重
 
     输出:
-        - loss_term: LossTerm | None, voxel_ligand 分支损失项; 缺少 logits 或 ligand_dist_map 时为 None
+        - loss_term: LossTerm | None, voxel_ligand 分支损失项; 缺少 logits 或任何 target 时为 None
     """
     # torch.Tensor | None, (B, C_ligand, D, H, W), ligand 预测 logits
     voxel_logits_ligand = outputs.get("voxel_logits_ligand")
     if voxel_logits_ligand is None:
         return None
-    # torch.Tensor | None, (B, D, H, W), ligand 距离图
+    # torch.Tensor | None, (B, D, H, W), schema v3 union mask 的直接 80³ crop
+    ligand_area_target = batch.get("ligand_area_target")
+    if ligand_area_target is not None:
+        if isinstance(loss_module, (UnifiedCompositeLoss, AdaptiveClassificationCompositeLoss)):
+            loss_out = loss_module(
+                logits=voxel_logits_ligand,
+                target=ligand_area_target,
+                hardmask=None,
+                ligand_dist_map=None,
+            )
+        else:
+            raise RuntimeError("loss_module must be an instance of UnifiedCompositeLoss or AdaptiveClassificationCompositeLoss.")
+        value = loss_output_to_tensor(loss_out)
+        return LossTerm(name="voxel_ligand", value=value, weight=float(weight), logged_value=value.detach())
+
+    # 旧 Pocket_Plus 配置继续允许以 ligand_dist_map 派生 target；AdaLigand 配置不会进入此分支。
     ligand_dist_map = batch.get("ligand_dist_map")
     if ligand_dist_map is None:
         return None

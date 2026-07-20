@@ -1,0 +1,5 @@
+# @package _global_
+# unet_c1 不构造点云分支；VolumePointStage1Model 的纯 voxel forward 直接跳过全部 point 组件。
+model:
+  backbone:
+    point_backbone: null

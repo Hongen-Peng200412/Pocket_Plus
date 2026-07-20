@@ -1,0 +1,46 @@
+# AdaLigand Stage1 从头训练制度；unet_c1 与两个 Find/CPC1 共用。
+# → src/train.py 构造 DataLoader/Trainer；wrapper.configure_optimizers() 消费 optimizer/scheduler。
+defaults:
+  - B40_L3
+  - _self_
+
+global_batch_size: 64               # 实际 preflight 若任一 Find 只能 batch=6，则五套配置整体切到 66。
+enable_batch_size_tuning: false
+batch_size: 8
+strict_global_batch_size: true
+num_workers: 20
+dataloader_backend: torch
+use_balanced_foreground_sampler: false
+data_fault_tolerance:
+  enabled: false                    # 冻结 BOX pool 不允许训练时跳样本或替换样本。
+  stages: []
+  max_resample_attempts: 0
+  sample_timeout_sec: null
+  log_first_n: 0
+
+max_epochs: 20
+precision: "bf16-mixed"
+gradient_clip_val: 0.5
+val_per_epoch: 10
+
+optimizer:
+  _target_: torch.optim.AdamW
+  _partial_: true
+  lr: 3.0e-5
+  weight_decay: 0.01
+
+scheduler:
+  name: warmup_plateau
+  total_steps: null
+  warmup_steps: null
+  warmup_ratio: 0.025
+  warmup_start_factor: 0.33
+  mode: ${model.monitor_mode}
+  factor: 0.3
+  patience: 3
+  threshold: 0.001
+  threshold_mode: abs
+  cooldown: 0
+  min_lr: 0.0
+  eps: 1.0e-8
+  stop_after_lr_reductions: 3

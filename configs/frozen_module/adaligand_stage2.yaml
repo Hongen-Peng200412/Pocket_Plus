@@ -1,0 +1,17 @@
+# @package _global_
+# AdaLigand CPC2：固定 CPC1 trunk 与 voxel 两个 head，只训练 interaction 及 A/P 尾部。
+frozen_module:
+  patterns:
+    - "backbone.voxel_backbone.*"
+    - "backbone.point_backbone.*"
+    - "backbone.embed_head.*"
+    - "backbone.point_fusion_modules.*"
+    - "backbone.interface_norm_fusion.*"
+    - "backbone.interface_norm_embed_to_point.*"
+    - "backbone.interface_norm_density_to_point.*"
+    - "backbone.density_cube_encoder.*"
+    - "backbone.cube_weight_params.*"
+  optional_patterns:
+    - "backbone.real_density_cube_encoder.*"
+    - "backbone.real_density_combine.*"
+    - "backbone.interface_norm_real_density_to_point.*"

@@ -1,0 +1,57 @@
+# @package _global_
+# AdaLigand Find_0：共同 point embed + voxel 侧 raw49 core hard scatter。
+model:
+  backbone:
+    embed_head:
+      _target_: src.model.stage1_embed_head.Stage1EmbedHead
+      atom_feature_dim: 49
+      embed_hidden_dim: 128
+      embed_voxel_out_channels: 0
+      embed_point_out_channels: 64
+      num_trunk_blocks: 0
+      num_voxel_blocks: 0
+      num_point_blocks: 3
+      trunk_buffer_radii: []
+      voxel_buffer_radii: []
+      point_buffer_radii: [8.0, 4.0, 0.0]
+      num_heads: 4
+      patch_size: 256
+      serialization_orders: ["z", "z-trans", "hilbert", "hilbert-trans"]
+      shuffle_orders: true
+      qkv_bias: true
+      qk_scale: null
+      attn_drop: 0.1
+      proj_drop: 0.1
+      enable_rpe: false
+      enable_flash: true
+      upcast_attention: false
+      upcast_softmax: false
+      ffn_type: ${model.backbone.ffn_type}
+      mlp_ratio: 3
+      act_layer_name: ${model.backbone.act_layer_name}
+      scatter_reduce: "sum"
+      point_grid_size: 0.25
+      cpe_impl: "pointconv"
+      cpe_kernel_size: 5
+      cpe_receptive_field: 2.0
+      pointconv_block_max_neighbors: 64
+      drop_path: 0.2
+      pre_norm: true
+      embed_residual_enabled: true
+      embed_point_gate_enabled: false
+      embed_voxel_gate_enabled: false
+      add_occupancy_channels: false
+      use_soft_splatting: false
+      use_centroid_encoding: false
+
+    # 49D raw atom value 按 floor home voxel 求和；point blocks 最终裁到严格 core。
+    online_pdb_feature: true
+    online_pdb_feature_reduce: "sum"
+    online_pdb_feature_use_soft_splatting: false
+    online_pdb_feature_scatter_kernel: "legacy"
+    online_pdb_feature_sigma_voxel: 0.7
+    online_pdb_feature_add_occupancy: false
+    online_pdb_feature_add_centroid: false
+    online_pdb_feature_dim: 49
+    point_backbone:
+      atom_feature_dim: 64
