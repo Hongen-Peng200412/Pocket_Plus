@@ -230,12 +230,56 @@ CPC2 只能读取同名 CPC1 BEST。`src/train.py::_load_model_only_checkpoint()
 
 `src/inference/checkpoint.py::load_stage1_wrapper()` 与 CPC2 初始化不同：它从相邻 resolved config 实例化完整 wrapper，strict 加载完整 `state_dict`，执行 `on_load_checkpoint()` 并切到 eval。推理入口因此不依赖旧的裸 backbone loader。
 
-## 7. 当前阅读进度
+## 7. Artifact 协议
 
-- 已完成：旧链清理、数据层、producer 模型、四类监督、五套训练配置、CPC 与 checkpoint 接缝。
-- 下一层：正式 artifact 的目录身份、完成状态和聚合 NPZ schema。
+### 7.1 路径身份
+
+`Stage1ArtifactPaths` 用 `(stage1_model_name, split, pdb_id)` 唯一定位一个 PDB 的全部正式产物：
+
+```text
+stage1_outputs/<producer>/<split>/<pdb_id>/
+├─ probability/
+├─ components/
+├─ centered/
+└─ status/<output_role>/_COMPLETE
+```
+
+producer 只能是 `Find_0`、`Find_1` 或 `unet_c1`。五个 output role 是 `probability`、`components`、`F1_centered`、`CLG_centered` 和 `Selected_Refined_Centered`。
+
+### 7.2 发布状态
+
+```text
+PDB _RUNNING              临时互斥租约，任一 role 生产期间阻止其它 worker
+status/<role>/_COMPLETE   该 role payload 已关闭、校验并发布
+PDB _BLOB_EXCEED          t_F1 eligible component 超过上限的可识别终态
+```
+
+`pdb_is_consumable()` 的条件是：不存在 `_RUNNING`，不存在 `_BLOB_EXCEED`，并且消费者要求的全部 role 都有 `_COMPLETE`。完成标记与 payload 分离，因此 centered 目录可以只包含三个正式聚合 NPZ。
+
+### 7.3 原子 IO
+
+JSON 和 NPZ 都先写同目录临时文件。NPZ 发布前后均以 `allow_pickle=False` 读取，并拒绝 object dtype；正式路径只在临时归档通过结构校验后由 `os.replace()` 替换。
+
+这套 IO 保证“文件存在”不会被误解为“半写入文件可消费”。role `_COMPLETE` 仍必须在 payload 发布之后单独形成。
+
+### 7.4 Ragged offsets
+
+一个 PDB 的同类 centered entries 聚合成一个 NPZ。长度变化的数据不使用 object array，而是拼接 value 表并保存 `int64 (N_entry+1,)` offsets：
+
+```text
+第 i 个 entry 的值 = values[offsets[i] : offsets[i+1]]
+```
+
+主要分组包括 voxel values、voxel auxiliary values、P values、A values，以及 CLG candidate membership。每个 offsets 字段必须从 0 开始、单调不减，并以对应 value 表长度结束。
+
+`Selected_Refined_Centered` 的失败 entry 不伪造全零固定 V grid。只有 `refine_status=success` 的 entry 保存 V grid，并由 `feature_entry_index` 映射回全部 entry 表。
+
+## 8. 当前阅读进度
+
+- 已完成：旧链清理、数据层、producer、artifact 路径/状态/原子 IO/ragged schema。
+- 下一层：多阈值 components 如何组成 forest，CLG 如何在树结构上枚举。
 - 暂不修改：目标差异之外的既有 geometry、density builder 和 backbone 注释。
 
-## 8. 留给实现线
+## 9. 留给实现线
 
 当前没有需要移交的事项。
