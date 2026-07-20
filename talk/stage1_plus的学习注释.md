@@ -343,12 +343,50 @@ depth1/depth2 分别由 split/merge 预算和 32/64 node cap 控制。超过 nod
 
 IoU、online oracle 和 Selector loss 在下游根据交集、candidate voxel count 与 occurrence voxel count计算；谱系层不提前做选择。
 
-## 9. 当前阅读进度
+## 9. 完整图概率与指标
 
-- 已完成：旧链清理、数据层、producer、artifact、component forest、CLG 与 GT overlap。
-- 下一层：完整图滑窗概率如何产生，以及 calibration 如何冻结阈值。
+### 9.1 窗口覆盖
+
+每个轴使用 80 长度、40 stride，并强制加入 `length-80` 作为末端起点。三轴起点做笛卡尔积，因此所有窗口都是完整真实 crop，且边缘不会因 stride 余数漏掉。
+
+每个 80³ 窗口使用归一化坐标 `[-1,1]³` 上、`sigma=0.5` 的严格正 Gaussian 权重。融合维护两张 float32 完整图：
+
+$$
+P_{sum}(v)=\sum_w G_w(v)P_w(v),\qquad
+W_{sum}(v)=\sum_w G_w(v).
+$$
+
+最终概率为 `P_sum/W_sum`，并要求每个 voxel 的 `W_sum>0`。
+
+### 9.2 Producer 后处理
+
+`forward_voxel_probability()` 返回 logits；`logits_to_probability()` 统一执行稳定 sigmoid 并转为 CPU float32。
+
+- `Find_0/Find_1`：完整融合后把 receptor `hardmask` home voxels 概率清零。
+- `unet_c1`：不使用 receptor hardmask，保留融合概率。
+
+同一 `postprocess_ligand_probability()` 也供 centered BOX 使用，避免完整图与居中推理采用不同遮蔽语义。
+
+### 9.3 完整图发布
+
+`probability_map.npz` 保存 `(D,H,W) float32` 概率以及 `(3,) float32` 的 `origin_xyz`、`voxel_size_xyz`，因此单个 NPZ 已包含把离散体素索引换算到世界坐标所需的几何。`geometry.json` 保存相同的 XYZ 原点与体素尺寸，并额外保存完整图 shape、窗口 shape/stride 和 Gaussian sigma；两个文件的同名几何字段必须逐值一致。两份 payload 完成后才发布 `probability` role。
+
+### 9.4 指标分工
+
+- voxel AP：每个 PDB 在完整网格上计算，再对含 GT 正 voxel 的 PDB 做 macro 平均。
+- semantic Dice：在冻结阈值上统计完整图 TP/FP/FN。
+- coverage：允许多预测对同一 GT 或多 GT 对同一预测，只问双向覆盖是否达标。
+- one-to-one：先对连续分数 `sqrt(c_pred*c_GT)` 做一次固定 Hungarian，再在同一配对上应用多个 coverage 阈值。
+- top-K：按连续候选质量分取前 K，只问是否存在任一双向 coverage 达标 pair，不做 Hungarian。
+
+其中 `c_pred=intersection/pred_size`，`c_GT=intersection/GT_size`。指标可以直接消费 `overlap.npz` 的交集计数，无需重新物化所有完整 mask。
+
+## 10. 当前阅读进度
+
+- 已完成：旧链清理、数据层、producer、artifact、谱系、完整图概率融合与基础指标。
+- 下一层：calibration 如何扫描整数阈值并冻结七个 `F_alpha` 工作点。
 - 暂不修改：目标差异之外的既有 geometry、density builder 和 backbone 注释。
 
-## 10. 留给实现线
+## 11. 留给实现线
 
 当前没有需要移交的事项。
