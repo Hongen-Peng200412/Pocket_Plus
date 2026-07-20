@@ -113,10 +113,52 @@ $$
 
 训练时每个 PDB 每 epoch 最多选择 50 个 occurrence；每个入选 occurrence 使用 1 个 center、5 个 bias，以及在 context 池非空时抽取的 3 个 context。context 只有 1–2 项时允许有放回抽样，空池则省略 context。
 
+### 5.4 统一物化链
+
+`Stage1Dataset` 不决定样本位置，只消费 `ResolvedStage1Crop`。一次物化按以下顺序进行：
+
+```text
+request
+  → 读取或复用 receptor/label 与 exp/sim/union 整图
+  → 从整图裁 80³ density 和 target
+  → 选择 core+8 Å receptor atoms
+  → 构造 hardmask、voxel_label 与原子坐标
+  → 按 producer 构造 density_input
+  → train-only 同步 90° 旋转
+  → 转为固定 dtype 的 tensor sample
+```
+
+worker-local LRU 按数组真实字节数缓存整图资产，不缓存裁好的 BOX，所以缓存只改变 I/O 次数，不改变请求身份或样本数值来源。
+
+### 5.5 Find 与 unet_c1 的样本差异
+
+共同 dense 字段包括：
+
+| 字段 | 单样本 shape / dtype | 语义 |
+| --- | --- | --- |
+| `density_input` | `(C,80,80,80) float32` | C=56（Find）或 1（unet_c1） |
+| `hardmask` | `(80,80,80) bool` | core receptor home-voxel 集合 |
+| `ligand_area_target` | `(80,80,80) bool` | train/validation 的 ligand union target |
+| `voxel_label` | `(80,80,80) bool` | binding receptor home-voxel target |
+| `box_origin_world` | `(3,) float32` | BOX 的 XYZ 世界原点 |
+| `voxel_size_world` | `(3,) float32` | XYZ 轴 voxel size |
+
+Find 额外返回 core+8 Å 原子表：`atom_feat (N_A,49)`、三套 XYZ 坐标、`atom_global_indices`、`atom_is_in_core_box` 和可选 `atom_label`。`unet_c1` 仍会在 Dataset 内读取 receptor 以构造 auxiliary target，但不会把原子表作为模型输入返回。
+
+### 5.6 Collator 的 ragged 原子组织
+
+80³ dense 字段直接堆叠为 batch。原子表沿第 0 轴拼接，不 pad：
+
+- `atom_counts`: `(B,) int64`，每个 BOX 的原子数。
+- `atom_offsets`: `(B+1,) int64`，首项为 0，`[offsets[i], offsets[i+1])` 切出第 i 个 BOX 的所有原子。
+- `atom_batch_index`: `(N_A_total,) int64`，逐原子记录所属 BOX。
+
+因此模型既能连续处理整张原子表，又能用 offsets 或 batch index 恢复样本边界。
+
 ## 6. 当前阅读进度
 
-- 已完成：旧链清理边界、请求对象、PDB split、center/bias/context BOX pool。
-- 下一层：`Stage1Dataset` 如何读取整图资产并构造 Find/unet 的 batch 字段。
+- 已完成：旧链清理边界、请求对象、PDB split、BOX pool、统一 Dataset/materializer/collator。
+- 下一层：三个 producer 如何消费 batch，以及 Find_0/Find_1 的 voxel scatter 差异。
 - 暂不修改：目标差异之外的既有 geometry、density builder 和 backbone 注释。
 
 ## 7. 留给实现线
