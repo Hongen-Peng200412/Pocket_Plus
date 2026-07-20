@@ -6,9 +6,11 @@ from types import SimpleNamespace
 import torch
 from torch import nn
 
+import src.wrappers.voxel_point_stage1 as stage1_wrapper_module
 from src.modules.losses import AdaptiveClassificationCompositeLoss
 from src.wrappers.voxel_point_stage1 import VoxelPointStage1Wrapper
 from src.wrappers.voxel_point_stage1_diagnostics import CpcValidationDiagnostics
+from src.wrappers.voxel_point_stage1_losses import LossTerm
 from src.wrappers.voxel_point_stage1_metrics import ValidationMetricManager
 
 
@@ -96,6 +98,11 @@ class _ThinBackbone(nn.Module):
         """
         return batch["outputs"]
 
+    def forward_voxel_probability(self, batch: dict[str, torch.Tensor]) -> torch.Tensor:
+        """返回测试预置的 voxel-only logits。"""
+
+        return batch["voxel_logits"]
+
 
 def _loss(num_classes: int) -> AdaptiveClassificationCompositeLoss:
     """
@@ -177,6 +184,30 @@ def test_wrapper_does_not_restore_old_metric_private_api() -> None:
         assert not hasattr(VoxelPointStage1Wrapper, name)
 
 
+def test_zero_weight_non_sparse_nan_does_not_poison_total_loss(monkeypatch) -> None:
+    """CPC2 关闭的辅助项即使诊断值为 NaN，也不得经 0*NaN 污染总损失。"""
+
+    nan = torch.tensor(float("nan"))
+    monkeypatch.setattr(
+        stage1_wrapper_module,
+        "compute_voxel_ligand_loss_term",
+        lambda **_kwargs: LossTerm(
+            name="voxel_ligand",
+            value=nan,
+            weight=0.0,
+            logged_value=nan,
+        ),
+    )
+    wrapper = _wrapper()
+
+    total_loss, terms, _ = wrapper._compute_total_loss(outputs={}, batch={})
+
+    assert len(terms) == 1
+    assert torch.isnan(terms[0].logged_value)
+    assert torch.isfinite(total_loss)
+    assert total_loss.item() == 0.0
+
+
 def test_validation_step_keeps_readable_time_order() -> None:
     """
     验证 validation_step 保持 coordinator 时间顺序, 而不是内联旧 metric 计算细节。
@@ -221,3 +252,35 @@ def test_threshold_checkpoint_cache_remains_wrapper_runtime_state() -> None:
     torch.testing.assert_close(restored._cached_voxel_ligand_best_f1_before_refine_by_class, torch.tensor([0.75]))
     assert not any("val_metrics" in key for key in checkpoint)
     assert not any("cpc_diagnostics" in key for key in checkpoint)
+
+
+def test_adaligand_direct_union_target_has_priority_over_legacy_distance_map() -> None:
+    """验证 schema-v3 union target 直接进入 loss，不被 hardmask 或旧距离图替换。"""
+
+    wrapper = _wrapper()
+    direct = torch.tensor(
+        [[[[[False, True], [True, False]], [[True, False], [False, True]]]]]
+    )
+    legacy = torch.full((1, 2, 2, 2), 99.0)
+
+    target = wrapper._ligand_target_from_batch(
+        {"ligand_area_target": direct, "ligand_dist_map": legacy},
+        logit_dim=1,
+        device=torch.device("cpu"),
+        dtype=torch.float32,
+    )
+
+    assert target.dtype == torch.long
+    assert target.shape == (1, 2, 2, 2)
+    assert torch.equal(target, direct[:, 0].long())
+
+
+def test_wrapper_voxel_only_entry_is_a_thin_logit_delegation() -> None:
+    """验证 wrapper 不重复模型、checkpoint、sigmoid 或阈值逻辑。"""
+
+    wrapper = _wrapper()
+    logits = torch.randn(1, 1, 2, 2, 2)
+
+    returned = wrapper.forward_voxel_probability({"voxel_logits": logits})
+
+    assert returned is logits

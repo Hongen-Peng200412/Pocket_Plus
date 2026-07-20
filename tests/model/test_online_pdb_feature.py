@@ -377,6 +377,84 @@ class TestStage1EmbedHeadEmptyTrim:
         assert next_global_keep.tolist() == [False, False]
 
 
+def test_find1_voxel_only_matches_full_embed_voxel_branch() -> None:
+    """验证 Find_1 非块式 MLP/centroid/residual/soft-splat 最短路径逐元素等价。"""
+
+    torch.manual_seed(17)
+    head = Stage1EmbedHead(
+        atom_feature_dim=49,
+        embed_hidden_dim=128,
+        embed_voxel_out_channels=49,
+        embed_point_out_channels=64,
+        num_trunk_blocks=0,
+        num_voxel_blocks=0,
+        num_point_blocks=3,
+        trunk_buffer_radii=(),
+        voxel_buffer_radii=(),
+        point_buffer_radii=(8.0, 4.0, 0.0),
+        num_heads=4,
+        patch_size=16,
+        serialization_orders=("z",),
+        shuffle_orders=False,
+        qkv_bias=True,
+        qk_scale=None,
+        attn_drop=0.0,
+        proj_drop=0.0,
+        enable_rpe=False,
+        enable_flash=False,
+        upcast_attention=False,
+        upcast_softmax=False,
+        scatter_reduce="sum",
+        ffn_type="gated",
+        mlp_ratio=3,
+        act_layer_name="gelu",
+        point_grid_size=0.25,
+        cpe_impl="none",
+        cpe_kernel_size=5,
+        cpe_receptive_field=2.0,
+        pointconv_block_max_neighbors=16,
+        drop_path=0.0,
+        pre_norm=True,
+        embed_residual_enabled=True,
+        embed_point_gate_enabled=False,
+        embed_voxel_gate_enabled=False,
+        add_occupancy_channels=True,
+        use_soft_splatting=True,
+        use_centroid_encoding=True,
+    )
+    head.eval()
+    atom_feat = torch.randn(4, 49)
+    atom_coord_local = torch.tensor(
+        [[1.25, 1.50, 1.75], [1.80, 1.20, 1.40], [15.50, 8.0, 8.0], [18.0, 8.0, 8.0]],
+        dtype=torch.float32,
+    )
+    core = torch.tensor([True, True, True, False])
+    batch_index = torch.zeros(4, dtype=torch.long)
+    box_shape = torch.tensor([[16, 16, 16]], dtype=torch.long)
+    centered_world = atom_coord_local - 8.0
+
+    full = head(
+        atom_feat=atom_feat,
+        atom_coord_centered_world=centered_world,
+        atom_batch_index=batch_index,
+        atom_offsets=torch.tensor([4], dtype=torch.long),
+        atom_coord_local_voxel=atom_coord_local,
+        box_shape_zyx=box_shape,
+        voxel_size_world=torch.ones(1, 3),
+        atom_is_in_core_box=core,
+    )["voxel_pdb_embed_grid"]
+    short = head.forward_voxel_only(
+        atom_feat=atom_feat,
+        atom_coord_local_voxel=atom_coord_local,
+        atom_batch_index=batch_index,
+        box_shape_zyx=box_shape,
+        atom_is_in_core_box=core,
+    )
+
+    assert full.shape == short.shape == (1, 51, 16, 16, 16)
+    torch.testing.assert_close(short, full, rtol=0.0, atol=0.0)
+
+
 # ==================================================================
 # Test 3: 梯度隔离
 # ==================================================================
