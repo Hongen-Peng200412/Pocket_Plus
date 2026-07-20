@@ -274,12 +274,47 @@ JSON 和 NPZ 都先写同目录临时文件。NPZ 发布前后均以 `allow_pick
 
 `Selected_Refined_Centered` 的失败 entry 不伪造全零固定 V grid。只有 `refine_status=success` 的 entry 保存 V grid，并由 `feature_entry_index` 映射回全部 entry 表。
 
-## 8. 当前阅读进度
+## 8. Component 谱系对象
 
-- 已完成：旧链清理、数据层、producer、artifact 路径/状态/原子 IO/ragged schema。
-- 下一层：多阈值 components 如何组成 forest，CLG 如何在树结构上枚举。
+### 8.1 阈值方向
+
+完整图概率在多个阈值上做 26-连通组件。降低阈值时组件只会扩大或合并，因此树的方向定义为：
+
+- parent：更低阈值、mask 更大的直接包含组件。
+- child：更高阈值、mask 更小的直接被包含组件。
+- root：该棵树最低阈值方向的最老组件。
+
+`threshold_grid_index=j` 对应物理阈值 `j/32768`。节点的 voxel mask 以完整图 ZYX C-order linear index 保存。
+
+### 8.2 对象层次
+
+```text
+ComponentForest
+  └─ ComponentTree (唯一 root)
+       └─ ComponentNode
+            ├─ parent
+            ├─ children
+            └─ voxel/bbox/centroid/probability/eligibility
+```
+
+`ComponentTree` 校验 parent/children 双向一致、无环和 root 全可达；`ComponentForest` 用 `(tree_id,node_id)` 唯一寻址节点。对象可以编码为 `forest.npz` 的 ragged arrays，也可以从 arrays 恢复回连接好的对象树。
+
+### 8.3 WorkingTree
+
+CLG 枚举不能修改正式 forest，因此 `WorkingTree` 只复制拓扑 identity 和 `active` 状态，不复制大体积 voxel mask。一次扫描选中 seed `g` 后，`delete_D(g)` 删除：
+
+$$
+D_W(g)=Ancestors_W(g)\cup Subtree_W(g).
+$$
+
+这里的删除只把工作副本节点标记为 inactive；原 `ComponentNode` 及其 payload 始终只读。后续算法由此可以反复查询 active ancestors、children、sisters 和 subtree。
+
+## 9. 当前阅读进度
+
+- 已完成：旧链清理、数据层、producer、artifact，以及 component forest/working-tree 对象模型。
+- 下一层：从概率阈值构造 forest，并在 WorkingTree 上枚举 CLG。
 - 暂不修改：目标差异之外的既有 geometry、density builder 和 backbone 注释。
 
-## 9. 留给实现线
+## 10. 留给实现线
 
 当前没有需要移交的事项。
