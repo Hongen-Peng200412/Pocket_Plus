@@ -309,10 +309,44 @@ $$
 
 这里的删除只把工作副本节点标记为 inactive；原 `ComponentNode` 及其 payload 始终只读。后续算法由此可以反复查询 active ancestors、children、sisters 和 subtree。
 
+### 8.4 Forest 构造
+
+`build_component_forest()` 对去重后的实际阈值按从高到低顺序处理：
+
+1. 在 `probability >= j/32768` 上计算 26-连通组件。
+2. 保存每个组件的完整图 linear voxel index、bbox、centroid 和概率统计。
+3. 根据最小/最大 voxel 数和解析后的 80³ BOX 能否包含 bbox，标记 candidate eligibility。
+4. 高阈值组件在相邻低阈值层中必须落入唯一组件；该包含组件成为 direct parent。
+5. 按稳定深度优先顺序分配 `tree_id/node_id`。
+
+eligibility 只决定节点能否参与候选，不会把不合格节点从 forest 删除。因此 forest 仍完整描述全部实际阈值层的连通谱系。
+
+### 8.5 CLG 枚举
+
+CLG seed 先取 `t_F1` 层 eligible 节点，再按阈值从高到低继续扫描更低阈值节点。一次尝试：
+
+```text
+seed
+  → 向高阈值沿 children 展开；多 child 计一次 split event
+  → 向低阈值沿 parent 展开；出现 sisters 计一次 merge event
+  → merge 时原子加入 parent + 全部 sisters
+  → 找到覆盖全部 candidates 的唯一 oldest node
+```
+
+depth1/depth2 分别由 split/merge 预算和 32/64 node cap 控制。超过 node cap 只拒绝当前尝试，不产生 `CLG_id`；成功与失败最终都对当前 seed 应用相同的 `D_W(g)`。
+
+同一 forest node 出现在多个 CLG 中是允许的：`D_W(g)` 删除的是 seed 的 ancestors 与 subtree，不等于删除该尝试临时收集到的所有 sisters。下游需要按 CLG 保留局部竞争关系，并在最终唯一预测集合处再去重。
+
+### 8.6 GT overlap
+
+`overlap.npz` 只保存 candidate mask 与 GT occurrence mask 的正交集体素数。`overlap_occurrence_index` 是指向同文件 `occurrence_id` 表的局部行号，不是 occurrence identity 本身。
+
+IoU、online oracle 和 Selector loss 在下游根据交集、candidate voxel count 与 occurrence voxel count计算；谱系层不提前做选择。
+
 ## 9. 当前阅读进度
 
-- 已完成：旧链清理、数据层、producer、artifact，以及 component forest/working-tree 对象模型。
-- 下一层：从概率阈值构造 forest，并在 WorkingTree 上枚举 CLG。
+- 已完成：旧链清理、数据层、producer、artifact、component forest、CLG 与 GT overlap。
+- 下一层：完整图滑窗概率如何产生，以及 calibration 如何冻结阈值。
 - 暂不修改：目标差异之外的既有 geometry、density builder 和 backbone 注释。
 
 ## 10. 留给实现线
