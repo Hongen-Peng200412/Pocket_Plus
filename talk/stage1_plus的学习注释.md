@@ -155,12 +155,60 @@ Find 额外返回 core+8 Å 原子表：`atom_feat (N_A,49)`、三套 XYZ 坐标
 
 因此模型既能连续处理整张原子表，又能用 offsets 或 batch index 恢复样本边界。
 
-## 6. 当前阅读进度
+## 6. Producer 模型主链
 
-- 已完成：旧链清理边界、请求对象、PDB split、BOX pool、统一 Dataset/materializer/collator。
-- 下一层：三个 producer 如何消费 batch，以及 Find_0/Find_1 的 voxel scatter 差异。
+### 6.1 三个 producer
+
+| producer | density 输入 | receptor voxel 输入 | point 路径 |
+| --- | --- | --- | --- |
+| `unet_c1` | 1D `exp_clipnorm_nopost` | 无 | 无 |
+| `Find_0` | 56D `ALL` | core atoms 的 raw49 hard floor/sum scatter | 共同 `[8,4,0]` point blocks |
+| `Find_1` | 56D `ALL` | 49D learned value + 2D occupancy soft scatter | 共同 `[8,4,0]` point blocks |
+
+`Find_0` 和 `Find_1` 的科学差异只在送入 voxel backbone 前的 receptor grid。两者的 point-side `Stage1EmbedHead`、point backbone 和 A/P 输出路径保持一致。
+
+### 6.2 完整 forward
+
+`VolumePointStage1Model.forward()` 的主顺序为：
+
+```text
+规范化 Stage1 batch
+  → real-only Stage1EmbedHead
+  → density + receptor grid
+  → 1–3 次 voxel recycle
+  → 最后一轮生成候选 C 与 P anchors（若配置启用）
+  → point backbone
+  → A/P heads
+  → sparse refine（若配置启用）
+  → 发布 V/P/A centered feature hooks
+```
+
+AdaLigand 当前五套 producer 配置不实例化 sparse refine，但通用实现继续保留。学习时要区分“代码具有该能力”和“当前配置实际启用该能力”。
+
+### 6.3 voxel-only 入口
+
+`forward_voxel_probability(batch)` 固定执行三次 recycle，并跳过 point blocks、point backbone、候选 C、P、A/P heads 和 sparse refine。返回值是 sigmoid 前的 `voxel_logits_ligand (B,1,80,80,80)`。
+
+三条最短路径为：
+
+```text
+unet_c1: density → voxel backbone
+Find_0:  density → raw49 core hard scatter → voxel backbone
+Find_1:  density → non-block embed/scatter → voxel backbone
+```
+
+Find_1 必须先对 core+8 Å完整原子表执行 feature projection，再筛出 core 原子进行 scatter。虽然“先筛 core 再投影”在数学表达上等价，但会改变矩阵形状和底层 kernel，无法保证与完整 forward 逐元素一致。
+
+### 6.4 centered 特征出口
+
+完整 forward 通过 `_publish_stage1_feature_hooks()` 把内部多尺度输出发布为稳定直键：voxel 层形成 V 特征，Find 另外形成 P/A 特征。这里只建立模型到 artifact 层的接口；具体 NPZ 对齐与 ragged schema 在后续 artifact/centered 里阅读。
+
+## 7. 当前阅读进度
+
+- 已完成：旧链清理、数据层、三个 producer 的模型主路径、Find voxel scatter 差异与 voxel-only 入口。
+- 下一层：wrapper 如何把模型输出接入 loss、CPC 阶段、checkpoint 和五套配置。
 - 暂不修改：目标差异之外的既有 geometry、density builder 和 backbone 注释。
 
-## 7. 留给实现线
+## 8. 留给实现线
 
 当前没有需要移交的事项。
