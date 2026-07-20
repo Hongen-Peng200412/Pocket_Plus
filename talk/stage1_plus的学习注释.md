@@ -402,12 +402,55 @@ $$
 
 阈值选择和 fitted 报告都只使用 calibration，不反向选择训练 epoch 或 checkpoint。
 
-## 10. 当前阅读进度
+## 10. Centered 生产
 
-- 已完成：旧链清理、数据层、producer、artifact、谱系、完整图概率、指标与阈值 calibration。
-- 下一层：F1/CLG/Selected 三类 centered BOX 如何恢复模型特征并写入聚合 NPZ。
+### 10.1 三类 role
+
+| role | entry 来源 | BOX 中的权威 voxel |
+| --- | --- | --- |
+| `F1_centered` | `t_F1` 层每个 eligible component | 该 source component mask |
+| `CLG_centered` | 每个 CLG 的 oldest node | oldest node mask，并附全部 candidate membership |
+| `Selected_Refined_Centered` | Selector 最终选择的 source node | 在选定局部阈值重算后与 source node 匹配的组件 |
+
+三者都用 source centroid 调用统一起点解析器，并要求 source bbox 完整落入真实 80³ BOX。
+
+### 10.2 回调装配
+
+```text
+ComponentNode / selection
+  → CenteredRequest
+  → Stage1Dataset.materialize_request()
+  → Stage1BatchCollator
+  → 完整 wrapper forward
+  → adapt_stage1_centered_output()
+  → source mask 对齐的 entry payload
+```
+
+centered 必须走完整 forward，因为它需要 V/P/A 特征；不能复用只返回 ligand logits 的 voxel-only 入口。
+
+### 10.3 V/P/A
+
+- V：五张具名 channel-first feature grids；`voxel_final` 在 source mask rows 上稀疏抽取为 `(K_source,48)`。
+- P：Find 的全部 P anchor 坐标、概率与 L2–L4 特征，逐行对齐。
+- A：Find 的真实 receptor atom identity、坐标、概率与 L1–L4 特征。
+- `unet_c1`：只有 V，不伪造 P/A 表。
+
+A-pocket 固定为“当前 core BOX 内原子”与“来源 blob voxel centers 的 10 Å欧氏包络”交集。`A_global_index` 继续回指每 PDB 唯一 receptor 表。
+
+### 10.4 BF16 桥接
+
+模型内部 feature 可以是 BF16，但 NumPy 没有原生 BF16 dtype。`_to_numpy()` 只在 CPU 桥接时提升为 float32；artifact 打包层随后按契约把学习特征压为 float16。这个转换不改变模型内部计算路径。
+
+### 10.5 Selected 失败状态
+
+Selected entry 可以是 `success/empty/no_overlap/failed`。非 success entry 保留 source identity 和几何，但 ragged payload 为空；不能用全零固定 V grid 冒充一次真实 forward。`feature_entry_index` 只把成功特征行映射回全部 entry。
+
+## 11. 当前阅读进度
+
+- 已完成：旧链清理、数据层、producer、artifact、谱系、完整图/calibration 和三类 centered payload。
+- 下一层：runner 如何按 role 状态续跑，以及 assembly/CLI 如何装配真实数据与模型。
 - 暂不修改：目标差异之外的既有 geometry、density builder 和 backbone 注释。
 
-## 11. 留给实现线
+## 12. 留给实现线
 
 当前没有需要移交的事项。
