@@ -381,10 +381,31 @@ $$
 
 其中 `c_pred=intersection/pred_size`，`c_GT=intersection/GT_size`。指标可以直接消费 `overlap.npz` 的交集计数，无需重新物化所有完整 mask。
 
+### 9.5 Calibration 阈值扫描
+
+每个 voxel 概率映射为整数 bin：
+
+$$
+j=\lfloor p\times32768\rfloor,\qquad j\in[0,32768].
+$$
+
+`ThresholdHistogram` 分别累计 GT 正、负 voxel 的 32769-bin 直方图。对直方图从高 bin 向低 bin 反向累积，即可一次得到所有阈值 `p>=j/32768` 的 micro TP/FP/FN。
+
+七个固定 `alpha` 为：`1/2, 2/3, 4/5, 1, 5/4, 3/2, 2`。每条 `F_alpha` 曲线都按 `j=0..32768` 升序取第一个最大值，因此并列时冻结较低的整数阈值。`alpha=1` 对应 `t_F1`。
+
+### 9.6 两阶段 calibration
+
+1. calibration 100 先全部发布 probability。
+2. 第一遍只累计直方图并冻结七个阈值。
+3. 第二遍在 `t_F1` 临时构造单层组件，计算 fitted Dice、coverage、固定 Hungarian 和 top-K。
+4. 原子发布 `thresholds.json`、`threshold_scan.npz`、`metrics.json`，最后发布 producer 级 calibration `_COMPLETE`。
+
+阈值选择和 fitted 报告都只使用 calibration，不反向选择训练 epoch 或 checkpoint。
+
 ## 10. 当前阅读进度
 
-- 已完成：旧链清理、数据层、producer、artifact、谱系、完整图概率融合与基础指标。
-- 下一层：calibration 如何扫描整数阈值并冻结七个 `F_alpha` 工作点。
+- 已完成：旧链清理、数据层、producer、artifact、谱系、完整图概率、指标与阈值 calibration。
+- 下一层：F1/CLG/Selected 三类 centered BOX 如何恢复模型特征并写入聚合 NPZ。
 - 暂不修改：目标差异之外的既有 geometry、density builder 和 backbone 注释。
 
 ## 11. 留给实现线
