@@ -1,13 +1,4 @@
-"""计算组件实例的双向覆盖率、固定 Hungarian 配对和 top-K 成功指标。
-
-主要入口:
-    - `evaluate_instance_labels`、`evaluate_instance_masks`: 从完整图标签或可重叠 bool masks 汇总预测组件与真实配体 occurrence 的交集和体积。
-    - `evaluate_instance_overlap_counts`: 从 `(N_pred, N_gt)` 交集计数直接计算多对一 coverage 与固定一对一 Hungarian 计数。
-    - `aggregate_instance_counts`: 对多个 PDB 的分子、分母和 true-positive 计数求和，形成 global/micro 指标。
-    - `evaluate_topk_overlap_counts`: 按连续候选质量分稳定排序，判断前 K 个候选是否存在双向 coverage 达标配对。
-
-coverage 指预测组件被真实 occurrence 覆盖的比例与真实 occurrence 被预测组件覆盖的比例。固定 Hungarian 配对只按连续分数 `sqrt(c_pred*c_gt)` 求解一次，随后所有离散阈值复用同一配对。
-"""
+"""双向 coverage、固定连续 Hungarian 与 top-K instance 指标。"""
 
 from __future__ import annotations
 
@@ -18,9 +9,7 @@ import numpy as np
 from scipy.optimize import linear_sum_assignment
 
 
-# 正式双向 coverage 阈值顺序；结果字段后缀依次为 `0p3` 和 `0p5`。
 DEFAULT_COVERAGE_THRESHOLDS: tuple[float, ...] = (0.3, 0.5)
-# 正式 top-K 候选数量；稳定排序后分别检查前 3、4、5 个预测组件。
 DEFAULT_TOPK_VALUES: tuple[int, ...] = (3, 4, 5)
 
 
@@ -30,13 +19,14 @@ class InstanceCounts:
     保存一个或多个 PDB 可直接求 global/micro F1 的 instance 计数。
 
     输入参数:
-        - coverage_thresholds: tuple[float, ...], 长度 T 的双向 coverage 阈值顺序；三张计数表的第 t 项均对应同一阈值。
-        - n_pred: int, 汇总范围内的预测组件总数，作为 coverage 和 one-to-one precision 分母。
-        - n_gt: int, 汇总范围内的真实配体 occurrence 总数，作为 coverage 和 one-to-one recall 分母。
-        - coverage_pred_hit: int64, (T,), 每个阈值下与任一 GT 双向达标的预测组件数，允许多个预测命中同一 GT。
-        - coverage_gt_hit: int64, (T,), 每个阈值下被任一预测双向达标命中的 GT 数，允许一个预测命中多个 GT。
-        - one_to_one_tp: int64, (T,), 固定 Hungarian 配对中在每个阈值下双向达标的配对数。
+        - coverage_thresholds: tuple[float,...], 双向 coverage 阈值顺序
+        - n_pred: int, 预测组件总数，precision 分母
+        - n_gt: int, GT occurrence 总数，recall 分母
+        - coverage_pred_hit: np.ndarray, (T,), int64，各阈值命中任一 GT 的预测数
+        - coverage_gt_hit: np.ndarray, (T,), int64，各阈值被任一预测命中的 GT 数
+        - one_to_one_tp: np.ndarray, (T,), int64，固定 Hungarian 配对中双向达标数
     """
+
     coverage_thresholds: tuple[float, ...]
     n_pred: int
     n_gt: int
@@ -48,15 +38,8 @@ class InstanceCounts:
         """
         把计数转换为 coverage 与 one-to-one precision/recall/F1。
 
-        输出字段:
-            - `n_pred_instances`: int, 汇总范围内的预测组件总数。
-            - `n_gt_instances`: int, 汇总范围内的真实配体 occurrence 总数。
-            - `coverage_precision_{tag}`: float, 对应阈值下 `coverage_pred_hit/n_pred`，空分母返回 0。
-            - `coverage_recall_{tag}`: float, 对应阈值下 `coverage_gt_hit/n_gt`，空分母返回 0。
-            - `coverage_f1_{tag}`: float, 对应 coverage precision 与 recall 的调和平均。
-            - `one_to_one_precision_{tag}`: float, 对应阈值下 `one_to_one_tp/n_pred`，空分母返回 0。
-            - `one_to_one_recall_{tag}`: float, 对应阈值下 `one_to_one_tp/n_gt`，空分母返回 0。
-            - `one_to_one_f1_{tag}`: float, 对应 one-to-one precision 与 recall 的调和平均。
+        输出:
+            - metrics: dict[str,float|int], 包含 `n_pred_instances/n_gt_instances`，以及每个阈值后缀对应的 `coverage_precision/recall/f1` 与 `one_to_one_precision/recall/f1`
         """
         result: dict[str, float | int] = {
             "n_pred_instances": int(self.n_pred),
@@ -70,14 +53,15 @@ class InstanceCounts:
             one_recall = _safe_div(int(self.one_to_one_tp[row]), self.n_gt)
             result[f"coverage_precision_{tag}"] = coverage_precision
             result[f"coverage_recall_{tag}"] = coverage_recall
-            result[f"coverage_f1_{tag}"] = _harmonic_mean(coverage_precision, coverage_recall)
+            result[f"coverage_f1_{tag}"] = _harmonic_mean(
+                coverage_precision, coverage_recall
+            )
             result[f"one_to_one_precision_{tag}"] = one_precision
             result[f"one_to_one_recall_{tag}"] = one_recall
             result[f"one_to_one_f1_{tag}"] = _harmonic_mean(one_precision, one_recall)
         return result
 
 
-######## 核心计算函数
 def evaluate_instance_labels(
     pred_instance_label: np.ndarray,
     gt_instance_label: np.ndarray,
@@ -87,37 +71,31 @@ def evaluate_instance_labels(
     对一张 PDB 的预测组件和 GT occurrence 标签图计算正式 instance 计数。
 
     输入参数:
-        - pred_instance_label: integer, (D, H, W), 完整 ZYX voxel 网格的预测实例标签；正整数表示预测组件，0 表示背景。
-        - gt_instance_label: integer, (D, H, W), 与预测标签同网格的真实实例标签；正整数表示 occurrence，0 表示背景。
-        - coverage_thresholds: Sequence[float], 长度 T 的双向 coverage 阈值，正式值为 `(0.3, 0.5)`。
+        - pred_instance_label: np.ndarray, (D,H,W), 完整图 ZYX voxel-grid instance label；正整数为预测组件，0 为背景
+        - gt_instance_label: np.ndarray, (D,H,W), 完整图 ZYX voxel-grid instance label；正整数为 GT occurrence，0 为背景
+        - coverage_thresholds: Sequence[float], 正式值为 (0.3,0.5)
 
     输出:
-        - counts: InstanceCounts, coverage 允许多对一；one-to-one 先对连续 `sqrt(c_pred*c_gt)` 做一次固定 Hungarian，再在同一配对上逐阈值计数。
+        - counts: InstanceCounts, coverage 允许多对一；one-to-one 先对连续
+          `sqrt(c_pred*c_GT)` 做一次固定 Hungarian，再在同一配对上逐阈值计数
     """
     pred_label = np.asarray(pred_instance_label, dtype=np.int64)
     gt_label = np.asarray(gt_instance_label, dtype=np.int64)
     if pred_label.shape != gt_label.shape or pred_label.ndim != 3:
         raise ValueError("预测与 GT instance label 必须是同 shape 的三维数组")
-    # int64, (N_pred,), 预测标签图中实际出现的正组件编号，按数值升序排列。
     pred_ids = np.unique(pred_label[pred_label > 0])
-    # int64, (N_gt,), GT 标签图中实际出现的正 occurrence 编号，按数值升序排列。
     gt_ids = np.unique(gt_label[gt_label > 0])
-    # int64, (N_pred,), 每个预测组件的 voxel 数，与 `pred_ids` 逐组件对齐。
     pred_sizes = np.asarray([(pred_label == value).sum() for value in pred_ids], dtype=np.int64)
-    # int64, (N_gt,), 每个真实 occurrence 的 voxel 数，与 `gt_ids` 逐 occurrence 对齐。
     gt_sizes = np.asarray([(gt_label == value).sum() for value in gt_ids], dtype=np.int64)
-    # int64, (N_pred, N_gt), 每个预测组件与真实 occurrence 的共同 voxel 数。
     intersections = np.zeros((pred_ids.size, gt_ids.size), dtype=np.int64)
     if pred_ids.size and gt_ids.size:
-        # bool, (D, H, W), 同时属于某个预测组件和某个真实 occurrence 的 voxel。
         both = (pred_label > 0) & (gt_label > 0)
-        # int64, (N_overlap_voxel,), 每个重叠 voxel 对应的预测组件主表行号。
         pred_rows = np.searchsorted(pred_ids, pred_label[both])
-        # int64, (N_overlap_voxel,), 每个重叠 voxel 对应的 GT occurrence 主表列号。
         gt_columns = np.searchsorted(gt_ids, gt_label[both])
-        # int64, (N_overlap_voxel,), 把 `(pred_row, gt_column)` 压成长度 `N_pred*N_gt` 表的一维行号。
         flattened = pred_rows * gt_ids.size + gt_columns
-        intersections = np.bincount(flattened, minlength=pred_ids.size * gt_ids.size).reshape(pred_ids.size, gt_ids.size)
+        intersections = np.bincount(
+            flattened, minlength=pred_ids.size * gt_ids.size
+        ).reshape(pred_ids.size, gt_ids.size)
     return evaluate_instance_overlap_counts(
         intersections=intersections,
         pred_sizes=pred_sizes,
@@ -126,7 +104,6 @@ def evaluate_instance_labels(
     )
 
 
-######## 核心计算函数
 def evaluate_instance_masks(
     pred_masks: Sequence[np.ndarray],
     gt_masks: Sequence[np.ndarray],
@@ -136,9 +113,9 @@ def evaluate_instance_masks(
     直接从互相可重叠的 bool masks 计算正式 instance 计数。
 
     输入参数:
-        - pred_masks: Sequence[np.ndarray], N_pred 张同 shape bool 预测组件 mask；不同预测 mask 可以重叠。
-        - gt_masks: Sequence[np.ndarray], N_gt 张同 shape bool 真实 occurrence mask；不同 GT mask 可以重叠。
-        - coverage_thresholds: Sequence[float], 长度 T 的双向 coverage 阈值。
+        - pred_masks: Sequence[np.ndarray], N_pred 张同 shape 预测组件 mask
+        - gt_masks: Sequence[np.ndarray], N_gt 张同 shape occurrence GT mask
+        - coverage_thresholds: Sequence[float], 双向 coverage 阈值
 
     输出:
         - counts: InstanceCounts, 与标签图入口相同，但允许 GT masks 彼此重叠
@@ -162,7 +139,6 @@ def evaluate_instance_masks(
     )
 
 
-######## 核心计算函数
 def evaluate_instance_overlap_counts(
     intersections: np.ndarray,
     pred_sizes: np.ndarray,
@@ -173,13 +149,14 @@ def evaluate_instance_overlap_counts(
     从已经汇总的交集与实例体积计算 coverage 和固定 Hungarian 计数。
 
     输入参数:
-        - intersections: integer, (N_pred, N_gt), 每个预测组件与真实 occurrence 配对的交集 voxel 数。
-        - pred_sizes: integer, (N_pred,), 每个预测组件的 voxel 数，与 `intersections` 第一维对齐。
-        - gt_sizes: integer, (N_gt,), 每个真实 occurrence 的 voxel 数，与 `intersections` 第二维对齐。
-        - coverage_thresholds: Sequence[float], 长度 T 的双向 coverage 阈值，正式值为 `(0.3, 0.5)`。
+        - intersections: np.ndarray, [N_pred,N_gt]，每个预测/GT 对的交集体素数
+        - pred_sizes: np.ndarray, [N_pred]，各预测实例体素数
+        - gt_sizes: np.ndarray, [N_gt]，各 GT occurrence 体素数
+        - coverage_thresholds: Sequence[float]，双向 coverage 阈值；正式值为 (0.3,0.5)
 
     输出:
-        - counts: InstanceCounts, 先按连续 `sqrt(c_pred*c_gt)` 求一次固定 Hungarian，再在不改变配对的前提下逐 coverage 阈值计数。
+        - counts: InstanceCounts，先只按连续 `sqrt(c_pred*c_GT)` 求一次固定 Hungarian，
+          再在不改变配对的前提下逐 coverage 阈值计数
 
     该入口让 overlap.npz 等稀疏基础事实直接复用正式指标，不要求重新物化完整 mask。
     """
@@ -189,14 +166,14 @@ def evaluate_instance_overlap_counts(
     n_pred, n_gt = int(pred_sizes.size), int(gt_sizes.size)
     if intersections.shape != (n_pred, n_gt):
         raise ValueError("intersections shape 与 pred/GT sizes 不一致")
-    # float64, (N_pred, N_gt), `intersection/pred_size`，表示每个交集覆盖对应预测组件的比例 c_pred。
+    # np.ndarray[float64], (N_pred,N_gt), 交集占每个预测组件体积的比例
     pred_cover = np.divide(
         intersections,
         pred_sizes[:, None],
         out=np.zeros((n_pred, n_gt), dtype=np.float64),
         where=pred_sizes[:, None] > 0,
     )
-    # float64, (N_pred, N_gt), `intersection/gt_size`，表示同一交集覆盖对应真实 occurrence 的比例 c_gt。
+    # np.ndarray[float64], (N_pred,N_gt), 同一交集占每个 GT occurrence 体积的比例
     gt_cover = np.divide(
         intersections,
         gt_sizes[None, :],
@@ -208,9 +185,9 @@ def evaluate_instance_overlap_counts(
     one_to_one_tp = np.zeros(len(thresholds), dtype=np.int64)
 
     if n_pred and n_gt:
-        # float64, (N_pred, N_gt), 固定 Hungarian 使用的连续双向覆盖分数 `sqrt(c_pred*c_gt)`。
+        # np.ndarray[float64], (N_pred,N_gt), 固定 Hungarian 使用的连续双向覆盖分数
         continuous_score = np.sqrt(pred_cover * gt_cover)
-        # 两个 int64 `(N_match,)` 索引，表示一次求得并供全部 coverage 阈值复用的预测行与 GT 列配对。
+        # np.ndarray[int64], (N_match,), 一次求得且供全部 coverage 阈值复用的配对
         matched_pred, matched_gt = linear_sum_assignment(-continuous_score)
         matched_pred_cover = pred_cover[matched_pred, matched_gt]
         matched_gt_cover = gt_cover[matched_pred, matched_gt]
@@ -218,7 +195,9 @@ def evaluate_instance_overlap_counts(
             valid_edges = (pred_cover >= threshold) & (gt_cover >= threshold)
             coverage_pred_hit[row] = int(valid_edges.any(axis=1).sum())
             coverage_gt_hit[row] = int(valid_edges.any(axis=0).sum())
-            one_to_one_tp[row] = int(((matched_pred_cover >= threshold) & (matched_gt_cover >= threshold)).sum())
+            one_to_one_tp[row] = int(
+                ((matched_pred_cover >= threshold) & (matched_gt_cover >= threshold)).sum()
+            )
     return InstanceCounts(
         coverage_thresholds=thresholds,
         n_pred=n_pred,
@@ -248,14 +227,18 @@ def aggregate_instance_counts(counts: Sequence[InstanceCounts]) -> InstanceCount
         coverage_thresholds=thresholds,
         n_pred=sum(item.n_pred for item in counts),
         n_gt=sum(item.n_gt for item in counts),
-        coverage_pred_hit=np.sum(np.stack([item.coverage_pred_hit for item in counts]), axis=0, dtype=np.int64),
-        coverage_gt_hit=np.sum(np.stack([item.coverage_gt_hit for item in counts]), axis=0, dtype=np.int64),
-        one_to_one_tp=np.sum(np.stack([item.one_to_one_tp for item in counts]), axis=0, dtype=np.int64),
+        coverage_pred_hit=np.sum(
+            np.stack([item.coverage_pred_hit for item in counts]), axis=0, dtype=np.int64
+        ),
+        coverage_gt_hit=np.sum(
+            np.stack([item.coverage_gt_hit for item in counts]), axis=0, dtype=np.int64
+        ),
+        one_to_one_tp=np.sum(
+            np.stack([item.one_to_one_tp for item in counts]), axis=0, dtype=np.int64
+        ),
     )
 
 
-
-######## 核心计算函数
 def evaluate_topk_success(
     pred_masks: Sequence[np.ndarray],
     gt_masks: Sequence[np.ndarray],
@@ -267,16 +250,16 @@ def evaluate_topk_success(
     按连续候选质量分取 top-K，并检查是否存在任一双向 coverage 达标 pair。
 
     输入参数:
-        - pred_masks: Sequence[np.ndarray], N_pred 张预测组件 bool mask，与 `candidate_scores` 逐候选对齐。
-        - gt_masks: Sequence[np.ndarray], 当前 PDB 的 N_gt 张真实 occurrence bool mask。
-        - candidate_scores: Sequence[float], (N_pred,), 连续候选质量分；F1 路线使用组件内概率均值，Selector 使用 `predicted_max_iou`，不得使用 `selection_logit`。
-        - topk_values: Sequence[int], 要检查的候选数量 K，正式值为 `(3, 4, 5)`。
-        - coverage_thresholds: Sequence[float], 双向 coverage 阈值，正式值为 `(0.3, 0.5)`。
+        - pred_masks: Sequence[np.ndarray], 与 candidate_scores 同序的预测组件 masks
+        - gt_masks: Sequence[np.ndarray], 当前 PDB 全部 occurrence GT masks
+        - candidate_scores: Sequence[float], F1 路线为组件内概率均值，Selector 为
+          `predicted_max_iou`；不得传 `selection_logit`
+        - topk_values: Sequence[int], 正式值为 (3,4,5)
+        - coverage_thresholds: Sequence[float], 正式值为 (0.3,0.5)
 
     输出:
-        - result: dict[str, int], 当前 PDB 的 top-K 评估资格与成功标志；包含以下字段。
-            - `n_topk_eligible_pdb`: int, 标量 0/1；N_gt > 0 时为 1，表示当前 PDB 进入 top-K success 汇总分母，否则为 0。
-            - `top{K}_success_{tag}`: int, 每个 `topk_values` 中的 K 与 `coverage_thresholds` 中的阈值各生成一个标量 0/1 字段；候选按 `candidate_scores` 稳定降序排列后，前 K 个候选中只要存在一个 pred/GT pair 同时满足 `intersection / pred_size >= threshold` 和 `intersection / gt_size >= threshold` 就为 1，否则为 0；`tag` 将阈值格式化为最多三位小数、去掉末尾 0 并用 `p` 替换小数点，默认字段为 `top3_success_0p3`、`top3_success_0p5`、`top4_success_0p3`、`top4_success_0p5`、`top5_success_0p3` 和 `top5_success_0p5`，有 GT 但无预测时这些字段仍为 0。
+        - result: dict[str,int], `n_topk_eligible_pdb` 在 n_gt>0 时为 1，另含
+          每个 K/threshold 的 0/1 success；无预测仍记失败
     """
     if len(pred_masks) != len(candidate_scores):
         raise ValueError("pred_masks 与 candidate_scores 长度必须一致")
@@ -311,17 +294,16 @@ def evaluate_topk_overlap_counts(
     直接从稀疏 overlap 汇总值计算单个 PDB 的 top-K success。
 
     输入参数:
-        - intersections: integer, (N_pred, N_gt), 预测组件与真实 occurrence 的交集 voxel 数。
-        - pred_sizes: integer, (N_pred,), 每个预测组件的 voxel 数。
-        - gt_sizes: integer, (N_gt,), 每个真实 occurrence 的 voxel 数。
-        - candidate_scores: Sequence[float], (N_pred,), 连续候选质量分；同分时保持原候选顺序。
-        - topk_values: Sequence[int], 要检查的候选数量 K，正式值为 `(3, 4, 5)`。
-        - coverage_thresholds: Sequence[float], 双向 coverage 阈值，正式值为 `(0.3, 0.5)`。
+        - intersections: np.ndarray, [N_pred,N_gt]，预测与 occurrence 的交集体素数
+        - pred_sizes: np.ndarray, [N_pred]，预测组件体素数
+        - gt_sizes: np.ndarray, [N_gt]，GT occurrence 体素数
+        - candidate_scores: Sequence[float]，[N_pred]，连续候选质量分
+        - topk_values: Sequence[int]，正式值为 (3,4,5)
+        - coverage_thresholds: Sequence[float]，正式值为 (0.3,0.5)
 
     输出:
-        - result: dict[str, int], 当前 PDB 的 top-K 评估资格与成功标志；包含以下字段，计算过程不执行 Hungarian 配对。
-            - `n_topk_eligible_pdb`: int, 标量 0/1；N_gt > 0 时为 1，表示当前 PDB 进入 top-K success 汇总分母，否则为 0。
-            - `top{K}_success_{tag}`: int, 每个 `topk_values` 中的 K 与 `coverage_thresholds` 中的阈值各生成一个标量 0/1 字段；候选按 `candidate_scores` 稳定降序排列后，前 K 个候选中只要存在一个 pred/GT pair 同时满足 `intersection / pred_size >= threshold` 和 `intersection / gt_size >= threshold` 就为 1，否则为 0；`tag` 将阈值格式化为最多三位小数、去掉末尾 0 并用 `p` 替换小数点，默认字段为 `top3_success_0p3`、`top3_success_0p5`、`top4_success_0p3`、`top4_success_0p5`、`top5_success_0p3` 和 `top5_success_0p5`，无 GT 或无预测时这些字段均为 0。
+        - result: dict[str,int]，每个 K/阈值为单 PDB 0/1；`n_topk_eligible_pdb`
+          只由是否存在 GT 决定。该指标不做 Hungarian。
     """
     pred_sizes_array = np.asarray(pred_sizes, dtype=np.int64).reshape(-1)
     gt_sizes_array = np.asarray(gt_sizes, dtype=np.int64).reshape(-1)
@@ -351,13 +333,16 @@ def evaluate_topk_overlap_counts(
         out=np.zeros((n_pred, n_gt), dtype=np.float64),
         where=gt_sizes_array[None, :] > 0,
     )
-    # int64, (N_pred,), 按连续质量分降序排列的候选行号；稳定 mergesort 保留同分候选的原来源顺序。
     order = np.argsort(-scores, kind="mergesort")
     for k in topk_values:
         selected = order[: int(k)]
         for threshold in thresholds:
-            valid = (pred_cover[selected] >= threshold) & (gt_cover[selected] >= threshold)
-            result[f"top{int(k)}_success_{_threshold_tag(threshold)}"] = int(bool(np.any(valid)))
+            valid = (pred_cover[selected] >= threshold) & (
+                gt_cover[selected] >= threshold
+            )
+            result[f"top{int(k)}_success_{_threshold_tag(threshold)}"] = int(
+                bool(np.any(valid))
+            )
     return result
 
 
@@ -377,7 +362,7 @@ def _safe_div(numerator: int, denominator: int) -> float:
 
 def _harmonic_mean(left: float, right: float) -> float:
     """
-    返回两个非负比率的调和平均: 2.0 * left * right / (left + right) if left + right else 0.0 。
+    返回两个非负比率的调和平均。
 
     输入参数:
         - left: float, 第一个非负比率
@@ -391,7 +376,7 @@ def _harmonic_mean(left: float, right: float) -> float:
 
 def _threshold_tag(threshold: float) -> str:
     """
-    把 0.3/0.5 等阈值转换为稳定 JSON key 后缀: f"{float(threshold):.3f}".rstrip("0").rstrip(".").replace(".", "p") 。
+    把 0.3/0.5 等阈值转换为稳定 JSON key 后缀。
 
     输入参数:
         - threshold: float, coverage 阈值

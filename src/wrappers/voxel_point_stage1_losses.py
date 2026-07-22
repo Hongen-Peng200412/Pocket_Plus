@@ -6,6 +6,7 @@ from typing import Any
 
 import torch
 from torch import nn
+from torch.nn import functional as F
 
 from src.modules.losses import AdaptiveClassificationCompositeLoss, LigandSparseRefineDeltaLoss, UnifiedCompositeLoss
 
@@ -230,6 +231,59 @@ def compute_voxel_ligand_loss_term(
     # torch.Tensor, 标量, voxel ligand 原始损失
     value = loss_output_to_tensor(loss_out)
     return LossTerm(name="voxel_ligand", value=value, weight=float(weight), logged_value=value.detach())
+
+
+def compute_mainchain_class_loss_term(
+    *,
+    outputs: Mapping[str, Any],
+    batch: Mapping[str, Any],
+    loss_module: nn.Module,
+    weight: float,
+    polymer_name: str,
+) -> LossTerm | None:
+    """计算蛋白或核酸固定主链类别的全体素复合分类损失。"""
+
+    if polymer_name not in {"protein", "nucleic"}:
+        raise ValueError("polymer_name 只允许 protein 或 nucleic。")
+    logits = outputs.get(f"voxel_logits_{polymer_name}")
+    if logits is None:
+        return None
+    target = batch[f"{polymer_name}_mainchain_target"]
+    if not isinstance(loss_module, AdaptiveClassificationCompositeLoss):
+        raise TypeError("主链类别损失必须使用 AdaptiveClassificationCompositeLoss。")
+    value = loss_output_to_tensor(loss_module(logits=logits, target=target, hardmask=None))
+    return LossTerm(
+        name=f"{polymer_name}_mainchain",
+        value=value,
+        weight=float(weight),
+        logged_value=value.detach(),
+    )
+
+
+def compute_ligand_distance_loss_term(
+    *,
+    outputs: Mapping[str, Any],
+    batch: Mapping[str, Any],
+    weight: float,
+) -> LossTerm | None:
+    """计算最近配体距离变换值的全体素平均 MSE。"""
+
+    logits = outputs.get("voxel_logits_distance")
+    if logits is None:
+        return None
+    target = batch["ligand_inverse_distance_target"].to(device=logits.device, dtype=logits.dtype)
+    if logits.ndim != 5 or logits.shape[1] != 1 or logits[:, 0].shape != target.shape:
+        raise ValueError(
+            "配体距离预测与监督形状不一致: "
+            f"logits={tuple(logits.shape)}, target={tuple(target.shape)}。"
+        )
+    value = F.mse_loss(torch.sigmoid(logits[:, 0]), target, reduction="mean")
+    return LossTerm(
+        name="ligand_distance",
+        value=value,
+        weight=float(weight),
+        logged_value=value.detach(),
+    )
 
 # refine loss
 def compute_sparse_refine_loss_term(

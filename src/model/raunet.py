@@ -377,6 +377,7 @@ class SimpleUnet(nn.Module):
         out_channels: int = 1,
         planes: list = (64, 256, 256, 256, 256, 256, 128, 64, 64),
         gradient_checkpoint: bool = False,
+        enable_multiscale_output: bool = True,
     ):
         super(SimpleUnet, self).__init__()
         # planes 映射映射固定为：(enc0, enc1, enc2, enc3, bottleneck, dec3, dec2, dec1, dec0)
@@ -387,6 +388,7 @@ class SimpleUnet(nn.Module):
         self.in_channels = in_channels
         self.out_channels = out_channels
         self.gradient_checkpoint = bool(gradient_checkpoint)
+        self.enable_multiscale_output = bool(enable_multiscale_output)
         
         # 如果 self.in_channels 是 None，这里的第一个卷积层将在 forward 中或包装器中被延迟初始化或重新创建
         self.shortconvadd = ShortConvAdd(input_channels=in_channels, output_channels=enc0)   # 用于原始输入 or 循环融合
@@ -426,18 +428,24 @@ class SimpleUnet(nn.Module):
         # main4: nn.Sequential, 4层Res2NetBlock
         self.main4 = self.main_layer(dec0, 4, 4)
         
-        # ===== 多尺度输出层 =====
-        mid_ch = max(32, dec0 // 2)
-        # conv_end_3: nn.Conv3d, 3x3卷积分支
-        self.conv_end_3 = nn.Conv3d(dec0, mid_ch, kernel_size=3, stride=1, padding=1)
-        # conv_end_5: nn.Conv3d, 5x5卷积分支
-        self.conv_end_5 = nn.Conv3d(dec0, mid_ch, kernel_size=5, stride=1, padding=2)
-        # conv_end_7: nn.Conv3d, 7x7卷积分支
-        self.conv_end_7 = nn.Conv3d(dec0, mid_ch, kernel_size=7, stride=1, padding=3)
-        # relu1: nn.ReLU, 激活函数
-        self.relu1 = nn.ReLU()
-        # conv_end: nn.Conv3d, 最终输出卷积
-        self.conv_end = nn.Conv3d(in_channels=mid_ch * 3, out_channels=out_channels, padding=1, kernel_size=3)
+        # ===== 可选多尺度输出层 =====
+        if self.enable_multiscale_output:
+            mid_ch = max(32, dec0 // 2)
+            self.conv_end_3 = nn.Conv3d(dec0, mid_ch, kernel_size=3, stride=1, padding=1)
+            self.conv_end_5 = nn.Conv3d(dec0, mid_ch, kernel_size=5, stride=1, padding=2)
+            self.conv_end_7 = nn.Conv3d(dec0, mid_ch, kernel_size=7, stride=1, padding=3)
+            self.relu1 = nn.ReLU()
+            self.conv_end = nn.Conv3d(in_channels=mid_ch * 3, out_channels=out_channels, padding=1, kernel_size=3)
+        else:
+            if int(out_channels) != int(dec0):
+                raise ValueError(
+                    "关闭多尺度输出时 out_channels 必须等于解码器最高分辨率通道数 dec0。"
+                )
+            self.conv_end_3 = None
+            self.conv_end_5 = None
+            self.conv_end_7 = None
+            self.relu1 = None
+            self.conv_end = None
 
     def set_input_channels(self, in_channels: int):  # 将会在包装器 src\wrappers\volume_segmentation.py 中被调用
         """

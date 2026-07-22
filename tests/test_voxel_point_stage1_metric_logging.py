@@ -108,6 +108,57 @@ def test_validation_metric_manager_outputs_multiclass_suffix_and_macro() -> None
     assert "val_score/global/voxel_ligand_PRAUC_small_molecule" in payload
 
 
+def test_validation_macro_skips_classes_without_positive_targets() -> None:
+    """结构类别宏平均只纳入整个验证集中实际出现的前景类别。"""
+
+    manager = ValidationMetricManager(
+        branches=[
+            MetricBranchSpec(
+                name="protein_mainchain",
+                enabled=True,
+                num_classes=4,
+                class_names=("background", "A", "B", "C"),
+                thresholds=8,
+                report_per_class=False,
+                macro_present_classes_only=True,
+            )
+        ],
+        metric_device_policy="auto",
+    )
+    logits = torch.tensor(
+        [
+            [
+                [[[0.0, 0.0, 0.0, 0.0]]],
+                [[[4.0, 1.0, -2.0, -3.0]]],
+                [[[-2.0, -2.0, -2.0, -2.0]]],
+                [[[-3.0, -1.0, 1.0, 4.0]]],
+            ]
+        ]
+    )
+    target = torch.tensor([[[[1, 0, 0, 3]]]])
+    mask = torch.ones_like(target, dtype=torch.bool)
+
+    manager.update_branch(
+        branch_name="protein_mainchain",
+        logits=logits,
+        target=target,
+        mask=mask,
+    )
+    payload = manager.compute_payload()
+
+    expected = torch.stack(
+        [
+            manager.metrics["protein_mainchain__class_1"].compute(),
+            manager.metrics["protein_mainchain__class_3"].compute(),
+        ]
+    ).mean()
+    torch.testing.assert_close(
+        payload["val_score/global/protein_mainchain_PRAUC_macro"],
+        expected,
+    )
+    assert len(payload) == 1
+
+
 def test_wrapper_receptor_metric_name_replaces_voxel_aux_name() -> None:
     """
     验证新 wrapper 对外使用 receptor PR-AUC 名称, 不再注册 voxel_aux PR-AUC 名称。

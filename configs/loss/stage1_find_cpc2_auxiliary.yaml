@@ -1,0 +1,12 @@
+# @package _global_
+# 新版 Find_1 CPC2：保留三个输出头并冻结体素主干，不再计算三项辅助损失。
+defaults:
+  - stage1_find_cpc1_auxiliary
+  - _self_
+
+model:
+  voxel_aux_loss_weight: 0.0
+  voxel_ligand_loss_weight: 0.0
+  protein_mainchain_loss_weight: 0.0
+  nucleic_mainchain_loss_weight: 0.0
+  ligand_distance_loss_weight: 0.0

@@ -22,6 +22,8 @@ class MetricBranchSpec:
         - num_classes: int, task 类别数; 2 表示二分类输出无 suffix 指标
         - class_names: tuple[str, ...], (num_classes,), task class 名
         - thresholds: int | Sequence[float] | None, TorchMetrics AP 阈值配置(作为近似计算 AP 的 bin)
+        - report_per_class: bool, 是否把逐类别值写入日志
+        - macro_present_classes_only: bool, 宏平均是否跳过验证集中没有正样本的类别
     """
 
     name: str
@@ -29,6 +31,26 @@ class MetricBranchSpec:
     num_classes: int
     class_names: tuple[str, ...]
     thresholds: int | Sequence[float] | None
+    report_per_class: bool = True
+    macro_present_classes_only: bool = False
+
+
+class _PositiveCount(Metric):
+    """跨验证进程累计一个 one-vs-rest 类别的正样本数。"""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.add_state(
+            "count",
+            default=torch.tensor(0, dtype=torch.int64),
+            dist_reduce_fx="sum",
+        )
+
+    def update(self, target: torch.Tensor) -> None:
+        self.count += target.to(device=self.count.device, dtype=torch.int64).sum()
+
+    def compute(self) -> torch.Tensor:
+        return self.count
 
 
 # 管理 Stage1 常规 validation AP/PRAUC 指标(只是 AP 或 PRAUC 哦)
@@ -101,6 +123,10 @@ class ValidationMetricManager(nn.Module):
                     thresholds=spec.thresholds,
                     compute_on_cpu=compute_on_cpu,
                 )
+                if spec.macro_present_classes_only:
+                    self.metrics[f"{spec.name}__class_{class_id}_positive_count"] = (
+                        _PositiveCount()
+                    )
 
     def update_branch(
         self,
@@ -151,6 +177,10 @@ class ValidationMetricManager(nn.Module):
             # torch.Tensor, (M,), 有效位置当前类别 one-vs-rest 标签
             targets = (target_flat[mask_flat] == class_id).long()
             self.metrics[f"{branch_name}__class_{class_id}"].update(preds, targets)
+            if spec.macro_present_classes_only:
+                self.metrics[
+                    f"{branch_name}__class_{class_id}_positive_count"
+                ].update(targets)
 
     def compute_payload(self) -> dict[str, torch.Tensor]:
         """
@@ -176,6 +206,14 @@ class ValidationMetricManager(nn.Module):
             class_values: list[torch.Tensor] = []
             for class_id in range(1, spec.num_classes):
                 class_name = spec.class_names[class_id]
+                class_is_present = True
+                if spec.macro_present_classes_only:
+                    positive_count = self.metrics[
+                        f"{spec.name}__class_{class_id}_positive_count"
+                    ].compute()
+                    class_is_present = bool(positive_count.item() > 0)
+                if not class_is_present:
+                    continue
                 value = self.metrics[f"{spec.name}__class_{class_id}"].compute()
                 class_values.append(value)
                 key = build_metric_key(
@@ -185,7 +223,8 @@ class ValidationMetricManager(nn.Module):
                     scope="global",
                     task_class_name=class_name,
                 )
-                payload[key] = value
+                if spec.report_per_class:
+                    payload[key] = value
             if class_values:
                 payload[f"val_score/global/{spec.name}_PRAUC_macro"] = torch.stack(class_values).mean()
         return payload

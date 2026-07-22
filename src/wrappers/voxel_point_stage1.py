@@ -9,6 +9,10 @@ import torch
 from hydra.utils import instantiate
 from torch import nn
 
+from src.auxiliary_supervision import (
+    NUCLEIC_MAINCHAIN_CLASS_NAMES,
+    PROTEIN_MAINCHAIN_CLASS_NAMES,
+)
 from src.modules.losses import AdaptiveClassificationCompositeLoss, LigandSparseRefineDeltaLoss
 from src.wrappers.voxel_point_stage1_diagnostics import (
     CpcDiagnosticsConfig,
@@ -18,6 +22,8 @@ from src.wrappers.voxel_point_stage1_logging import log_scalar_payload, log_wand
 from src.wrappers.voxel_point_stage1_losses import (
     LossTerm,
     compute_atom_loss_term,
+    compute_ligand_distance_loss_term,
+    compute_mainchain_class_loss_term,
     compute_pseudo_loss_term,
     compute_receptor_loss_term,
     compute_sparse_refine_loss_term,
@@ -52,6 +58,8 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
         atom_loss: nn.Module | None = None,
         voxel_aux_loss: nn.Module | None = None,
         voxel_ligand_loss: nn.Module | None = None,
+        protein_mainchain_loss: nn.Module | None = None,
+        nucleic_mainchain_loss: nn.Module | None = None,
         ligand_sparse_refine_loss: nn.Module | None = None,
         ligand_sparse_refine_delta_loss: nn.Module | None = None,
         ligand_pseudo_loss: nn.Module | None = None,
@@ -61,6 +69,9 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
         atom_loss_weight: float = 1.0,
         voxel_aux_loss_weight: float = 0.0,
         voxel_ligand_loss_weight: float = 0.0,
+        protein_mainchain_loss_weight: float = 0.0,
+        nucleic_mainchain_loss_weight: float = 0.0,
+        ligand_distance_loss_weight: float = 0.0,
         ligand_sparse_refine_loss_weight: float = 0.0,
         ligand_sparse_refine_loss_schedule: Mapping[str, Any] | None = None,
         pseudo_loss_weight: float = 1.0,
@@ -121,13 +132,15 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
         super().__init__()
         if class_names is None:
             raise ValueError("VoxelPointStage1Wrapper 必须显式传入 class_names。")
-        self.save_hyperparameters(ignore=["backbone", "atom_loss", "voxel_aux_loss", "voxel_ligand_loss", "ligand_sparse_refine_loss", "ligand_sparse_refine_delta_loss", "ligand_pseudo_loss"])
+        self.save_hyperparameters(ignore=["backbone", "atom_loss", "voxel_aux_loss", "voxel_ligand_loss", "protein_mainchain_loss", "nucleic_mainchain_loss", "ligand_sparse_refine_loss", "ligand_sparse_refine_delta_loss", "ligand_pseudo_loss"])
         self.model_name = str(name)
         self.monitor_mode = str(monitor_mode)
         self.backbone = backbone if isinstance(backbone, nn.Module) else instantiate(backbone)
         self.atom_loss = atom_loss if (atom_loss is None or isinstance(atom_loss, nn.Module)) else instantiate(atom_loss)
         self.voxel_aux_loss = voxel_aux_loss if (voxel_aux_loss is None or isinstance(voxel_aux_loss, nn.Module)) else instantiate(voxel_aux_loss)
         self.voxel_ligand_loss = voxel_ligand_loss if (voxel_ligand_loss is None or isinstance(voxel_ligand_loss, nn.Module)) else instantiate(voxel_ligand_loss)
+        self.protein_mainchain_loss = protein_mainchain_loss if (protein_mainchain_loss is None or isinstance(protein_mainchain_loss, nn.Module)) else instantiate(protein_mainchain_loss)
+        self.nucleic_mainchain_loss = nucleic_mainchain_loss if (nucleic_mainchain_loss is None or isinstance(nucleic_mainchain_loss, nn.Module)) else instantiate(nucleic_mainchain_loss)
         self.ligand_sparse_refine_loss = (
             ligand_sparse_refine_loss
             if (ligand_sparse_refine_loss is None or isinstance(ligand_sparse_refine_loss, nn.Module))
@@ -264,6 +277,24 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
             MetricBranchSpec("pseudo", self.ligand_pseudo_loss is not None, int(getattr(self.ligand_pseudo_loss, "num_classes", 2)), self.class_names, voxel_ligand_pr_auc_thresholds),
             MetricBranchSpec("receptor", self.voxel_aux_loss is not None, int(getattr(self.voxel_aux_loss, "num_classes", 2)), self.class_names, None),
             MetricBranchSpec("voxel_ligand", self.voxel_ligand_loss is not None, int(getattr(self.voxel_ligand_loss, "num_classes", 2)), self.class_names, voxel_ligand_pr_auc_thresholds),
+            MetricBranchSpec(
+                "protein_mainchain",
+                self.protein_mainchain_loss is not None and float(self.hparams.protein_mainchain_loss_weight) > 0.0,
+                len(PROTEIN_MAINCHAIN_CLASS_NAMES),
+                PROTEIN_MAINCHAIN_CLASS_NAMES,
+                voxel_ligand_pr_auc_thresholds,
+                False,
+                True,
+            ),
+            MetricBranchSpec(
+                "nucleic_mainchain",
+                self.nucleic_mainchain_loss is not None and float(self.hparams.nucleic_mainchain_loss_weight) > 0.0,
+                len(NUCLEIC_MAINCHAIN_CLASS_NAMES),
+                NUCLEIC_MAINCHAIN_CLASS_NAMES,
+                voxel_ligand_pr_auc_thresholds,
+                False,
+                True,
+            ),
         )
 
     def _build_cpc_diagnostics(self, diagnostics_cfg: Mapping[str, Any], voxel_ligand_pr_auc_thresholds: int | None) -> CpcValidationDiagnostics:
@@ -653,6 +684,34 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
             term = compute_voxel_ligand_loss_term(outputs=outputs, batch=batch, loss_module=self.voxel_ligand_loss, weight=float(self.hparams.voxel_ligand_loss_weight))
             if term is not None:
                 loss_terms.append(term)
+        if self.protein_mainchain_loss is not None and float(self.hparams.protein_mainchain_loss_weight) > 0.0:
+            term = compute_mainchain_class_loss_term(
+                outputs=outputs,
+                batch=batch,
+                loss_module=self.protein_mainchain_loss,
+                weight=float(self.hparams.protein_mainchain_loss_weight),
+                polymer_name="protein",
+            )
+            if term is not None:
+                loss_terms.append(term)
+        if self.nucleic_mainchain_loss is not None and float(self.hparams.nucleic_mainchain_loss_weight) > 0.0:
+            term = compute_mainchain_class_loss_term(
+                outputs=outputs,
+                batch=batch,
+                loss_module=self.nucleic_mainchain_loss,
+                weight=float(self.hparams.nucleic_mainchain_loss_weight),
+                polymer_name="nucleic",
+            )
+            if term is not None:
+                loss_terms.append(term)
+        if float(self.hparams.ligand_distance_loss_weight) > 0.0:
+            term = compute_ligand_distance_loss_term(
+                outputs=outputs,
+                batch=batch,
+                weight=float(self.hparams.ligand_distance_loss_weight),
+            )
+            if term is not None:
+                loss_terms.append(term)
         if self.ligand_pseudo_loss is not None and outputs.get("pseudo_logits") is not None:
             # dict[str, torch.Tensor], P 级 ligand 区域归属监督字段(前后置头共用 target/valid); P 损失从头开、不走 warmup
             pseudo_supervision = self._sample_ligand_pseudo_supervision(outputs=outputs, batch=batch)
@@ -933,6 +992,22 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
                 self.cpc_diagnostics.update_unrefined(candidate_outputs=candidate_outputs, target_C=outputs["ligand_refine_target_C"], valid_C=outputs["ligand_refine_valid_mask_C"], dense_num_gt=dense_num_gt) # outputs["ligand_refine_valid_mask_C"] 就是由batch["voxel_valid_mask"] 导出的(见 def _sample_ligand_refine_supervision )
                 if "ligand_refine_logits_C" in outputs:
                     self.cpc_diagnostics.update_refined(refined_logits_C=outputs["ligand_refine_logits_C"], candidate_outputs=candidate_outputs, target_C=outputs["ligand_refine_target_C"], valid_C=outputs["ligand_refine_valid_mask_C"], dense_num_gt=dense_num_gt)
+        if self.protein_mainchain_loss is not None and float(self.hparams.protein_mainchain_loss_weight) > 0.0:
+            target = batch_dict["protein_mainchain_target"]
+            self.val_metrics.update_branch(
+                branch_name="protein_mainchain",
+                logits=outputs["voxel_logits_protein"],
+                target=target,
+                mask=torch.ones_like(target, dtype=torch.bool),
+            )
+        if self.nucleic_mainchain_loss is not None and float(self.hparams.nucleic_mainchain_loss_weight) > 0.0:
+            target = batch_dict["nucleic_mainchain_target"]
+            self.val_metrics.update_branch(
+                branch_name="nucleic_mainchain",
+                logits=outputs["voxel_logits_nucleic"],
+                target=target,
+                mask=torch.ones_like(target, dtype=torch.bool),
+            )
         self._log_loss_terms("val_loss", total_loss, loss_terms, extra_logs)
         return total_loss
 

@@ -21,7 +21,13 @@ _DENSE_STACK_FIELDS = (
     "density_input",
     "hardmask",
 )
-_OPTIONAL_DENSE_FIELDS = ("ligand_area_target", "voxel_label")
+_OPTIONAL_DENSE_FIELDS = (
+    "ligand_area_target",
+    "voxel_label",
+    "protein_mainchain_target",
+    "nucleic_mainchain_target",
+    "ligand_inverse_distance_target",
+)
 _ATOM_FIELDS = (
     "atom_global_indices",
     "atom_feat",

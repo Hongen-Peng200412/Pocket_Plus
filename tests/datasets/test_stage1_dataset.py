@@ -15,6 +15,7 @@ from src.datasets.stage1_dataset import Stage1Dataset
 from src.datasets.stage1_box_pool import build_stage1_box_pools, generate_context_starts
 from src.datasets.stage1_requests import (
     Stage1TrainingRequestSet,
+    build_request_source,
     centered_start_from_centroid_zyx,
     centered_start_from_sparse_mask,
     load_validation_selection,
@@ -39,6 +40,17 @@ def _write_upstream(root: Path, pdb_id: str = "1abc", shape: tuple[int, int, int
     union = np.zeros((1, *shape), dtype=bool)
     union[0, 4, 3, 2] = True
     np.savez_compressed(density_dir / "ligand_area.npz", union_mask=union)
+    distance = np.full((1, *shape), 100.0, dtype=np.float16)
+    distance[0, 4, 3, 2] = np.float16(3.0)
+    np.savez_compressed(
+        density_dir / "ligand_dist.npz",
+        distance=distance,
+        schema_version=np.asarray(1, dtype=np.uint16),
+        grid_shape_zyx=np.asarray(shape, dtype=np.int64),
+        voxel_size_xyz=voxel_size,
+        origin_xyz=origin,
+        distance_unit=np.asarray("angstrom"),
+    )
 
     coords = np.asarray(
         [
@@ -50,7 +62,13 @@ def _write_upstream(root: Path, pdb_id: str = "1abc", shape: tuple[int, int, int
         dtype=np.float32,
     )
     feat = np.arange(coords.shape[0] * 49, dtype=np.float32).reshape(coords.shape[0], 49)
-    np.savez(parse_dir / "receptor_tokens.npz", coords=coords, feat=feat)
+    np.savez(
+        parse_dir / "receptor_tokens.npz",
+        coords=coords,
+        feat=feat,
+        res_type=np.asarray([0, 0, 20, 28], dtype=np.uint8),
+        atom_name=np.asarray([b"CA", b"N", b"P", b"CB"], dtype="S4"),
+    )
     np.savez(label_dir / "atom_labels.npz", binding_atom=np.asarray([True, False, True, False]))
 
 
@@ -146,7 +164,7 @@ def test_find_dataset_materializes_direct_core8_and_union_target(tmp_path: Path,
         all_data_path=str(tmp_path),
         split_file=str(manifest),
         mode="val",
-        stage1_model_name="Find_0",
+        stage1_model_name="Find_1",
         box_pool_root=None,
         density_channel_config=_density_config(list(ALL_CHANNEL_NAMES)),
         enable_random_rotation=False,
@@ -161,7 +179,53 @@ def test_find_dataset_materializes_direct_core8_and_union_target(tmp_path: Path,
     assert sample["hardmask"].sum().item() == 2
     assert sample["voxel_label"].sum().item() == 1
     assert sample["ligand_area_target"][4, 3, 2].item() is True
+    assert sample["protein_mainchain_target"][0, 0, 0].item() == 2
+    assert sample["protein_mainchain_target"][79, 79, 79].item() == 1
+    assert sample["nucleic_mainchain_target"].sum().item() == 0
+    assert sample["ligand_inverse_distance_target"][4, 3, 2].item() == pytest.approx(0.25)
+    assert sample["ligand_inverse_distance_target"][0, 0, 0].item() == pytest.approx(
+        1.0 / 101.0
+    )
     assert "ligand_dist_map" not in sample
+
+
+def test_ligand_distance_loader_rejects_mixed_finite_and_infinite_values(
+    tmp_path: Path,
+) -> None:
+    """有配体距离图必须全部有限；无配体距离图才允许全部为正无穷。"""
+
+    _write_upstream(tmp_path)
+    distance_path = tmp_path / "density" / "1abc" / "ligand_dist.npz"
+    distance = np.ones((1, 80, 80, 80), dtype=np.float16)
+    distance[0, 0, 0, 0] = np.inf
+    np.savez_compressed(
+        distance_path,
+        distance=distance,
+        schema_version=np.asarray(1, dtype=np.uint16),
+        grid_shape_zyx=np.asarray([80, 80, 80], dtype=np.int64),
+        voxel_size_xyz=np.ones(3, dtype=np.float32),
+        origin_xyz=np.asarray([10.0, 20.0, 30.0], dtype=np.float32),
+        distance_unit=np.asarray("angstrom"),
+    )
+    request_path = tmp_path / "requests.json"
+    _write_request(request_path, require_targets=True)
+    dataset = Stage1Dataset(
+        all_data_path=str(tmp_path),
+        split_file=str(request_path),
+        mode="val",
+        stage1_model_name="Find_1",
+        box_pool_root=None,
+        density_channel_config=_density_config(list(ALL_CHANNEL_NAMES)),
+        enable_random_rotation=False,
+    )
+
+    with pytest.raises(ValueError, match="全部有限且非负，或全部为正无穷"):
+        dataset._load_ligand_distance(
+            "1abc",
+            (80, 80, 80),
+            np.ones(3, dtype=np.float32),
+            np.asarray([10.0, 20.0, 30.0], dtype=np.float32),
+        )
 
 
 def test_unet_dataset_does_not_read_sim_or_return_atoms(tmp_path: Path) -> None:
@@ -341,6 +405,27 @@ def test_training_pool_rebuilds_fixed_1_5_3_ratio(tmp_path: Path) -> None:
     source_again.set_epoch(1)
     assert tuple(source_again.requests) == tuple(source.requests)
 
+    reduced = Stage1TrainingRequestSet(pool_dir, seed=7, box_sample_fraction=0.1)
+    frozen = tuple(reduced.requests)
+    assert len(frozen) == 45
+    assert sum(request.role == "center" for request in frozen) == 5
+    assert sum(request.role == "bias" for request in frozen) == 25
+    assert sum(request.role == "context" for request in frozen) == 15
+    assert (tmp_path / "train_selection_0.1_seed7.npz").is_file()
+    with np.load(tmp_path / "train_selection_0.1_seed7.npz", allow_pickle=False) as saved:
+        assert float(saved["box_sample_fraction"]) == pytest.approx(0.1)
+        assert int(saved["request_seed"]) == 7
+        assert int(saved["selection_epoch"]) == 0
+        assert int(saved["schema_version"]) == 1
+        assert len(str(saved["source_manifest_sha256"].item())) == 64
+    reduced.set_epoch(9)
+    assert tuple(reduced.requests) == frozen
+    assert tuple(Stage1TrainingRequestSet(pool_dir, seed=7, box_sample_fraction=0.1).requests) == frozen
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(manifest_path.read_text(encoding="utf-8") + "\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="元数据与当前来源不一致"):
+        Stage1TrainingRequestSet(pool_dir, seed=7, box_sample_fraction=0.1)
+
 
 @pytest.mark.parametrize("context_count", (0, 1, 2))
 def test_training_pool_context_underflow_does_not_abort(
@@ -512,3 +597,21 @@ def test_box_pool_one_click_entry_publishes_train_validation_and_selection(tmp_p
     assert [request.role for request in requests].count("center") == 1
     assert [request.role for request in requests].count("bias") == 5
     assert [request.role for request in requests].count("context") == 3
+    reduced_validation = build_request_source(
+        split_file=output_root / "validation_selection.npz",
+        mode="val",
+        box_pool_root=output_root,
+        seed=23,
+        box_sample_fraction=0.5,
+    )
+    assert len(reduced_validation) == 4
+    assert [request.role for request in reduced_validation].count("center") == 1
+    assert [request.role for request in reduced_validation].count("bias") == 2
+    assert [request.role for request in reduced_validation].count("context") == 1
+    assert (output_root / "validation_selection_0.5_seed23.npz").is_file()
+    with np.load(
+        output_root / "validation_selection_0.5_seed23.npz",
+        allow_pickle=False,
+    ) as saved:
+        assert len(str(saved["source_manifest_sha256"].item())) == 64
+        assert len(str(saved["source_validation_sha256"].item())) == 64
