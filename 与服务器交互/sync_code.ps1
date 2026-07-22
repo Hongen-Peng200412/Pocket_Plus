@@ -130,7 +130,7 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 Write-Host "[3/6] Removing remote .git directory if present..." -ForegroundColor Yellow
-$RemoveGitCmd = "if [ -d '$RemoteFullDir/.git' ]; then rm -rf '$RemoteFullDir/.git'; fi"
+$RemoveGitCmd = "if [ -e '$RemoteFullDir/.git' ] || [ -L '$RemoteFullDir/.git' ]; then rm -rf '$RemoteFullDir/.git'; fi"
 Invoke-RemoteCommand $RemoveGitCmd
 
 if ($LASTEXITCODE -ne 0) {
@@ -139,6 +139,7 @@ if ($LASTEXITCODE -ne 0) {
 
 Write-Host "[4/6] Uploading local code with rsync..." -ForegroundColor Yellow
 & $RsyncExe -av `
+    --exclude=".git" `
     --exclude=".git/" `
     --exclude="__pycache__/" `
     --exclude="*.pyc" `
