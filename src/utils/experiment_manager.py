@@ -4,6 +4,8 @@
 """
 
 import glob
+import hashlib
+import json
 import logging
 import os
 import shutil
@@ -44,7 +46,7 @@ class ExperimentManager:
         self.feedback_root = Path(feedback_root)
         self.start_time = time.time()
         self.experiment_group = self._sanitize_path_component(experiment_group)
-        self.rank = int(os.environ.get("SLURM_PROCID", os.environ.get("LOCAL_RANK", "0")))
+        self.rank = self._resolve_process_rank()
         self.is_rank_zero = self.rank == 0
         self.run_stamp, self.run_stamp_source = self._resolve_run_stamp()
         
@@ -57,6 +59,16 @@ class ExperimentManager:
             self._archive_model_source()
             self._migrate_slurm_logs_to_run_dir()
             self._relocate_hydra_logging()
+
+    @staticmethod
+    def _resolve_process_rank() -> int:
+        """优先使用 Lightning 子进程全局 rank，最后才使用 Slurm task rank。"""
+
+        for variable_name in ("RANK", "LOCAL_RANK", "SLURM_PROCID"):
+            value = os.environ.get(variable_name, "").strip()
+            if value:
+                return int(value)
+        return 0
 
     @staticmethod
     def _sanitize_path_component(value: str) -> str:
@@ -102,19 +114,42 @@ class ExperimentManager:
 
     def _archive_model_source(self):
         """
-        将 src/model/ (含 PTV3bakcbone) 复制到 run_dir/src_snapshot/src/model/。
-        确保推理时可以使用训练时的完整模型代码，不受后续代码迭代影响。
+        将完整 `src/` 复制到运行目录，并写入逐文件 SHA-256 清单。
+
+        Dataset、wrapper、损失、模型与训练入口共同决定 checkpoint 的可执行语义，
+        因此快照不能只保存 `src/model/`。运行目录一经创建便不允许覆盖既有快照。
         """
-        import shutil
-        # 用 __file__ 推导 Pocket_Plus 根目录，避免受 .project-root 解析位置影响
+
         pocket_root = Path(__file__).resolve().parents[2]  # src/utils/ → src → Pocket_Plus
-        src_model_dir = pocket_root / "src" / "model"
-        snapshot_dir = self.run_dir / "src_snapshot" / "src" / "model"
-        if src_model_dir.exists():
-            shutil.copytree(src_model_dir, snapshot_dir, dirs_exist_ok=True)
-            print(f"[ExperimentManager] 模型代码快照已保存: {snapshot_dir}")
-        else:
-            print(f"[ExperimentManager] 模型代码目录不存在: {src_model_dir}")
+        source_dir = pocket_root / "src"
+        snapshot_root = self.run_dir / "src_snapshot"
+        snapshot_dir = snapshot_root / "src"
+        if not source_dir.is_dir():
+            raise FileNotFoundError(f"Pocket_Plus 源代码目录不存在: {source_dir}")
+        if snapshot_root.exists():
+            raise FileExistsError(f"运行目录已经包含代码快照，拒绝覆盖: {snapshot_root}")
+        shutil.copytree(
+            source_dir,
+            snapshot_dir,
+            ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo"),
+        )
+        files: dict[str, str] = {}
+        for path in sorted(snapshot_dir.rglob("*")):
+            if path.is_file():
+                relative = path.relative_to(snapshot_root).as_posix()
+                files[relative] = hashlib.sha256(path.read_bytes()).hexdigest()
+        config_path = self.run_dir / "config.yaml"
+        manifest = {
+            "schema_version": 1,
+            "source_directory": str(source_dir),
+            "config_sha256": hashlib.sha256(config_path.read_bytes()).hexdigest(),
+            "files": files,
+        }
+        (snapshot_root / "manifest.json").write_text(
+            json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        print(f"[ExperimentManager] 完整 src 代码快照已保存: {snapshot_dir}")
 
     def _migrate_slurm_logs_to_run_dir(self):
         """
