@@ -1,14 +1,122 @@
-"""AdaLigand Stage1 正式完整 wrapper checkpoint 加载器。
+"""从训练运行目录的代码快照严格恢复 Stage1 wrapper。
 
-训练侧的 CPC1→CPC2 只恢复 model state；本模块服务推理侧，必须从 resolved config
-重新实例化完整 wrapper，再 strict 加载 ``state_dict`` 并执行 ``on_load_checkpoint``。
-因此推理能恢复候选阈值等 wrapper 状态，而不是只得到一个裸 backbone。
+主要入口 ``load_stage1_wrapper`` 优先使用 checkpoint 所属运行目录中的
+``src_snapshot/src/`` 与 resolved config，再 strict 加载 ``state_dict`` 并执行
+``on_load_checkpoint``。缺少完整快照时默认报错；只有调用者显式允许时才使用
+当前工作区代码。同一 Python 进程不得混用两个训练运行的快照。
 """
 
 from __future__ import annotations
 
+import importlib
+import sys
 from pathlib import Path
 from typing import Callable
+
+
+_ACTIVE_SNAPSHOT_SOURCE: Path | None = None
+_REQUIRED_SNAPSHOT_PACKAGES = (
+    "artifacts",
+    "datasets",
+    "inference",
+    "model",
+    "modules",
+    "selector",
+    "utils",
+    "wrappers",
+)
+
+
+def _checkpoint_run_directory(checkpoint_path: str | Path) -> Path:
+    """返回 checkpoint 所属的训练运行目录。"""
+    checkpoint = Path(checkpoint_path).resolve()
+    if checkpoint.parent.name == "checkpoints":
+        return checkpoint.parent.parent
+    return checkpoint.parent
+
+
+def resolve_checkpoint_source_path(
+    checkpoint_path: str | Path,
+    allow_current_workspace_code: bool,
+) -> Path | None:
+    """
+    解析运行目录的完整 ``src`` 快照。
+
+    返回 ``run/src_snapshot/src``；该目录缺失时，只有
+    ``allow_current_workspace_code=True`` 才返回 ``None``。
+    """
+    source_path = _checkpoint_run_directory(checkpoint_path) / "src_snapshot" / "src"
+    missing = [
+        name
+        for name in _REQUIRED_SNAPSHOT_PACKAGES
+        if not (source_path / name).is_dir()
+    ]
+    if (
+        source_path.is_dir()
+        and (source_path / "__init__.py").is_file()
+        and not missing
+    ):
+        return source_path.resolve()
+    if allow_current_workspace_code:
+        return None
+    raise FileNotFoundError(
+        "checkpoint 所属运行目录缺少完整代码快照: "
+        f"{source_path}，缺少子包={missing}。若确认要使用当前工作区代码，"
+        "必须显式设置 "
+        "allow_current_workspace_code=True。"
+    )
+
+
+def _activate_checkpoint_source(source_path: Path | None) -> None:
+    """
+    让 Hydra 后续导入从唯一训练快照的 ``src`` 目录解析。
+
+    推理编排模块已从当前工作区导入；Dataset、模型、wrapper、损失模块
+    与共享工具必须尚未导入，才能统一从快照根目录解析。如果其中任一
+    子包已经从其他位置导入，直接报错，不在活跃进程中删除已加载模块。
+    """
+    global _ACTIVE_SNAPSHOT_SOURCE
+
+    if source_path is None:
+        if _ACTIVE_SNAPSHOT_SOURCE is not None:
+            raise RuntimeError(
+                "当前进程已加载训练快照，不能再切换到工作区代码: "
+                f"{_ACTIVE_SNAPSHOT_SOURCE}"
+            )
+        return
+    source_path = source_path.resolve()
+    if _ACTIVE_SNAPSHOT_SOURCE is not None:
+        if _ACTIVE_SNAPSHOT_SOURCE != source_path:
+            raise RuntimeError(
+                "同一推理进程只能加载一套训练快照；已加载 "
+                f"{_ACTIVE_SNAPSHOT_SOURCE}，本次请求 {source_path}"
+            )
+        return
+
+    snapshot_packages = (
+        "src.datasets",
+        "src.model",
+        "src.wrappers",
+        "src.modules",
+        "src.utils",
+    )
+    imported = sorted(
+        name
+        for name in sys.modules
+        if any(name == prefix or name.startswith(f"{prefix}.") for prefix in snapshot_packages)
+    )
+    if imported:
+        raise RuntimeError(
+            "加载 checkpoint 快照前已导入模型或 wrapper 代码，无法保证快照单一性: "
+            f"{imported[:10]}"
+        )
+
+    import src
+
+    # 只保留快照根，防止快照缺失子模块时从当前工作区静默补齐。
+    src.__path__[:] = [str(source_path)]
+    importlib.invalidate_caches()
+    _ACTIVE_SNAPSHOT_SOURCE = source_path
 
 
 def resolve_checkpoint_config_path(
@@ -21,7 +129,7 @@ def resolve_checkpoint_config_path(
     输入参数:
         - checkpoint_path: str | Path, 调用者明确选中的 Stage1 checkpoint
         - resolved_config_path: str | Path | None, 显式 config 路径；为 None 时只检查
-          训练 run 的 `checkpoints/../config.yaml` 与 checkpoint 同目录 `config.yaml`
+          训练运行目录的 `config.yaml` 与 `resolved_config.yaml`
 
     输出:
         - config_path: Path, 唯一存在的 resolved YAML 路径
@@ -32,11 +140,9 @@ def resolve_checkpoint_config_path(
         if not config_path.is_file():
             raise FileNotFoundError(f"resolved config 不存在: {config_path}")
         return config_path
-    # tuple[Path,Path], 只允许训练 run 根与 checkpoint 同目录这两种固定相邻布局。
-    candidates = (
-        checkpoint.parent.parent / "config.yaml",
-        checkpoint.parent / "config.yaml",
-    )
+    # tuple[Path,Path], 只检查 checkpoint 所属运行目录的两个 resolved config 标准名称。
+    run_directory = _checkpoint_run_directory(checkpoint)
+    candidates = (run_directory / "config.yaml", run_directory / "resolved_config.yaml")
     # tuple[Path,...], 去重后真实存在的候选；必须恰有一个，避免静默选错实验配置。
     existing = tuple(dict.fromkeys(path for path in candidates if path.is_file()))
     if len(existing) != 1:
@@ -52,6 +158,7 @@ def load_stage1_wrapper(
     resolved_config_path: str | Path | None,
     map_location: str,
     lazy_initializer: Callable[[object, object], None] | None = None,
+    allow_current_workspace_code: bool = False,
 ):
     """
     从 resolved config 严格恢复完整 Stage1 wrapper 并执行 checkpoint 生命周期。
@@ -63,6 +170,8 @@ def load_stage1_wrapper(
         - map_location: str, `torch.load` 的设备位置，正式 CPU 恢复传 `"cpu"`
         - lazy_initializer: Callable | None, 仅当当前模型仍含未初始化参数时由调用者
           提供的 `(wrapper,resolved_cfg)->None` 初始化函数
+        - allow_current_workspace_code: bool，缺少 ``src_snapshot/src`` 时是否
+          显式允许使用当前工作区代码；默认为 False
 
     输出:
         - wrapper: torch.nn.Module, strict state_dict、`on_load_checkpoint`、eval 已完成的
@@ -75,6 +184,11 @@ def load_stage1_wrapper(
     checkpoint = Path(checkpoint_path)
     if not checkpoint.is_file():
         raise FileNotFoundError(f"checkpoint 不存在: {checkpoint}")
+    source_path = resolve_checkpoint_source_path(
+        checkpoint,
+        allow_current_workspace_code=bool(allow_current_workspace_code),
+    )
+    _activate_checkpoint_source(source_path)
     config_path = resolve_checkpoint_config_path(checkpoint, resolved_config_path)
     # DictConfig, 训练时保存的完整 resolved 配置；model/train 已无 Hydra 插值歧义。
     resolved_cfg = OmegaConf.load(config_path)
