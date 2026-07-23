@@ -14,4 +14,4 @@ init_from: "***"  # str, 由 src/train.py 解析同名 CPC1 run 的 checkpoints/
 
 train:
   optimizer:
-    lr: 1.0e-4
+    lr: 5.0e-5

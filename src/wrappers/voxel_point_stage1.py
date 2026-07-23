@@ -1050,7 +1050,9 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
             self._update_candidate_threshold_cache_from_payload(payload)
         self._last_validation_payload = {key: value.detach() for key, value in payload.items()}
         self._sync_sparse_candidate_runtime_to_backbone()
-        log_scalar_payload(module=self, payload=payload, monitor_metric=str(self.hparams.monitor_metric), sync_dist=True)
+        # payload 已由 TorchMetrics 的通信组和 CPC 固定形状统计完成跨卡聚合。
+        # 这里不再让 Lightning 用默认 NCCL 通信组二次同步 CPU PRAUC 标量。
+        log_scalar_payload(module=self, payload=payload, monitor_metric=str(self.hparams.monitor_metric), sync_dist=False)
         # pl.Trainer, 当前 Lightning trainer
         trainer = self.trainer
         if bool(getattr(trainer, "is_global_zero", True)):
