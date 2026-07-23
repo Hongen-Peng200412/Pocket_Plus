@@ -249,6 +249,38 @@ def test_unet_dataset_does_not_read_sim_or_return_atoms(tmp_path: Path) -> None:
     assert sample["voxel_label"].sum().item() == 1
 
 
+def test_dataset_excludes_pdb_without_rewriting_request_file(tmp_path: Path) -> None:
+    """训练配置排除 PDB 时只改变可读样本，不改写原请求文件。"""
+
+    request_path = tmp_path / "requests.json"
+    request_rows = [
+        {
+            "pdb_id": pdb_id,
+            "box_start_zyx": [0, 0, 0],
+            "require_targets": True,
+            "role": "centered",
+        }
+        for pdb_id in ("1ABC", "2DEF")
+    ]
+    original_text = json.dumps(request_rows)
+    request_path.write_text(original_text, encoding="utf-8")
+
+    dataset = Stage1Dataset(
+        all_data_path=str(tmp_path),
+        split_file=str(request_path),
+        mode="val",
+        stage1_model_name="unet_c1",
+        box_pool_root=None,
+        density_channel_config=_density_config(["exp_clipnorm_nopost"]),
+        excluded_pdb_ids=["1AbC"],
+        enable_random_rotation=False,
+    )
+
+    assert len(dataset) == 1
+    assert dataset.describe_index(0).startswith("pdb_id=2def")
+    assert request_path.read_text(encoding="utf-8") == original_text
+
+
 def test_targets_toggle_does_not_change_model_inputs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _write_upstream(tmp_path)
     monkeypatch.setattr(

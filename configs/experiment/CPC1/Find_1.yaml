@@ -29,6 +29,25 @@ init_from: null
 
 dataset:
   stage1_model_name: Find_1
+  # 5 个结构缺少实验密度；其余 11 个超大距离图未在 90 秒内完成写后验证。
+  # 这里只过滤本次训练请求，不改写正式 A—G 产物、BOX pool 或 validation_selection.npz。
+  excluded_pdb_ids:
+    - 1q5c
+    - 2w49
+    - 5y6p
+    - 6k0a
+    - 7cbp
+    - 7cth
+    - 7n6g
+    - 7ojf
+    - 7pel
+    - 7wc2
+    - 7z8g
+    - 8olc
+    - 9hhl
+    - 9v7i
+    - 9wqp
+    - 9yx6
 
 model:
   backbone:

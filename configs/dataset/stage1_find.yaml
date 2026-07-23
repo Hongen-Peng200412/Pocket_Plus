@@ -17,6 +17,7 @@ class_names: [background, foreground]
 atom_buffer_radius: 8.0
 request_seed: 3407
 box_sample_fraction: 1.0  # float, 1.0 保持逐 epoch 重选；小于 1.0 时创建并复用固定比例请求表
+excluded_pdb_ids: []  # list[str], 仅从本次训练与验证请求中排除，不修改 BOX pool。
 cache_max_bytes: 536870912
 enable_random_rotation: true
 
