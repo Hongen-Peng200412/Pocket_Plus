@@ -33,7 +33,7 @@ scheduler:
   name: warmup_plateau
   total_steps: null
   warmup_steps: null
-  warmup_ratio: 0.025
+  warmup_ratio: 0.005
   warmup_start_factor: 0.33
   mode: ${model.monitor_mode}
   factor: 0.3
