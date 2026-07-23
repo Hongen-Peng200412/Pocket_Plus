@@ -108,6 +108,52 @@ def test_validation_metric_manager_outputs_multiclass_suffix_and_macro() -> None
     assert "val_score/global/voxel_ligand_PRAUC_small_molecule" in payload
 
 
+def test_cpu_metric_uses_gloo_group_inside_nccl_training(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """NCCL 多进程训练中的 CPU PRAUC 状态改用 Gloo 通信组。"""
+
+    manager = ValidationMetricManager(
+        branches=[
+            MetricBranchSpec(
+                name="receptor",
+                enabled=True,
+                num_classes=2,
+                class_names=("background", "foreground"),
+                thresholds=None,
+            ),
+            MetricBranchSpec(
+                name="voxel_ligand",
+                enabled=True,
+                num_classes=2,
+                class_names=("background", "foreground"),
+                thresholds=8,
+            ),
+        ],
+        metric_device_policy="auto",
+    )
+    gloo_group = object()
+    created_backends: list[str] = []
+
+    monkeypatch.setattr(torch.distributed, "is_available", lambda: True)
+    monkeypatch.setattr(torch.distributed, "is_initialized", lambda: True)
+    monkeypatch.setattr(torch.distributed, "get_world_size", lambda: 2)
+    monkeypatch.setattr(torch.distributed, "get_backend", lambda: "nccl")
+
+    def _new_group(*, backend: str) -> object:
+        created_backends.append(backend)
+        return gloo_group
+
+    monkeypatch.setattr(torch.distributed, "new_group", _new_group)
+
+    manager._configure_distributed_process_groups()
+    manager._configure_distributed_process_groups()
+
+    assert created_backends == ["gloo"]
+    assert manager.metrics["receptor__binary"].process_group is gloo_group
+    assert manager.metrics["voxel_ligand__binary"].process_group is None
+
+
 def test_validation_macro_skips_classes_without_positive_targets() -> None:
     """结构类别宏平均只纳入整个验证集中实际出现的前景类别。"""
 

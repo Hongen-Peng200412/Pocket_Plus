@@ -79,8 +79,39 @@ class ValidationMetricManager(nn.Module):
         self.branch_specs = {spec.name: spec for spec in branches if spec.enabled}
         # nn.ModuleDict, TorchMetrics 指标模块树
         self.metrics = nn.ModuleDict()
+        # object | None, 两卡 NCCL 训练中供 CPU 指标状态同步使用的 Gloo 通信组
+        self._cpu_metric_process_group: object | None = None
         for spec in self.branch_specs.values():
             self._register_branch_metrics(spec)
+
+    def _configure_distributed_process_groups(self) -> None:
+        """
+        为 NCCL 多进程训练中的 CPU 指标状态配置 Gloo 通信组。
+
+        TorchMetrics 的非分箱 PRAUC 会把可变长度状态保存在 CPU；NCCL 不能直接
+        聚合 CPU 张量，因此这些指标必须改用同时支持 CPU 张量的 Gloo 通信组。
+
+        输出:
+            - None, 原地设置使用 CPU 状态的 TorchMetrics 对象
+        """
+        if self._cpu_metric_process_group is not None:
+            return
+        if not torch.distributed.is_available() or not torch.distributed.is_initialized():
+            return
+        if torch.distributed.get_world_size() <= 1:
+            return
+        if str(torch.distributed.get_backend()).lower() != "nccl":
+            return
+        # list[Metric], 使用 CPU 保存非分箱 PRAUC 状态的指标对象
+        cpu_metrics = [
+            metric for metric in self.metrics.values() if bool(metric.compute_on_cpu)
+        ]
+        if not cpu_metrics:
+            return
+        process_group = torch.distributed.new_group(backend="gloo")
+        self._cpu_metric_process_group = process_group
+        for metric in cpu_metrics:
+            metric.process_group = process_group
 
     def _metric_compute_on_cpu(self, thresholds: int | Sequence[float] | None) -> bool:
         """
@@ -189,6 +220,7 @@ class ValidationMetricManager(nn.Module):
         输出:
             - payload: dict[str, torch.Tensor], Lightning/W&B scalar key 到标量 tensor 的映射
         """
+        self._configure_distributed_process_groups()
         payload: dict[str, torch.Tensor] = {}
         for spec in self.branch_specs.values():
             # 二分类
