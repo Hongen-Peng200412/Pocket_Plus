@@ -228,7 +228,11 @@ def test_ligand_distance_loader_rejects_mixed_finite_and_infinite_values(
         )
 
 
-def test_unet_dataset_does_not_read_sim_or_return_atoms(tmp_path: Path) -> None:
+def test_unet_dataset_returns_auxiliary_targets_without_sim_or_atom_table(
+    tmp_path: Path,
+) -> None:
+    """验证 unet_c1 不读取模拟密度或返回原子表，但仍提供三项新增体素监督。"""
+
     _write_upstream(tmp_path)
     (tmp_path / "density" / "1abc" / "sim.npz").unlink()
     manifest = tmp_path / "requests.json"
@@ -247,6 +251,12 @@ def test_unet_dataset_does_not_read_sim_or_return_atoms(tmp_path: Path) -> None:
     assert "atom_feat" not in sample
     assert sample["hardmask"].sum().item() == 2
     assert sample["voxel_label"].sum().item() == 1
+    assert sample["protein_mainchain_target"][0, 0, 0].item() == 2
+    assert sample["protein_mainchain_target"][79, 79, 79].item() == 1
+    assert sample["nucleic_mainchain_target"].sum().item() == 0
+    assert sample["ligand_inverse_distance_target"][4, 3, 2].item() == pytest.approx(
+        0.25
+    )
 
 
 def test_dataset_excludes_pdb_without_rewriting_request_file(tmp_path: Path) -> None:
