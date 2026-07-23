@@ -62,7 +62,7 @@ model:
     w_mse: 0.0
     focal_soft_negative_suppression: false
     tversky_soft_target: false
-  protein_mainchain_loss_weight: 0.1
+  protein_mainchain_loss_weight: 0.05
 
   nucleic_mainchain_loss:
     _target_: src.modules.losses.AdaptiveClassificationCompositeLoss
@@ -82,9 +82,9 @@ model:
     w_mse: 0.0
     focal_soft_negative_suppression: false
     tversky_soft_target: false
-  nucleic_mainchain_loss_weight: 0.1
+  nucleic_mainchain_loss_weight: 0.05
 
-  ligand_distance_loss_weight: 0.2
+  ligand_distance_loss_weight: 0.3
 
   ligand_pseudo_loss: null
   pseudo_loss_weight: 0.0
