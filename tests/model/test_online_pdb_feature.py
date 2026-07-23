@@ -18,6 +18,7 @@ import numpy as np
 # ---- 被测模块 ----
 from src.model.stage1_embed_head import Stage1EmbedHead, scatter_to_voxel_grid, soft_scatter_to_voxel_grid
 from src.model.stage1_model import VolumePointStage1Model
+import src.model.stage1_embed_head as stage1_embed_head_mod
 import src.model.stage1_model as stage1_model_mod
 
 
@@ -421,6 +422,7 @@ def test_find1_voxel_only_matches_full_embed_voxel_branch() -> None:
         add_occupancy_channels=True,
         use_soft_splatting=True,
         use_centroid_encoding=True,
+        use_gaussian_splatting=True,
     )
     head.eval()
     atom_feat = torch.randn(4, 49)
@@ -453,6 +455,45 @@ def test_find1_voxel_only_matches_full_embed_voxel_branch() -> None:
 
     assert full.shape == short.shape == (1, 51, 16, 16, 16)
     torch.testing.assert_close(short, full, rtol=0.0, atol=0.0)
+
+
+def test_embed_gaussian_scatter_takes_priority_over_soft_scatter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """同时打开两个开关时复现旧 Find_1 的 Gaussian scatter。"""
+
+    head = Stage1EmbedHead.__new__(Stage1EmbedHead)
+    torch.nn.Module.__init__(head)
+    head.use_gaussian_splatting = True
+    head.use_soft_splatting = True
+    head.add_occupancy_channels = True
+    head.scatter_reduce = "sum"
+    expected = torch.tensor([23.0])
+    calls: list[str] = []
+
+    def _gaussian(**kwargs: object) -> torch.Tensor:
+        calls.append("gaussian")
+        assert kwargs["sigma_voxel"] == 0.7
+        assert kwargs["add_centroid_channels"] is False
+        return expected
+
+    def _soft(**kwargs: object) -> torch.Tensor:
+        calls.append("soft")
+        return torch.tensor([-1.0])
+
+    monkeypatch.setattr(stage1_embed_head_mod, "gauss_scatter_to_voxel_grid", _gaussian)
+    monkeypatch.setattr(stage1_embed_head_mod, "soft_scatter_to_voxel_grid", _soft)
+
+    actual = head._scatter_voxel_embed(
+        voxel_feat_per_atom=torch.zeros(1, 2),
+        atom_coord_local_voxel=torch.zeros(1, 3),
+        atom_batch_index=torch.zeros(1, dtype=torch.long),
+        box_shape_zyx=torch.ones(1, 3, dtype=torch.long),
+        batch_size=1,
+    )
+
+    assert actual is expected
+    assert calls == ["gaussian"]
 
 
 # ==================================================================

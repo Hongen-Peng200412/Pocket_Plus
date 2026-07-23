@@ -36,7 +36,7 @@ embed head 前置模块：
 
 AdaLigand 三 producer 的当前用法:
     - Find_0 的 point 路径仍使用本模块，但 voxel 路径在 stage1_model.py 中直接做 raw49 hard scatter。
-    - Find_1 的 point 路径与 Find_0 相同；voxel 路径使用 forward_voxel_only 复现非块式 MLP、centroid、residual、soft scatter 和 occupancy。
+    - Find_1 的 point 路径与 Find_0 相同；voxel 路径使用 forward_voxel_only 复现非块式 MLP、centroid、residual、Gaussian scatter 和 occupancy。
     - unet_c1 不实例化本模块。
 """
 from __future__ import annotations
@@ -677,6 +677,7 @@ class Stage1EmbedHead(nn.Module):
         add_occupancy_channels: bool = False,  # bool, 是否添加 occupancy 通道
         use_soft_splatting: bool = False,      # bool, 是否使用 soft splatting
         use_centroid_encoding: bool = False,   # bool, 是否使用 centroid-aware 偏移编码
+        use_gaussian_splatting: bool = False,  # bool, 是否优先使用 3×3×3 Gaussian scatter
     ) -> None:
         """
         Stage1 embed head 前置模块, 将原子级点云编码为体素网格嵌入特征和(可选的)点特征。
@@ -726,6 +727,7 @@ class Stage1EmbedHead(nn.Module):
             - add_occupancy_channels: bool, 是否添加 occupancy 通道 (log(1+N) 和归一化 occupancy)
             - use_soft_splatting: bool, 是否使用 soft splatting (三线性插值写入)
             - use_centroid_encoding: bool, 是否使用 centroid-aware 偏移编码
+            - use_gaussian_splatting: bool, 是否用 sigma=0.7 的 3×3×3 Gaussian scatter 替代 soft 或 hard scatter
 
         前向输入:
             - atom_feat, atom_coord_centered_world, atom_batch_index, atom_offsets,
@@ -779,6 +781,7 @@ class Stage1EmbedHead(nn.Module):
         self.add_occupancy_channels = bool(add_occupancy_channels)
         self.use_soft_splatting = bool(use_soft_splatting)
         self.use_centroid_encoding = bool(use_centroid_encoding)
+        self.use_gaussian_splatting = bool(use_gaussian_splatting)
         if self.use_centroid_encoding and not self.has_voxel_output:
             raise ValueError("use_centroid_encoding=True 要求 embed_voxel_out_channels > 0")
 
@@ -1104,12 +1107,49 @@ class Stage1EmbedHead(nn.Module):
 
         if self.embed_voxel_add_proj is not None:
             voxel_value = self.embed_voxel_add_proj(core_feat) + self.embed_voxel_gate * voxel_value
-        # Callable, 把 (N_core,C_value) 聚合为 (B,C_out,D,H,W) 的配置选定 scatter。
-        scatter_fn = soft_scatter_to_voxel_grid if self.use_soft_splatting else scatter_to_voxel_grid
-        return scatter_fn(
-            point_feat=voxel_value,
+        return self._scatter_voxel_embed(
+            voxel_feat_per_atom=voxel_value,
             atom_coord_local_voxel=core_local,
-            point_batch=core_batch,
+            atom_batch_index=core_batch,
+            box_shape_zyx=box_shape_zyx,
+            batch_size=batch_size,
+        )
+
+    def _scatter_voxel_embed(
+        self,
+        *,
+        voxel_feat_per_atom: torch.Tensor,
+        atom_coord_local_voxel: torch.Tensor,
+        atom_batch_index: torch.Tensor,
+        box_shape_zyx: torch.Tensor,
+        batch_size: int,
+    ) -> torch.Tensor:
+        """
+        按配置把逐原子体素特征写入 BOX 网格。
+
+        `use_gaussian_splatting=True` 时优先使用旧 Find_1 的 Gaussian 写入方式；
+        否则再按 `use_soft_splatting` 选择三线性或单体素写入。
+        """
+        if self.use_gaussian_splatting:
+            return gauss_scatter_to_voxel_grid(
+                point_feat=voxel_feat_per_atom,
+                atom_coord_local_voxel=atom_coord_local_voxel,
+                point_batch=atom_batch_index,
+                box_shape_zyx=box_shape_zyx,
+                batch_size=batch_size,
+                sigma_voxel=0.7,
+                add_occupancy_channels=self.add_occupancy_channels,
+                add_centroid_channels=False,
+            )
+        scatter_fn = (
+            soft_scatter_to_voxel_grid
+            if self.use_soft_splatting
+            else scatter_to_voxel_grid
+        )
+        return scatter_fn(
+            point_feat=voxel_feat_per_atom,
+            atom_coord_local_voxel=atom_coord_local_voxel,
+            point_batch=atom_batch_index,
             box_shape_zyx=box_shape_zyx,
             batch_size=batch_size,
             reduce=self.scatter_reduce,
@@ -1418,26 +1458,13 @@ class Stage1EmbedHead(nn.Module):
 
         # ---------- Scatter 到体素网格 (残差融合后只执行一次) ----------
         if self.has_voxel_output:
-            if self.use_soft_splatting:
-                voxel_pdb_embed_grid = soft_scatter_to_voxel_grid(
-                    point_feat=voxel_feat_per_atom,
-                    atom_coord_local_voxel=v_local_voxel,
-                    point_batch=v_batch,
-                    box_shape_zyx=box_shape_zyx,
-                    batch_size=batch_size,
-                    reduce=self.scatter_reduce,
-                    add_occupancy_channels=self.add_occupancy_channels,
-                )
-            else:
-                voxel_pdb_embed_grid = scatter_to_voxel_grid(
-                    point_feat=voxel_feat_per_atom,
-                    atom_coord_local_voxel=v_local_voxel,
-                    point_batch=v_batch,
-                    box_shape_zyx=box_shape_zyx,
-                    batch_size=batch_size,
-                    reduce=self.scatter_reduce,
-                    add_occupancy_channels=self.add_occupancy_channels,
-                )
+            voxel_pdb_embed_grid = self._scatter_voxel_embed(
+                voxel_feat_per_atom=voxel_feat_per_atom,
+                atom_coord_local_voxel=v_local_voxel,
+                atom_batch_index=v_batch,
+                box_shape_zyx=box_shape_zyx,
+                batch_size=batch_size,
+            )
         else:
             voxel_pdb_embed_grid = None
 
