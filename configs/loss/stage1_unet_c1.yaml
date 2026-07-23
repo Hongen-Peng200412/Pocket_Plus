@@ -1,5 +1,5 @@
 # @package _global_
-# AdaLigand unet_c1：L_voxel_ligand + 0.1 L_voxel_aux。
+# AdaLigand unet_c1：既有两项体素损失加蛋白、核酸主链类别与最近配体距离监督。
 model:
   atom_loss: null
   atom_loss_weight: 0.0
@@ -43,6 +43,48 @@ model:
     focal_soft_negative_suppression: false
     tversky_soft_target: false
   voxel_ligand_loss_weight: 1.0
+
+  protein_mainchain_loss:
+    _target_: src.modules.losses.AdaptiveClassificationCompositeLoss
+    num_classes: 5
+    sigma: 2.0
+    hard_label_threshold: null
+    focal_gamma: 2.0
+    focal_alpha: null
+    focal_alpha_neg: 0.5
+    focal_alpha_pos: 0.5
+    focal_eps: 1.0e-6
+    tversky_alpha: 0.5
+    tversky_beta: 0.5
+    tversky_smooth: 1.0
+    w_focal: 0.7
+    w_tversky: 0.3
+    w_mse: 0.0
+    focal_soft_negative_suppression: false
+    tversky_soft_target: false
+  protein_mainchain_loss_weight: 0.1
+
+  nucleic_mainchain_loss:
+    _target_: src.modules.losses.AdaptiveClassificationCompositeLoss
+    num_classes: 7
+    sigma: 2.0
+    hard_label_threshold: null
+    focal_gamma: 2.0
+    focal_alpha: null
+    focal_alpha_neg: 0.5
+    focal_alpha_pos: 0.5
+    focal_eps: 1.0e-6
+    tversky_alpha: 0.5
+    tversky_beta: 0.5
+    tversky_smooth: 1.0
+    w_focal: 0.7
+    w_tversky: 0.3
+    w_mse: 0.0
+    focal_soft_negative_suppression: false
+    tversky_soft_target: false
+  nucleic_mainchain_loss_weight: 0.1
+
+  ligand_distance_loss_weight: 0.2
 
   ligand_pseudo_loss: null
   pseudo_loss_weight: 0.0
