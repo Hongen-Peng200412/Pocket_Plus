@@ -459,6 +459,50 @@ def test_training_pool_rebuilds_fixed_1_5_3_ratio(tmp_path: Path) -> None:
         Stage1TrainingRequestSet(pool_dir, seed=7, box_sample_fraction=0.1)
 
 
+def test_training_pool_excludes_pdb_before_fraction_selection(
+    tmp_path: Path,
+) -> None:
+    """排除 PDB 后再按完整 1:5:3 请求数计算消融比例。"""
+
+    pool_dir = tmp_path / "train"
+    pool_dir.mkdir()
+    for pdb_id in ("1abc", "2def"):
+        np.savez(
+            pool_dir / f"{pdb_id}.npz",
+            occurrence_id=np.asarray([3], dtype=np.int32),
+            center_start_zyx=np.asarray([[1, 2, 3]], dtype=np.int32),
+            bias_start_zyx=np.zeros((1, 30, 3), dtype=np.int32),
+            context_start_zyx=np.zeros((1, 3), dtype=np.int32),
+        )
+    (tmp_path / "manifest.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "splits": {
+                    "train": [
+                        {"pdb_id": pdb_id, "path": f"train/{pdb_id}.npz"}
+                        for pdb_id in ("1abc", "2def")
+                    ],
+                    "validation": [],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    (tmp_path / "_COMPLETE").write_text("", encoding="utf-8")
+
+    source = Stage1TrainingRequestSet(
+        pool_dir,
+        seed=11,
+        box_sample_fraction=0.5,
+        excluded_pdb_ids=["1ABC"],
+    )
+
+    assert len(source) == 4
+    assert {request.pdb_id for request in source.requests} == {"2def"}
+    assert len(list(tmp_path.glob("train_selection_0.5_seed11_exclude*.npz"))) == 1
+
+
 @pytest.mark.parametrize("context_count", (0, 1, 2))
 def test_training_pool_context_underflow_does_not_abort(
     tmp_path: Path,
