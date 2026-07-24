@@ -35,4 +35,16 @@ python -m src.datasets.stage1_box_pool \
 - Find 的 Dataset 直接加载 core+8 Å 原子；下游 artifact 中的 A-pocket 才按来源 blob 的 10 Å 包络与当前 BOX 取交集。
 - train-only 90° 旋转会同步旋转 density/target/原子坐标；交换数组轴时也交换对应 voxel size，并重算 BOX 中心与世界坐标，不要求三轴尺度完全相等。
 
-训练入口仍是仓库根 `src/train.py`。AdaLigand 配置位于 `configs/experiment/CPC1/Find_0.yaml`、`Find_1.yaml`、`configs/experiment/unet_c1.yaml` 及对应 Dataset/loss/train 子配置。本轮交付只验证 smoke，不代表已经获准提交正式训练。
+新版 Find_1 的监督样本还包含三张与 BOX 对齐的数组：
+
+| 字段 | 形状与类型 | 内容 |
+|---|---|---|
+| `protein_mainchain_target` | `int64 (80,80,80)` | `0=背景, 1=N, 2=CA, 3=C, 4=O` |
+| `nucleic_mainchain_target` | `int64 (80,80,80)` | `0=背景, 1=P, 2=O5', 3=C5', 4=C4', 5=C3', 6=O3'` |
+| `ligand_inverse_distance_target` | `float32 (80,80,80)` | 从 `ligand_dist.npz` 裁出的 Å 距离按 `1/(1+d/(1 Å))` 变换；正无穷变为 0 |
+
+蛋白和核酸类别只在受体原子局部坐标向下取整后所属的体素写入非背景编号，BOX 中其余体素是背景；损失在完整 `80³` 网格上计算。
+
+`box_sample_fraction` 默认是 `1.0`，此时训练请求仍随 epoch 重新选择，不生成额外文件。小于 `1.0` 时，目标总数取 `floor(完整请求数 × 比例)`；center、bias、context 按完整请求表中的实际组成使用最大余数法分配名额，再由 `request_seed` 分别无放回抽取。程序在 `box_pool/` 根目录保存 `train_selection_<比例>_seed<seed>.npz` 与相应 validation 文件。文件同时保存比例、随机种子、固定的 `selection_epoch=0`、来源摘要和契约版本；只有这些字段与当前来源完全一致时才复用，损坏或过期文件会明确报错。
+
+训练入口仍是仓库根 `src/train.py`。AdaLigand 配置位于 `configs/experiment/CPC1/Find_0.yaml`、`Find_1.yaml`、`Find_2.yaml`、`configs/experiment/unet_c1.yaml` 及对应 Dataset、损失和训练子配置。合法 producer 统一由 `src/stage1_producers.py` 的 `STAGE1_MODEL_NAMES` 维护，其中 `FIND_MODEL_NAMES` 共享完整 56D density 和原子表物化语义。Find_2 的实现、配置与短训练证据继续保留，但当前正式训练不再使用 Find_2。
