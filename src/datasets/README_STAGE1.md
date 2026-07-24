@@ -47,4 +47,4 @@ python -m src.datasets.stage1_box_pool \
 
 `box_sample_fraction` 默认是 `1.0`，此时训练请求仍随 epoch 重新选择，不生成额外文件。小于 `1.0` 时，目标总数取 `floor(完整请求数 × 比例)`；center、bias、context 按完整请求表中的实际组成使用最大余数法分配名额，再由 `request_seed` 分别无放回抽取。程序在 `box_pool/` 根目录保存 `train_selection_<比例>_seed<seed>.npz` 与相应 validation 文件。文件同时保存比例、随机种子、固定的 `selection_epoch=0`、来源摘要和契约版本；只有这些字段与当前来源完全一致时才复用，损坏或过期文件会明确报错。
 
-训练入口仍是仓库根 `src/train.py`。AdaLigand 配置位于 `configs/experiment/CPC1/Find_0.yaml`、`Find_1.yaml`、`configs/experiment/unet_c1.yaml` 及对应 Dataset、损失和训练子配置。
+训练入口仍是仓库根 `src/train.py`。AdaLigand 配置位于 `configs/experiment/CPC1/Find_0.yaml`、`Find_1.yaml`、`Find_2.yaml`、`configs/experiment/unet_c1.yaml` 及对应 Dataset、损失和训练子配置。合法 producer 统一由 `src/stage1_producers.py` 的 `STAGE1_MODEL_NAMES` 维护，其中 `FIND_MODEL_NAMES` 共享完整 56D density 和原子表物化语义。Find_2 的实现、配置与短训练证据继续保留，但当前正式训练不再使用 Find_2。

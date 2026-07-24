@@ -12,7 +12,7 @@ box_pool_root: ${oc.env:ADALIGAND_STAGE1_PREPARATION_ROOT,/storage/penghongen/Ad
 split_train: ${dataset.box_pool_root}/train
 split_val: ${dataset.box_pool_root}/validation_selection.npz
 
-stage1_model_name: Find_0  # str, producer recipe；Find_1 实验配置会覆盖为 Find_1。
+stage1_model_name: Find_0  # str, producer recipe；Find_1/Find_2 实验配置会覆盖为同名 producer。
 class_names: [background, foreground]
 atom_buffer_radius: 8.0
 request_seed: 3407

@@ -4,7 +4,7 @@ import pytest
 import torch
 from torch import nn
 
-from src.wrappers.voxel_point_stage1_logging import build_metric_key
+from src.wrappers.voxel_point_stage1_logging import build_metric_key, log_scalar_payload
 from src.wrappers.voxel_point_stage1_metrics import MetricBranchSpec, ValidationMetricManager
 
 
@@ -152,6 +152,29 @@ def test_cpu_metric_uses_gloo_group_inside_nccl_training(
     assert created_backends == ["gloo"]
     assert manager.metrics["receptor__binary"].process_group is gloo_group
     assert manager.metrics["voxel_ligand__binary"].process_group is None
+
+
+def test_globally_reduced_metric_payload_is_logged_without_lightning_resync() -> None:
+    """已经完成跨卡聚合的指标不再由 Lightning 重复同步。"""
+
+    class _LoggingModule:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        def log(self, key: str, value: torch.Tensor, **kwargs: object) -> None:
+            self.calls.append({"key": key, "value": value, **kwargs})
+
+    module = _LoggingModule()
+    log_scalar_payload(
+        module=module,
+        payload={"val_score/global/atom_PRAUC": torch.tensor(0.75)},
+        monitor_metric="val_score/global/atom_PRAUC",
+        sync_dist=False,
+    )
+
+    assert len(module.calls) == 1
+    assert module.calls[0]["sync_dist"] is False
+    assert module.calls[0]["on_epoch"] is True
 
 
 def test_validation_macro_skips_classes_without_positive_targets() -> None:

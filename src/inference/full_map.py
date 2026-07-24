@@ -130,7 +130,7 @@ def infer_full_map(
         - full_shape_zyx: Sequence[int], (3,), 当前完整图 ZYX voxel-grid shape
         - window_batch_builder: Callable, 接收一批完整图离散 ZYX voxel-index 窗口 corner 起点并返回统一 Dataset/Collator batch
         - stage1_model_name: str, 当前 producer 名
-        - receptor_hardmask_full: np.ndarray | None, (D,H,W), 两个 Find 必填的完整图 ZYX voxel-grid receptor home-voxel mask；unet_c1 传 None
+        - receptor_hardmask_full: np.ndarray | None, (D,H,W), Find 必填的完整图 ZYX voxel-grid receptor home-voxel mask；unet_c1 传 None
         - window_batch_size: int, 单次 voxel-only forward 的窗口数
         - window_shape_zyx: tuple[int,int,int], 正式值为 (80,80,80)
         - stride_zyx: tuple[int,int,int], 正式值为 (40,40,40)

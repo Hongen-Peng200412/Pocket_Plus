@@ -1,0 +1,82 @@
+# ============================================================
+# AdaLigand Stage1 Selector：Find_2 / CCLN + V5+D
+# src/selector/train.py 直接读取本文件；启动后保存完整 resolved_config.yaml
+# ============================================================
+
+stage1_model_name: Find_2
+selector_variant: ccln_v5d_oracle                 # str, src/selector/train.py 构造 CCLN + V5+D
+
+paths:
+  stage1_outputs_root: "/path/to/stage1_outputs"  # str, 读取 Stage1 probability/components/centered 正式 artifact 的根
+  upstream_root: "/path/to/Ori_Data"              # str, 读取 experimental density 与 receptor_tokens 的 A–G 数据根
+  selector_run_dir: "/path/to/selector_outputs/Find_2/ccln_v5d_oracle/run_001" # str, Selector run 输出根
+  input_CLG_list_path: null                       # str|null；null=本次启动扫描一次，非 null=严格复用同 producer 清单
+  expected_validation_pdb_ids_path: null          # str|null；formal_run=true 时必须指向固定 validation PDB 清单
+
+data:
+  split_order: [train, validation, calibration]   # list[str], 冻结 input_CLG_list.json 的 split 与 PDB 扫描顺序
+  formal_run: false                               # bool, false 只发布 TRIAL_BEST.ckpt；true 才发布正式 BEST.ckpt
+  selector_seed: 20260720                         # int, 统一控制初始化、shuffle 与 DataLoader worker
+  lambda_count: 0.05                              # float，oracle 与预测反链每个节点的计数惩罚
+  density_clip_percentile: [0.001, 0.999]         # list[float]，exp_clipnorm_nopost 的两端 clip 分位
+  pdb_cache_size: 1                               # int，每个 worker 的 PDB 聚合 bundle LRU 容量；按内存 profiling 调整
+
+model:
+  modalities: [V, P, A]                           # list[str], Find 的真实模态；CCLN 不补假模态
+  A_source_order: [A_feat_L0, A_feat_L1, A_feat_L2, A_feat_L3, A_feat_L4]
+  P_source_order: [P_feat_L2, P_feat_L3, P_feat_L4]
+  # A/P 各层末维从首个真实 artifact 严格解析，并写入 resolved_source_dimensions。
+  hidden_dim: 128
+  num_heads: 4
+  tree_layers: 2
+  tree_ffn_hidden_dim: 256
+  candidate_attribute_dim: 16
+  modality_projected_dim: 64
+  modality_gate_hidden_dim: 128
+  dropout: 0.1
+  probability_epsilon: 1.0e-6
+
+  # --- V5+D：关闭两个额外分支时同一模块严格退化为 V48 ---
+  V_output_dim: 48
+  V_grid_source_order: [voxel_ds_2, voxel_ds_3, voxel_ds_4, voxel_c4]
+  V_grid_source_dims:
+    voxel_ds_2: 256
+    voxel_ds_3: 256
+    voxel_ds_4: 256
+    voxel_c4: 256
+  V_meta_dim: 2                                  # int，p 与稳定 logit(p) 两维
+  V_fusion_projected_dim: 48
+  V_fusion_gate_hidden_dim: 96
+  V_correction_gate_hidden_dim: 128
+  use_V_multiscale: true
+  use_density_context: true
+
+  # --- DensityMUNetLite：80→40→20→10，仅最低分辨率使用 1-layer Transformer ---
+  density_input_shape_zyx: [80, 80, 80]
+  density_channels: [32, 64, 64, 128]
+  density_bottleneck_heads: 4
+  density_bottleneck_layers: 1
+  density_bottleneck_ffn_dim: 256
+
+loss:
+  condition_weighting: oracle                    # str，oracle/detached/joint；只加权正 CLG 的 L_antichain
+  gamma_focal: 0.0                               # float，第一梯队固定 0；第二梯队单独试 2
+  w_CLG: 1.0
+  w_blob: 1.0                                    # L_blob 对正、负 CLG 始终训练
+  w_antichain: 1.0
+  smooth_l1_beta: 1.0
+
+optimizer:
+  learning_rate: 3.0e-4
+  weight_decay: 0.01
+  gradient_clip_norm: 1.0
+  plateau_factor: 0.3
+  plateau_patience: 3
+  plateau_threshold: 0.001
+
+train:
+  device: cuda                                   # str，显式 cpu/cuda；smoke 可覆盖为 cpu
+  batch_size: 1                                  # int，正式训练前用 preflight 冻结，不做运行时自动搜索
+  num_workers: 2
+  pin_memory: true
+  max_epochs: 20

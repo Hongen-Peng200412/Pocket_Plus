@@ -1,6 +1,6 @@
 """Stage1 ligand logits 的 sigmoid 与 producer-specific hardmask 后处理。
 
-模型始终输出 logits；本模块统一转为 float32 probability。两个 Find 随后把 receptor
+模型始终输出 logits；本模块统一转为 float32 probability。Find producer 随后把 receptor
 home voxels 清零，``unet_c1`` 保留原概率。该规则同时服务完整图与 centered 推理。
 """
 
@@ -10,9 +10,7 @@ from typing import Any
 
 import numpy as np
 
-
-FIND_MODEL_NAMES: tuple[str, ...] = ("Find_0", "Find_1")
-STAGE1_MODEL_NAMES: tuple[str, ...] = (*FIND_MODEL_NAMES, "unet_c1")
+from src.stage1_producers import FIND_MODEL_NAMES, STAGE1_MODEL_NAMES
 
 
 def logits_to_probability(voxel_logits_ligand: Any) -> np.ndarray:
@@ -68,8 +66,8 @@ def postprocess_ligand_probability(
 
     输入参数:
         - probability: np.ndarray, (...,D,H,W), 完整图或 BOX-local ZYX voxel grid 上的连续概率
-        - stage1_model_name: str, `Find_0`、`Find_1` 或 `unet_c1`
-        - receptor_hardmask: np.ndarray | None, (D,H,W), 与最后三维相同的 ZYX voxel-grid receptor home-voxel bool mask；两个 Find 必须提供，unet_c1 不读取
+        - stage1_model_name: str, `STAGE1_MODEL_NAMES` 中的 producer 身份
+        - receptor_hardmask: np.ndarray | None, (D,H,W), 与最后三维相同的 ZYX voxel-grid receptor home-voxel bool mask；Find 必须提供，unet_c1 不读取
 
     输出:
         - processed: np.ndarray, 与输入同 shape 的 float32 概率；Find hardmask 位置为 0
@@ -82,7 +80,7 @@ def postprocess_ligand_probability(
         raise ValueError("probability 含非有限值")
     if stage1_model_name in FIND_MODEL_NAMES:
         if receptor_hardmask is None:
-            raise ValueError("两个 Find 的 probability 后处理必须显式提供 receptor_hardmask")
+            raise ValueError("Find producer 的 probability 后处理必须显式提供 receptor_hardmask")
         # np.ndarray[bool], (D,H,W), 完整图或当前 centered BOX 的 receptor home voxels
         hardmask = np.asarray(receptor_hardmask, dtype=np.bool_)
         if hardmask.shape != processed.shape[-3:]:

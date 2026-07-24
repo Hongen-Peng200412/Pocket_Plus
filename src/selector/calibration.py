@@ -281,7 +281,7 @@ def calibrate_tau_g(
         - selector_run_dir: str | Path, 当前 Selector run 独立输出目录
         - stage1_outputs_root: str | Path, Stage1 producer 正式输出根
         - input_clg_list_path: str | Path, 当前 run 冻结的 input_CLG_list.json
-        - stage1_model_name: str, Find_0/Find_1/unet_c1
+        - stage1_model_name: str, `STAGE1_MODEL_NAMES` 中的 producer 身份
         - split: str, 校正 split；正式为 calibration
 
     输出:
