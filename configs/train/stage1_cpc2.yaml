@@ -1,5 +1,5 @@
 # AdaLigand Find CPC2 小增量训练制度。
-# → 继承 CPC1 的数据与优化器，仅覆盖无 warmup、patience=1 和一次降 LR 后停止。
+# → 继承 CPC1 的数据与优化器，仅覆盖无 warmup，并在一次降 LR 后停止。
 defaults:
   - stage1_cpc1
   - _self_

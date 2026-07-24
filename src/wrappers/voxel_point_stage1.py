@@ -1,3 +1,11 @@
+"""连接 Stage1 模型、正式损失、验证指标和 Lightning 生命周期。
+
+主要入口 :class:`VoxelPointStage1Wrapper` 接收
+``Stage1BatchCollator`` 生成的批次字典，将前向输出解释为受体原子、受体结合区域、
+配体区域、蛋白主链、核酸主链和配体距离监督。它还负责优化器、学习率调度、
+验证指标、候选阈值与 checkpoint 状态，但不重复实现模型网络或 Dataset。
+"""
+
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
@@ -9,6 +17,10 @@ import torch
 from hydra.utils import instantiate
 from torch import nn
 
+from src.auxiliary_supervision import (
+    NUCLEIC_MAINCHAIN_CLASS_NAMES,
+    PROTEIN_MAINCHAIN_CLASS_NAMES,
+)
 from src.modules.losses import AdaptiveClassificationCompositeLoss, LigandSparseRefineDeltaLoss
 from src.wrappers.voxel_point_stage1_diagnostics import (
     CpcDiagnosticsConfig,
@@ -18,6 +30,8 @@ from src.wrappers.voxel_point_stage1_logging import log_scalar_payload, log_wand
 from src.wrappers.voxel_point_stage1_losses import (
     LossTerm,
     compute_atom_loss_term,
+    compute_ligand_distance_loss_term,
+    compute_mainchain_class_loss_term,
     compute_pseudo_loss_term,
     compute_receptor_loss_term,
     compute_sparse_refine_loss_term,
@@ -30,19 +44,20 @@ from src.utils.module_freeze import set_fully_frozen_submodules_eval
 
 class VoxelPointStage1Wrapper(pl.LightningModule):
     """
-    协调 Stage1 backbone、监督、指标、调度和 checkpoint 生命周期。
+    协调 Stage1 模型、监督、指标、调度和 checkpoint 生命周期。
 
-    wrapper 不重新实现 producer 网络；普通 ``forward`` 和 voxel-only 调用都转发给
-    backbone。它的主要职责是把同一输出字典按当前 CPC 配置组合成 total loss，并
-    保存下一阶段 model-only 恢复仍需继承的候选阈值状态。
+    本类不重新实现模型网络；普通 ``forward`` 和只计算体素概率的调用都转发给
+    ``backbone``。它把模型输出按当前 CPC 配置组合成加权总损失，并保存下一阶段
+    只恢复模型参数时仍需继承的候选阈值状态。
     输入参数:
         - 初始化参数: 见 `__init__` 的完整参数契约
 
     前向输入:
-        - batch: dict[str,Any], Stage1Dataset/Collator 生成的 batch，坐标字段由 backbone 解释
+        - batch: dict[str,Any]，Stage1Dataset/Collator 生成的批次字典；
+          稠密体素字段为 ``(B, ..., D, H, W)``，受体原子字段按第 0 维拼接。
 
     前向输出:
-        - outputs: dict[str,Any], backbone 输出字典，包含 voxel/point/atom 预测及监督字段
+        - outputs: dict[str,Any]，模型输出字典，包含体素、点、受体原子预测及必要的对齐字段。
     """
 
     def __init__(
@@ -52,6 +67,8 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
         atom_loss: nn.Module | None = None,
         voxel_aux_loss: nn.Module | None = None,
         voxel_ligand_loss: nn.Module | None = None,
+        protein_mainchain_loss: nn.Module | None = None,
+        nucleic_mainchain_loss: nn.Module | None = None,
         ligand_sparse_refine_loss: nn.Module | None = None,
         ligand_sparse_refine_delta_loss: nn.Module | None = None,
         ligand_pseudo_loss: nn.Module | None = None,
@@ -61,6 +78,9 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
         atom_loss_weight: float = 1.0,
         voxel_aux_loss_weight: float = 0.0,
         voxel_ligand_loss_weight: float = 0.0,
+        protein_mainchain_loss_weight: float = 0.0,
+        nucleic_mainchain_loss_weight: float = 0.0,
+        ligand_distance_loss_weight: float = 0.0,
         ligand_sparse_refine_loss_weight: float = 0.0,
         ligand_sparse_refine_loss_schedule: Mapping[str, Any] | None = None,
         pseudo_loss_weight: float = 1.0,
@@ -77,7 +97,7 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
         compile: bool = False,
     ) -> None:
         """
-        Stage1 体素+点融合模型的 Lightning thin coordinator。
+        初始化 Stage1 体素与点融合模型的 Lightning 协调器。
 
         输入参数:
             - 基本
@@ -90,6 +110,8 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
                 - atom_loss: nn.Module | None, 原子级监督损失
                 - voxel_aux_loss: nn.Module | None, receptor 对外语义的体素辅助监督损失
                 - voxel_ligand_loss: nn.Module | None, dense ligand 体素监督损失
+                - protein_mainchain_loss: nn.Module | None，蛋白背景/N/CA/C/O 多分类复合损失。
+                - nucleic_mainchain_loss: nn.Module | None，核酸背景/P/O5'/C5'/C4'/C3'/O3' 多分类复合损失。
                 - ligand_sparse_refine_loss: nn.Module | None, C 级 sparse refine 分类监督损失(L_cls)
                 - ligand_sparse_refine_delta_loss: nn.Module | None, LigandSparseRefineDeltaLoss(ranking-only); None 或 w_rank=0 时退化为纯分类
                 - ligand_sparse_refine_w_rank: float, ranking(L_rank)权重
@@ -97,6 +119,9 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
                 - atom_loss_weight: float, 最终 atom loss 静态权重
                 - voxel_aux_loss_weight: float, receptor loss 静态权重
                 - voxel_ligand_loss_weight: float, voxel ligand loss 静态权重
+                - protein_mainchain_loss_weight: float，蛋白主链分类损失的静态权重。
+                - nucleic_mainchain_loss_weight: float，核酸主链分类损失的静态权重。
+                - ligand_distance_loss_weight: float，配体反距离全体素平均 MSE 的静态权重。
                 - ligand_sparse_refine_loss_weight: float, sparse refine loss 最终权重
                 - pseudo_loss_weight: float, 最终 pseudo loss 静态权重
 
@@ -121,13 +146,15 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
         super().__init__()
         if class_names is None:
             raise ValueError("VoxelPointStage1Wrapper 必须显式传入 class_names。")
-        self.save_hyperparameters(ignore=["backbone", "atom_loss", "voxel_aux_loss", "voxel_ligand_loss", "ligand_sparse_refine_loss", "ligand_sparse_refine_delta_loss", "ligand_pseudo_loss"])
+        self.save_hyperparameters(ignore=["backbone", "atom_loss", "voxel_aux_loss", "voxel_ligand_loss", "protein_mainchain_loss", "nucleic_mainchain_loss", "ligand_sparse_refine_loss", "ligand_sparse_refine_delta_loss", "ligand_pseudo_loss"])
         self.model_name = str(name)
         self.monitor_mode = str(monitor_mode)
         self.backbone = backbone if isinstance(backbone, nn.Module) else instantiate(backbone)
         self.atom_loss = atom_loss if (atom_loss is None or isinstance(atom_loss, nn.Module)) else instantiate(atom_loss)
         self.voxel_aux_loss = voxel_aux_loss if (voxel_aux_loss is None or isinstance(voxel_aux_loss, nn.Module)) else instantiate(voxel_aux_loss)
         self.voxel_ligand_loss = voxel_ligand_loss if (voxel_ligand_loss is None or isinstance(voxel_ligand_loss, nn.Module)) else instantiate(voxel_ligand_loss)
+        self.protein_mainchain_loss = protein_mainchain_loss if (protein_mainchain_loss is None or isinstance(protein_mainchain_loss, nn.Module)) else instantiate(protein_mainchain_loss)
+        self.nucleic_mainchain_loss = nucleic_mainchain_loss if (nucleic_mainchain_loss is None or isinstance(nucleic_mainchain_loss, nn.Module)) else instantiate(nucleic_mainchain_loss)
         self.ligand_sparse_refine_loss = (
             ligand_sparse_refine_loss
             if (ligand_sparse_refine_loss is None or isinstance(ligand_sparse_refine_loss, nn.Module))
@@ -264,6 +291,24 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
             MetricBranchSpec("pseudo", self.ligand_pseudo_loss is not None, int(getattr(self.ligand_pseudo_loss, "num_classes", 2)), self.class_names, voxel_ligand_pr_auc_thresholds),
             MetricBranchSpec("receptor", self.voxel_aux_loss is not None, int(getattr(self.voxel_aux_loss, "num_classes", 2)), self.class_names, None),
             MetricBranchSpec("voxel_ligand", self.voxel_ligand_loss is not None, int(getattr(self.voxel_ligand_loss, "num_classes", 2)), self.class_names, voxel_ligand_pr_auc_thresholds),
+            MetricBranchSpec(
+                "protein_mainchain",
+                self.protein_mainchain_loss is not None and float(self.hparams.protein_mainchain_loss_weight) > 0.0,
+                len(PROTEIN_MAINCHAIN_CLASS_NAMES),
+                PROTEIN_MAINCHAIN_CLASS_NAMES,
+                voxel_ligand_pr_auc_thresholds,
+                False,
+                True,
+            ),
+            MetricBranchSpec(
+                "nucleic_mainchain",
+                self.nucleic_mainchain_loss is not None and float(self.hparams.nucleic_mainchain_loss_weight) > 0.0,
+                len(NUCLEIC_MAINCHAIN_CLASS_NAMES),
+                NUCLEIC_MAINCHAIN_CLASS_NAMES,
+                voxel_ligand_pr_auc_thresholds,
+                False,
+                True,
+            ),
         )
 
     def _build_cpc_diagnostics(self, diagnostics_cfg: Mapping[str, Any], voxel_ligand_pr_auc_thresholds: int | None) -> CpcValidationDiagnostics:
@@ -623,22 +668,22 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
 
     def _compute_total_loss(self, outputs: dict[str, Any], batch: dict[str, Any]) -> tuple[torch.Tensor, list[LossTerm], dict[str, torch.Tensor]]:
         """
-        汇总各监督分支 loss。
+        计算当前批次中已启用的 Stage1 损失项并汇总加权总损失。
 
         输入参数:
             - outputs: dict[str, Any], backbone 输出
             - batch: dict[str, Any], 当前 batch 字典
 
         输出:
-            - total_loss: torch.Tensor, (), 加权总损失
-            - loss_terms: list[LossTerm], 各分支 loss term
-            - extra_logs: dict[str, torch.Tensor], extra_logs["ligand_sparse_refine_weight_effective"] = logged_weight(当前sparse refine loss 的权重)
+            - total_loss: 标量张量，所有启用分支的 ``weight * value`` 之和。
+            - loss_terms: list[LossTerm]，每个已启用监督分支的未加权损失与静态权重。
+            - extra_logs: dict[str, torch.Tensor]，稀疏细化的动态权重和分量日志。
         """
-        # torch.Tensor, (), 当前 batch 加权总损失
+        # 标量张量，当前批次的加权总损失。
         total_loss = torch.tensor(0.0, device=self.device, dtype=torch.float32)
-        # list[LossTerm], 当前 batch 已启用监督分支的 loss term
+        # list[LossTerm]，当前批次实际产生的监督分支损失。
         loss_terms: list[LossTerm] = []
-        # dict[str, torch.Tensor], 当前 batch 额外 loss 日志项
+        # dict[str, torch.Tensor]，不直接作为独立损失分支的标量日志。
         extra_logs: dict[str, torch.Tensor] = {}
         if self.atom_loss is not None:
             if outputs.get("atom_logits") is not None:
@@ -653,8 +698,36 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
             term = compute_voxel_ligand_loss_term(outputs=outputs, batch=batch, loss_module=self.voxel_ligand_loss, weight=float(self.hparams.voxel_ligand_loss_weight))
             if term is not None:
                 loss_terms.append(term)
+        if self.protein_mainchain_loss is not None and float(self.hparams.protein_mainchain_loss_weight) > 0.0:
+            term = compute_mainchain_class_loss_term(
+                outputs=outputs,
+                batch=batch,
+                loss_module=self.protein_mainchain_loss,
+                weight=float(self.hparams.protein_mainchain_loss_weight),
+                polymer_name="protein",
+            )
+            if term is not None:
+                loss_terms.append(term)
+        if self.nucleic_mainchain_loss is not None and float(self.hparams.nucleic_mainchain_loss_weight) > 0.0:
+            term = compute_mainchain_class_loss_term(
+                outputs=outputs,
+                batch=batch,
+                loss_module=self.nucleic_mainchain_loss,
+                weight=float(self.hparams.nucleic_mainchain_loss_weight),
+                polymer_name="nucleic",
+            )
+            if term is not None:
+                loss_terms.append(term)
+        if float(self.hparams.ligand_distance_loss_weight) > 0.0:
+            term = compute_ligand_distance_loss_term(
+                outputs=outputs,
+                batch=batch,
+                weight=float(self.hparams.ligand_distance_loss_weight),
+            )
+            if term is not None:
+                loss_terms.append(term)
         if self.ligand_pseudo_loss is not None and outputs.get("pseudo_logits") is not None:
-            # dict[str, torch.Tensor], P 级 ligand 区域归属监督字段(前后置头共用 target/valid); P 损失从头开、不走 warmup
+            # P 锚点配体区域监督；前后预测头共用同一标签和有效掩码，不使用预热调度。
             pseudo_supervision = self._sample_ligand_pseudo_supervision(outputs=outputs, batch=batch)
             if float(self.hparams.pseudo_loss_weight) > 0.0:
                 loss_terms.append(compute_pseudo_loss_term(
@@ -663,11 +736,11 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
                     target=pseudo_supervision["pseudo_ligand_target"],
                     valid_mask=pseudo_supervision["pseudo_ligand_valid_mask"]))
         if self.ligand_sparse_refine_loss is not None and outputs.get("ligand_refine_logits_C") is not None:
-            # dict[str, torch.Tensor], sparse refine dense/C 级监督字段
+            # 完整体素网格和稀疏候选 C 的配体区域监督字段。
             supervision = self._sample_ligand_refine_supervision(outputs=outputs, batch=batch)
-            # torch.Tensor, (), 当前 step 的 sparse refine loss 有效权重
+            # 标量张量，当前优化步骤的稀疏细化有效权重。
             effective_weight = self._compute_sparse_refine_loss_effective_weight()
-            # bool, 是否启用 delta 损失(模块存在、ranking 权重>0 且 base_prob 齐备)
+            # 是否启用候选排序损失：模块存在、排序权重大于 0 且基础概率可用。
             delta_on = (
                 self.ligand_sparse_refine_delta_loss is not None
                 and float(self.hparams.ligand_sparse_refine_w_rank) > 0.0
@@ -792,7 +865,7 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
         self._sync_sparse_candidate_runtime_to_backbone()
         # dict[str, Any], backbone 输出字典
         outputs = self(batch_dict)
-        # torch.Tensor/list[LossTerm]/dict[str, torch.Tensor], 当前 batch 总损失、分支损失和额外日志
+        # 当前批次的总损失、分支损失和额外标量日志。
         total_loss, loss_terms, extra_logs = self._compute_total_loss(outputs=outputs, batch=batch_dict)
         self._log_loss_terms("train_loss", total_loss, loss_terms, extra_logs)
         if "recycle_passes_used" in outputs:
@@ -885,7 +958,7 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
         # torch.Tensor/list[LossTerm]/dict[str, torch.Tensor], 当前 batch 总损失、分支损失和额外日志
         total_loss, loss_terms, extra_logs = self._compute_total_loss(outputs=outputs, batch=batch_dict)
         if self.atom_loss is not None and outputs.get("atom_logits") is not None:
-            # torch.Tensor, (N,), atom 分支有效统计掩码; core-box 内原子参与统计
+            # bool, (N_atom,)，只有核心 BOX 内的受体原子参加原子分类 PRAUC。
             atom_mask = outputs.get("atom_is_in_core_box", batch_dict["atom_is_in_core_box"])
             self.val_metrics.update_branch(branch_name="atom", logits=outputs["atom_logits"], target=outputs.get("atom_target", batch_dict["atom_label"]), mask=atom_mask)
         if self.ligand_pseudo_loss is not None and outputs.get("pseudo_logits") is not None and "pseudo_ligand_target" in outputs:
@@ -896,7 +969,7 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
                 mask=outputs["pseudo_ligand_valid_mask"],
             )
         if self.voxel_aux_loss is not None and "voxel_logits_aux" in outputs:
-            # torch.Tensor, (B,D,H,W), receptor 分支只使用几何 hardmask
+            # bool, (B, D, H, W)，只有受体原子占据体素参加受体结合区域 PRAUC。
             receptor_mask = batch_dict["hardmask"].bool().squeeze(1)
             self.val_metrics.update_branch(branch_name="receptor", logits=outputs["voxel_logits_aux"], target=batch_dict["voxel_label"], mask=receptor_mask)
         if (
@@ -904,14 +977,14 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
             and "voxel_logits_ligand" in outputs
             and ("ligand_area_target" in batch_dict or "ligand_dist_map" in batch_dict)
         ):
-            # torch.Tensor, (B,D,H,W), dense ligand hard-label target
+            # int64, (B, D, H, W)，每个体素的配体区域类别编号。
             ligand_target = self._ligand_target_from_batch(
                 batch_dict,
                 int(outputs["voxel_logits_ligand"].shape[1]),
                 outputs["voxel_logits_ligand"].device,
                 outputs["voxel_logits_ligand"].dtype,
             )
-            # torch.Tensor, (B,D,H,W), dense ligand 全体素有效统计掩码
+            # bool, (B, D, H, W)，配体区域 PRAUC 覆盖完整 80³ BOX。
             ligand_valid = torch.ones_like(ligand_target, dtype=torch.bool, device=ligand_target.device)
             self.val_metrics.update_branch(branch_name="voxel_ligand", logits=outputs["voxel_logits_ligand"], target=ligand_target, mask=ligand_valid)
             # bool, 当前 validation 是否启用 CPC diagnostics
@@ -933,6 +1006,22 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
                 self.cpc_diagnostics.update_unrefined(candidate_outputs=candidate_outputs, target_C=outputs["ligand_refine_target_C"], valid_C=outputs["ligand_refine_valid_mask_C"], dense_num_gt=dense_num_gt) # outputs["ligand_refine_valid_mask_C"] 就是由batch["voxel_valid_mask"] 导出的(见 def _sample_ligand_refine_supervision )
                 if "ligand_refine_logits_C" in outputs:
                     self.cpc_diagnostics.update_refined(refined_logits_C=outputs["ligand_refine_logits_C"], candidate_outputs=candidate_outputs, target_C=outputs["ligand_refine_target_C"], valid_C=outputs["ligand_refine_valid_mask_C"], dense_num_gt=dense_num_gt)
+        if self.protein_mainchain_loss is not None and float(self.hparams.protein_mainchain_loss_weight) > 0.0:
+            target = batch_dict["protein_mainchain_target"]
+            self.val_metrics.update_branch(
+                branch_name="protein_mainchain",
+                logits=outputs["voxel_logits_protein"],
+                target=target,
+                mask=torch.ones_like(target, dtype=torch.bool),
+            )
+        if self.nucleic_mainchain_loss is not None and float(self.hparams.nucleic_mainchain_loss_weight) > 0.0:
+            target = batch_dict["nucleic_mainchain_target"]
+            self.val_metrics.update_branch(
+                branch_name="nucleic_mainchain",
+                logits=outputs["voxel_logits_nucleic"],
+                target=target,
+                mask=torch.ones_like(target, dtype=torch.bool),
+            )
         self._log_loss_terms("val_loss", total_loss, loss_terms, extra_logs)
         return total_loss
 
@@ -975,7 +1064,9 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
             self._update_candidate_threshold_cache_from_payload(payload)
         self._last_validation_payload = {key: value.detach() for key, value in payload.items()}
         self._sync_sparse_candidate_runtime_to_backbone()
-        log_scalar_payload(module=self, payload=payload, monitor_metric=str(self.hparams.monitor_metric), sync_dist=True)
+        # payload 已由 TorchMetrics 的通信组和 CPC 固定形状统计完成跨卡聚合。
+        # 这里不再让 Lightning 用默认 NCCL 通信组二次同步 CPU PRAUC 标量。
+        log_scalar_payload(module=self, payload=payload, monitor_metric=str(self.hparams.monitor_metric), sync_dist=False)
         # pl.Trainer, 当前 Lightning trainer
         trainer = self.trainer
         if bool(getattr(trainer, "is_global_zero", True)):

@@ -1,15 +1,38 @@
+"""运行 Stage1 的三维体素编码器、解码器和独立预测头。
+
+主要入口是 :meth:`Stage1VoxelBackbone.forward`。它接收
+``(B, C_in, D, H, W)`` 体素特征，返回指定分辨率的命名特征、受体结合区域与
+配体区域预测，以及按配置启用的蛋白主链、核酸主链和配体距离预测。
+本模块只计算张量，不写文件；损失与指标由 ``voxel_point_stage1.py`` 解释。
+"""
+
 from __future__ import annotations
 
 from typing import Sequence
-import math
 
 import torch
 from torch import nn
+
+from src.auxiliary_supervision import (
+    NUCLEIC_MAINCHAIN_CLASS_NAMES,
+    NUCLEIC_MAINCHAIN_PRIORS,
+    PROTEIN_MAINCHAIN_CLASS_NAMES,
+    PROTEIN_MAINCHAIN_PRIORS,
+)
+from src.utils.bias_init import init_classification_head_bias
 
 from .raunet import SimpleUnet
 
 
 class Stage1VoxelBackbone(SimpleUnet):
+    """组合 RAUNet 体素主干、循环特征投影和彼此独立的两层 ``1×1×1`` 预测头。
+
+    ``voxel_final`` 是所有预测头共享的最高分辨率特征。结构辅助监督启用时，
+    蛋白和核酸输出通道分别严格对应
+    ``PROTEIN_MAINCHAIN_CLASS_NAMES`` 与 ``NUCLEIC_MAINCHAIN_CLASS_NAMES``；
+    配体距离头输出一个 logit，损失函数对其取 sigmoid 后拟合反距离监督值。
+    """
+
     def __init__(
         self,
         in_channels: int | None,
@@ -17,10 +40,12 @@ class Stage1VoxelBackbone(SimpleUnet):
         planes: Sequence[int],
         gradient_checkpoint: bool,
         return_feature_keys: Sequence[str],
-        aux_head_hidden_channels: int,
-        num_conv3d_aux: int,
-        ligand_head_hidden_channels: int,
-        num_conv3d_ligand: int,
+        aux_head_hidden_channels: int | None = None,
+        num_conv3d_aux: int | None = None,
+        ligand_head_hidden_channels: int | None = None,
+        num_conv3d_ligand: int | None = None,
+        enable_multiscale_output: bool = True,
+        enable_structure_heads: bool = False,
         prior_prob: float | None = None,  # float|None, legacy 单通道 sigmoid 正类先验概率; 命名先验缺省时作为 aux/ligand 头兜底
         voxel_aux_logit_dim: int = 1,
         voxel_ligand_logit_dim: int = 1,
@@ -43,26 +68,33 @@ class Stage1VoxelBackbone(SimpleUnet):
             - forward() 返回 dict[str, torch.Tensor | dict[str, torch.Tensor]]
                 - `"voxel_features"`: dict[str, torch.Tensor]，当前请求导出的命名体素特征
                 - `"voxel_logits_aux"`: torch.Tensor，`(B, 1, D, H, W)`，体素辅助监督 logits
+                - `"voxel_logits_ligand"`: torch.Tensor，`(B, 1, D, H, W)`，配体区域 logits
+                - `"voxel_logits_protein"`: torch.Tensor | None，蛋白固定类别 logits
+                - `"voxel_logits_nucleic"`: torch.Tensor | None，核酸固定类别 logits
+                - `"voxel_logits_distance"`: torch.Tensor | None，配体反距离 logit
                 - `"voxel_recycle_out"`: torch.Tensor，`(B, C_recycle, D, H, W)`，voxel_final的简单投影，下一轮 recycle 的输入
 
         说明:
-            - `_forward_single_pass()` 会按局部变量名自动收集可导出的 5D 体素特征，返回键统一写成 `voxel_{变量名}`。因此，若后续想额外返回某个中间变量，只需在 `return_feature_keys` 中加入对应的 `voxel_{变量名}` 字符串即可。
-            - `feature_channels_by_name` 只维护当前明确参与融合的常用变量通道信息；它仅用于调试罢了，不需要同步维护这张表。
+            - `_forward_single_pass()` 显式构造可导出的五维体素特征字典，键统一写成 `voxel_{变量名}`。
+            - `feature_channels_by_name` 记录可供融合或诊断代码查询的命名特征通道数，不参与前向数值计算。
         """
         super().__init__(
             in_channels=in_channels,
             out_channels=int(feature_channels),
             planes=planes,
             gradient_checkpoint=gradient_checkpoint,
+            enable_multiscale_output=enable_multiscale_output,
         )
 
         self.feature_channels = int(feature_channels)
         self.voxel_aux_logit_dim = int(voxel_aux_logit_dim)
         self.voxel_ligand_logit_dim = int(voxel_ligand_logit_dim)
+        self.voxel_protein_logit_dim = len(PROTEIN_MAINCHAIN_CLASS_NAMES)
+        self.voxel_nucleic_logit_dim = len(NUCLEIC_MAINCHAIN_CLASS_NAMES)
         self.return_feature_keys = tuple(str(key_name) for key_name in return_feature_keys)
 
         enc0, enc1, enc2, enc3, bottleneck, dec3, dec2, dec1, dec0 = [int(value) for value in planes]
-        # dict[str, int]，命名体素变量到通道数的映射；仅用于调试罢了
+        # dict[str, int]，命名体素特征到通道数的映射；不参与前向数值计算。
         self.feature_channels_by_name = {
             "voxel_ds_0": int(enc0 * 4),
             "voxel_ds_1": enc1,
@@ -77,40 +109,31 @@ class Stage1VoxelBackbone(SimpleUnet):
             "voxel_final": self.feature_channels,
         }
 
-        # nn.Sequential | None，`(B, C_final, D, H, W) -> (B, 1, D, H, W)`，体素辅助监督头。
-        if int(aux_head_hidden_channels) > 0:
-            aux_layers: list[nn.Module] = []
-            for _ in range(int(num_conv3d_aux)):
-                aux_layers.append(nn.Conv3d(self.feature_channels if len(aux_layers) == 0 else int(aux_head_hidden_channels), int(aux_head_hidden_channels), kernel_size=3, padding=1))
-                aux_layers.append(nn.ReLU())
-            # 最后一层 Conv3d 的 in_channels: 若有中间隐藏层则用 aux_head_hidden_channels, 否则用 self.feature_channels
-            _last_in = int(aux_head_hidden_channels) if len(aux_layers) > 0 else self.feature_channels
-            aux_layers.append(nn.Conv3d(_last_in, self.voxel_aux_logit_dim, kernel_size=1))
-            self.voxel_aux_head = nn.Sequential(*aux_layers)
-        else:   # aux_head_hidden_channels <= 0 时不构建(消融模式: 直接用 voxel_final 作为 logit, 节省显存)
-            if self.feature_channels != self.voxel_aux_logit_dim:
-                raise ValueError(
-                    "aux_head_hidden_channels <= 0 时要求 feature_channels == voxel_aux_logit_dim, "
-                    f"实际 feature_channels={self.feature_channels}, voxel_aux_logit_dim={self.voxel_aux_logit_dim}"
-                )
-            self.voxel_aux_head = None
-
-        # nn.Sequential | None, `(B, C_final, D, H, W) -> (B, C_logit, D, H, W)`, 体素 ligand 占据预测头
-        if int(ligand_head_hidden_channels) > 0:
-            ligand_layers: list[nn.Module] = []
-            for _ in range(int(num_conv3d_ligand)):
-                ligand_layers.append(nn.Conv3d(self.feature_channels if len(ligand_layers) == 0 else int(ligand_head_hidden_channels), int(ligand_head_hidden_channels), kernel_size=3, padding=1))
-                ligand_layers.append(nn.ReLU())
-            _last_in_lig = int(ligand_head_hidden_channels) if len(ligand_layers) > 0 else self.feature_channels
-            ligand_layers.append(nn.Conv3d(_last_in_lig, self.voxel_ligand_logit_dim, kernel_size=1))
-            self.voxel_ligand_head = nn.Sequential(*ligand_layers)
-        else:
-            self.voxel_ligand_head = None
+        # 旧实验 YAML 可能仍传入四个宽度/层数字段；新版固定结构不再读取它们。
+        del aux_head_hidden_channels, num_conv3d_aux
+        del ligand_head_hidden_channels, num_conv3d_ligand
+        self.voxel_aux_head = self._build_voxel_head(self.voxel_aux_logit_dim)
+        self.voxel_ligand_head = self._build_voxel_head(self.voxel_ligand_logit_dim)
+        self.enable_structure_heads = bool(enable_structure_heads)
+        self.voxel_protein_head = (
+            self._build_voxel_head(self.voxel_protein_logit_dim)
+            if self.enable_structure_heads
+            else None
+        )
+        self.voxel_nucleic_head = (
+            self._build_voxel_head(self.voxel_nucleic_logit_dim)
+            if self.enable_structure_heads
+            else None
+        )
+        self.voxel_distance_head = (
+            self._build_voxel_head(1)
+            if self.enable_structure_heads
+            else None
+        )
 
         if prior_probs is not None:
-            # 多通道 softmax 先验(tri 等): aux/ligand 头统一用 prior_probs 初始化, 单通道命名先验在此路径忽略
-            self._init_multiclass_prior_bias(self.voxel_aux_head, self.voxel_aux_logit_dim, prior_probs)
-            self._init_multiclass_prior_bias(self.voxel_ligand_head, self.voxel_ligand_logit_dim, prior_probs)
+            init_classification_head_bias(self.voxel_aux_head, list(prior_probs))
+            init_classification_head_bias(self.voxel_ligand_head, list(prior_probs))
         else:
             # 单通道 sigmoid 先验: aux(受体)与 ligand 头各自独立; 命名先验缺省时回退 legacy prior_prob; 均为 None 则不初始化
             # float | None, aux/ligand 头各自有效先验
@@ -119,19 +142,20 @@ class Stage1VoxelBackbone(SimpleUnet):
             if aux_prior is not None:
                 if self.voxel_aux_logit_dim != 1:
                     raise ValueError("多通道 softmax head 请使用 prior_probs，不要使用单通道先验(voxel aux)")
-                # float, aux 头 sigmoid 正类先验对应的输出 bias = logit(prior)
-                aux_bias_val = -math.log((1.0 - float(aux_prior)) / float(aux_prior))
-                if self.voxel_aux_head is not None:
-                    nn.init.constant_(self.voxel_aux_head[2 * int(num_conv3d_aux)].bias, aux_bias_val)
-                elif self.conv_end.bias is not None:
-                    nn.init.constant_(self.conv_end.bias, aux_bias_val)
+                init_classification_head_bias(self.voxel_aux_head, float(aux_prior))
             if ligand_prior is not None:
                 if self.voxel_ligand_logit_dim != 1:
                     raise ValueError("多通道 softmax head 请使用 prior_probs，不要使用单通道先验(voxel ligand)")
-                # float, ligand 头 sigmoid 正类先验对应的输出 bias = logit(prior)
-                ligand_bias_val = -math.log((1.0 - float(ligand_prior)) / float(ligand_prior))
-                if self.voxel_ligand_head is not None:
-                    nn.init.constant_(self.voxel_ligand_head[2 * int(num_conv3d_ligand)].bias, ligand_bias_val)
+                init_classification_head_bias(self.voxel_ligand_head, float(ligand_prior))
+
+        if self.enable_structure_heads:
+            init_classification_head_bias(
+                self.voxel_protein_head, list(PROTEIN_MAINCHAIN_PRIORS)
+            )
+            init_classification_head_bias(
+                self.voxel_nucleic_head, list(NUCLEIC_MAINCHAIN_PRIORS)
+            )
+            init_classification_head_bias(self.voxel_distance_head, 1.0 / 11.0)
 
         # nn.Conv3d，`(B, C_final, D, H, W) -> (B, C_recycle, D, H, W)`，体素 voxel_final 的简单投影。
         self.voxel_recycle_proj = nn.Conv3d(
@@ -140,38 +164,17 @@ class Stage1VoxelBackbone(SimpleUnet):
             kernel_size=1,
         )
 
-    @staticmethod
-    def _init_multiclass_prior_bias(head: nn.Module | None, logit_dim: int, prior_probs: Sequence[float]) -> None:
-        """
-        用 softmax 先验概率初始化多通道 Conv3d head 的输出 bias。
+    def _build_voxel_head(self, output_channels: int) -> nn.Sequential:
+        """构造固定的 `1×1×1 卷积 → ReLU → 1×1×1 卷积` 输出头。"""
 
-        输入参数:
-            - head: nn.Module | None, Sequential 分类头; 最后一层应为带 bias 的 nn.Conv3d
-            - logit_dim: int, 输出类别通道数 C
-            - prior_probs: Sequence[float], (C,), softmax 后期望得到的类别先验概率
-
-        输出:
-            - None, 原地修改 head 最后一层 bias
-        """
-        if head is None:
-            return
-        if int(logit_dim) <= 1:
-            raise ValueError("prior_probs 只适用于多通道 softmax head")
-        # torch.Tensor, (C,), CPU float32 先验概率向量
-        probs = torch.as_tensor(list(prior_probs), dtype=torch.float32)
-        if probs.numel() != int(logit_dim):
-            raise ValueError(f"prior_probs 长度 {probs.numel()} 与 logit_dim={logit_dim} 不一致")
-        if torch.any(probs <= 0):
-            raise ValueError("prior_probs 中所有概率必须大于 0")
-        if not torch.isclose(probs.sum(), torch.tensor(1.0), rtol=1e-4, atol=1e-6):
-            raise ValueError(f"prior_probs 总和必须为 1，实际为 {float(probs.sum())}")
-        # nn.Conv3d, 分类头最后一层, 输出 shape 为 (B, C, D, H, W)
-        last_layer = head[-1]
-        if not isinstance(last_layer, nn.Conv3d) or last_layer.bias is None:
-            raise TypeError("多分类先验初始化要求 head 最后一层是带 bias 的 Conv3d")
-        with torch.no_grad():
-            # torch.Tensor, (C,), log(prior_probs) 后 softmax 等于 prior_probs
-            last_layer.bias.copy_(probs.log().to(device=last_layer.bias.device, dtype=last_layer.bias.dtype))
+        output_channels = int(output_channels)
+        if output_channels <= 0:
+            raise ValueError("体素输出头的输出通道数必须为正。")
+        return nn.Sequential(
+            nn.Conv3d(self.feature_channels, self.feature_channels, kernel_size=1),
+            nn.ReLU(),
+            nn.Conv3d(self.feature_channels, output_channels, kernel_size=1),
+        )
 
 
     def _forward_single_pass(
@@ -227,16 +230,16 @@ class Stage1VoxelBackbone(SimpleUnet):
         # torch.Tensor，`(B, C_c0, D, H, W)`，解码第 4 层输出。
         c0 = self._checkpoint_call(self.main4, self._checkpoint_call(self.attn4, c1, ds_0))
 
-        # torch.Tensor，`(B, C_branch, D, H, W)`，3x3 卷积分支特征。
-        f3 = self.conv_end_3(c0)
-        # torch.Tensor，`(B, C_branch, D, H, W)`，5x5 卷积分支特征。
-        f5 = self.conv_end_5(c0)
-        # torch.Tensor，`(B, C_branch, D, H, W)`，7x7 卷积分支特征。
-        f7 = self.conv_end_7(c0)
-        # torch.Tensor，`(B, 3*C_branch, D, H, W)`，多尺度分支拼接结果。
-        fused_multiscale = self.relu1(torch.cat((f3, f5, f7), dim=1))
-        # torch.Tensor，`(B, C_final, D, H, W)`，最终高分辨率体素特征。
-        final = self.conv_end(fused_multiscale)
+        if self.enable_multiscale_output:
+            # 四个张量的空间形状均为 (D, H, W)；f3/f5/f7 分别使用
+            # 3×3×3、5×5×5、7×7×7 卷积，再拼接并压回 feature_channels。
+            f3 = self.conv_end_3(c0)
+            f5 = self.conv_end_5(c0)
+            f7 = self.conv_end_7(c0)
+            fused_multiscale = self.relu1(torch.cat((f3, f5, f7), dim=1))
+            final = self.conv_end(fused_multiscale)
+        else:
+            final = c0
 
         # dict[str, torch.Tensor]，命名体素特征字典；显式列出以避免 torch.compile 下 locals() 丢失中间变量
         all_feature_dict = {
@@ -251,12 +254,15 @@ class Stage1VoxelBackbone(SimpleUnet):
             "voxel_c2": c2,
             "voxel_c1": c1,
             "voxel_c0": c0,
-            "voxel_f3": f3,
-            "voxel_f5": f5,
-            "voxel_f7": f7,
-            "voxel_fused_multiscale": fused_multiscale,
             "voxel_final": final,
         }
+        if self.enable_multiscale_output:
+            all_feature_dict.update(
+                voxel_f3=f3,
+                voxel_f5=f5,
+                voxel_f7=f7,
+                voxel_fused_multiscale=fused_multiscale,
+            )
         return all_feature_dict
 
 
@@ -311,16 +317,30 @@ class Stage1VoxelBackbone(SimpleUnet):
         all_feature_dict = self._forward_single_pass(voxel_grid=voxel_grid, recycle_in=recycle_in)
         selected_feature_dict = {key_name: all_feature_dict[key_name] for key_name in requested_feature_keys}
 
-        # torch.Tensor，`(B, 1, D, H, W)`，体素辅助监督 logits。
-        # voxel_aux_head 为 None 时直接用 voxel_final 作为 logit(需 feature_channels=1)
-        if self.voxel_aux_head is not None:
-            voxel_logits_aux = self.voxel_aux_head(all_feature_dict["voxel_final"])
-        else:
-            voxel_logits_aux = all_feature_dict["voxel_final"]
-        # torch.Tensor | None, `(B, 1, D, H, W)`, 体素 ligand 占据预测 logits
+        # torch.Tensor，`(B, C_aux, D, H, W)`，受体结合区域监督 logits。
+        voxel_logits_aux = self.voxel_aux_head(all_feature_dict["voxel_final"])
+        # (B, C_ligand, D, H, W) 或 None，配体区域预测 logits。
         voxel_logits_ligand = None
         if self.voxel_ligand_head is not None:
             voxel_logits_ligand = self.voxel_ligand_head(all_feature_dict["voxel_final"])
+        voxel_logits_protein = (
+            self.voxel_protein_head(all_feature_dict["voxel_final"])
+            if self.voxel_protein_head is not None
+            else None
+        )
+        # 上述两个多分类张量的类别维依次对应 auxiliary_supervision.py 中的类别名称；
+        # 背景类别固定为通道 0。未启用结构辅助监督时二者均为 None。
+        voxel_logits_nucleic = (
+            self.voxel_nucleic_head(all_feature_dict["voxel_final"])
+            if self.voxel_nucleic_head is not None
+            else None
+        )
+        voxel_logits_distance = (
+            self.voxel_distance_head(all_feature_dict["voxel_final"])
+            if self.voxel_distance_head is not None
+            else None
+        )
+        # (B, 1, D, H, W) 或 None；sigmoid 后解释为 1 / (1 + 最近配体原子距离_Å)。
 
         # torch.Tensor，`(B, C_recycle, D, H, W)`，下一轮体素 recycle 输入。
         voxel_recycle_out = self.voxel_recycle_proj(all_feature_dict["voxel_final"])  # 简单的1x1卷积
@@ -329,5 +349,8 @@ class Stage1VoxelBackbone(SimpleUnet):
             "voxel_features": selected_feature_dict,
             "voxel_logits_aux": voxel_logits_aux,
             "voxel_logits_ligand": voxel_logits_ligand,
+            "voxel_logits_protein": voxel_logits_protein,
+            "voxel_logits_nucleic": voxel_logits_nucleic,
+            "voxel_logits_distance": voxel_logits_distance,
             "voxel_recycle_out": voxel_recycle_out,   # voxel_final 经过简单投影
         }

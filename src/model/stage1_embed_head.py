@@ -1,43 +1,26 @@
 # -*- coding: utf-8 -*-
-"""
-=============================================================================
-Stage1EmbedHead
-=============================================================================
-embed head 前置模块：
-    - 接收原子级点云数据 (atom_feat + atom_coord), 在点上做共享编码 (若干层 Block)
-    - 分叉：
-        1. 体素路径 (可选):
-            - 如果 embed_voxel_out_channels!=0, 那么 将 per-atom hidden 通过 scatter 聚合到体素网格 → 产出 voxel_pdb_embed_grid, 它将和 src\datasets\density_channel_builder.py 产出的密度通道进行拼接, 送入体素分支。
-            -  如果 embed_voxel_out_channels=0 那么表示输出None或空的张量, 即不通过 embed head 向体素分支注入受体原子信息。但此时 src\model\stage1_model.py 的850行左右仍有逻辑 elif self.online_pdb_feature , 也就是在这个条件下, 还可以通过打开 online_pdb_feature 来调用 scatter_to_voxel_grid 直接把原始受体原子信息注入体素分支。
-        2. 点路径 (可选):
-            - 如果 embed_point_out_channels=!0, 那么 输出 per-atom hidden → 产出 embed_point_feat, 代替原本的点特征送入点云分支; 
-            - 如果 embed_point_out_channels=0 那么表示输出None或空的张量, 此时点云分支以原始batch作为输入。
-    - 支持渐进感受野裁剪: 每经过一个 block, 可按配置缩小 buffer 半径
+"""把真实受体原子编码为点特征和可选的稠密体素特征。
 
-坐标约定同 box_point_dataset.py:
-    - atom_coord_local_voxel: BOX-local 连续 voxel 坐标, XYZ 轴序, corner 语义; 不是世界坐标或离散 voxel 索引
-    - atom_coord_centered_world: 以 BOX 中心为原点的连续世界坐标, XYZ 轴序, 单位 Å; 不是 voxel 坐标
+主要入口 :class:`Stage1EmbedHead` 只接收真实受体原子，不接收虚拟 P 锚点。
+共享点编码器可以在各层后收窄核心 BOX 外的缓冲半径；随后按配置产生两类结果：
 
-对齐契约（修改时必须全量同步）:
-    - 本段、CLAUDE/plans/implement/tri_ligand_sparse_refine/00-master.md 和 src/model/stage1_model.py::_run_embed_head_once 必须同步更新。
-    - embed head 只允许处理 real-only atom, 不允许接收 pseudo_mask、real_mask 或 P anchor 字段。
+- ``embed_point_feat``：``(N_keep, C_point)``，送入 Stage1 点模型；
+- ``voxel_pdb_embed_grid``：``(B, C_voxel, D, H, W)``，与密度通道拼接或相加。
 
-    - atom_feat: torch.Tensor, (N_real, F_atom), floating, real atom 原始特征。
-    - atom_coord_centered_world: torch.Tensor, (N_real, 3), floating, 以 BOX 中心为原点的连续世界坐标, XYZ 轴序, 单位 Å。
-    - atom_batch_index: torch.Tensor, (N_real,), int64/long, 每个 real atom 所属 BOX 索引。
-    - atom_offsets: torch.Tensor, (B,), int64/long, 每个 BOX 在 real-only 展平序列中的结束偏移。
-    - atom_coord_local_voxel: torch.Tensor, (N_real, 3), floating, BOX-local 连续 voxel 坐标, XYZ 轴序, corner 语义。
-    - box_shape_zyx: torch.Tensor, (B, 3), int64/long, BOX 离散 voxel 网格尺寸, ZYX 轴序。
-    - voxel_size_world: torch.Tensor, (B, 3), floating, 世界坐标 XYZ 各轴的 voxel 间距, 单位 Å/voxel。
-    - atom_is_in_core_box: torch.Tensor, (N_real,), bool, real atom 是否在 core box 内。
-    - global_keep_mask: torch.Tensor, (N_real,), bool, 输出字段, True 表示原始 real atom 被 embed 裁剪后保留。
-    - embed_point_feat: torch.Tensor | None, (N_keep, embed_point_out_channels), floating, 裁剪后点分支特征; 未启用点输出时为 None。
-    - voxel_pdb_embed_grid: torch.Tensor | None, (B, C_embed, D, H, W), floating, scatter 后体素嵌入; 未启用体素输出时为 None。
+关键输入契约:
+    - ``atom_feat``: (N_real, F_atom)，真实受体原子特征。
+    - ``atom_coord_centered_world``: (N_real, 3)，相对 BOX 中心的世界 XYZ 坐标，单位 Å。
+    - ``atom_coord_local_voxel``: (N_real, 3)，BOX 内连续体素 XYZ 坐标，原点是 BOX 角点。
+    - ``atom_batch_index``: int64, (N_real,)，每个原子所属 BOX 的批次编号。
+    - ``atom_offsets``: int64, (B,)，每个 BOX 在真实原子拼接数组中的结束位置。
+    - ``box_shape_zyx``: int64, (B, 3)，每个 BOX 的离散体素尺寸，轴序 ZYX。
+    - ``voxel_size_world``: (B, 3)，世界 XYZ 每体素尺寸，单位 Å/voxel。
+    - ``atom_is_in_core_box``: bool, (N_real,)，真实原子是否位于核心 BOX。
 
-AdaLigand 三 producer 的当前用法:
-    - Find_0 的 point 路径仍使用本模块，但 voxel 路径在 stage1_model.py 中直接做 raw49 hard scatter。
-    - Find_1 的 point 路径与 Find_0 相同；voxel 路径使用 forward_voxel_only 复现非块式 MLP、centroid、residual、soft scatter 和 occupancy。
-    - unet_c1 不实例化本模块。
+``global_keep_mask`` 为 bool ``(N_real,)``，把裁剪后的原子重新对应到输入原子数组。
+Find_0 和 Find_1 使用共同的点编码路径；Find_1 另用
+``forward_voxel_only`` 生成高斯散射体素特征，Find_2 将 56 通道高斯体素特征作为
+密度调整量，``unet_c1`` 不实例化本模块。
 """
 from __future__ import annotations
 
@@ -677,6 +660,8 @@ class Stage1EmbedHead(nn.Module):
         add_occupancy_channels: bool = False,  # bool, 是否添加 occupancy 通道
         use_soft_splatting: bool = False,      # bool, 是否使用 soft splatting
         use_centroid_encoding: bool = False,   # bool, 是否使用 centroid-aware 偏移编码
+        use_gaussian_splatting: bool = False,  # bool, 是否优先使用 3×3×3 Gaussian scatter
+        voxel_embed_as_tune: bool = False,     # bool, 是否把 voxel embed 作为 56D density tune 项
     ) -> None:
         """
         Stage1 embed head 前置模块, 将原子级点云编码为体素网格嵌入特征和(可选的)点特征。
@@ -726,6 +711,8 @@ class Stage1EmbedHead(nn.Module):
             - add_occupancy_channels: bool, 是否添加 occupancy 通道 (log(1+N) 和归一化 occupancy)
             - use_soft_splatting: bool, 是否使用 soft splatting (三线性插值写入)
             - use_centroid_encoding: bool, 是否使用 centroid-aware 偏移编码
+            - use_gaussian_splatting: bool, 是否用 sigma=0.7 的 3×3×3 Gaussian 替代 hard/三线性 scatter
+            - voxel_embed_as_tune: bool, 是否把 voxel 输出固定为 56D、移除 voxel raw residual/occupancy 并与 density56 相加
 
         前向输入:
             - atom_feat, atom_coord_centered_world, atom_batch_index, atom_offsets,
@@ -760,7 +747,8 @@ class Stage1EmbedHead(nn.Module):
 
         self.atom_feature_dim = int(atom_feature_dim)
         self.embed_hidden_dim = int(embed_hidden_dim)
-        self.embed_voxel_out_channels = int(embed_voxel_out_channels)
+        self.voxel_embed_as_tune = bool(voxel_embed_as_tune)
+        self.embed_voxel_out_channels = 56 if self.voxel_embed_as_tune else int(embed_voxel_out_channels)
         self.embed_point_out_channels = int(embed_point_out_channels)
         self.num_trunk_blocks = int(num_trunk_blocks)
         self.num_voxel_blocks = int(num_voxel_blocks)
@@ -776,9 +764,10 @@ class Stage1EmbedHead(nn.Module):
         self.point_grid_size = float(point_grid_size)
         self.cpe_impl = str(cpe_impl)
         self.embed_residual_enabled = bool(embed_residual_enabled)
-        self.add_occupancy_channels = bool(add_occupancy_channels)
+        self.add_occupancy_channels = bool(add_occupancy_channels) and not self.voxel_embed_as_tune
         self.use_soft_splatting = bool(use_soft_splatting)
         self.use_centroid_encoding = bool(use_centroid_encoding)
+        self.use_gaussian_splatting = bool(use_gaussian_splatting)
         if self.use_centroid_encoding and not self.has_voxel_output:
             raise ValueError("use_centroid_encoding=True 要求 embed_voxel_out_channels > 0")
 
@@ -802,7 +791,7 @@ class Stage1EmbedHead(nn.Module):
                 self.register_buffer("embed_point_gate", torch.tensor(1.0))
 
             # voxel 路径: proj(atom_feature_dim → embed_voxel_out_channels) + gate
-            if self.has_voxel_output:
+            if self.has_voxel_output and not self.voxel_embed_as_tune:
                 if self.atom_feature_dim == self.embed_voxel_out_channels:
                     self.embed_voxel_add_proj = nn.Identity()  # 维度匹配: identity shortcut
                 else:
@@ -1033,7 +1022,7 @@ class Stage1EmbedHead(nn.Module):
         atom_is_in_core_box: torch.Tensor,
     ) -> torch.Tensor:
         """
-        只执行 Find_1 所需的非块式 voxel MLP/centroid/residual/scatter。
+        只执行 Find_1/Find_2 所需的非块式 voxel MLP/centroid/scatter。
 
         输入参数:
             - atom_feat: torch.Tensor, (N,49), float, Dataset 直接加载的 core+8 Å real atom 特征
@@ -1049,10 +1038,10 @@ class Stage1EmbedHead(nn.Module):
         if not self.has_voxel_output:
             raise RuntimeError("forward_voxel_only 需要 embed_voxel_out_channels > 0。")
         if self.num_trunk_blocks != 0 or self.num_voxel_blocks != 0:
-            raise RuntimeError("forward_voxel_only 仅支持无 trunk/voxel Transformer 的 Find_1 配置。")
+            raise RuntimeError("forward_voxel_only 仅支持无 trunk/voxel Transformer 的 Find_1/Find_2 配置。")
         # int, 当前固定网格 batch 的 BOX 数 B。
         batch_size = int(box_shape_zyx.shape[0])
-        # torch.Tensor[bool], (N_A,), 只允许 core 原子向 Find_1 voxel grid 贡献特征。
+        # torch.Tensor[bool], (N_A,), 只允许 core 原子向 Find voxel grid 贡献特征。
         core_keep = atom_is_in_core_box.bool()
         # core_feat/core_local/core_batch 的第 0 轴均为 N_core，且保持原 atom 表顺序。
         core_feat = atom_feat[core_keep]
@@ -1104,12 +1093,49 @@ class Stage1EmbedHead(nn.Module):
 
         if self.embed_voxel_add_proj is not None:
             voxel_value = self.embed_voxel_add_proj(core_feat) + self.embed_voxel_gate * voxel_value
-        # Callable, 把 (N_core,C_value) 聚合为 (B,C_out,D,H,W) 的配置选定 scatter。
-        scatter_fn = soft_scatter_to_voxel_grid if self.use_soft_splatting else scatter_to_voxel_grid
-        return scatter_fn(
-            point_feat=voxel_value,
+        return self._scatter_voxel_embed(
+            voxel_feat_per_atom=voxel_value,
             atom_coord_local_voxel=core_local,
-            point_batch=core_batch,
+            atom_batch_index=core_batch,
+            box_shape_zyx=box_shape_zyx,
+            batch_size=batch_size,
+        )
+
+    def _scatter_voxel_embed(
+        self,
+        *,
+        voxel_feat_per_atom: torch.Tensor,
+        atom_coord_local_voxel: torch.Tensor,
+        atom_batch_index: torch.Tensor,
+        box_shape_zyx: torch.Tensor,
+        batch_size: int,
+    ) -> torch.Tensor:
+        """
+        按配置把逐原子体素特征写入 BOX 网格。
+
+        `use_gaussian_splatting=True` 时优先使用旧 Find_1 的 Gaussian 写入方式；
+        否则再按 `use_soft_splatting` 选择三线性或单体素写入。
+        """
+        if self.use_gaussian_splatting:
+            return gauss_scatter_to_voxel_grid(
+                point_feat=voxel_feat_per_atom,
+                atom_coord_local_voxel=atom_coord_local_voxel,
+                point_batch=atom_batch_index,
+                box_shape_zyx=box_shape_zyx,
+                batch_size=batch_size,
+                sigma_voxel=0.7,
+                add_occupancy_channels=self.add_occupancy_channels,
+                add_centroid_channels=False,
+            )
+        scatter_fn = (
+            soft_scatter_to_voxel_grid
+            if self.use_soft_splatting
+            else scatter_to_voxel_grid
+        )
+        return scatter_fn(
+            point_feat=voxel_feat_per_atom,
+            atom_coord_local_voxel=atom_coord_local_voxel,
+            point_batch=atom_batch_index,
             box_shape_zyx=box_shape_zyx,
             batch_size=batch_size,
             reduce=self.scatter_reduce,
@@ -1418,26 +1444,13 @@ class Stage1EmbedHead(nn.Module):
 
         # ---------- Scatter 到体素网格 (残差融合后只执行一次) ----------
         if self.has_voxel_output:
-            if self.use_soft_splatting:
-                voxel_pdb_embed_grid = soft_scatter_to_voxel_grid(
-                    point_feat=voxel_feat_per_atom,
-                    atom_coord_local_voxel=v_local_voxel,
-                    point_batch=v_batch,
-                    box_shape_zyx=box_shape_zyx,
-                    batch_size=batch_size,
-                    reduce=self.scatter_reduce,
-                    add_occupancy_channels=self.add_occupancy_channels,
-                )
-            else:
-                voxel_pdb_embed_grid = scatter_to_voxel_grid(
-                    point_feat=voxel_feat_per_atom,
-                    atom_coord_local_voxel=v_local_voxel,
-                    point_batch=v_batch,
-                    box_shape_zyx=box_shape_zyx,
-                    batch_size=batch_size,
-                    reduce=self.scatter_reduce,
-                    add_occupancy_channels=self.add_occupancy_channels,
-                )
+            voxel_pdb_embed_grid = self._scatter_voxel_embed(
+                voxel_feat_per_atom=voxel_feat_per_atom,
+                atom_coord_local_voxel=v_local_voxel,
+                atom_batch_index=v_batch,
+                box_shape_zyx=box_shape_zyx,
+                batch_size=batch_size,
+            )
         else:
             voxel_pdb_embed_grid = None
 

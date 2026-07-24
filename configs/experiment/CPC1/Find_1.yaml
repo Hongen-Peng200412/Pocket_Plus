@@ -15,7 +15,7 @@ defaults:
   - override /model/sparse_refine/anchor_to_candidate: none
   - override /model/sparse_refine/sparse_refine_head: none
   - override /model/sparse_refine/anchor_class_conditioning: none
-  - override /loss: stage1_find_cpc1
+  - override /loss: stage1_find_cpc1_auxiliary
   - override /dataset: stage1_find
   - override /train: stage1_cpc1
   - override /frozen_module: adaligand_stage1
@@ -29,6 +29,25 @@ init_from: null
 
 dataset:
   stage1_model_name: Find_1
+  # 5 个结构缺少实验密度；其余 11 个超大距离图未在 90 秒内完成写后验证。
+  # 这里只过滤本次训练请求，不改写正式 A—G 产物、BOX pool 或 validation_selection.npz。
+  excluded_pdb_ids:
+    - 1q5c
+    - 2w49
+    - 5y6p
+    - 6k0a
+    - 7cbp
+    - 7cth
+    - 7n6g
+    - 7ojf
+    - 7pel
+    - 7wc2
+    - 7z8g
+    - 8olc
+    - 9hhl
+    - 9v7i
+    - 9wqp
+    - 9yx6
 
 model:
   backbone:
@@ -42,12 +61,15 @@ model:
     enable_atom_head: true
     enable_interface_norm: true
     voxel_backbone:
-      aux_head_hidden_channels: 32
-      ligand_head_hidden_channels: 32
-      num_conv3d_aux: 0
-      num_conv3d_ligand: 0
+      feature_channels: 64
+      enable_multiscale_output: false
+      enable_structure_heads: true
   class_names: ${dataset.class_names}
   monitor_metric: val_loss/global/total
   monitor_mode: min
   validation_diagnostics:
     enabled: true
+
+train:
+  optimizer:
+    lr: 5.0e-5

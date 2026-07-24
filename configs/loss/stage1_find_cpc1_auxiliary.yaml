@@ -1,0 +1,48 @@
+# @package _global_
+# 新版 Find_1 CPC1：在既有损失上增加蛋白、核酸主链类别与最近配体距离监督。
+defaults:
+  - stage1_find_cpc1
+  - _self_
+
+model:
+  protein_mainchain_loss:
+    _target_: src.modules.losses.AdaptiveClassificationCompositeLoss
+    num_classes: 5
+    sigma: 2.0
+    hard_label_threshold: null
+    focal_gamma: 2.0
+    focal_alpha: null
+    focal_alpha_neg: 0.5
+    focal_alpha_pos: 0.5
+    focal_eps: 1.0e-6
+    tversky_alpha: 0.5
+    tversky_beta: 0.5
+    tversky_smooth: 1.0
+    w_focal: 0.7
+    w_tversky: 0.3
+    w_mse: 0.0
+    focal_soft_negative_suppression: false
+    tversky_soft_target: false
+  protein_mainchain_loss_weight: 0.05
+
+  nucleic_mainchain_loss:
+    _target_: src.modules.losses.AdaptiveClassificationCompositeLoss
+    num_classes: 7
+    sigma: 2.0
+    hard_label_threshold: null
+    focal_gamma: 2.0
+    focal_alpha: null
+    focal_alpha_neg: 0.5
+    focal_alpha_pos: 0.5
+    focal_eps: 1.0e-6
+    tversky_alpha: 0.5
+    tversky_beta: 0.5
+    tversky_smooth: 1.0
+    w_focal: 0.7
+    w_tversky: 0.3
+    w_mse: 0.0
+    focal_soft_negative_suppression: false
+    tversky_soft_target: false
+  nucleic_mainchain_loss_weight: 0.05
+
+  ligand_distance_loss_weight: 0.3

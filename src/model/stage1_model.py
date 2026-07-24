@@ -24,6 +24,11 @@ detach、refine 与 logit 残差:
     - sparse_refine_residual_mode / sparse_refine_use_C_voxel_logits 由 detach_residual 配置组注入 sparse_refine_head。
 
 forward 输出契约:
+    - voxel_logits_aux: (B,C_receptor,D,H,W)，受体结合区域体素预测。
+    - voxel_logits_ligand: (B,C_ligand,D,H,W)，配体区域体素预测。
+    - voxel_logits_protein: (B,5,D,H,W) 或 None，背景/N/CA/C/O 主链类别预测。
+    - voxel_logits_nucleic: (B,7,D,H,W) 或 None，背景/P/O5'/C5'/C4'/C3'/O3' 主链类别预测。
+    - voxel_logits_distance: (B,1,D,H,W) 或 None，sigmoid 后解释为配体反距离预测。
     - point_feat_raw: torch.Tensor, (N_all,C_point), point backbone 原始输出。
     - fused_point_feat: torch.Tensor, (N_all,C_point), 按 into_atomhead detach 路由后的最终分类头输入。
     - real_feat_before_interaction / real_feat_after_interaction: torch.Tensor | None, (N_real,C_point), real cross-attn 前后特征。
@@ -74,10 +79,11 @@ class VolumePointStage1Model(nn.Module):
     """
     组合 voxel、point、候选与 refine 子系统的 Stage1 顶层模型。
 
-    AdaLigand 的三个 producer 复用本类，但通过配置关闭不同分支:
+    AdaLigand 的四个 producer 复用本类，但通过配置关闭不同分支:
         - ``unet_c1``: 只运行单通道 density 与 voxel backbone。
         - ``Find_0``: 56D density 拼接 core receptor raw49 hard scatter。
         - ``Find_1``: 56D density 拼接 embed head 生成的 49D value + 2D occupancy。
+        - ``Find_2``: 56D density与 embed head 生成的 56D Gaussian tune 逐元素相加。
 
     完整 :meth:`forward` 还会运行共同的 point 路径并发布 centered 所需特征；
     :meth:`forward_voxel_probability` 只复现完整图推理所需的 voxel 前半段。
@@ -961,10 +967,11 @@ class VolumePointStage1Model(nn.Module):
         raw_in_channels = int(in_channels)
         actual_in_channels = raw_in_channels
         if self.embed_head is not None and self.embed_head.has_voxel_output:
-            extra = int(self.embed_head.embed_voxel_out_channels)
-            if self.embed_head.add_occupancy_channels:
-                extra += 2
-            actual_in_channels += extra
+            if not bool(getattr(self.embed_head, "voxel_embed_as_tune", False)):
+                extra = int(self.embed_head.embed_voxel_out_channels)
+                if self.embed_head.add_occupancy_channels:
+                    extra += 2
+                actual_in_channels += extra
         elif self.online_pdb_feature:
             actual_in_channels += self._online_pdb_voxel_channels()
         # 调用它们内部的方法, 根据 in_channels 重新初始化某些层
@@ -1427,6 +1434,8 @@ class VolumePointStage1Model(nn.Module):
         if embed_output is not None and embed_output.get("voxel_pdb_embed_grid") is not None:
             # torch.Tensor, (B, C_embed, D, H, W), embed head 体素输出
             fused_voxel_grid = embed_output["voxel_pdb_embed_grid"]
+            if bool(getattr(self.embed_head, "voxel_embed_as_tune", False)):
+                return batch["voxel_grid"] + fused_voxel_grid
             return torch.cat([batch["voxel_grid"], fused_voxel_grid], dim=1)
         if self.online_pdb_feature:
             online_atom_feat = batch.get("_online_pdb_raw_atom_feat", batch["atom_feat"])
@@ -1871,7 +1880,7 @@ class VolumePointStage1Model(nn.Module):
         # torch.Tensor, (B,C_density,80,80,80), Dataset 构造的 producer 密度通道。
         density_input = canonical["voxel_grid"]
         if self.embed_head is not None and self.embed_head.has_voxel_output:
-            # torch.Tensor, (B,C_receptor,80,80,80), Find_1 的 49D value+2D occupancy 网格。
+            # torch.Tensor, (B,C_receptor,80,80,80), Find_1 的 49D+2D 网格或 Find_2 的 56D tune 网格。
             receptor_grid = self.embed_head.forward_voxel_only(
                 atom_feat=canonical["atom_feat"],
                 atom_coord_local_voxel=canonical["atom_coord_local_voxel"],
@@ -1879,8 +1888,12 @@ class VolumePointStage1Model(nn.Module):
                 box_shape_zyx=canonical["box_shape_zyx"],
                 atom_is_in_core_box=canonical["atom_is_in_core_box"],
             )
-            # torch.Tensor, (B,C_density+C_receptor,80,80,80), Find_1 voxel backbone 输入。
-            voxel_input = torch.cat([density_input, receptor_grid], dim=1)
+            # torch.Tensor, (B,C_voxel,80,80,80), producer-specific voxel backbone 输入。
+            voxel_input = (
+                density_input + receptor_grid
+                if bool(getattr(self.embed_head, "voxel_embed_as_tune", False))
+                else torch.cat([density_input, receptor_grid], dim=1)
+            )
         elif self.online_pdb_feature:
             if self.online_pdb_feature_scatter_kernel != "legacy":
                 raise RuntimeError("Find_0 voxel-only 路径只允许 legacy hard scatter。")
@@ -1903,7 +1916,7 @@ class VolumePointStage1Model(nn.Module):
             # unet_c1 没有原子支路，voxel 输入就是单一实验密度通道。
             voxel_input = density_input
         else:
-            raise RuntimeError("当前模型不是受支持的 Find_0、Find_1 或 unet_c1 producer 配置。")
+            raise RuntimeError("当前模型不是受支持的 Find_0、Find_1、Find_2 或 unet_c1 producer 配置。")
 
         # torch.Tensor | None, voxel backbone 的跨 recycle 隐状态；第 1 轮为 None。
         voxel_recycle_in: torch.Tensor | None = None
@@ -1959,6 +1972,9 @@ class VolumePointStage1Model(nn.Module):
             outputs = {
                 "voxel_logits_aux": voxel_output_dict["voxel_logits_aux"],
                 "voxel_logits_ligand": voxel_output_dict.get("voxel_logits_ligand"),
+                "voxel_logits_protein": voxel_output_dict.get("voxel_logits_protein"),
+                "voxel_logits_nucleic": voxel_output_dict.get("voxel_logits_nucleic"),
+                "voxel_logits_distance": voxel_output_dict.get("voxel_logits_distance"),
                 "voxel_outputs": voxel_output_dict,
                 "embed_output": None,
                 "voxel_recycle_out": voxel_output_dict["voxel_recycle_out"],
@@ -2046,6 +2062,9 @@ class VolumePointStage1Model(nn.Module):
                     "atom_global_indices": real_batch.get("atom_global_indices"),
                     "voxel_logits_aux": voxel_output_dict["voxel_logits_aux"],
                     "voxel_logits_ligand": voxel_output_dict.get("voxel_logits_ligand"),
+                    "voxel_logits_protein": voxel_output_dict.get("voxel_logits_protein"),
+                    "voxel_logits_nucleic": voxel_output_dict.get("voxel_logits_nucleic"),
+                    "voxel_logits_distance": voxel_output_dict.get("voxel_logits_distance"),
                     "voxel_outputs": voxel_output_dict,
                     "point_outputs": real_point_output_dict,
                     "embed_output": embed_output,

@@ -1,5 +1,5 @@
 # @package _global_
-# AdaLigand Find_1：共同 point embed + 无 voxel Transformer 的 MLP/centroid/residual/soft-splat。
+# AdaLigand Find_1：共同 point embed + 无 voxel Transformer 的 MLP/centroid/residual/Gaussian scatter。
 model:
   backbone:
     embed_head:
@@ -43,6 +43,8 @@ model:
       add_occupancy_channels: true
       use_soft_splatting: true
       use_centroid_encoding: true
+      use_gaussian_splatting: true  # bool, voxel embed 使用 sigma=0.7 的 3×3×3 Gaussian scatter。
+      voxel_embed_as_tune: false    # bool, Find_1 保持 49D+2D 与 density56 拼接。
 
     online_pdb_feature: false
     online_pdb_feature_reduce: "sum"
