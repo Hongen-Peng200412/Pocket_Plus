@@ -17,6 +17,8 @@ atom_buffer_radius: 8.0             # 只用于构造 hardmask/voxel_label；原
 request_seed: 3407
 cache_max_bytes: 536870912
 enable_random_rotation: true
+box_sample_fraction: 1.0
+excluded_pdb_ids: []
 
 density_channel_config:
   clip_percentile: [0.001, 0.999]
