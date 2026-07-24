@@ -34,9 +34,10 @@ embed head 前置模块：
     - embed_point_feat: torch.Tensor | None, (N_keep, embed_point_out_channels), floating, 裁剪后点分支特征; 未启用点输出时为 None。
     - voxel_pdb_embed_grid: torch.Tensor | None, (B, C_embed, D, H, W), floating, scatter 后体素嵌入; 未启用体素输出时为 None。
 
-AdaLigand 三 producer 的当前用法:
+AdaLigand 四 producer 的当前用法:
     - Find_0 的 point 路径仍使用本模块，但 voxel 路径在 stage1_model.py 中直接做 raw49 hard scatter。
-    - Find_1 的 point 路径与 Find_0 相同；voxel 路径使用 forward_voxel_only 复现非块式 MLP、centroid、residual、soft scatter 和 occupancy。
+    - Find_1 的 point 路径与 Find_0 相同；voxel 路径使用 forward_voxel_only 复现非块式 MLP、centroid、residual、Gaussian scatter 和 occupancy。
+    - Find_2 复用共同 point 路径，并把 56D Gaussian voxel embed 作为 density tune 项。
     - unet_c1 不实例化本模块。
 """
 from __future__ import annotations
@@ -677,6 +678,8 @@ class Stage1EmbedHead(nn.Module):
         add_occupancy_channels: bool = False,  # bool, 是否添加 occupancy 通道
         use_soft_splatting: bool = False,      # bool, 是否使用 soft splatting
         use_centroid_encoding: bool = False,   # bool, 是否使用 centroid-aware 偏移编码
+        use_gaussian_splatting: bool = False,  # bool, 是否使用 3×3×3 Gaussian scatter
+        voxel_embed_as_tune: bool = False,     # bool, 是否把 voxel embed 作为 56D density tune 项
     ) -> None:
         """
         Stage1 embed head 前置模块, 将原子级点云编码为体素网格嵌入特征和(可选的)点特征。
@@ -726,6 +729,8 @@ class Stage1EmbedHead(nn.Module):
             - add_occupancy_channels: bool, 是否添加 occupancy 通道 (log(1+N) 和归一化 occupancy)
             - use_soft_splatting: bool, 是否使用 soft splatting (三线性插值写入)
             - use_centroid_encoding: bool, 是否使用 centroid-aware 偏移编码
+            - use_gaussian_splatting: bool, 是否用 sigma=0.7 的 3×3×3 Gaussian 替代 hard/三线性 scatter
+            - voxel_embed_as_tune: bool, 是否把 voxel 输出固定为 56D、移除 voxel raw residual/occupancy 并与 density56 相加
 
         前向输入:
             - atom_feat, atom_coord_centered_world, atom_batch_index, atom_offsets,
@@ -760,7 +765,8 @@ class Stage1EmbedHead(nn.Module):
 
         self.atom_feature_dim = int(atom_feature_dim)
         self.embed_hidden_dim = int(embed_hidden_dim)
-        self.embed_voxel_out_channels = int(embed_voxel_out_channels)
+        self.voxel_embed_as_tune = bool(voxel_embed_as_tune)
+        self.embed_voxel_out_channels = 56 if self.voxel_embed_as_tune else int(embed_voxel_out_channels)
         self.embed_point_out_channels = int(embed_point_out_channels)
         self.num_trunk_blocks = int(num_trunk_blocks)
         self.num_voxel_blocks = int(num_voxel_blocks)
@@ -776,9 +782,10 @@ class Stage1EmbedHead(nn.Module):
         self.point_grid_size = float(point_grid_size)
         self.cpe_impl = str(cpe_impl)
         self.embed_residual_enabled = bool(embed_residual_enabled)
-        self.add_occupancy_channels = bool(add_occupancy_channels)
+        self.add_occupancy_channels = bool(add_occupancy_channels) and not self.voxel_embed_as_tune
         self.use_soft_splatting = bool(use_soft_splatting)
         self.use_centroid_encoding = bool(use_centroid_encoding)
+        self.use_gaussian_splatting = bool(use_gaussian_splatting)
         if self.use_centroid_encoding and not self.has_voxel_output:
             raise ValueError("use_centroid_encoding=True 要求 embed_voxel_out_channels > 0")
 
@@ -802,7 +809,7 @@ class Stage1EmbedHead(nn.Module):
                 self.register_buffer("embed_point_gate", torch.tensor(1.0))
 
             # voxel 路径: proj(atom_feature_dim → embed_voxel_out_channels) + gate
-            if self.has_voxel_output:
+            if self.has_voxel_output and not self.voxel_embed_as_tune:
                 if self.atom_feature_dim == self.embed_voxel_out_channels:
                     self.embed_voxel_add_proj = nn.Identity()  # 维度匹配: identity shortcut
                 else:
@@ -1024,6 +1031,51 @@ class Stage1EmbedHead(nn.Module):
         return point, cur_coord, cur_batch, cur_offset, cur_core, cur_local_voxel, global_keep_mask
 
 
+    def _scatter_voxel_embed(
+        self,
+        voxel_feat_per_atom: torch.Tensor,
+        atom_coord_local_voxel: torch.Tensor,
+        atom_batch_index: torch.Tensor,
+        box_shape_zyx: torch.Tensor,
+        batch_size: int,
+    ) -> torch.Tensor:
+        """
+        按当前 embed 配置把 per-atom voxel 特征投影到 BOX 网格。
+
+        输入参数:
+            - voxel_feat_per_atom: torch.Tensor, (N,C_embed), scatter 前的原子级 voxel embed
+            - atom_coord_local_voxel: torch.Tensor, (N,3), BOX-local 连续 voxel 坐标 XYZ
+            - atom_batch_index: torch.Tensor, (N,), 每个原子所属 BOX 的 batch 索引
+            - box_shape_zyx: torch.Tensor, (B,3), BOX 离散 voxel 网格尺寸 ZYX
+            - batch_size: int, batch 内 BOX 数 B
+
+        输出:
+            - voxel_grid: torch.Tensor, (B,C_out,D,H,W), Gaussian、三线性或 hard scatter 后的 voxel embed
+        """
+
+        if self.use_gaussian_splatting:
+            return gauss_scatter_to_voxel_grid(
+                point_feat=voxel_feat_per_atom,
+                atom_coord_local_voxel=atom_coord_local_voxel,
+                point_batch=atom_batch_index,
+                box_shape_zyx=box_shape_zyx,
+                batch_size=batch_size,
+                sigma_voxel=0.7,
+                add_occupancy_channels=self.add_occupancy_channels,
+                add_centroid_channels=False,
+            )
+        scatter_fn = soft_scatter_to_voxel_grid if self.use_soft_splatting else scatter_to_voxel_grid
+        return scatter_fn(
+            point_feat=voxel_feat_per_atom,
+            atom_coord_local_voxel=atom_coord_local_voxel,
+            point_batch=atom_batch_index,
+            box_shape_zyx=box_shape_zyx,
+            batch_size=batch_size,
+            reduce=self.scatter_reduce,
+            add_occupancy_channels=self.add_occupancy_channels,
+        )
+
+
     def forward_voxel_only(
         self,
         atom_feat: torch.Tensor,
@@ -1033,7 +1085,7 @@ class Stage1EmbedHead(nn.Module):
         atom_is_in_core_box: torch.Tensor,
     ) -> torch.Tensor:
         """
-        只执行 Find_1 所需的非块式 voxel MLP/centroid/residual/scatter。
+        只执行 Find_1/Find_2 所需的非块式 voxel MLP/centroid/scatter。
 
         输入参数:
             - atom_feat: torch.Tensor, (N,49), float, Dataset 直接加载的 core+8 Å real atom 特征
@@ -1049,10 +1101,10 @@ class Stage1EmbedHead(nn.Module):
         if not self.has_voxel_output:
             raise RuntimeError("forward_voxel_only 需要 embed_voxel_out_channels > 0。")
         if self.num_trunk_blocks != 0 or self.num_voxel_blocks != 0:
-            raise RuntimeError("forward_voxel_only 仅支持无 trunk/voxel Transformer 的 Find_1 配置。")
+            raise RuntimeError("forward_voxel_only 仅支持无 trunk/voxel Transformer 的 Find_1/Find_2 配置。")
         # int, 当前固定网格 batch 的 BOX 数 B。
         batch_size = int(box_shape_zyx.shape[0])
-        # torch.Tensor[bool], (N_A,), 只允许 core 原子向 Find_1 voxel grid 贡献特征。
+        # torch.Tensor[bool], (N_A,), 只允许 core 原子向 Find voxel grid 贡献特征。
         core_keep = atom_is_in_core_box.bool()
         # core_feat/core_local/core_batch 的第 0 轴均为 N_core，且保持原 atom 表顺序。
         core_feat = atom_feat[core_keep]
@@ -1104,16 +1156,12 @@ class Stage1EmbedHead(nn.Module):
 
         if self.embed_voxel_add_proj is not None:
             voxel_value = self.embed_voxel_add_proj(core_feat) + self.embed_voxel_gate * voxel_value
-        # Callable, 把 (N_core,C_value) 聚合为 (B,C_out,D,H,W) 的配置选定 scatter。
-        scatter_fn = soft_scatter_to_voxel_grid if self.use_soft_splatting else scatter_to_voxel_grid
-        return scatter_fn(
-            point_feat=voxel_value,
+        return self._scatter_voxel_embed(
+            voxel_feat_per_atom=voxel_value,
             atom_coord_local_voxel=core_local,
-            point_batch=core_batch,
+            atom_batch_index=core_batch,
             box_shape_zyx=box_shape_zyx,
             batch_size=batch_size,
-            reduce=self.scatter_reduce,
-            add_occupancy_channels=self.add_occupancy_channels,
         )
 
     def forward(
@@ -1418,26 +1466,13 @@ class Stage1EmbedHead(nn.Module):
 
         # ---------- Scatter 到体素网格 (残差融合后只执行一次) ----------
         if self.has_voxel_output:
-            if self.use_soft_splatting:
-                voxel_pdb_embed_grid = soft_scatter_to_voxel_grid(
-                    point_feat=voxel_feat_per_atom,
-                    atom_coord_local_voxel=v_local_voxel,
-                    point_batch=v_batch,
-                    box_shape_zyx=box_shape_zyx,
-                    batch_size=batch_size,
-                    reduce=self.scatter_reduce,
-                    add_occupancy_channels=self.add_occupancy_channels,
-                )
-            else:
-                voxel_pdb_embed_grid = scatter_to_voxel_grid(
-                    point_feat=voxel_feat_per_atom,
-                    atom_coord_local_voxel=v_local_voxel,
-                    point_batch=v_batch,
-                    box_shape_zyx=box_shape_zyx,
-                    batch_size=batch_size,
-                    reduce=self.scatter_reduce,
-                    add_occupancy_channels=self.add_occupancy_channels,
-                )
+            voxel_pdb_embed_grid = self._scatter_voxel_embed(
+                voxel_feat_per_atom=voxel_feat_per_atom,
+                atom_coord_local_voxel=v_local_voxel,
+                atom_batch_index=v_batch,
+                box_shape_zyx=box_shape_zyx,
+                batch_size=batch_size,
+            )
         else:
             voxel_pdb_embed_grid = None
 

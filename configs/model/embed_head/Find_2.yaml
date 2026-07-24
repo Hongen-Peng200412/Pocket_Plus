@@ -1,12 +1,12 @@
 # @package _global_
-# AdaLigand Find_1：共同 point embed + 无 voxel Transformer 的 MLP/centroid/residual/Gaussian scatter。
+# AdaLigand Find_2：共同 point embed + 56D Gaussian voxel tune，与 density56 逐元素相加。
 model:
   backbone:
     embed_head:
       _target_: src.model.stage1_embed_head.Stage1EmbedHead
       atom_feature_dim: 49
       embed_hidden_dim: 128
-      embed_voxel_out_channels: 49
+      embed_voxel_out_channels: 49  # int, tune 开关打开后由 Stage1EmbedHead 固定为有效 56D。
       embed_point_out_channels: 64
       num_trunk_blocks: 0
       num_voxel_blocks: 0
@@ -40,11 +40,11 @@ model:
       embed_residual_enabled: true
       embed_point_gate_enabled: false
       embed_voxel_gate_enabled: false
-      add_occupancy_channels: true
+      add_occupancy_channels: true  # bool, tune 分支忽略附加 occupancy，Gaussian 只输出 56D。
       use_soft_splatting: true
       use_centroid_encoding: true
       use_gaussian_splatting: true  # bool, voxel embed 使用 sigma=0.7 的 3×3×3 Gaussian scatter。
-      voxel_embed_as_tune: false    # bool, Find_1 保持 49D+2D 与 density56 拼接。
+      voxel_embed_as_tune: true     # bool, 固定 56D、移除 voxel raw residual，并与 density56 相加。
 
     online_pdb_feature: false
     online_pdb_feature_reduce: "sum"

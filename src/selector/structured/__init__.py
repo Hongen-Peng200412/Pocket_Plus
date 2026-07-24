@@ -1,7 +1,4 @@
-"""公开 Selector 的在线最优监督、候选树闭包和精确反链求解接口。
-
-本子包只依赖基础数组与 tensor 操作，不读取 Stage1 产物，也不负责 CLG 概率校准。
-"""
+"""Selector 的在线 oracle 与精确树反链算法。"""
 
 from .antichain_dp import (
     CandidateTreeClosure,

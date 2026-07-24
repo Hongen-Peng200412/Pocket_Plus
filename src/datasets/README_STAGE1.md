@@ -35,4 +35,4 @@ python -m src.datasets.stage1_box_pool \
 - Find 的 Dataset 直接加载 core+8 Å 原子；下游 artifact 中的 A-pocket 才按来源 blob 的 10 Å 包络与当前 BOX 取交集。
 - train-only 90° 旋转会同步旋转 density/target/原子坐标；交换数组轴时也交换对应 voxel size，并重算 BOX 中心与世界坐标，不要求三轴尺度完全相等。
 
-训练入口仍是仓库根 `src/train.py`。AdaLigand 配置位于 `configs/experiment/CPC1/Find_0.yaml`、`Find_1.yaml`、`configs/experiment/unet_c1.yaml` 及对应 Dataset/loss/train 子配置。本轮交付只验证 smoke，不代表已经获准提交正式训练。
+训练入口仍是仓库根 `src/train.py`。AdaLigand 配置位于 `configs/experiment/CPC1/Find_0.yaml`、`Find_1.yaml`、`Find_2.yaml`、`configs/experiment/unet_c1.yaml` 及对应 Dataset/loss/train 子配置。当前合法 producer 统一由 `src/stage1_producers.py` 的 `STAGE1_MODEL_NAMES` 维护；其中 `FIND_MODEL_NAMES` 共享完整 56D density 和原子表物化语义。

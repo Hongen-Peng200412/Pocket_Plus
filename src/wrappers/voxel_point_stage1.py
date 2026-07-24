@@ -975,7 +975,9 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
             self._update_candidate_threshold_cache_from_payload(payload)
         self._last_validation_payload = {key: value.detach() for key, value in payload.items()}
         self._sync_sparse_candidate_runtime_to_backbone()
-        log_scalar_payload(module=self, payload=payload, monitor_metric=str(self.hparams.monitor_metric), sync_dist=True)
+        # payload 已由 TorchMetrics process group 或 CPC 显式 all-reduce 做过全局聚合；
+        # 此处再次让 Lightning 用默认 NCCL 同步会同时重复归约，并且无法处理 CPU AP 标量。
+        log_scalar_payload(module=self, payload=payload, monitor_metric=str(self.hparams.monitor_metric), sync_dist=False)
         # pl.Trainer, 当前 Lightning trainer
         trainer = self.trainer
         if bool(getattr(trainer, "is_global_zero", True)):

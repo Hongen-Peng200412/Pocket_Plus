@@ -1,15 +1,4 @@
-"""生成 Selector 候选分数，并按冻结门控阈值解码最终选择结果。
-
-主要入口:
-    - `produce_scores`: 严格恢复 BEST checkpoint，为固定数据划分逐 PDB 发布
-      `scores.npz`。
-    - `produce_selection_for_pdb`: 先执行 CLG 门控，再用精确动态规划解码非空反链，
-      原子发布 `selection.npz`。
-    - `load_selected_nodes_for_pdb`: 把 CLG 局部候选下标恢复为原组件森林节点，
-      供 Selected 居中特征重跑。
-
-本模块不重新校准阈值、不改变来源 CLG 顺序，也不把预测候选复制为新的组件。
-"""
+"""生成 Selector scores.npz 并按冻结 tau_G 解码 selection.npz。"""
 
 from __future__ import annotations
 
@@ -25,6 +14,7 @@ import torch
 
 from src.artifacts import atomic_savez_compressed, load_npz_strict, validate_offsets
 from src.component_lineage import ComponentForest, ComponentNode
+from src.stage1_producers import STAGE1_MODEL_NAMES
 
 from .calibration import calibrate_tau_g
 from .dataset import SelectorDataset
@@ -39,13 +29,7 @@ def _validate_scores_arrays(arrays: Mapping[str, np.ndarray]) -> None:
     校验 scores.npz 的精确字段、dtype、offsets 和有限值。
 
     输入参数:
-        - arrays: Mapping[str, np.ndarray], 待发布 `scores.npz` 的字段映射。
-        - `CLG_id/CLG_logit/CLG_valid_probability`: `(N_CLG,)`，逐 CLG 对齐。
-        - `candidate_offsets`: `(N_CLG + 1,)`，切分候选值表。
-        - `predicted_max_iou/selection_logit`: `(N_candidate_total,)`，逐候选对齐。
-
-    异常:
-        - 字段集合、dtype、shape、offsets、有限值或概率范围不符合契约时抛出异常
+        - arrays: Mapping[str,np.ndarray], 待发布 scores.npz 的字段映射
     """
     expected = {
         "CLG_id": np.int32,
@@ -83,11 +67,7 @@ def _validate_selection_arrays(arrays: Mapping[str, np.ndarray]) -> None:
     校验 selection.npz 的精确字段、dtype 和 ragged offsets。
 
     输入参数:
-        - arrays: Mapping[str, np.ndarray], 待发布 `selection.npz` 的字段映射。
-        - `CLG_id/CLG_gate_pass`: `(N_CLG,)`，逐 CLG 对齐。
-        - `selected_candidate_offsets`: `(N_CLG + 1,)`，切分已选候选局部下标。
-        - `selected_candidate_index`: `(N_selected_total,)`，每项相对所属 CLG
-          候选段计数，而不是候选值表绝对行号。
+        - arrays: Mapping[str,np.ndarray], 待发布 selection.npz 的字段映射
     """
     expected = {
         "CLG_id": np.int32,
@@ -115,15 +95,15 @@ def load_selector_checkpoint(
     device: torch.device,
 ) -> tuple[SelectorWrapper, dict[str, Any]]:
     """
-    从 Selector BEST checkpoint 严格恢复完整模型和损失包装器。
+    从 Selector BEST checkpoint 严格恢复完整 Wrapper。
 
     输入参数:
         - checkpoint_path: str | Path, Selector `checkpoints/BEST.ckpt`
         - device: torch.device, 推理设备
 
     输出:
-        - wrapper: SelectorWrapper，严格恢复全部参数、移动到 `device` 并置为推理模式
-        - checkpoint: dict[str, Any]，含已解析配置、实际来源通道和训练选择信息
+        - wrapper: SelectorWrapper，strict 恢复并置 eval
+        - checkpoint: dict[str,Any]，含 resolved config/source dimensions 等运行身份
     """
     checkpoint = torch.load(Path(checkpoint_path), map_location="cpu", weights_only=False)
     wrapper = build_selector_wrapper_from_config(
@@ -146,20 +126,19 @@ def produce_scores(
     device_name: str,
 ) -> tuple[Path, ...]:
     """
-    按来源 `clg.npz` 顺序为一个数据划分的每个 PDB 发布 `scores.npz`。
+    按来源 clg.npz 顺序为一个 split 的每个 PDB 发布 scores.npz。
 
     输入参数:
-        - checkpoint_path: str | Path, 由 validation 总损失选出的 Selector BEST
+        - checkpoint_path: str | Path, validation total loss 选出的 Selector BEST
         - input_clg_list_path: str | Path, 当前 run 冻结输入清单
         - stage1_outputs_root: str | Path, Stage1 producer 输出根
         - upstream_root: str | Path, A–G 上游数据根
         - selector_run_dir: str | Path, 当前 selector_run_dir
-        - split: str, `train/validation/calibration` 等唯一数据划分
-        - device_name: str, 显式 `cpu` 或 `cuda`
+        - split: str, train/validation/calibration 等单一 split
+        - device_name: str, 显式 cpu 或 cuda
 
     输出:
-        - score_paths: tuple[Path, ...]，按冻结 PDB 清单顺序排列的正式
-          `scores.npz` 路径；零 CLG PDB 也会发布空候选表
+        - score_paths: tuple[Path,...]，按冻结 PDB inventory 顺序的正式 scores.npz 路径
     """
     if device_name not in {"cpu", "cuda"}:
         raise ValueError("device_name 只允许 cpu 或 cuda。")
@@ -186,7 +165,6 @@ def produce_scores(
         raise ValueError("input_CLG_list.json 缺少当前 split 的 PDB inventory。")
     frozen_pdb_ids = tuple(str(value) for value in pdb_ids_by_split[split])
 
-    # PDB 标识 -> CLG_id -> 模型输出；先逐 CLG 前向，随后按来源 `clg.npz` 重排发布。
     by_pdb: dict[str, dict[int, dict[str, np.ndarray | float]]] = defaultdict(dict)
     with torch.no_grad():
         for index in range(len(dataset)):
@@ -208,7 +186,6 @@ def produce_scores(
         with np.load(source_path, allow_pickle=False) as source:
             source_clg_id = np.asarray(source["CLG_id"], dtype=np.int32)
             source_offsets = np.asarray(source["candidate_offsets"], dtype=np.int64)
-        # 当前 PDB 的结果必须与来源 CLG ID 集合完全相同，不能漏项或混入额外项。
         result_by_id = by_pdb[pdb_id]
         if set(result_by_id) != set(source_clg_id.tolist()):
             raise ValueError(f"scores 必须覆盖来源 PDB 的全部 CLG: split={split}, pdb_id={pdb_id}")
@@ -266,12 +243,11 @@ def produce_selection_for_pdb(
         - forest_path: str | Path, 来源 forest.npz
         - clg_path: str | Path, 来源 clg.npz
         - selection_path: str | Path, 正式 selection.npz 输出路径
-        - tau_g: float, calibration 冻结的 CLG 有效概率门控阈值
+        - tau_g: float, calibration 冻结的 CLG gate 阈值
         - lambda_count: float, 预测反链计数惩罚
 
     输出:
-        - output_path: Path, 原子发布后的 `selection.npz`；已选值均是所属 CLG
-          候选段内的局部下标
+        - output_path: Path, 原子发布后的 selection.npz
     """
     with np.load(scores_path, allow_pickle=False) as source:
         scores = {name: np.asarray(source[name]).copy() for name in source.files}
@@ -284,7 +260,6 @@ def produce_selection_for_pdb(
     if not np.array_equal(scores["candidate_offsets"], clg["candidate_offsets"]):
         raise ValueError("scores.candidate_offsets 必须逐元素复制来源 clg.npz。")
 
-    # 三个变长构造容器分别保存逐 CLG 门控、候选段 offsets 和局部候选下标值表。
     gate_pass_values: list[bool] = []
     selected_offsets = [0]
     selected_local_values: list[int] = []
@@ -344,8 +319,7 @@ def load_selected_nodes_for_pdb(
         - clg_path: str | Path, 同 PDB 来源 clg.npz
 
     输出:
-        - selected_nodes: tuple[ComponentNode, ...], 按 CLG 和来源候选顺序排列；
-          同一 `(tree_id, node_id)` 被多个 CLG 选中时只保留首次出现，结果可供
+        - selected_nodes: tuple[ComponentNode,...], 按 CLG/来源 candidate 顺序，供
           `produce_selected_refined_entries(selected_nodes=...)` 直接消费
     """
     selection = load_npz_strict(selection_path)
@@ -362,7 +336,6 @@ def load_selected_nodes_for_pdb(
         raise ValueError("selected_candidate_offsets 必须按 CLG 完整切分 selected_candidate_index。")
 
     forest = ComponentForest.from_arrays(forest_arrays)
-    # identities 防止同一森林节点被不同 CLG 重复送入 Selected 居中重跑。
     nodes: list[ComponentNode] = []
     identities: set[tuple[int, int]] = set()
     for clg_row in range(np.asarray(clg["CLG_id"]).size):
@@ -392,14 +365,13 @@ def load_selected_nodes_for_pdb(
 
 def main(argv: Sequence[str] | None = None) -> int:
     """
-    提供 `scores`、`calibrate` 和 `selection` 三个显式 Selector 推理子命令。
+    提供 scores、calibrate 与 selection 三个显式 Selector 推理子命令。
 
     输入参数:
         - argv: Sequence[str] | None, CLI 参数；None 表示读取 sys.argv
 
     输出:
-        - exit_code: int, 指定子命令成功完成时为 0；输入或产物契约错误向上抛出，
-          由进程返回非零状态
+        - exit_code: int, 成功为 0
     """
     parser = argparse.ArgumentParser(description="AdaLigand Stage1 Selector 推理")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -419,7 +391,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     calibrate_parser.add_argument(
         "--stage1-model-name",
         required=True,
-        choices=("Find_0", "Find_1", "unet_c1"),
+        choices=STAGE1_MODEL_NAMES,
     )
     calibrate_parser.add_argument("--split", default="calibration")
 

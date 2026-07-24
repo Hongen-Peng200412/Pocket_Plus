@@ -57,8 +57,35 @@ class ValidationMetricManager(nn.Module):
         self.branch_specs = {spec.name: spec for spec in branches if spec.enabled}
         # nn.ModuleDict, TorchMetrics 指标模块树
         self.metrics = nn.ModuleDict()
+        # object | None, NCCL DDP 下专供 CPU metric state 同步的 Gloo process group
+        self._cpu_metric_process_group: object | None = None
         for spec in self.branch_specs.values():
             self._register_branch_metrics(spec)
+
+    def _configure_distributed_process_groups(self) -> None:
+        """
+        为 NCCL DDP 下保存在 CPU 的 TorchMetrics 状态配置 Gloo process group。
+
+        输出:
+            - None, 原地把 ``compute_on_cpu=True`` 的 metric 绑定到共享 Gloo group; 单进程、Gloo DDP 或全 GPU metric 不创建额外 group
+        """
+
+        if self._cpu_metric_process_group is not None:
+            return
+        if not torch.distributed.is_available() or not torch.distributed.is_initialized():
+            return
+        if torch.distributed.get_world_size() <= 1:
+            return
+        if str(torch.distributed.get_backend()).lower() != "nccl":
+            return
+        # list[Metric], 可变长度, non-binned 或显式 CPU 策略下保存 CPU list state 的指标
+        cpu_metrics = [metric for metric in self.metrics.values() if bool(metric.compute_on_cpu)]
+        if not cpu_metrics:
+            return
+        process_group = torch.distributed.new_group(backend="gloo")
+        self._cpu_metric_process_group = process_group
+        for metric in cpu_metrics:
+            metric.process_group = process_group
 
     def _metric_compute_on_cpu(self, thresholds: int | Sequence[float] | None) -> bool:
         """
@@ -159,6 +186,7 @@ class ValidationMetricManager(nn.Module):
         输出:
             - payload: dict[str, torch.Tensor], Lightning/W&B scalar key 到标量 tensor 的映射
         """
+        self._configure_distributed_process_groups()
         payload: dict[str, torch.Tensor] = {}
         for spec in self.branch_specs.values():
             # 二分类

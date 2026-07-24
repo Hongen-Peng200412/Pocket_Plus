@@ -1,4 +1,4 @@
-# AdaLigand Stage1 从头训练制度；unet_c1 与两个 Find/CPC1 共用。
+# AdaLigand Stage1 从头训练制度；unet_c1 与三个 Find/CPC1 共用。
 # → src/train.py 构造 DataLoader/Trainer；wrapper.configure_optimizers() 消费 optimizer/scheduler。
 defaults:
   - B40_L3
@@ -21,23 +21,24 @@ data_fault_tolerance:
 max_epochs: 20
 precision: "bf16-mixed"
 gradient_clip_val: 0.5
-val_per_epoch: 10
+val_per_epoch: 30                    # int, 每个 epoch 等间隔执行 30 次完整 validation。
+                                     # -> src/train.py: 映射为 val_check_interval=1/30。
 
 optimizer:
   _target_: torch.optim.AdamW
   _partial_: true
-  lr: 3.0e-5
+  lr: 5.0e-5
   weight_decay: 0.01
 
 scheduler:
   name: warmup_plateau
   total_steps: null
   warmup_steps: null
-  warmup_ratio: 0.025
+  warmup_ratio: 0.005               # float, 从头训练阶段以估算总步数的 0.5% 线性 warmup。
   warmup_start_factor: 0.33
   mode: ${model.monitor_mode}
   factor: 0.3
-  patience: 3
+  patience: 2                        # int, 连续第 3 次未改进时降低学习率。
   threshold: 0.001
   threshold_mode: abs
   cooldown: 0

@@ -4,7 +4,7 @@ import pytest
 import torch
 from torch import nn
 
-from src.wrappers.voxel_point_stage1_logging import build_metric_key
+from src.wrappers.voxel_point_stage1_logging import build_metric_key, log_scalar_payload
 from src.wrappers.voxel_point_stage1_metrics import MetricBranchSpec, ValidationMetricManager
 
 
@@ -106,6 +106,84 @@ def test_validation_metric_manager_outputs_multiclass_suffix_and_macro() -> None
 
     assert "val_score/global/voxel_ligand_PRAUC_metal_ion" in payload
     assert "val_score/global/voxel_ligand_PRAUC_small_molecule" in payload
+
+
+def test_nccl_cpu_metrics_use_a_shared_gloo_process_group(monkeypatch: pytest.MonkeyPatch) -> None:
+    """
+    验证 NCCL DDP 不会用 NCCL 同步保存在 CPU 的 non-binned metric state。
+
+    输入参数:
+        - monkeypatch: pytest.MonkeyPatch, 替换分布式运行时查询与 process group 创建
+
+    输出:
+        - None, 断言 CPU metric 绑定一次性共享 Gloo group, binned GPU metric 保持默认 NCCL group
+    """
+
+    manager = ValidationMetricManager(
+        branches=[
+            MetricBranchSpec(
+                name="atom",
+                enabled=True,
+                num_classes=2,
+                class_names=("background", "foreground"),
+                thresholds=None,
+            ),
+            MetricBranchSpec(
+                name="voxel_ligand",
+                enabled=True,
+                num_classes=2,
+                class_names=("background", "foreground"),
+                thresholds=4,
+            ),
+        ],
+        metric_device_policy="auto",
+    )
+    # object, 模拟 torch.distributed.new_group 返回的 Gloo process group
+    gloo_group = object()
+    created_backends: list[str] = []
+    monkeypatch.setattr(torch.distributed, "is_available", lambda: True)
+    monkeypatch.setattr(torch.distributed, "is_initialized", lambda: True)
+    monkeypatch.setattr(torch.distributed, "get_world_size", lambda: 2)
+    monkeypatch.setattr(torch.distributed, "get_backend", lambda: "nccl")
+    monkeypatch.setattr(
+        torch.distributed,
+        "new_group",
+        lambda *, backend: created_backends.append(backend) or gloo_group,
+    )
+
+    manager._configure_distributed_process_groups()
+    manager._configure_distributed_process_groups()
+
+    assert manager.metrics["atom__binary"].compute_on_cpu is True
+    assert manager.metrics["atom__binary"].process_group is gloo_group
+    assert manager.metrics["voxel_ligand__binary"].compute_on_cpu is False
+    assert manager.metrics["voxel_ligand__binary"].process_group is None
+    assert created_backends == ["gloo"]
+
+
+def test_globally_reduced_metric_payload_is_logged_without_lightning_resync() -> None:
+    """
+    验证已完成全局聚合的 CPU metric 标量不会再次交给 Lightning 默认 NCCL 同步。
+    """
+
+    class _LoggingModule:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        def log(self, key: str, value: torch.Tensor, **kwargs: object) -> None:
+            self.calls.append({"key": key, "value": value, **kwargs})
+
+    module = _LoggingModule()
+    log_scalar_payload(
+        module=module,
+        payload={"val_score/global/atom_PRAUC": torch.tensor(0.75)},
+        monitor_metric="val_score/global/atom_PRAUC",
+        sync_dist=False,
+    )
+
+    assert len(module.calls) == 1
+    assert module.calls[0]["sync_dist"] is False
+    assert module.calls[0]["on_epoch"] is True
 
 
 def test_wrapper_receptor_metric_name_replaces_voxel_aux_name() -> None:
