@@ -6,6 +6,10 @@ import pytest
 import torch
 from torch import nn
 
+from src.auxiliary_supervision import (
+    NUCLEIC_MAINCHAIN_CLASS_NAMES,
+    PROTEIN_MAINCHAIN_CLASS_NAMES,
+)
 from src.model.stage1_voxel_backbone import Stage1VoxelBackbone
 
 
@@ -35,6 +39,8 @@ def test_multiclass_voxel_heads_use_configured_logit_dims_and_prior_probs() -> N
     assert isinstance(backbone.voxel_ligand_head[-1], nn.Conv3d)
     assert backbone.voxel_aux_head[-1].out_channels == 3
     assert backbone.voxel_ligand_head[-1].out_channels == 3
+    assert backbone.voxel_aux_head[0].in_channels == 4
+    assert backbone.voxel_aux_head[0].out_channels == 4
     expected_bias = torch.tensor([math.log(0.98), math.log(0.01), math.log(0.01)])
     torch.testing.assert_close(backbone.voxel_aux_head[-1].bias.detach().cpu(), expected_bias)
     torch.testing.assert_close(backbone.voxel_ligand_head[-1].bias.detach().cpu(), expected_bias)
@@ -102,3 +108,41 @@ def test_multiclass_prior_probs_take_precedence_over_named_sigmoid() -> None:
     expected_bias = torch.tensor([math.log(0.98), math.log(0.01), math.log(0.01)])
     torch.testing.assert_close(backbone.voxel_aux_head[-1].bias.detach().cpu(), expected_bias)
     torch.testing.assert_close(backbone.voxel_ligand_head[-1].bias.detach().cpu(), expected_bias)
+
+
+def test_auxiliary_heads_and_disabled_multiscale_output_contract() -> None:
+    backbone = Stage1VoxelBackbone(
+        in_channels=2,
+        feature_channels=2,
+        planes=(2, 8, 8, 8, 8, 8, 4, 2, 2),
+        gradient_checkpoint=False,
+        return_feature_keys=("voxel_final",),
+        aux_head_hidden_channels=4,
+        num_conv3d_aux=0,
+        ligand_head_hidden_channels=4,
+        num_conv3d_ligand=0,
+        enable_multiscale_output=False,
+        enable_structure_heads=True,
+    )
+
+    assert backbone.conv_end_3 is None
+    assert backbone.conv_end_5 is None
+    assert backbone.conv_end_7 is None
+    assert backbone.conv_end is None
+    final = torch.zeros((1, 2, 4, 4, 4))
+    assert backbone.voxel_protein_head(final).shape == (
+        1,
+        len(PROTEIN_MAINCHAIN_CLASS_NAMES),
+        4,
+        4,
+        4,
+    )
+    assert backbone.voxel_nucleic_head(final).shape == (
+        1,
+        len(NUCLEIC_MAINCHAIN_CLASS_NAMES),
+        4,
+        4,
+        4,
+    )
+    assert backbone.voxel_distance_head(final).shape == (1, 1, 4, 4, 4)
+    assert torch.sigmoid(backbone.voxel_distance_head[-1].bias).item() == pytest.approx(1.0 / 11.0)

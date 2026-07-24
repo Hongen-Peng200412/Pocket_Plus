@@ -18,6 +18,7 @@ import numpy as np
 # ---- 被测模块 ----
 from src.model.stage1_embed_head import Stage1EmbedHead, scatter_to_voxel_grid, soft_scatter_to_voxel_grid
 from src.model.stage1_model import VolumePointStage1Model
+import src.model.stage1_embed_head as stage1_embed_head_mod
 import src.model.stage1_model as stage1_model_mod
 
 
@@ -139,6 +140,7 @@ class TestSetInputChannels:
         mock_eh.has_voxel_output = True
         mock_eh.embed_voxel_out_channels = 64
         mock_eh.add_occupancy_channels = True  # +2
+        mock_eh.voxel_embed_as_tune = False
         model = _make_minimal_stage1_model(
             online_pdb_feature=True, online_pdb_feature_dim=49, embed_head=mock_eh
         )
@@ -378,7 +380,7 @@ class TestStage1EmbedHeadEmptyTrim:
 
 
 def test_find1_voxel_only_matches_full_embed_voxel_branch() -> None:
-    """验证 Find_1 非块式 MLP/centroid/residual/soft-splat 最短路径逐元素等价。"""
+    """验证 Find_1 非块式 MLP/centroid/residual/Gaussian 最短路径逐元素等价。"""
 
     torch.manual_seed(17)
     head = Stage1EmbedHead(
@@ -421,6 +423,8 @@ def test_find1_voxel_only_matches_full_embed_voxel_branch() -> None:
         add_occupancy_channels=True,
         use_soft_splatting=True,
         use_centroid_encoding=True,
+        use_gaussian_splatting=True,
+        voxel_embed_as_tune=False,
     )
     head.eval()
     atom_feat = torch.randn(4, 49)
@@ -453,6 +457,147 @@ def test_find1_voxel_only_matches_full_embed_voxel_branch() -> None:
 
     assert full.shape == short.shape == (1, 51, 16, 16, 16)
     torch.testing.assert_close(short, full, rtol=0.0, atol=0.0)
+
+
+def test_embed_gaussian_scatter_takes_priority_over_soft_scatter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """同时打开两个开关时复现旧 Find_1 的 Gaussian scatter。"""
+
+    head = Stage1EmbedHead.__new__(Stage1EmbedHead)
+    torch.nn.Module.__init__(head)
+    head.use_gaussian_splatting = True
+    head.use_soft_splatting = True
+    head.add_occupancy_channels = True
+    head.scatter_reduce = "sum"
+    expected = torch.tensor([23.0])
+    calls: list[str] = []
+
+    def _gaussian(**kwargs: object) -> torch.Tensor:
+        calls.append("gaussian")
+        assert kwargs["sigma_voxel"] == 0.7
+        assert kwargs["add_centroid_channels"] is False
+        return expected
+
+    def _soft(**kwargs: object) -> torch.Tensor:
+        calls.append("soft")
+        return torch.tensor([-1.0])
+
+    monkeypatch.setattr(stage1_embed_head_mod, "gauss_scatter_to_voxel_grid", _gaussian)
+    monkeypatch.setattr(stage1_embed_head_mod, "soft_scatter_to_voxel_grid", _soft)
+
+    actual = head._scatter_voxel_embed(
+        voxel_feat_per_atom=torch.zeros(1, 2),
+        atom_coord_local_voxel=torch.zeros(1, 3),
+        atom_batch_index=torch.zeros(1, dtype=torch.long),
+        box_shape_zyx=torch.ones(1, 3, dtype=torch.long),
+        batch_size=1,
+    )
+
+    assert actual is expected
+    assert calls == ["gaussian"]
+
+
+def test_find2_voxel_tune_is_56d_without_voxel_raw_residual() -> None:
+    """验证 Find_2 固定输出 56D Gaussian tune，并保留 point residual 路径。"""
+
+    torch.manual_seed(23)
+    head = Stage1EmbedHead(
+        atom_feature_dim=49,
+        embed_hidden_dim=128,
+        embed_voxel_out_channels=49,
+        embed_point_out_channels=64,
+        num_trunk_blocks=0,
+        num_voxel_blocks=0,
+        num_point_blocks=3,
+        trunk_buffer_radii=(),
+        voxel_buffer_radii=(),
+        point_buffer_radii=(8.0, 4.0, 0.0),
+        num_heads=4,
+        patch_size=16,
+        serialization_orders=("z",),
+        shuffle_orders=False,
+        qkv_bias=True,
+        qk_scale=None,
+        attn_drop=0.0,
+        proj_drop=0.0,
+        enable_rpe=False,
+        enable_flash=False,
+        upcast_attention=False,
+        upcast_softmax=False,
+        scatter_reduce="sum",
+        ffn_type="gated",
+        mlp_ratio=3,
+        act_layer_name="gelu",
+        point_grid_size=0.25,
+        cpe_impl="none",
+        cpe_kernel_size=5,
+        cpe_receptive_field=2.0,
+        pointconv_block_max_neighbors=16,
+        drop_path=0.0,
+        pre_norm=True,
+        embed_residual_enabled=True,
+        embed_point_gate_enabled=False,
+        embed_voxel_gate_enabled=False,
+        add_occupancy_channels=True,
+        use_soft_splatting=True,
+        use_centroid_encoding=True,
+        use_gaussian_splatting=True,
+        voxel_embed_as_tune=True,
+    )
+    head.eval()
+    atom_feat = torch.randn(4, 49)
+    atom_coord_local = torch.tensor(
+        [[1.25, 1.50, 1.75], [1.80, 1.20, 1.40], [15.50, 8.0, 8.0], [18.0, 8.0, 8.0]],
+        dtype=torch.float32,
+    )
+    core = torch.tensor([True, True, True, False])
+    batch_index = torch.zeros(4, dtype=torch.long)
+    box_shape = torch.tensor([[16, 16, 16]], dtype=torch.long)
+    outputs = head(
+        atom_feat=atom_feat,
+        atom_coord_centered_world=atom_coord_local - 8.0,
+        atom_batch_index=batch_index,
+        atom_offsets=torch.tensor([4], dtype=torch.long),
+        atom_coord_local_voxel=atom_coord_local,
+        box_shape_zyx=box_shape,
+        voxel_size_world=torch.ones(1, 3),
+        atom_is_in_core_box=core,
+    )
+    short = head.forward_voxel_only(
+        atom_feat=atom_feat,
+        atom_coord_local_voxel=atom_coord_local,
+        atom_batch_index=batch_index,
+        box_shape_zyx=box_shape,
+        atom_is_in_core_box=core,
+    )
+
+    assert head.embed_voxel_out_channels == 56
+    assert head.add_occupancy_channels is False
+    assert head.embed_voxel_add_proj is None
+    assert head.embed_point_add_proj is not None
+    assert outputs["embed_point_feat"].shape[1] == 64
+    assert outputs["voxel_pdb_embed_grid"].shape == short.shape == (1, 56, 16, 16, 16)
+    torch.testing.assert_close(short, outputs["voxel_pdb_embed_grid"], rtol=0.0, atol=0.0)
+
+
+def test_find2_voxel_input_adds_tune_instead_of_concatenating() -> None:
+    """验证 Find_2 的 56D voxel embed 与 density56 逐元素直接相加。"""
+
+    model = SimpleNamespace()
+    model.embed_head = SimpleNamespace(voxel_embed_as_tune=True)
+    model.online_pdb_feature = False
+    model._build_voxel_input = VolumePointStage1Model._build_voxel_input.__get__(model)
+    density = torch.full((1, 56, 2, 2, 2), 2.0)
+    tune = torch.full((1, 56, 2, 2, 2), 3.0)
+
+    voxel_input = model._build_voxel_input(
+        {"voxel_grid": density},
+        {"voxel_pdb_embed_grid": tune},
+    )
+
+    assert voxel_input.shape == density.shape
+    assert torch.equal(voxel_input, torch.full_like(density, 5.0))
 
 
 # ==================================================================

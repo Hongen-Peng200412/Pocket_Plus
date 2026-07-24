@@ -4,7 +4,7 @@ import pytest
 import torch
 from torch import nn
 
-from src.wrappers.voxel_point_stage1_logging import build_metric_key
+from src.wrappers.voxel_point_stage1_logging import build_metric_key, log_scalar_payload
 from src.wrappers.voxel_point_stage1_metrics import MetricBranchSpec, ValidationMetricManager
 
 
@@ -106,6 +106,126 @@ def test_validation_metric_manager_outputs_multiclass_suffix_and_macro() -> None
 
     assert "val_score/global/voxel_ligand_PRAUC_metal_ion" in payload
     assert "val_score/global/voxel_ligand_PRAUC_small_molecule" in payload
+
+
+def test_cpu_metric_uses_gloo_group_inside_nccl_training(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """NCCL 多进程训练中的 CPU PRAUC 状态改用 Gloo 通信组。"""
+
+    manager = ValidationMetricManager(
+        branches=[
+            MetricBranchSpec(
+                name="receptor",
+                enabled=True,
+                num_classes=2,
+                class_names=("background", "foreground"),
+                thresholds=None,
+            ),
+            MetricBranchSpec(
+                name="voxel_ligand",
+                enabled=True,
+                num_classes=2,
+                class_names=("background", "foreground"),
+                thresholds=8,
+            ),
+        ],
+        metric_device_policy="auto",
+    )
+    gloo_group = object()
+    created_backends: list[str] = []
+
+    monkeypatch.setattr(torch.distributed, "is_available", lambda: True)
+    monkeypatch.setattr(torch.distributed, "is_initialized", lambda: True)
+    monkeypatch.setattr(torch.distributed, "get_world_size", lambda: 2)
+    monkeypatch.setattr(torch.distributed, "get_backend", lambda: "nccl")
+
+    def _new_group(*, backend: str) -> object:
+        created_backends.append(backend)
+        return gloo_group
+
+    monkeypatch.setattr(torch.distributed, "new_group", _new_group)
+
+    manager._configure_distributed_process_groups()
+    manager._configure_distributed_process_groups()
+
+    assert created_backends == ["gloo"]
+    assert manager.metrics["receptor__binary"].process_group is gloo_group
+    assert manager.metrics["voxel_ligand__binary"].process_group is None
+
+
+def test_globally_reduced_metric_payload_is_logged_without_lightning_resync() -> None:
+    """已经完成跨卡聚合的指标不再由 Lightning 重复同步。"""
+
+    class _LoggingModule:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        def log(self, key: str, value: torch.Tensor, **kwargs: object) -> None:
+            self.calls.append({"key": key, "value": value, **kwargs})
+
+    module = _LoggingModule()
+    log_scalar_payload(
+        module=module,
+        payload={"val_score/global/atom_PRAUC": torch.tensor(0.75)},
+        monitor_metric="val_score/global/atom_PRAUC",
+        sync_dist=False,
+    )
+
+    assert len(module.calls) == 1
+    assert module.calls[0]["sync_dist"] is False
+    assert module.calls[0]["on_epoch"] is True
+
+
+def test_validation_macro_skips_classes_without_positive_targets() -> None:
+    """结构类别宏平均只纳入整个验证集中实际出现的前景类别。"""
+
+    manager = ValidationMetricManager(
+        branches=[
+            MetricBranchSpec(
+                name="protein_mainchain",
+                enabled=True,
+                num_classes=4,
+                class_names=("background", "A", "B", "C"),
+                thresholds=8,
+                report_per_class=False,
+                macro_present_classes_only=True,
+            )
+        ],
+        metric_device_policy="auto",
+    )
+    logits = torch.tensor(
+        [
+            [
+                [[[0.0, 0.0, 0.0, 0.0]]],
+                [[[4.0, 1.0, -2.0, -3.0]]],
+                [[[-2.0, -2.0, -2.0, -2.0]]],
+                [[[-3.0, -1.0, 1.0, 4.0]]],
+            ]
+        ]
+    )
+    target = torch.tensor([[[[1, 0, 0, 3]]]])
+    mask = torch.ones_like(target, dtype=torch.bool)
+
+    manager.update_branch(
+        branch_name="protein_mainchain",
+        logits=logits,
+        target=target,
+        mask=mask,
+    )
+    payload = manager.compute_payload()
+
+    expected = torch.stack(
+        [
+            manager.metrics["protein_mainchain__class_1"].compute(),
+            manager.metrics["protein_mainchain__class_3"].compute(),
+        ]
+    ).mean()
+    torch.testing.assert_close(
+        payload["val_score/global/protein_mainchain_PRAUC_macro"],
+        expected,
+    )
+    assert len(payload) == 1
 
 
 def test_wrapper_receptor_metric_name_replaces_voxel_aux_name() -> None:

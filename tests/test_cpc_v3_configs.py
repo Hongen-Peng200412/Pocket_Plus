@@ -5,6 +5,8 @@ from pathlib import Path
 import pytest
 import yaml
 
+from src.stage1_producers import FIND_MODEL_NAMES
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 CONFIG_ROOT = PROJECT_ROOT / "configs"
@@ -27,8 +29,8 @@ CPC3_NAMES = {
     for loss in ("tversky", "tversky_bce", "tversky_rank")
     for ratio in ("73", "82", "91")
 }
-ADALIGAND_CPC1_NAMES = {"Find_0", "Find_1"}
-ADALIGAND_CPC2_NAMES = {"Find_0", "Find_1"}
+ADALIGAND_CPC1_NAMES = set(FIND_MODEL_NAMES)
+ADALIGAND_CPC2_NAMES = set(FIND_MODEL_NAMES)
 
 
 def _yaml_files(group: str) -> list[Path]:
