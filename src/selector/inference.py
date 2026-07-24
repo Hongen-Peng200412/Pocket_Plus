@@ -25,6 +25,7 @@ import torch
 
 from src.artifacts import atomic_savez_compressed, load_npz_strict, validate_offsets
 from src.component_lineage import ComponentForest, ComponentNode
+from src.stage1_producers import STAGE1_MODEL_NAMES
 
 from .calibration import calibrate_tau_g
 from .dataset import SelectorDataset
@@ -419,7 +420,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     calibrate_parser.add_argument(
         "--stage1-model-name",
         required=True,
-        choices=("Find_0", "Find_1", "unet_c1"),
+        choices=STAGE1_MODEL_NAMES,
     )
     calibrate_parser.add_argument("--split", default="calibration")
 

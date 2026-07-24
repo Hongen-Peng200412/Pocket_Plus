@@ -1,4 +1,4 @@
-"""把 Stage1 ligand logits 转为概率，并应用 producer 专属 receptor hardmask。
+"""把 Stage1 ligand logits 转为概率，并应用模型来源专属 receptor hardmask。
 
 主要入口:
     - `logits_to_probability`: 接受 PyTorch 或 NumPy 的单通道 voxel logits，使用数值稳定 sigmoid 返回 CPU float32 概率。
@@ -13,11 +13,7 @@ from typing import Any
 import torch
 import numpy as np
 
-
-# 需要清零 receptor home voxels 的两个正式 Find producer。
-FIND_MODEL_NAMES: tuple[str, ...] = ("Find_0", "Find_1")
-# 三个正式 Stage1 producer；`unet_c1` 不应用 receptor hardmask。
-STAGE1_MODEL_NAMES: tuple[str, ...] = (*FIND_MODEL_NAMES, "unet_c1")
+from src.stage1_producers import FIND_MODEL_NAMES, STAGE1_MODEL_NAMES
 
 
 def logits_to_probability(voxel_logits_ligand: Any) -> np.ndarray:
@@ -86,8 +82,9 @@ def postprocess_ligand_probability(
         raise ValueError("probability 含非有限值")
     if stage1_model_name in FIND_MODEL_NAMES:
         if receptor_hardmask is None:
-            raise ValueError("两个 Find 的 probability 后处理必须显式提供 receptor_hardmask")
-        # bool, (D, H, W), 完整图或当前 centered BOX 的 receptor home voxels；广播到全部前导维。
+            raise ValueError("Find producer 的 probability 后处理必须显式提供 receptor_hardmask")
+        # bool，(D, H, W)，完整图或当前居中 BOX 的 receptor home voxel；
+        # 赋值时广播到概率数组的全部前导维。
         hardmask = np.asarray(receptor_hardmask, dtype=np.bool_)
         if hardmask.shape != processed.shape[-3:]:
             raise ValueError("receptor_hardmask 必须与 probability 最后三维同 shape")

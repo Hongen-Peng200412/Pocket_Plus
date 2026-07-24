@@ -11,9 +11,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from src.stage1_producers import STAGE1_MODEL_NAMES
 
-# 三个正式 Stage1 producer 名称；该顺序只用于稳定展示，不表示模型优先级。
-STAGE1_MODEL_NAMES: tuple[str, ...] = ("Find_0", "Find_1", "unet_c1")
+
 # 五个可独立发布完成标记的 PDB 级产物角色；列表顺序表达生产依赖，最后一个角色在 Selector 选择结果冻结后独立补跑。
 OUTPUT_ROLES: tuple[str, ...] = (
     "probability",
@@ -33,7 +33,7 @@ class Stage1ArtifactPaths:
         - output_root: Path, `stage1_outputs` 根目录；构造时只规范化路径，不要求目录已经存在。
         - stage1_model_name: str, `STAGE1_MODEL_NAMES` 中的模型来源身份，决定 producer 级目录。
         - split: str, 非空数据划分名，例如 `calibration`、`validation` 或 `train`。
-        - pdb_id: str, 非空 PDB 身份，决定 PDB 级目录名。
+        - pdb_id: str, 非空 PDB 标识，决定 PDB 级目录名。
 
     路径关系:
         - `producer_root`: `<output_root>/<stage1_model_name>`，包含该模型来源的全部数据划分和 calibration 产物。

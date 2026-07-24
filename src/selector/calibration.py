@@ -303,7 +303,7 @@ def calibrate_tau_g(
         - selector_run_dir: str | Path, 当前 Selector 运行的独立输出目录
         - stage1_outputs_root: str | Path, Stage1 模型来源的正式输出根目录
         - input_clg_list_path: str | Path, 当前运行冻结的 `input_CLG_list.json`
-        - stage1_model_name: str, `Find_0/Find_1/unet_c1` 之一
+        - stage1_model_name: str, `STAGE1_MODEL_NAMES` 中的模型来源身份
         - split: str, 校准数据划分；正式值为 `calibration`
 
     输出:
