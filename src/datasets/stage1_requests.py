@@ -2,14 +2,13 @@
 """AdaLigand Stage1 的 80³ 请求对象与冻结请求源。
 
 阅读主线:
-    1. :class:`ResolvedStage1Crop` 只描述“裁哪里”和“是否需要监督”，不读取数据。
-    2. :func:`resolve_stage1_start` 是所有请求共享的边界解析器，保证裁剪不补零。
-    3. :class:`Stage1TrainingRequestSet` 从冻结 BOX pool 按 epoch 生成 center/bias/context。
-    4. :func:`load_validation_selection` 恢复一次冻结的 validation 请求。
-    5. :func:`build_request_source` 统一选择 train、validation 或普通冻结请求源。
+    1. :class:`ResolvedStage1Crop` 只描述一个 80³ BOX 的身份、ZYX 起点、角色和监督开关，不读取密度图，也不构造模型输入。
+    2. :func:`resolve_stage1_start` 是所有请求共享的边界解析器，保证 ``[start_zyx, start_zyx + box_shape_zyx)`` 完整落在密度图内，不补零。
+    3. :class:`Stage1TrainingRequestSet` 从冻结 BOX pool 生成 center、bias、context 请求；``box_sample_fraction < 1`` 时还负责按固定 seed 创建并复用比例选择文件。
+    4. :func:`load_validation_selection` 读取已经冻结的 validation 请求，不重新抽样。
+    5. :func:`build_request_source` 根据 ``train``、``validation`` 或普通冻结文件返回统一的请求源对象。
 
-本模块是请求层，不负责把请求物化为张量；实际读取整图资产、裁剪 80³ BOX
-和构造模型字段的工作统一交给 ``stage1_dataset.py``。
+本模块的主要产物是 ``ResolvedStage1Crop`` 序列，以及保存比例抽样结果的压缩 ``.npz`` 请求文件。它只处理请求身份、BOX 起点、角色、抽样和来源摘要；不读取密度图、受体/配体坐标或标签数组，不把请求物化为张量。实际读取整图资产、裁剪 80³ BOX 和构造模型字段的工作统一交给 ``stage1_dataset.py``。
 """
 
 from __future__ import annotations
@@ -24,14 +23,28 @@ from typing import Any, Iterable, Sequence
 import numpy as np
 
 
+# (Z, Y, X)，Stage1 每个请求裁取的密度 BOX 体素数；起点使用完整图的离散 voxel index。
 STAGE1_BOX_SHAPE_ZYX = (80, 80, 80)
+# BOX pool 根目录中的唯一清单文件；请求发现只消费清单列出的 PDB 文件。
 BOX_POOL_MANIFEST_FILENAME = "manifest.json"
+# 请求角色的固定集合；前三个角色可参与训练比例抽样，后两个角色用于其他请求来源。
 _VALID_ROLES = {"center", "bias", "context", "sliding", "centered"}
+# 比例选择 NPZ 的字段契约版本；读取时必须与此版本完全一致。
 _FRACTION_SELECTION_SCHEMA_VERSION = 1
 
 
 def _validate_box_sample_fraction(value: float) -> float:
-    """返回位于 ``(0, 1]`` 的 BOX 请求保留比例。"""
+    """校验并返回 BOX 请求保留比例。
+
+    输入参数:
+        - ``value``: 可转换为 ``float`` 的比例。``1.0`` 表示保留完整请求池；小于 ``1.0`` 时，调用方按完整请求池的总数计算固定子集。
+
+    输出:
+        - ``float``: 位于 ``(0, 1]`` 的比例；不会改变请求池，也不会创建选择文件。
+
+    异常:
+        - ``ValueError``: ``value`` 不在允许区间内。
+    """
 
     fraction = float(value)
     if not 0.0 < fraction <= 1.0:
@@ -40,7 +53,14 @@ def _validate_box_sample_fraction(value: float) -> float:
 
 
 def _normalize_excluded_pdb_ids(values: Sequence[str]) -> frozenset[str]:
-    """规范化本次训练不读取的 PDB 身份。"""
+    """规范化本次训练排除的 PDB 身份。
+
+    输入参数:
+        - ``values``: PDB 身份序列；元素会去除首尾空白并转换为小写。
+
+    输出:
+        - ``frozenset[str]``: 去空白、去空字符串后的不可变 PDB 身份集合。集合不保留输入顺序，后续会用于请求过滤和选择文件命名。
+    """
 
     return frozenset(
         str(pdb_id).strip().lower()
@@ -55,7 +75,17 @@ def _fraction_filename(
     seed: int,
     excluded_pdb_ids: frozenset[str] = frozenset(),
 ) -> str:
-    """生成冻结比例请求文件名；排除集合通过稳定摘要进入文件名。"""
+    """生成冻结比例请求文件名。
+
+    输入参数:
+        - ``split_name``: ``train`` 或 ``validation`` 等数据划分名称。
+        - ``fraction``: 请求保留比例；格式化为最多 12 位有效数字。
+        - ``seed``: 产生固定请求子集的整数 seed。
+        - ``excluded_pdb_ids``: 已排除 PDB 身份的不可变集合；非空时将排序后的身份摘要写入文件名，避免不同排除集合复用同一文件。
+
+    输出:
+        - ``str``: 形如 ``<split>_selection_<fraction>_seed<seed>.npz`` 的文件名。函数只生成名称，不创建文件，也不检查目标路径。
+    """
 
     token = format(float(fraction), ".12g")
     exclusion_suffix = ""
@@ -75,17 +105,31 @@ def _select_request_fraction(
     fraction: float,
     seed: int,
 ) -> tuple[ResolvedStage1Crop, ...]:
-    """按准确总数与最大余数法抽取固定的 center、bias、context 子集。
+    """按完整请求池比例抽取固定的 center、bias、context 子集。
 
-    总数为 ``floor(len(requests) * fraction)``。三个请求角色分别按完整请求表
-    中的原有占比分配数量，无法整除的名额按小数余量从大到小补足。每个角色
-    使用由 ``seed`` 和角色编号确定的独立随机流；返回顺序仍与完整请求表一致。
+    输入参数:
+        - ``requests``: 长度 ``N_req`` 的完整请求序列；每个元素是一个已经完成起点解析的 :class:`ResolvedStage1Crop`。
+        - ``fraction``: 保留比例；目标总数严格为 ``floor(N_req * fraction)``，不是对某个 PDB 或某一种角色单独取比例。
+        - ``seed``: 固定选择结果的整数 seed；同一完整请求序列、比例和 seed 必须得到相同的具体请求集合。
+
+    处理规则:
+        - 只接受 ``center``、``bias``、``context`` 三种角色。
+        - 三种角色按完整请求序列中的原有数量比例分配目标总数；不能整除的名额使用最大余数法分配，角色顺序固定为 center、bias、context。
+        - 每个角色使用由 ``seed`` 和角色编号构成的独立 NumPy 随机流，且不放回抽样。
+        - 被选请求最后按它们在完整序列中的下标升序返回，保证不会引入额外的 epoch 排序。
+
+    输出:
+        - ``tuple[ResolvedStage1Crop, ...]``: 长度为 ``floor(N_req * fraction)`` 的冻结请求子集。
+
+    异常:
+        - ``ValueError``: 请求序列包含前三种角色之外的角色。
     """
 
     target_total = int(np.floor(len(requests) * float(fraction)))
     if target_total == 0:
         return ()
     roles = ("center", "bias", "context")
+    # dict[str, np.ndarray[int64]]；每个数组保存一种角色在 requests 中的原始下标，例如 role_indices_by_name["bias"] 的值可以直接索引完整请求序列。
     role_indices_by_name = {
         role: np.asarray(
             [index for index, request in enumerate(requests) if request.role == role],
@@ -96,10 +140,12 @@ def _select_request_fraction(
     classified_total = sum(indices.size for indices in role_indices_by_name.values())
     if classified_total != len(requests):
         raise ValueError("比例抽样只接受 center、bias、context 请求。")
+    # dict[str, float]；每种角色按完整请求池占比应得到的理想名额，尚未取整。
     exact_counts = {
         role: target_total * role_indices_by_name[role].size / len(requests)
         for role in roles
     }
+    # dict[str, int]；先取每种角色的整数名额，再把剩余名额交给最大余数法。
     target_counts = {role: int(np.floor(exact_counts[role])) for role in roles}
     remaining = target_total - sum(target_counts.values())
     remainder_order = sorted(
@@ -112,12 +158,14 @@ def _select_request_fraction(
     for role_index in remainder_order[:remaining]:
         target_counts[roles[role_index]] += 1
 
+    # list[int]；从完整 requests 中选出的原始下标，最后排序以保留原请求顺序。
     selected_indices: list[int] = []
     for role_index, role in enumerate(roles):
         role_indices = role_indices_by_name[role]
         selected_count = target_counts[role]
         if selected_count == 0:
             continue
+        # 每种角色独立的随机流；不会因另一种角色的名额变化而消耗不同随机数。
         rng = np.random.default_rng(np.random.SeedSequence([int(seed), role_index]))
         chosen = rng.choice(role_indices, size=selected_count, replace=False)
         selected_indices.extend(int(index) for index in chosen.tolist())
@@ -126,7 +174,14 @@ def _select_request_fraction(
 
 
 def _sha256_file(path: Path) -> str:
-    """计算比例选择来源文件的 SHA-256。"""
+    """分块计算来源文件的 SHA-256 摘要。
+
+    输入参数:
+        - ``path``: 已存在的来源文件路径；文件内容按二进制读取。
+
+    输出:
+        - ``str``: 64 个十六进制字符的 SHA-256 摘要，用于确认冻结选择文件仍对应同一份 manifest 或 validation selection。
+    """
 
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -144,7 +199,27 @@ def _save_request_selection(
     source_manifest_sha256: str,
     source_validation_sha256: str | None = None,
 ) -> None:
-    """原子发布一份可由 `load_flat_requests` 复用的冻结请求表。"""
+    """原子发布一份可由 :func:`load_flat_requests` 复用的冻结请求表。
+
+    输入参数:
+        - ``path``: 目标 ``.npz`` 路径；父目录不存在时创建。
+        - ``requests``: 要保存的冻结请求序列，长度记为 ``N_req``。
+        - ``fraction``、``seed``: 产生该选择的比例和整数 seed。
+        - ``source_manifest_sha256``: 选择所依据的 BOX pool manifest 摘要。
+        - ``source_validation_sha256``: 可选的 validation 来源文件摘要。
+
+    文件字段:
+        - ``pdb_id``: 字符串数组 ``(N_req,)``，每个请求对应的 PDB 身份。
+        - ``box_start_zyx``: int32 ``(N_req, 3)``，逐请求对齐的完整图 ZYX BOX 起点。
+        - ``role``: 字符串数组 ``(N_req,)``，逐请求对齐的 center/bias/context 等角色。
+        - ``occurrence_id``、``candidate_index``: int32 ``(N_req,)``；缺失值写为 ``-1``。
+        - ``require_targets``: bool ``(N_req,)``，每个请求是否要求 Dataset 构造监督字段。
+        - ``box_sample_fraction``、``request_seed``、``selection_epoch``、``schema_version``：标量元数据；本流程固定 ``selection_epoch=0``。
+        - ``source_manifest_sha256`` 和可选 ``source_validation_sha256``: 标量来源摘要。
+
+    写入边界:
+        - 先写入同目录临时 ``.tmp.npz``，再用 ``os.replace`` 原子替换目标路径；因此读取者不会看到半写入的正式选择文件。
+    """
 
     path.parent.mkdir(parents=True, exist_ok=True)
     temp_path = path.with_name(f".{path.name}.{os.getpid()}.tmp.npz")
@@ -200,7 +275,21 @@ def _load_request_selection(
     source_validation_sha256: str | None = None,
     expected_count: int,
 ) -> tuple[ResolvedStage1Crop, ...]:
-    """核对比例、随机种子和来源摘要后读取冻结请求表。"""
+    """核对冻结选择元数据后读取请求表。
+
+    输入参数:
+        - ``path``: 已存在的冻结 ``.npz`` 选择文件。
+        - ``fraction``、``seed``: 当前训练配置声明的比例和整数 seed。
+        - ``source_manifest_sha256``: 当前 BOX pool manifest 摘要。
+        - ``source_validation_sha256``: 当前 validation 来源摘要；仅在验证选择需要绑定来源时提供。
+        - ``expected_count``: 当前完整请求池比例应产生的请求数量。
+
+    输出:
+        - ``tuple[ResolvedStage1Crop, ...]``: 从文件字段恢复的冻结请求序列，长度必须等于 ``expected_count``，顺序与文件中的数组下标一致。
+
+    校验:
+        - 比例、seed、固定的 ``selection_epoch=0``、schema 版本和来源摘要必须全部与当前配置一致；缺字段、摘要漂移或请求数量不符都会拒绝读取。
+    """
 
     with np.load(path, allow_pickle=False) as data:
         required = {
@@ -390,13 +479,17 @@ def centered_start_from_centroid_zyx(
 
 def _read_json_rows(path: Path) -> list[dict[str, Any]]:
     """
-    读取 JSON 列表、包含 `requests` 的 JSON 对象或 JSONL 请求表。
+    读取 JSON 请求记录列表、包含 ``requests`` 的 JSON 对象或 JSONL 请求文件。
 
     输入参数:
-        - path: Path, 请求文件路径；后缀为 `.json` 或 `.jsonl`
+        - ``path``: ``Path``，请求文件路径；后缀为 ``.json`` 或 ``.jsonl``。``.jsonl`` 每个非空文本行必须编码为一个 JSON object；``.json`` 可以直接是 object 列表，也可以是包含 ``requests`` 列表的 object。
 
     输出:
-        - rows: list[dict[str,Any]], 长度 N_req，每项为一条尚未转成 dataclass 的请求记录
+        - ``list[dict[str, Any]]``：长度为 ``N_req`` 的请求记录；每个字典仍保留 ``pdb_id``、``box_start_zyx``、``role`` 等原始字段，尚未转成 dataclass。
+
+    读取边界:
+        - 空白 JSONL 文本不产生请求记录。
+        - 本函数只解析容器格式，不校验请求字段的完整性；字段检查和 :class:`ResolvedStage1Crop` 构造由 :func:`_requests_from_rows` 完成。
     """
 
     if path.suffix.lower() == ".jsonl":
@@ -422,14 +515,18 @@ def _read_json_rows(path: Path) -> list[dict[str, Any]]:
 
 def _requests_from_rows(rows: Iterable[dict[str, Any]], default_targets: bool) -> list[ResolvedStage1Crop]:
     """
-    把普通行记录转换为不可变 Stage1 请求对象。
+    把请求记录转换为不可变 Stage1 请求对象。
 
     输入参数:
-        - rows: Iterable[dict[str,Any]], 可变长度，每项至少包含 `pdb_id` 与 `box_start_zyx`
-        - default_targets: bool, 行内缺少 `require_targets` 时采用的监督开关
+        - ``rows``: ``Iterable[dict[str, Any]]``，可变长度；每个字典至少包含 ``pdb_id`` 和 ``box_start_zyx``，可选字段包括 ``role``、``occurrence_id``、``candidate_index`` 和 ``require_targets``。
+        - ``default_targets``: ``bool``；某个字典缺少 ``require_targets`` 时，为该请求补上的监督开关。
 
     输出:
-        - requests: list[ResolvedStage1Crop], 长度 N_req，与输入行顺序一致的请求对象
+        - ``list[ResolvedStage1Crop]``：长度 ``N_req``，与输入记录顺序一致；每个 ``box_start_zyx`` 最终由 dataclass 规范化为长度为 3 的整数 tuple。
+
+    字段规则:
+        - ``occurrence_id`` 和 ``candidate_index`` 的 JSON ``null`` 会保留为 ``None``；非空值转换为 Python ``int``。
+        - 缺少 ``role`` 时使用 ``centered``，缺少 ``require_targets`` 时使用 ``default_targets``。
     """
 
     requests: list[ResolvedStage1Crop] = []
@@ -470,14 +567,19 @@ def _string_array(values: np.ndarray) -> list[str]:
 
 def load_flat_requests(path: str | Path, default_targets: bool) -> list[ResolvedStage1Crop]:
     """
-    从path对应的文件中加载针对某个pdb的 list[ResolvedStage1Crop]
+    从请求文件恢复一份有序的 :class:`ResolvedStage1Crop` 序列。
 
     输入参数:
-        - path: str | Path, `.json`、`.jsonl` 或 `.npz` 请求文件
-        - default_targets: bool, 文件未显式保存监督开关时使用的默认值
+        - ``path``: ``str | Path``，``.json``、``.jsonl`` 或 ``.npz`` 请求文件。
+        - ``default_targets``: ``bool``，文件没有显式保存 ``require_targets`` 时使用的默认监督开关。
 
     输出:
-        - requests: list[ResolvedStage1Crop], 长度 N_req，按文件行序恢复的冻结请求
+        - ``list[ResolvedStage1Crop]``：长度 ``N_req``，按文件内请求下标恢复；不重新排序，也不根据 PDB 名称合并请求。
+
+    ``.npz`` 字段契约:
+        - ``pdb_id``: 字符串数组 ``(N_req,)``。
+        - ``box_start_zyx``: 整数数组 ``(N_req, 3)``，最后一维按 Z、Y、X 排列。
+        - ``role``、``occurrence_id``、``candidate_index``、``require_targets``：可选的一维数组，均按同一请求下标与 ``pdb_id`` 对齐；两个整数 ID 使用 ``-1`` 表示缺失，``require_targets`` 缺失时回退到 ``default_targets``。
     """
 
     source = Path(path)
@@ -491,12 +593,12 @@ def load_flat_requests(path: str | Path, default_targets: bool) -> list[Resolved
             raise KeyError(f"{source} 缺少 pdb_id 或 box_start_zyx。")
         # list[str], 长度 N_req，冻结请求的规范化 PDB identity。
         pdb_ids = _string_array(data["pdb_id"])
-        # np.ndarray[int64], (N_req,3), 与 pdb_ids 逐行对齐的 ZYX BOX 起点。
+        # np.ndarray[int64], (N_req,3)，与 pdb_ids 使用同一请求下标的 ZYX BOX 起点。
         starts = np.asarray(data["box_start_zyx"], dtype=np.int64)
         if starts.shape != (len(pdb_ids), 3):
             raise ValueError(f"{source}: box_start_zyx 形状必须为 ({len(pdb_ids)},3)。")
         roles = _string_array(data["role"]) if "role" in data else ["centered"] * len(pdb_ids)
-        # 可选一维数组均为 (N_req,)，与 pdb_ids/starts 使用相同的行下标。
+        # 可选一维数组均为 (N_req,)，与 pdb_ids 和 starts 使用相同的请求下标。
         occurrence = np.asarray(data["occurrence_id"], dtype=np.int64) if "occurrence_id" in data else None
         candidate = np.asarray(data["candidate_index"], dtype=np.int64) if "candidate_index" in data else None
         targets = np.asarray(data["require_targets"], dtype=bool) if "require_targets" in data else None
