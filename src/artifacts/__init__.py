@@ -1,13 +1,4 @@
-"""统一导出 AdaLigand Stage1 产物的路径、发布状态和数值归档接口。
-
-主要入口:
-    - `Stage1ArtifactPaths`: 从 `producer/split/pdb_id` 身份解析全部正式产物路径。
-    - `PdbRunningLease`: 以 PDB 级 `_RUNNING` 目录协调互斥生产。
-    - `atomic_write_json`、`atomic_savez_compressed`: 校验临时文件后原子发布 JSON 或纯数值 NPZ。
-    - `pack_centered_entries`、`validate_centered_archive`: 构造并校验三类 centered 聚合归档。
-
-本模块只汇总公共符号，不读取或写入任何产物。
-"""
+"""AdaLigand Stage1 产物寻址、状态与数值归档接口。"""
 
 from .io import (
     atomic_savez_compressed,

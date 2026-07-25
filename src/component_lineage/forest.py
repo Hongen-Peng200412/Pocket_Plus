@@ -1,11 +1,7 @@
-"""从完整图概率的多个冻结阈值层构造并发布只读 26-连通组件森林。
+"""由多阈值 26-连通组件构造只读 ComponentForest。
 
-主要入口:
-    - `build_component_forest`: 每个实际阈值独立标记 26-连通组件，再按相邻阈值层的 voxel 包含关系连接直接 parent/children。
-    - `count_f1_eligible`: 统计冻结 `t_F1` 层可进入后续居中生产的组件数量。
-    - `publish_component_artifacts`: 原子发布 `forest.npz`、`clg.npz`、`overlap.npz`、`summary.json`，最后发布 components 完成标记。
-
-候选资格只决定组件能否进入 CLG 或 centered 产物，不会从完整 forest 删除组件。谱系方向为低阈值 parent、较高阈值 child；输入和几何数组的体素轴顺序均为 ZYX。
+每个实际阈值先独立产生 26-连通组件；相邻层之间再按 mask 包含关系连接 direct
+parent。节点 eligibility 只影响它能否成为候选，不会把节点从完整 forest 删除。
 """
 
 from __future__ import annotations
@@ -24,7 +20,6 @@ from .clg import CLGEnumerationResult
 from .structures import ComponentForest, ComponentNode, ComponentTree
 
 
-# uint8 原因码到稳定名称的映射；体积检查优先于 80³ BOX 包含检查，因此每个节点只记录一个原因。
 INELIGIBLE_REASON: dict[int, str] = {
     0: "eligible",
     1: "below_min_voxels",
@@ -33,7 +28,6 @@ INELIGIBLE_REASON: dict[int, str] = {
 }
 
 
-# =========================================================== 给定概率图+阈值, 产生forest ===========================================================
 @dataclass(eq=False)
 class _RawNode:
     """
@@ -52,6 +46,7 @@ class _RawNode:
         - parent: _RawNode | None, 相邻低阈值层的 direct parent
         - children: list[_RawNode], 相邻高阈值层的 direct children
     """
+
     threshold_grid_index: int
     voxel_global_linear_index: np.ndarray
     bbox_min_zyx: np.ndarray
@@ -65,7 +60,6 @@ class _RawNode:
     children: list["_RawNode"] = field(default_factory=list)
 
 
-#### 核心函数 ####
 def build_component_forest(
     probability_map: np.ndarray,
     threshold_grid_indices: Sequence[int],
@@ -79,40 +73,25 @@ def build_component_forest(
     在实际去重阈值层上构造 26-连通组件森林。
 
     输入参数:
-        - probability_map: float32, (D, H, W), producer 后处理后的完整图概率，三维轴顺序 ZYX，所有数值必须有限。
-        - threshold_grid_indices: Sequence[int], 要实际构树的阈值网格整数 j；本函数去重并按 j 从高到低排列————去重后就是树的层数 N_layer 。
-        - denominator: int, 概率阈值分母 D_threshold；节点阈值为 `j/D_threshold`，正式值为 32768。
-        - min_voxels: int, candidate 最小组件 voxel 数，正式值为 32。
-        - max_voxels: int, candidate 最大组件 voxel 数，由 GT occurrence 体积 Q95×3.0 冻结。
-        - resolve_box_start: Callable[[np.ndarray, tuple[int, int, int]], Sequence[int]], 接收连续 ZYX voxel-index 质心和完整图 ZYX 形状，返回合法的离散 ZYX BOX 起点；必须与训练及 centered 请求共用同一实现。
-        - box_shape_zyx: tuple[int, int, int], centered BOX 的 ZYX voxel 形状，正式值为 `(80, 80, 80)`。
+        - probability_map: np.ndarray, (D,H,W), float32，producer 后处理后的完整图 ZYX voxel-grid 概率
+        - threshold_grid_indices: Sequence[int], 实际整数阈值 j；函数会去重并降序
+        - denominator: int, 阈值分母，正式值为 32768
+        - min_voxels: int, candidate 最小体素数，正式值为 32
+        - max_voxels: int, 已由 GT occurrence Q95×1.5 冻结的最大体素数
+        - resolve_box_start: Callable, 接收完整图连续 ZYX voxel-index 质心与完整图 ZYX shape，返回合法 80³ 离散 ZYX voxel-index BOX corner 起点；必须与训练/居中请求共用同一实现
+        - box_shape_zyx: tuple[int,int,int], 居中 BOX 形状，正式值为 (80,80,80)
 
     输出:
-        - forest: ComponentForest, parent 指向相邻更低实际阈值包含组件的只读森林；tree_id 和 node_id 由稳定排序确定。
-        - summary: dict[str, object], 当前 PDB 的 forest 基础统计；发布时与 CLG 统计合并后写入 `summary.json`，包含以下字段。
-            - `denominator`: int, 概率阈值网格分母 D_threshold；实际阈值由 `threshold_grid_index / denominator` 得到。
-            - `threshold_grid_indices_descending`: list[int], 长度 N_layer；去重后按高阈值到低阈值排列的实际构树阈值网格整数 j。
-            - `connectivity`: int, 固定为 26，表示三维组件连接中心 voxel 及其 26 个邻居。
-            - `min_voxels`: int, candidate 允许的最小组件 voxel 数，少于该值的节点记为 `below_min_voxels`。
-            - `max_voxels`: int, candidate 允许的最大组件 voxel 数，多于该值的节点记为 `above_max_voxels`。
-            - `n_trees`: int, 最低实际阈值层根节点形成的 component tree 总数。
-            - `n_nodes`: int, 全部实际阈值层中 ComponentNode 的总数。
-            - `ineligible_reason_code`: dict[str, str], 字符串化原因码 `"0"` 至 `"3"` 到 `eligible`、`below_min_voxels`、`above_max_voxels` 和 `bbox_not_contained_by_resolved_box` 的稳定映射。
-            - `layers`: list[dict[str, int]], 长度 N_layer；与 `threshold_grid_indices_descending` 逐层对齐，每层的 `n_eligible` 与三个 ineligible 原因计数之和等于 `n_nodes`。
-                - `threshold_grid_index`: int, 当前层的阈值网格整数 j。
-                - `n_nodes`: int, 当前阈值层的 26-连通组件总数。
-                - `n_eligible`: int, 当前层满足体积与 centered BOX 包含约束的 candidate 节点数。
-                - `n_below_min_voxels`: int, 当前层因组件 voxel 数少于 `min_voxels` 而不可作为 candidate 的节点数。
-                - `n_above_max_voxels`: int, 当前层因组件 voxel 数多于 `max_voxels` 而不可作为 candidate 的节点数。
-                - `n_bbox_not_contained_by_resolved_box`: int, 当前层体积合格但组件包围盒无法被解析出的 centered BOX 完整容纳的节点数。
+        - forest: ComponentForest, parent 指向相邻更低阈值包含组件的只读森林
+        - summary: dict[str, object], 含阈值、逐层 node/eligible 数和 reason code 说明
     """
-    # float32, (D, H, W), producer 后处理后的完整图概率；三维轴顺序 ZYX。
+    # np.ndarray[float32], (D,H,W), producer 后处理后的完整图 probability。
     probability = np.asarray(probability_map, dtype=np.float32)
     if probability.ndim != 3 or not bool(np.all(np.isfinite(probability))):
         raise ValueError("probability_map 必须是有限值三维数组")
     if denominator <= 0 or min_voxels <= 0 or max_voxels < min_voxels:
         raise ValueError("denominator/min_voxels/max_voxels 配置不合法")
-    # list[int], 长度 N_layer；去重后从高到低的阈值网格整数 j，重复阈值不制造重复 forest 层。
+    # list[int], (N_layer,), 去重后从高到低的整数阈值 j；重复 alpha 不制造重复层。
     thresholds = sorted({int(value) for value in threshold_grid_indices}, reverse=True)
     if not thresholds or thresholds[0] > denominator or thresholds[-1] < 0:
         raise ValueError("threshold_grid_indices 必须是 [0,denominator] 内的非空集合")
@@ -121,43 +100,38 @@ def build_component_forest(
     if box_shape.shape != (3,) or bool(np.any(np.asarray(full_shape) < box_shape)):
         raise ValueError("完整图三轴必须不小于 centered BOX")
 
-    # bool, (3, 3, 3), 三维中心 voxel 及其 26 个邻居的连通结构。
+    # np.ndarray[bool], (3,3,3), 含中心在内的 26-connectivity 邻域结构。
     structure = ndimage.generate_binary_structure(rank=3, connectivity=3)
-    # list[list[_RawNode]], 长度 N_layer；`layers[i]` 保存阈值层 i 的全部临时组件节点。
+    # layers[layer][component] 保存完整临时节点；label_layers 与它们按阈值层对齐。
     layers: list[list[_RawNode]] = []
-    # list[int array], 长度 N_layer；`label_layers[i]` 为 `(D, H, W)` 的 1-based 组件标签图(0 表示背景, 从1开始每个数字代表一个连通分支)，与 `layers[i]` 按标签编号对齐。
     label_layers: list[np.ndarray] = []
-    # list[dict[str, int]], 长度 N_layer；每项记录当前阈值、组件总数、eligible 数和各原因码计数。
     layer_stats: list[dict[str, int]] = []
     for threshold_grid_index in thresholds:
         threshold = float(threshold_grid_index) / float(denominator)
-        # labels: int array, (D, H, W), 当前阈值二值图的 1-based 26-连通组件标签；0 表示背景, 从1开始每个数字代表一个连通分支。
+        # labels: np.ndarray[int32], (D,H,W), 当前阈值二值图的 1-based 组件标签。
         # component_count: int, 当前阈值层的 26-连通组件数。
         labels, component_count = ndimage.label(probability >= threshold, structure=structure)
-        # list[tuple[slice, slice, slice] | None], 长度 `component_count`；第 `label_id - 1` 项给出标签 `label_id` 在完整 `(D, H, W)` ZYX 标签图中的最小包围盒切片 `(z_slice, y_slice, x_slice)`，缺失标签时为 None，后续用它裁剪该组件的局部 mask。
-        # “最小包围盒切片”是用三个切片范围把一个组件的全部 voxel 包住，并且每个轴的范围尽可能小。
-        # 例：若组件 voxel 范围为 z: 2 到 4、y: 10 到 12、x: 5 到 8，则 `(z_slice, y_slice, x_slice) = (slice(2, 5), slice(10, 13), slice(5, 9))`。
-        # Python 切片的结束位置不包含，因此 `slice(2, 5)` 实际包含索引 2、3、4。
         objects = ndimage.find_objects(labels, max_label=int(component_count))
         nodes: list[_RawNode] = []
         reason_counts = {reason: 0 for reason in INELIGIBLE_REASON.values()}
         for label_id, object_slices in enumerate(objects, start=1):
             if object_slices is None:
                 continue
-            # bool, (d, h, w), 当前组件包围盒内的局部 mask；`object_slices` 给出该局部网格在完整图中的 ZYX 区间。
+            # np.ndarray[bool], 当前组件 bbox 内的局部 mask；object_slices 给出完整图起点。
             local_mask = labels[object_slices] == label_id
-            # int64, (K_node, 3), 当前组件 K_node 个 voxel 在局部包围盒中的离散 ZYX 索引。
+            # np.ndarray[int64], (K_node,3), bbox-local ZYX voxel indices。
             local_zyx = np.argwhere(local_mask)
             start_zyx = np.asarray([axis_slice.start for axis_slice in object_slices], dtype=np.int64)
-            # int64, (K_node, 3), 加上包围盒起点后得到的完整图离散 ZYX voxel index。
+            # np.ndarray[int64], (K_node,3), 转回完整图坐标的 ZYX voxel indices。
             voxel_zyx = local_zyx + start_zyx[None, :]
-            # int64, (K_node,), 当前组件 voxel 在完整 ZYX 网格中的 C-order 离散线性索引，升序且唯一。
-            linear_index = np.ravel_multi_index(voxel_zyx.T, full_shape).astype(np.int64, copy=False)
+            # np.ndarray[int64], (K_node,), 完整图 C-order 线性索引，升序保存。
+            linear_index = np.ravel_multi_index(voxel_zyx.T, full_shape).astype(
+                np.int64, copy=False
+            )
             linear_index.sort()
             bbox_min = voxel_zyx.min(axis=0).astype(np.int32)
             bbox_max = voxel_zyx.max(axis=0).astype(np.int32)
             centroid = voxel_zyx.mean(axis=0, dtype=np.float64).astype(np.float32)
-            # float32, (K_node,), 当前组件每个 voxel 的完整图融合概率，与 `linear_index` 逐 voxel 对齐。
             values = probability.reshape(-1)[linear_index]
             reason_code = _candidate_reason_code(
                 voxel_count=int(linear_index.size),
@@ -200,11 +174,11 @@ def build_component_forest(
         high_nodes = layers[high_layer_index]
         low_nodes = layers[high_layer_index + 1]
         low_labels = label_layers[high_layer_index + 1]
-        # dict[int, _RawNode], 相邻低阈值层的 1-based label id 到临时节点的映射。
+        # dict[int,_RawNode], 低阈值层 label id -> 对应节点；与 ndimage 1-based 标签对齐。
         low_by_label = {label_id: node for label_id, node in enumerate(low_nodes, start=1)}
         low_flat = low_labels.reshape(-1)
         for child in high_nodes:
-            # int array, (K_label,), 高阈值 child 的全部 voxel 在相邻低阈值 label 图中命中的唯一标签集合；0 表示背景，合法单调关系必须恰好命中一个正 parent 标签。
+            # np.ndarray[int], 高阈值 child 的全部 voxel 在相邻低阈值 label 图中的标签集合。
             containing_labels = np.unique(low_flat[child.voxel_global_linear_index])
             if containing_labels.size != 1 or int(containing_labels[0]) <= 0:
                 raise RuntimeError("阈值单调性被破坏：高阈值组件没有唯一相邻低阈值 parent")
@@ -212,12 +186,12 @@ def build_component_forest(
             child.parent = parent
             parent.children.append(child)
 
-    # list[_RawNode], 没有相邻更低阈值 parent 的根节点；每个 root 形成一棵独立 tree。
+    # list[_RawNode], 只出现在最低可达阈值层的树根；每个 root 形成一棵独立 tree。
     roots = [node for layer in layers for node in layer if node.parent is None]
     roots.sort(key=_node_sort_key)
     trees: list[ComponentTree] = []
     for tree_id, root in enumerate(roots):
-        # list[_RawNode], parent-before-children 的稳定深度优先顺序；列表位置同时成为当前 tree 的连续 node_id。
+        # list[_RawNode], parent-before-children 的稳定 DFS 顺序，同时决定连续 node_id。
         raw_order = _deterministic_depth_first(root)
         converted = {
             raw_node: ComponentNode(
@@ -242,7 +216,6 @@ def build_component_forest(
         trees.append(ComponentTree(tree_id=tree_id, nodes=tuple(converted.values())))
 
     forest = ComponentForest(trees=trees)
-    # dict[str, object], 可直接写入 `summary.json` 的 forest 基础契约；CLG 统计在发布时并入同一顶层映射。
     summary: dict[str, object] = {
         "denominator": int(denominator),
         "threshold_grid_indices_descending": thresholds,
@@ -255,6 +228,7 @@ def build_component_forest(
         "layers": layer_stats,
     }
     return forest, summary
+
 
 def _candidate_reason_code(
     voxel_count: int,
@@ -288,7 +262,9 @@ def _candidate_reason_code(
         return 1
     if voxel_count > max_voxels:
         return 2
-    resolved_start = np.asarray(resolve_box_start(centroid_zyx, full_shape_zyx), dtype=np.int64)
+    resolved_start = np.asarray(
+        resolve_box_start(centroid_zyx, full_shape_zyx), dtype=np.int64
+    )
     if resolved_start.shape != (3,):
         raise ValueError("resolve_box_start 必须返回长度 3 的 ZYX 起点")
     max_start = np.asarray(full_shape_zyx, dtype=np.int64) - box_shape_zyx
@@ -299,9 +275,10 @@ def _candidate_reason_code(
         return 3
     return 0
 
+
 def _node_sort_key(node: _RawNode) -> tuple[int, float, int]:
     """
-    为 root/children 提供与平台无关的稳定排序键: (-int(node.threshold_grid_index), -float(node.probability_mean), first_voxel) 。
+    为 root/children 提供与平台无关的稳定排序键。
 
     输入参数:
         - node: _RawNode, 要排序的临时节点
@@ -315,6 +292,7 @@ def _node_sort_key(node: _RawNode) -> tuple[int, float, int]:
         else -1
     )
     return (-int(node.threshold_grid_index), -float(node.probability_mean), first_voxel)
+
 
 def _deterministic_depth_first(root: _RawNode) -> list[_RawNode]:
     """
@@ -335,10 +313,6 @@ def _deterministic_depth_first(root: _RawNode) -> list[_RawNode]:
     return result
 
 
-
-
-
-# =========================================================== 其余小工具函数: 发布/校验 ===========================================================
 def count_f1_eligible(
     forest: ComponentForest,
     f1_threshold_grid_index: int,
@@ -359,6 +333,7 @@ def count_f1_eligible(
         for node in forest.nodes
     )
 
+
 def publish_component_artifacts(
     paths: Stage1ArtifactPaths,
     forest: ComponentForest,
@@ -370,16 +345,16 @@ def publish_component_artifacts(
     原子发布 forest、CLG、overlap、summary，最后写 components `_COMPLETE`。
 
     输入参数:
-        - paths: Stage1ArtifactPaths, 当前 producer/split/PDB 的正式 forest、CLG、overlap、summary 与状态路径。
-        - forest: ComponentForest, 要编码为 `forest.npz` 的原始只读组件森林。
-        - clg_result: CLGEnumerationResult, 要编码为 `clg.npz` 的成功 CLG，以及并入 summary 的枚举计数。
-        - overlap_arrays: Mapping[str, np.ndarray], `overlap.npz` 字段；`candidate_occurrence_offsets` 同步切分 occurrence 局部行号与正交集 voxel 计数。
-        - forest_summary: Mapping[str, object], `build_component_forest` 返回的阈值层、eligibility 与原因码统计。
+        - paths: Stage1ArtifactPaths, 当前 producer/split/PDB 路径
+        - forest: ComponentForest, 原始只读森林
+        - clg_result: CLGEnumerationResult, 成功 CLG 与 cap 统计
+        - overlap_arrays: Mapping[str,np.ndarray], `candidate_occurrence_offsets` 同时切分
+          `overlap_occurrence_index` 与 `intersection_voxel_count` 的基础事实
+        - forest_summary: Mapping[str,object], 阈值层与 eligibility 统计
 
     输出:
-        - None, 依次原子发布 `forest.npz`、`clg.npz`、`overlap.npz` 和 `summary.json`，前三个 NPZ 均重读校验；全部成功后才发布 components `_COMPLETE`。
+        - None, 四个 payload 都可冷读后才发布 role 完成标记
     """
-    # dict[str, np.ndarray], `forest.npz` 的节点主表、children ragged 表和 voxel membership ragged 表。
     forest_arrays = forest.to_arrays()
     atomic_savez_compressed(
         paths.forest_npz,
@@ -396,11 +371,11 @@ def publish_component_artifacts(
         overlap_arrays,
         validator=_validate_overlap_arrays,
     )
-    # dict[str, object], forest 基础统计与 CLG 枚举统计的单一 `summary.json` 顶层映射。
     summary = dict(forest_summary)
     summary.update(clg_result.summary)
     atomic_write_json(paths.component_summary_json, summary)
     mark_role_complete(paths, "components")
+
 
 def _validate_clg_arrays(
     arrays: Mapping[str, np.ndarray],
@@ -420,12 +395,13 @@ def _validate_clg_arrays(
 
     clgs_from_arrays(arrays, forest)
 
+
 def _validate_overlap_arrays(arrays: Mapping[str, np.ndarray]) -> None:
     """
     校验 overlap 局部 occurrence index 与两张同步 value 表。
 
     输入参数:
-        - arrays: Mapping[str, np.ndarray], `overlap.npz` 的 `candidate_occurrence_offsets/overlap_occurrence_index/intersection_voxel_count/occurrence_id/occurrence_voxel_count` 字段。
+        - arrays: Mapping[str,np.ndarray], `overlap.npz` 的全部字段
 
     输出:
         - None: candidate offsets、occurrence 局部行号、正交集计数与 occurrence 主表全部对齐时返回

@@ -1,13 +1,4 @@
-"""在 calibration 数据划分的 Selector 分数上冻结 CLG 门控阈值 ``tau_G``。
-
-主要入口:
-    - `calibrate_tau_g`: 对实际出现的 CLG 有效概率升序扫描，以全局
-      `M_instance` 首个最大值冻结门控阈值，并原子发布 `calibration.json`。
-
-校准先在每个 CLG 内解码非空预测反链，再按组件树节点身份去重 PDB 内的预测
-candidate。扫描阈值只控制整个 CLG 是否进入实例指标，不会在校准期间重训模型或
-改变候选反链。
-"""
+"""在 calibration scores 上冻结 Selector 的 CLG 门控阈值 tau_G。"""
 
 from __future__ import annotations
 
@@ -34,16 +25,14 @@ from .structured.antichain_dp import build_candidate_tree_closure, exact_anticha
 @dataclass(frozen=True)
 class _PdbCalibrationTable:
     """
-    保存一个 PDB 已解码最大后验候选的稠密实例指标基础表。
+    保存一个 PDB 已解码 MAP candidates 的稠密 instance 计数基础表。
 
     输入参数:
-        - pdb_id: str, 当前 PDB 标识
-        - gate_probability: np.ndarray, `(N_prediction,)`，每个去重预测候选所属
-          CLG 的有效概率 `p_G`；同一树节点来自多个 CLG 时取最大概率
-        - pred_sizes: np.ndarray, `(N_prediction,)`，每个预测候选的 voxel 数
-        - intersections: np.ndarray, `(N_prediction, N_gt)`，候选与真实
-          occurrence 的交集 voxel 数
-        - gt_sizes: np.ndarray, `(N_gt,)`，每个真实 occurrence 的 voxel 数
+        - pdb_id: str, 当前 PDB 身份
+        - gate_probability: np.ndarray, (N_prediction,), 每个去重预测 candidate 所属 CLG 的 p_G
+        - pred_sizes: np.ndarray, (N_prediction,), 每个预测 candidate 的 voxel 数
+        - intersections: np.ndarray, (N_prediction,N_gt), candidate 与 GT occurrence 的交集 voxel 数
+        - gt_sizes: np.ndarray, (N_gt,), 每个 GT occurrence 的 voxel 数
     """
 
     pdb_id: str
@@ -60,19 +49,17 @@ def _selected_candidate_rows(
     lambda_count: float,
 ) -> tuple[np.ndarray, np.ndarray]:
     """
-    为全部 CLG 各解一次非空最大后验反链，并返回候选值表绝对行号及其 `p_G`。
+    为全部 CLG 各解一次非空预测 MAP，并返回绝对 candidate 行及其 p_G。
 
     输入参数:
-        - scores: dict[str, np.ndarray], 与 `clg.npz` 同序的 `scores.npz`
-        - forest: dict[str, np.ndarray], 当前 PDB 的 `forest.npz`
-        - clg: dict[str, np.ndarray], 当前 PDB 的 `clg.npz`
+        - scores: dict[str,np.ndarray], 与 clg.npz 同序的 scores.npz
+        - forest: dict[str,np.ndarray], 当前 PDB forest.npz
+        - clg: dict[str,np.ndarray], 当前 PDB clg.npz
         - lambda_count: float, 预测反链节点计数惩罚
 
     输出:
-        - candidate_rows: np.ndarray, `(N_pred,)`，CLG 候选值表绝对行号；同一
-          forest 节点在此阶段尚未跨 CLG 去重
-        - gate_probability: np.ndarray, `(N_pred,)`，与候选行号同序的所属 CLG
-          有效概率 `p_G`
+        - candidate_rows: np.ndarray, (N_pred,), clg candidate value 表绝对行
+        - gate_probability: np.ndarray, (N_pred,), 每个预测所属 CLG 的 p_G
     """
     if not np.array_equal(scores["CLG_id"], clg["CLG_id"]):
         raise ValueError("calibration scores.CLG_id 必须与来源 clg.npz 完全同序。")
@@ -91,7 +78,6 @@ def _selected_candidate_rows(
     if selection_logit.shape != candidate_node_id_all.shape or not np.isfinite(selection_logit).all():
         raise ValueError("selection_logit 必须与 candidate value 表对齐且全部有限。")
 
-    # 两个列表逐项对齐；候选行号是 `clg["candidate_node_id"]` 值表的绝对行号。
     selected_rows: list[int] = []
     selected_probabilities: list[float] = []
     for clg_row in range(probabilities.size):
@@ -125,17 +111,16 @@ def _build_pdb_calibration_table(
     lambda_count: float,
 ) -> _PdbCalibrationTable:
     """
-    从 scores、forest、CLG 和 overlap 构造一个 PDB 的预测候选×真实实例交集表。
+    从 scores/forest/clg/overlap 构造一个 PDB 的 MAP candidate×GT 交集表。
 
     输入参数:
-        - pdb_id: str, 当前 PDB 标识
-        - scores_path: Path, 当前 Selector 运行的 PDB `scores.npz`
-        - paths: Stage1ArtifactPaths, 当前 PDB 的 forest、CLG 和 overlap 产物路径
+        - pdb_id: str, 当前 PDB 身份
+        - scores_path: Path, 当前 Selector run 的 PDB scores.npz
+        - paths: Stage1ArtifactPaths, 当前 PDB forest、CLG 与 overlap artifact 路径
         - lambda_count: float, 预测反链的 candidate 计数惩罚
 
     输出:
-        - table: _PdbCalibrationTable, 按唯一 `(tree_id, node_id)` 预测候选组织的
-          校准输入表
+        - table: _PdbCalibrationTable, 按去重 candidate 行组织的校准输入表
     """
     scores = load_npz_strict(scores_path)
     forest = load_npz_strict(paths.forest_npz)
@@ -158,7 +143,6 @@ def _build_pdb_calibration_table(
     if overlap_occurrence.shape != overlap_count.shape:
         raise ValueError("overlap_occurrence_index 与 intersection_voxel_count 必须逐行对齐。")
 
-    # dict[(tree_id, node_id), int]，组件树节点身份到森林主表绝对行号。
     forest_rows = {
         (int(tree_id), int(node_id)): row
         for row, (tree_id, node_id) in enumerate(
@@ -167,7 +151,6 @@ def _build_pdb_calibration_table(
     }
     clg_offsets = np.asarray(clg["candidate_offsets"], dtype=np.int64)
     clg_row_by_candidate = np.searchsorted(clg_offsets[1:], candidate_rows, side="right")
-    # 同一组件树节点可能被多个 CLG 解码选中；校准只保留一次，并取最大的 `p_G`。
     unique_rows: list[int] = []
     unique_gate_probability: list[float] = []
     unique_clg_rows: list[int] = []
@@ -193,9 +176,7 @@ def _build_pdb_calibration_table(
         unique_clg_rows.append(int(clg_row))
         unique_gate_probability.append(float(probability))
 
-    # int64，(N_prediction,)，去重预测候选的 voxel 数。
     pred_sizes = np.empty(len(unique_rows), dtype=np.int64)
-    # int64，(N_prediction, N_gt)，预测候选与真实 occurrence 的稠密交集计数。
     intersections = np.zeros((len(unique_rows), occurrence_sizes.size), dtype=np.int64)
     for prediction_row, (candidate_row, clg_row) in enumerate(
         zip(unique_rows, unique_clg_rows, strict=True)
@@ -226,14 +207,13 @@ def _build_pdb_calibration_table(
 
 def _metric_summary(counts: InstanceCounts) -> dict[str, float | int]:
     """
-    从正式 InstanceCounts 提取全局指标并计算四项均值 `M_instance`。
+    从正式 InstanceCounts 提取完整 global 指标并计算四项均值 M_instance。
 
     输入参数:
         - counts: InstanceCounts, 已聚合的 instance overlap 计数
 
     输出:
-        - metrics: dict[str, float | int], `InstanceCounts.metrics()` 的全部字段以及
-          coverage/一对一匹配在 F1 阈值 0.3 和 0.5 下的四项算术均值
+        - metrics: dict[str,float|int], `InstanceCounts.metrics()` 字段及 `M_instance`
     """
     metrics = counts.metrics()
     component_names = (
@@ -251,17 +231,15 @@ def _evaluate_tau(
     tau_g: float,
 ) -> tuple[dict[str, float | int], dict[str, float]]:
     """
-    在一个 ``tau_G`` 下计算全部 PDB 的全局计数指标和逐 PDB 宏平均诊断。
+    在一个 tau_G 下计算全体 PDB global/micro 指标和逐 PDB macro 诊断。
 
     输入参数:
         - tables: Sequence[_PdbCalibrationTable], 各 PDB 已解码 candidate 计数表
         - tau_g: float, CLG 门控阈值
 
     输出:
-        - result: tuple[dict[str, float | int], dict[str, float]]，第一项先汇总
-          全部 PDB 基础计数再计算指标，第二项先计算逐 PDB 指标再取算术平均
+        - result: tuple[dict[str,float|int],dict[str,float]], 依次为 global 指标和逐 PDB macro 指标
     """
-    # 每个阈值只过滤整组 CLG 预测；候选反链已在构表阶段固定，不随阈值重解码。
     per_pdb_counts = []
     per_pdb_metrics: list[dict[str, float | int]] = []
     for table in tables:
@@ -297,18 +275,17 @@ def calibrate_tau_g(
     split: str = "calibration",
 ) -> dict[str, Any]:
     """
-    扫描实际出现的 `p_G`，按全局 `M_instance` 的首个最大值冻结 ``tau_G``。
+    扫描实际 p_G，按 global/micro M_instance 的首个最大值冻结 tau_G。
 
     输入参数:
-        - selector_run_dir: str | Path, 当前 Selector 运行的独立输出目录
-        - stage1_outputs_root: str | Path, Stage1 模型来源的正式输出根目录
-        - input_clg_list_path: str | Path, 当前运行冻结的 `input_CLG_list.json`
-        - stage1_model_name: str, `STAGE1_MODEL_NAMES` 中的模型来源身份
-        - split: str, 校准数据划分；正式值为 `calibration`
+        - selector_run_dir: str | Path, 当前 Selector run 独立输出目录
+        - stage1_outputs_root: str | Path, Stage1 producer 正式输出根
+        - input_clg_list_path: str | Path, 当前 run 冻结的 input_CLG_list.json
+        - stage1_model_name: str, `STAGE1_MODEL_NAMES` 中的 producer 身份
+        - split: str, 校正 split；正式为 calibration
 
     输出:
-        - payload: dict[str, Any], 含扫描定义、冻结阈值、最佳全局指标、宏平均
-          诊断和完整曲线；同时原子发布为运行根目录 `calibration.json`
+        - payload: dict[str,Any], 同时原子发布为 run 根目录 calibration.json
     """
     frozen = json.loads(Path(input_clg_list_path).read_text(encoding="utf-8"))
     if frozen.get("stage1_model_name") != stage1_model_name:
@@ -348,11 +325,9 @@ def calibrate_tau_g(
         )
         for pdb_id in pdb_ids
     )
-    # float32，(N_prediction_all,)，全部 PDB 去重预测候选所对应的实际 CLG 概率。
     all_probabilities = np.concatenate([table.gate_probability for table in tables])
     if all_probabilities.size == 0 or not np.isfinite(all_probabilities).all():
         raise ValueError("calibration 没有可扫描的有限 CLG_valid_probability。")
-    # float32，(N_tau,)，升序且去重；不额外插值或引入未实际出现的门控阈值。
     tau_values = np.unique(all_probabilities.astype(np.float32, copy=False))
 
     curve: list[dict[str, Any]] = []

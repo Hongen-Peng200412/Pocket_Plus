@@ -1,9 +1,4 @@
-"""为 Selector、Stage2 或 Stage3 独立训练的轻量三维密度上下文网络。
-
-`DensityMUNetLite` 只消费当前任务现场构造的单通道 experimental density。网络按
-`80→40→20→10` 三次下采样，在最低分辨率执行一次或多次 Transformer，再用跳跃
-连接恢复完整分辨率。输出只在真实稀疏 V voxel 位置被读取，不作为 dense 产物落盘。
-"""
+"""Selector/Stage2/Stage3 各自训练的轻量密度上下文 U-Net。"""
 
 from __future__ import annotations
 
@@ -16,7 +11,7 @@ from torch.nn import functional as F
 
 def _group_count(channels: int) -> int:
     """
-    选择能整除通道数且不超过 8 的 GroupNorm 分组数。
+    选择能整除通道数且不超过 8 的 GroupNorm group 数。
 
     输入参数:
         - channels: int, 当前 feature 通道数
@@ -46,14 +41,6 @@ class ResidualConvBlock3d(nn.Module):
     """
 
     def __init__(self, in_channels: int, out_channels: int) -> None:
-        """
-        初始化两层三维卷积主分支和通道匹配残差分支。
-
-        输入参数:
-            - in_channels: int, 输入特征通道数
-            - out_channels: int, 输出特征通道数；与输入不同时用 1×1×1 卷积
-              投影残差
-        """
         super().__init__()
         self.main = nn.Sequential(
             nn.GroupNorm(_group_count(in_channels), in_channels),
@@ -106,24 +93,6 @@ class DensityMUNetLite(nn.Module):
         bottleneck_ffn_dim: int,
         dropout: float,
     ) -> None:
-        """
-        构造三层下采样、最低分辨率 Transformer 和对称卷积解码器。
-
-        输入参数:
-            - input_shape_zyx: Sequence[int], 输入密度的离散 ZYX 网格尺寸；三轴
-              必须能被 8 整除
-            - channels: Sequence[int], 从完整分辨率到最低分辨率的四个通道数
-            - bottleneck_heads: int, 最低分辨率 Transformer 的注意力头数
-            - bottleneck_layers: int, Transformer encoder 层数
-            - bottleneck_ffn_dim: int, Transformer 前馈网络通道数
-            - dropout: float, Transformer 内部 dropout 概率
-
-        结构:
-            - 编码分辨率依次为 `(D,H,W)`、`/2`、`/4`、`/8`。
-            - 最低分辨率体素展平为序列，并加入由归一化 XYZ 坐标线性投影得到的
-              位置编码。
-            - 解码器逐级拼接同分辨率编码特征，最终输出 `channels[0]` 个通道。
-        """
         super().__init__()
         self.input_shape_zyx = tuple(int(value) for value in input_shape_zyx)
         channel_values = tuple(int(value) for value in channels)
@@ -135,7 +104,6 @@ class DensityMUNetLite(nn.Module):
             raise ValueError("bottleneck 通道数必须能被 attention head 数整除。")
         self.output_channels = channel_values[0]
 
-        # c0/c1/c2/c3 分别对应完整、1/2、1/4 和 1/8 线性分辨率。
         c0, c1, c2, c3 = channel_values
         self.input_projection = nn.Conv3d(1, c0, kernel_size=3, padding=1)
         self.encoder0 = ResidualConvBlock3d(c0, c0)
@@ -183,10 +151,8 @@ class DensityMUNetLite(nn.Module):
         z = torch.linspace(-1.0, 1.0, depth, device=feature.device, dtype=feature.dtype)
         y = torch.linspace(-1.0, 1.0, height, device=feature.device, dtype=feature.dtype)
         x = torch.linspace(-1.0, 1.0, width, device=feature.device, dtype=feature.dtype)
-        # `(D_b, H_b, W_b, 3)` 的归一化 ZYX 网格，换序后作为连续 XYZ 位置编码。
         grid_zyx = torch.stack(torch.meshgrid(z, y, x, indexing="ij"), dim=-1)
         position_xyz = grid_zyx[..., [2, 1, 0]].reshape(1, -1, 3)
-        # `(B, D_b*H_b*W_b, C)`，空间 C-order 展平与恢复使用相同次序。
         tokens = feature.flatten(2).transpose(1, 2)
         tokens = tokens + self.position_projection(position_xyz).expand(batch_size, -1, -1)
         transformed = self.bottleneck_transformer(tokens)
@@ -206,13 +172,11 @@ class DensityMUNetLite(nn.Module):
             raise ValueError(
                 f"density_input 必须为 (B,1,{self.input_shape_zyx}), 实际为 {tuple(density_input.shape)}"
             )
-        # 编码张量分别位于 1、1/2、1/4 和 1/8 线性分辨率。
         enc0 = self.encoder0(self.input_projection(density_input))
         enc1 = self.encoder1(self.down1(enc0))
         enc2 = self.encoder2(self.down2(enc1))
         enc3 = self.encoder3(self.down3(enc2))
         bottleneck = self._run_bottleneck_transformer(enc3)
-        # 每一级转置卷积结果与同分辨率编码特征按通道拼接后再做残差卷积。
         dec2 = self.decoder2(torch.cat([self.up2(bottleneck), enc2], dim=1))
         dec1 = self.decoder1(torch.cat([self.up1(dec2), enc1], dim=1))
         dec0 = self.decoder0(torch.cat([self.up0(dec1), enc0], dim=1))

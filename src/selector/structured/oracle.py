@@ -1,9 +1,4 @@
-"""根据冻结的 candidate-occurrence 交集现场生成 Selector 监督。
-
-`compute_candidate_max_iou` 只从体素计数基础事实计算每个候选对任一真实 occurrence
-的最大 IoU；`build_online_oracle` 再按当前 `lambda_count` 求包括空集在内的最佳
-反链。因此改变计数惩罚无需重写 Stage1 产物或保存另一份标签文件。
-"""
+"""根据基础 overlap 现场生成 Selector 监督。"""
 
 from __future__ import annotations
 
@@ -19,16 +14,13 @@ from .antichain_dp import exact_antichain_map
 @dataclass(frozen=True)
 class OnlineOracle:
     """
-    保存一次按当前候选计数惩罚现场计算的 CLG 最优监督。
+    保存一次按当前 lambda_count 现场计算的 CLG oracle。
 
     字段:
-        - candidate_max_iou: torch.Tensor, `(N_candidate,)`，每个候选对任一真实
-          occurrence 的最大 IoU
-        - selected_candidate_index: torch.Tensor, `(N_selected,)`，最优反链的
-          候选局部下标，升序排列
-        - is_valid: torch.Tensor, scalar bool，最佳非空反链分数是否严格大于空解 0
-        - best_score: torch.Tensor, scalar，含候选计数惩罚的最终最优分数；选择
-          空解时为 0
+        - candidate_max_iou: torch.Tensor, (N_candidate,), 每个 candidate 对任一 GT occurrence 的最大 IoU
+        - selected_candidate_index: torch.Tensor, (N_selected,), oracle 最优反链的 candidate 局部下标
+        - is_valid: torch.Tensor, scalar bool，oracle 是否选择非空反链
+        - best_score: torch.Tensor, scalar，含计数惩罚的 oracle 最优分数；空解时为 0
     """
 
     candidate_max_iou: torch.Tensor
@@ -48,19 +40,14 @@ def compute_candidate_max_iou(
     从非零 candidate-occurrence 交集计算每个 candidate 的最大 IoU。
 
     输入参数:
-        - candidate_occurrence_offsets: Sequence[int], `(N_candidate + 1,)`，同时
-          切分两个非零交集值表
-        - overlap_occurrence_index: Sequence[int], `(N_overlap,)`，指向同文件
-          `occurrence_id/occurrence_voxel_count` 的局部行号
-        - intersection_voxel_count: Sequence[int], `(N_overlap,)`，对应非零交集
-          voxel 数
-        - candidate_voxel_count: Sequence[int], `(N_candidate,)`，候选 mask 的 voxel 数
-        - occurrence_voxel_count: Sequence[int], `(N_gt,)`，真实 occurrence mask
-          的 voxel 数
+        - candidate_occurrence_offsets: Sequence[int], (N_candidate+1,), 同时切分两个 overlap value 表
+        - overlap_occurrence_index: Sequence[int], (N_overlap,), 指向同文件 occurrence_id/occurrence_voxel_count 的局部行
+        - intersection_voxel_count: Sequence[int], (N_overlap,), 对应交集体素数
+        - candidate_voxel_count: Sequence[int], (N_candidate,), candidate mask 体素数
+        - occurrence_voxel_count: Sequence[int], (N_gt,), 对应 GT mask 体素数
 
     输出:
-        - q: np.ndarray, `(N_candidate,)`，float32，每个候选的最大 IoU；没有
-          真实 occurrence 或没有非零交集时为 0
+        - q: np.ndarray, (N_candidate,), float32，每个 candidate 的最大 IoU；无 GT/无交集为 0
     """
     offsets = np.asarray(candidate_occurrence_offsets, dtype=np.int64)
     overlap_indices = np.asarray(overlap_occurrence_index, dtype=np.int64)
@@ -74,7 +61,6 @@ def compute_candidate_max_iou(
     if overlap_indices.size and (overlap_indices.min() < 0 or overlap_indices.max() >= gt_counts.size):
         raise IndexError("overlap_occurrence_index 越过 occurrence 表。")
 
-    # float32，(N_candidate,)，每个候选只保留对所有真实 occurrence 的最大 IoU。
     result = np.zeros(candidate_counts.size, dtype=np.float32)
     for candidate_index in range(candidate_counts.size):
         begin = int(offsets[candidate_index])
@@ -98,17 +84,16 @@ def build_online_oracle(
     lambda_count: float,
 ) -> OnlineOracle:
     """
-    按当前 ``lambda_count`` 现场求包括空集在内的真实监督最优反链。
+    按当前 lambda_count 现场求包括空集在内的 GT 最优反链。
 
     输入参数:
-        - candidate_max_iou: torch.Tensor, `(N_candidate,)`，候选质量 `q_i`
-        - parent_index: Sequence[int], `(N_closure,)`，候选最小连接闭包父行号
-        - candidate_index_by_node: Sequence[int], `(N_closure,)`，闭包节点到候选
-          局部下标映射
-        - lambda_count: float, 每选择一个候选所扣除的监督计数惩罚
+        - candidate_max_iou: torch.Tensor, (N_candidate,), q_i
+        - parent_index: Sequence[int], (N_closure,), candidate 最小连接闭包父行
+        - candidate_index_by_node: Sequence[int], (N_closure,), 闭包节点到 candidate 行映射
+        - lambda_count: float, oracle 计数惩罚
 
     输出:
-        - oracle: OnlineOracle，非空最优分数不大于空解分数 0 时稳定选择空集
+        - oracle: OnlineOracle；非空最优分数不大于 0 时稳定选择空集
     """
     q = candidate_max_iou.reshape(-1).to(dtype=torch.float32)
     nonempty_score, selected = exact_antichain_map(
