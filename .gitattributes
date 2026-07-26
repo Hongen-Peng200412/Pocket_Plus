@@ -1,0 +1,3 @@
+/训练与运行/**/*.sh text eol=lf
+/训练与运行/**/*.sbatch text eol=lf
+/与服务器交互/other/training_runtime/*.sh text eol=lf
