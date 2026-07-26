@@ -118,6 +118,17 @@ sbatch
 因此，排队期间修改代码会影响第一次运行；`try_lock` 期间修改代码会影响下一次
 运行。它们都不要求重新申请 GPU。
 
+关于 out 和 error 日志，它们实际输出重定向到：
+```text
+${feedback_root}/allocations/<jobid>/out
+${feedback_root}/allocations/<jobid>/err
+```
+因此当前项目默认日志位置是：
+```text
+/home/penghongen/Feedback/Pocket_Plus/allocations/<jobid>/out
+/home/penghongen/Feedback/Pocket_Plus/allocations/<jobid>/err
+```
+
 ## 3. release 为什么必须在每次运行前创建
 
 下面用完整数值例子说明 Job `400001` 的时间顺序。
