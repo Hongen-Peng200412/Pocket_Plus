@@ -18,7 +18,6 @@ request_seed: 3407
 cache_max_bytes: 536870912
 enable_random_rotation: true
 box_sample_fraction: 1.0
-excluded_pdb_ids: []
 
 density_channel_config:
   clip_percentile: [0.001, 0.999]

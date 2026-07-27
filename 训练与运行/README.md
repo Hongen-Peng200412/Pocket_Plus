@@ -412,8 +412,7 @@ Find_0.sh 或 Find_1.sh
 默认值：
 
 ```text
-/storage/penghongen/AdaLigand/Ori_Data/stage1_preparation/
-adaligand_stage1_20260721T024000
+/storage/penghongen/AdaLigand/Ori_Data/stage1_preparation
 ```
 
 Find 的完整链路：

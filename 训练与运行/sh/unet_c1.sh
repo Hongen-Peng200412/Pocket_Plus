@@ -87,7 +87,7 @@ export ADALIGAND_DATA_ROOT="${ADALIGAND_DATA_ROOT:-/storage/penghongen/AdaLigand
 # → UnifiedDataModule.setup()
 # → Stage1Dataset.__init__() 的 build_request_source()（stage1_dataset.py:470–477）
 # → 训练请求按 epoch 选择 BOX，验证请求读取固定 selection。
-export ADALIGAND_STAGE1_PREPARATION_ROOT="${ADALIGAND_STAGE1_PREPARATION_ROOT:-/storage/penghongen/AdaLigand/Ori_Data/stage1_preparation/adaligand_stage1_20260721T024000}"
+export ADALIGAND_STAGE1_PREPARATION_ROOT="${ADALIGAND_STAGE1_PREPARATION_ROOT:-/storage/penghongen/AdaLigand/Ori_Data/stage1_preparation}"
 
 #                                  -----------------------------------------------------------------------------------------------                                 #
 # --- 卡的申请/参数覆盖 ---

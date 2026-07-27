@@ -13,7 +13,7 @@
     - ``Stage1TrainingRequestSet.requests``: 当前 epoch 的 ``tuple[ResolvedStage1Crop, ...]``，顺序就是 Dataset 读取顺序。
 
 落盘文件:
-    - ``<box_pool_root>/<split>_selection_<fraction>_seed<seed>[_exclude<digest>].npz``: 冻结比例请求表；字段 ``pdb_id``、``box_start_zyx``、``role``、``occurrence_id``、``candidate_index`` 和 ``require_targets`` 按请求下标对齐，标量字段保存比例、seed、来源摘要和 schema 版本。
+    - ``<box_pool_root>/<split>_selection_<fraction>_seed<seed>.npz``: 冻结比例请求表；字段 ``pdb_id``、``box_start_zyx``、``role``、``occurrence_id``、``candidate_index`` 和 ``require_targets`` 按请求下标对齐，标量字段保存比例、seed、来源摘要和 schema 版本。
 
 本模块只处理请求身份、BOX 起点、角色、抽样和来源摘要；整图读取、80³ 裁剪和模型字段构造由 ``stage1_dataset.py`` 完成。
 """
@@ -227,28 +227,10 @@ def _validate_box_sample_fraction(value: float) -> float:
     return fraction
 
 
-def _normalize_excluded_pdb_ids(values: Sequence[str]) -> frozenset[str]:
-    """规范化本次训练排除的 PDB 身份。
-
-    输入参数:
-        - ``values``: PDB 身份序列；元素会去除首尾空白并转换为小写。
-
-    输出:
-        - ``frozenset[str]``: 去空白、去空字符串后的不可变 PDB 身份集合。集合不保留输入顺序，后续会用于请求过滤和选择文件命名。
-    """
-
-    return frozenset(
-        str(pdb_id).strip().lower()
-        for pdb_id in values
-        if str(pdb_id).strip()
-    )
-
-
 def _fraction_filename(
     split_name: str,
     fraction: float,
     seed: int,
-    excluded_pdb_ids: frozenset[str] = frozenset(),
 ) -> str:
     """生成冻结比例请求文件名。
 
@@ -256,23 +238,13 @@ def _fraction_filename(
         - ``split_name``: ``train`` 或 ``validation`` 等数据划分名称。
         - ``fraction``: 请求保留比例；格式化为最多 12 位有效数字。
         - ``seed``: 产生固定请求子集的整数 seed。
-        - ``excluded_pdb_ids``: 已排除 PDB 身份的不可变集合；非空时将排序后的身份摘要写入文件名，避免不同排除集合复用同一文件。
 
     输出:
         - ``str``: 形如 ``<split>_selection_<fraction>_seed<seed>.npz`` 的文件名。函数只生成名称，不创建文件，也不检查目标路径。
     """
 
     token = format(float(fraction), ".12g")
-    exclusion_suffix = ""
-    if excluded_pdb_ids:
-        digest = hashlib.sha256(
-            "\n".join(sorted(excluded_pdb_ids)).encode("utf-8")
-        ).hexdigest()[:12]
-        exclusion_suffix = f"_exclude{digest}"
-    return (
-        f"{split_name}_selection_{token}_seed{int(seed)}"
-        f"{exclusion_suffix}.npz"
-    )
+    return f"{split_name}_selection_{token}_seed{int(seed)}.npz"
 
 
 def _select_request_fraction(
@@ -775,12 +747,11 @@ class Stage1TrainingRequestSet:
         - ``pool_directory``: ``str | Path``；通常为 ``<box_pool_root>/train``，其中每个 PDB NPZ 由根 ``manifest.json`` 列出。
         - ``seed``: int；与 epoch 一起决定 center、bias 和 context 的选择。
         - ``box_sample_fraction``: float；``1.0`` 时每个 epoch 重新选择完整请求池，小于 ``1.0`` 时固定 epoch 0 的比例子集。
-        - ``excluded_pdb_ids``: ``Sequence[str]``；不读取这些 PDB 的 NPZ，不修改来源 BOX pool。
         - ``requests``: ``tuple[ResolvedStage1Crop, ...]``；当前 epoch 的请求，按 PDB、occurrence 和角色展开为 ``1:5:3``。
         - ``epoch``: int；``1.0`` 模式下当前请求所属 epoch，小于 ``1.0`` 时固定为 ``0``。
 
     文件副作用:
-        - ``<box_pool_root>/train_selection_<fraction>_seed<seed>[_exclude<digest>].npz``: 仅在 ``box_sample_fraction < 1.0`` 且文件不存在时创建，字段级契约由 ``_save_request_selection`` 定义。
+        - ``<box_pool_root>/train_selection_<fraction>_seed<seed>.npz``: 仅在 ``box_sample_fraction < 1.0`` 且文件不存在时创建，字段级契约由 ``_save_request_selection`` 定义。
 
     每个 occurrence 最多产生 1 个 center、5 个不重复 bias 和 3 个 context 请求；重复起点不去重。
     """
@@ -790,7 +761,6 @@ class Stage1TrainingRequestSet:
         pool_directory: str | Path,
         seed: int,
         box_sample_fraction: float = 1.0,
-        excluded_pdb_ids: Sequence[str] = (),
     ) -> None:
         """读取训练 BOX pool，并建立完整动态请求或固定比例请求。
 
@@ -798,25 +768,19 @@ class Stage1TrainingRequestSet:
             - ``pool_directory``: ``str | Path``；通常为 ``<box_pool_root>/train``。
             - ``seed``: int；动态请求和固定比例请求使用的基准 seed。
             - ``box_sample_fraction``: float；必须位于 ``(0, 1]``，比例小于 1 时从完整 epoch 0 请求池计算目标数量。
-            - ``excluded_pdb_ids``: PDB 身份序列；这些身份不会加载或产生请求。
 
         文件副作用:
-            - ``<box_pool_root>/train_selection_<fraction>_seed<seed>[_exclude<digest>].npz``: 比例小于 1 且文件不存在时原子写入冻结请求字段。
+            - ``<box_pool_root>/train_selection_<fraction>_seed<seed>.npz``: 比例小于 1 且文件不存在时原子写入冻结请求字段。
 
         ``box_sample_fraction == 1.0`` 不创建比例请求文件，``set_epoch`` 使用 ``seed`` 与 epoch 重新生成请求；比例小于 1 时所有 epoch 复用同一份已核对来源 manifest 摘要的请求文件。
         """
 
         pool_dir = Path(pool_directory)
-        self.excluded_pdb_ids = _normalize_excluded_pdb_ids(excluded_pdb_ids)
-        manifest_entries = tuple(
-            (pdb_id, path)
-            for pdb_id, path in _load_manifest_pool_paths(
-                pool_dir.parent, pool_dir.name
-            )
-            if pdb_id not in self.excluded_pdb_ids
+        manifest_entries = _load_manifest_pool_paths(
+            pool_dir.parent, pool_dir.name
         )
         if not manifest_entries:
-            raise ValueError("排除指定 PDB 后没有可读取的训练 BOX pool。")
+            raise ValueError("训练 BOX pool 清单不能为空。")
         self._pools = tuple(
             _load_pdb_pool(path, expected_pdb_id=pdb_id)
             for pdb_id, path in manifest_entries
@@ -839,7 +803,6 @@ class Stage1TrainingRequestSet:
                 "train",
                 self.box_sample_fraction,
                 self.seed,
-                self.excluded_pdb_ids,
             )
             if selection_path.is_file():
                 self.requests = _load_request_selection(
@@ -1068,7 +1031,6 @@ def build_request_source(
     box_pool_root: str | Path | None,
     seed: int,
     box_sample_fraction: float = 1.0,
-    excluded_pdb_ids: Sequence[str] = (),
 ) -> Stage1TrainingRequestSet | list[ResolvedStage1Crop]:
     """
     根据模式构造训练动态池、固定验证表或普通冻结请求表。
@@ -1079,18 +1041,16 @@ def build_request_source(
         - ``box_pool_root``: ``str | Path | None``；validation selection 回查 PDB pool 所需的根目录。
         - ``seed``: int；train 动态请求集和比例选择使用的基准 seed。
         - ``box_sample_fraction``: float；请求保留比例，默认 1.0。
-        - ``excluded_pdb_ids``: PDB 身份序列；本次运行不读取这些 PDB。
 
     输出:
         - ``Stage1TrainingRequestSet``: ``mode == "train"`` 且 ``split_file`` 是 ``box_pool/train`` 目录时返回，可按 epoch 重建或复用请求。
         - ``list[ResolvedStage1Crop]``: validation selection 或普通 JSON/JSONL/NPZ 文件时返回，顺序由文件固定。
 
     文件副作用:
-        - ``<box_pool_root>/validation_selection_<fraction>_seed<seed>[_exclude<digest>].npz``: validation 比例小于 1 且对应文件不存在时创建，字段与 ``_save_request_selection`` 相同，并额外保存 validation 来源摘要。
+        - ``<box_pool_root>/validation_selection_<fraction>_seed<seed>.npz``: validation 比例小于 1 且对应文件不存在时创建，字段与 ``_save_request_selection`` 相同，并额外保存 validation 来源摘要。
     """
 
     mode = str(mode).lower()
-    excluded = _normalize_excluded_pdb_ids(excluded_pdb_ids)
     sources = list(split_file) if isinstance(split_file, (list, tuple)) else [split_file]
     if len(sources) == 1 and Path(sources[0]).is_dir():
         if mode != "train":
@@ -1099,18 +1059,13 @@ def build_request_source(
             sources[0],
             seed=seed,
             box_sample_fraction=box_sample_fraction,
-            excluded_pdb_ids=excluded,
         )
     if len(sources) == 1 and Path(sources[0]).name == "validation_selection.npz":
         if box_pool_root is None:
             raise ValueError("读取 validation_selection.npz 时必须提供 box_pool_root。")
-        requests = [
-            request
-            for request in load_validation_selection(sources[0], box_pool_root)
-            if request.pdb_id not in excluded
-        ]
+        requests = load_validation_selection(sources[0], box_pool_root)
         if not requests:
-            raise ValueError("排除指定 PDB 后没有可读取的验证请求。")
+            raise ValueError("验证请求文件不能为空。")
         fraction = _validate_box_sample_fraction(box_sample_fraction)
         if fraction == 1.0:
             return requests
@@ -1120,7 +1075,7 @@ def build_request_source(
         )
         source_validation_sha256 = _sha256_file(Path(sources[0]))
         selection_path = Path(box_pool_root) / _fraction_filename(
-            "validation", fraction, seed, excluded
+            "validation", fraction, seed
         )
         if selection_path.is_file():
             return list(
@@ -1147,9 +1102,6 @@ def build_request_source(
     requests: list[ResolvedStage1Crop] = []
     for source in sources:
         requests.extend(load_flat_requests(source, default_targets=default_targets))
-    filtered = [
-        request for request in requests if request.pdb_id not in excluded
-    ]
-    if not filtered:
-        raise ValueError("排除指定 PDB 后没有可读取的 Stage1 请求。")
-    return filtered
+    if not requests:
+        raise ValueError("Stage1 请求文件不能为空。")
+    return requests

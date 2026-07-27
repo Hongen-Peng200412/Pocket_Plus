@@ -7,7 +7,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from src.datasets.stage1_split import freeze_stage1_splits
+from src.datasets.ops.stage1_split import freeze_stage1_splits
 
 
 def _write_exp_shape(data_root: Path, pdb_id: str, shape_zyx: tuple[int, int, int]) -> None:
