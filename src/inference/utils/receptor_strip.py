@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-从 PDB/CIF 结构中剔除所有 HETATM(配体/水/离子/修饰残基), 仅保留 polymer 受体残基, 写出 mmCIF。
+从 PDB/CIF 结构中剔除所有 HETATM(配体/水/离子/修饰残基), 仅保留 polymer 受体残基, 写出 mmCIF. 
 
 共享 util: 由 phenix 差图预生成脚本与 Bundle_of_Maps/simulated_map/get_receptor_from_PDB.py 共同 import,
-避免重复实现 receptor 剔除逻辑。
+避免重复实现 receptor 剔除逻辑. 
 """
 
 import warnings
@@ -15,7 +15,7 @@ from Bio.PDB.PDBIO import Select
 
 class ReceptorOnlySelect(Select):
     """
-    Biopython Select 子类: 仅接受非 HETATM 的残基(受体 polymer)。
+    Biopython Select 子类: 仅接受非 HETATM 的残基(受体 polymer). 
 
     过滤逻辑:
         - het_flag == ' ' (标准 ATOM 记录) → 保留
@@ -31,7 +31,7 @@ class ReceptorOnlySelect(Select):
 
     def accept_residue(self, residue):
         """
-        判断残基是否为受体(非 HETATM)。
+        判断残基是否为受体(非 HETATM). 
 
         输入参数:
             - residue: Bio.PDB.Residue.Residue, Biopython 残基对象
@@ -48,7 +48,7 @@ class ReceptorOnlySelect(Select):
 
     def accept_atom(self, atom):
         """
-        对已接受的残基统计原子数并全部保留。
+        对已接受的残基统计原子数并全部保留. 
 
         输入参数:
             - atom: Bio.PDB.Atom.Atom, Biopython 原子对象
@@ -62,7 +62,7 @@ class ReceptorOnlySelect(Select):
 
 def extract_receptor_cif(input_pdb_path: str, output_cif_path: str):
     """
-    解析 PDB/CIF 结构, 剔除所有 HETATM, 仅保留 polymer 受体残基, 写出 mmCIF。
+    解析 PDB/CIF 结构, 剔除所有 HETATM, 仅保留 polymer 受体残基, 写出 mmCIF. 
 
     输入参数:
         - input_pdb_path: str, 输入结构文件路径(.pdb / .cif / .mmcif)

@@ -22,7 +22,7 @@ DEFAULT_SIM_MAP_KEYS = ("sim_map_path", "sim_map_path_cryoatom")
 @dataclass(frozen=True)
 class DensityGridMeta:
     """
-    记录推理路径中密度图重采样后的几何元数据。
+    记录推理路径中密度图重采样后的几何元数据. 
     输入参数:
         - shape_zyx: tuple[int, int, int], 重采样后密度图形状, 轴顺序为 z/y/x
         - voxel_size_xyz: list[float], (3,), 重采样后体素大小, 轴顺序为 x/y/z
@@ -37,7 +37,7 @@ class DensityGridMeta:
 @dataclass(frozen=True)
 class DensityPairValidation:
     """
-    表示一对真实密度图和模拟密度图的几何兼容性校验结果。
+    表示一对真实密度图和模拟密度图的几何兼容性校验结果. 
     输入参数:
         - ok: bool, 当前配对是否通过校验
         - map_path: str, 真实密度图路径
@@ -59,7 +59,7 @@ class DensityPairValidation:
 
 def resolve_n_jobs(n_jobs: int) -> int:
     """
-    将命令行并行数解析为实际 joblib worker 数。
+    将命令行并行数解析为实际 joblib worker 数. 
     输入参数:
         - n_jobs: int, 标量; 0 表示读取 SLURM_CPUS_PER_TASK, 负数表示使用 os.cpu_count()
 
@@ -80,7 +80,7 @@ def _model_grid_meta_from_raw(
     target_voxel_size: float,
 ) -> DensityGridMeta:
     """
-    复刻 make_model_grid 的几何元数据计算, 但不执行 Fourier 重采样。
+    复刻 make_model_grid 的几何元数据计算, 但不执行 Fourier 重采样. 
     输入参数:
         - grid_shape_zyx: tuple[int, int, int], 原始 load_map 后的密度图形状
         - voxel_size_xyz: np.ndarray, (3,), 原始体素大小, 轴顺序 x/y/z
@@ -127,7 +127,7 @@ def _model_grid_meta_from_raw(
 
 def load_inference_grid_meta(map_path: str, target_voxel_size: float) -> DensityGridMeta:
     """
-    按当前推理读取口径提取单张密度图的重采样后几何元数据。
+    按当前推理读取口径提取单张密度图的重采样后几何元数据. 
     输入参数:
         - map_path: str, 标量, MRC/MAP 文件路径
         - target_voxel_size: float, 推理配置中的目标体素大小
@@ -154,7 +154,7 @@ def validate_density_map_pair(
     voxel_atol: float,
 ) -> DensityPairValidation:
     """
-    校验真实密度图和模拟密度图在当前推理口径下是否几何一致。
+    校验真实密度图和模拟密度图在当前推理口径下是否几何一致. 
     输入参数:
         - map_path: str, 标量, 真实密度图路径
         - sim_map_path: str, 标量, 模拟密度图路径
@@ -210,7 +210,7 @@ def validate_sample_density_maps(
     sim_map_keys: tuple[str, ...] = DEFAULT_SIM_MAP_KEYS,
 ) -> list[DensityPairValidation]:
     """
-    校验单个样本中所有已存在的模拟密度图字段。
+    校验单个样本中所有已存在的模拟密度图字段. 
     输入参数:
         - sample: dict[str, Any], 单个 JSON 样本条目, 至少包含 map_path
         - target_voxel_size: float, 推理配置中的目标体素大小
@@ -250,7 +250,7 @@ def _validate_for_cli(
     sim_map_keys: tuple[str, ...],
 ) -> dict[str, Any]:
     """
-    为命令行批量校验构造可 JSON 序列化的单样本结果。
+    为命令行批量校验构造可 JSON 序列化的单样本结果. 
     输出:
         - result: dict[str, Any], 包含 sample、ok 和 validations 三个字段
     """
@@ -271,7 +271,7 @@ def _validate_for_cli(
 
 def main() -> None:
     """
-    命令行入口: 过滤 JSON 中真实密度图和模拟密度图几何不匹配的样本。
+    命令行入口: 过滤 JSON 中真实密度图和模拟密度图几何不匹配的样本. 
     """
     parser = argparse.ArgumentParser(description="过滤真实密度图与模拟密度图几何不一致的 JSON 样本")
     parser.add_argument("--input_json", required=True, help="输入样本 JSON 路径")

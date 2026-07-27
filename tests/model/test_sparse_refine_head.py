@@ -12,7 +12,7 @@ def _make_head(
     enable_interface_norm: bool,
 ) -> SparseRefineHead:
     """
-    构造测试用 sparse refine head。
+    构造测试用 sparse refine head. 
 
     输入参数:
         - mode: str, 输出模式 direct 或 residual
@@ -54,7 +54,7 @@ def _make_head(
 
 def _inputs(logit_dim: int) -> dict[str, torch.Tensor]:
     """
-    构造含一条有效消息和一条无消息 C 的输入。
+    构造含一条有效消息和一条无消息 C 的输入. 
 
     输入参数:
         - logit_dim: int, C logits 通道数
@@ -78,7 +78,7 @@ def _inputs(logit_dim: int) -> dict[str, torch.Tensor]:
 
 def test_residual_zero_init_starts_from_voxel_logits_and_marks_missing_message() -> None:
     """
-    验证 residual 零初始化时输出等于 base logits，且无邻居 C 被标记为未收到消息。
+    验证 residual 零初始化时输出等于 base logits, 且无邻居 C 被标记为未收到消息. 
     """
     inputs = _inputs(logit_dim=1)
     output = _make_head("residual", 1, True, False)(**inputs)
@@ -90,7 +90,7 @@ def test_residual_zero_init_starts_from_voxel_logits_and_marks_missing_message()
 
 def test_voxel_logits_gradient_flows_through_without_internal_detach() -> None:
     """
-    验证 head 内部不再 detach voxel_logits，detach 职责属于调用方。
+    验证 head 内部不再 detach voxel_logits, detach 职责属于调用方. 
     """
     inputs = _inputs(logit_dim=1)
     _make_head("residual", 1, False, False)(**inputs)["ligand_refine_logits_C"].sum().backward()
@@ -100,7 +100,7 @@ def test_voxel_logits_gradient_flows_through_without_internal_detach() -> None:
 
 def test_interface_norm_builds_current_source_modules_and_forward_runs() -> None:
     """
-    验证 enable_interface_norm 开时构造 P_final/P_after/P_voxel/C_voxel LayerNorm。
+    验证 enable_interface_norm 开时构造 P_final/P_after/P_voxel/C_voxel LayerNorm. 
     """
     head_on = _make_head("residual", 1, False, True)
     assert head_on.interface_norm_P_final is not None
@@ -122,7 +122,7 @@ def test_interface_norm_builds_current_source_modules_and_forward_runs() -> None
 
 def test_direct_multiclass_preserves_logit_dimension() -> None:
     """
-    验证 direct 多分类 head 输出完整 logits 通道。
+    验证 direct 多分类 head 输出完整 logits 通道. 
     """
     output = _make_head("direct", 3, False, False)(**_inputs(logit_dim=3))
 
@@ -131,7 +131,7 @@ def test_direct_multiclass_preserves_logit_dimension() -> None:
 
 def test_all_candidates_without_neighbors_stay_finite() -> None:
     """
-    验证所有 C 都无有效邻居时 mask 全 False，输出仍保持有限值。
+    验证所有 C 都无有效邻居时 mask 全 False, 输出仍保持有限值. 
     """
     inputs = _inputs(logit_dim=1)
     inputs["candidate_neighbor_valid_mask"] = torch.zeros_like(inputs["candidate_neighbor_valid_mask"], dtype=torch.bool)

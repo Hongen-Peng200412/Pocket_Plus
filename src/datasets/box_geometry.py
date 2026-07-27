@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
-"""提供 Stage1 训练与推理共用的 BOX 原子选择、坐标换算和硬掩码计算。
+"""提供 Stage1 训练与推理共用的 BOX 原子选择、坐标换算和硬掩码计算. 
 
 主要入口是 ``select_atoms_for_box``、``build_atom_coordinates`` 与
-``build_hardmask_from_atom_coordinates``。这些纯函数由
-``src.datasets.stage1_dataset.Stage1Dataset`` 和 ``src.inference`` 调用，
-只返回内存数组，不写入文件。
+``build_hardmask_from_atom_coordinates``. 这些纯函数由
+``src.datasets.stage1_dataset.Stage1Dataset`` 和 ``src.inference`` 调用, 
+只返回内存数组, 不写入文件. 
 """
 
 import numpy as np
@@ -18,39 +18,39 @@ def select_atoms_for_box(
     buffer_radius: float,
 ) -> dict[str, np.ndarray]:
     """
-    先选 box 内原子，再从这个BOX额外地扩张 buffer 内原子。
+    先选 box 内原子, 再从这个BOX额外地扩张 buffer 内原子. 
 
     输入:
-        - atom_coords_world: numpy.ndarray, 形如 (N_atom, 3), 表示原子在世界坐标系下的三维坐标，顺序为 (x, y, z)。
-        - box_origin_world: numpy.ndarray, 形如 (3,), 表示当前 BOX 左下近角点在世界坐标系下的坐标，顺序为 (x, y, z)。
-        - voxel_size_world: numpy.ndarray, 形如 (3,), 表示当前 BOX 中每个体素的世界物理尺寸，顺序为 (x, y, z)。
-        - box_shape_zyx: numpy.ndarray, 形如 (3,), 表示当前 BOX 的体素网格大小，顺序为 (Z, Y, X)，对应 (depth, height, width)。
-        - buffer_radius: float, 标量, 表示在 box 外部额外扩展接受原子的世界坐标半径。
+        - atom_coords_world: numpy.ndarray, 形如 (N_atom, 3), 表示原子在世界坐标系下的三维坐标, 顺序为 (x, y, z). 
+        - box_origin_world: numpy.ndarray, 形如 (3,), 表示当前 BOX 左下近角点在世界坐标系下的坐标, 顺序为 (x, y, z). 
+        - voxel_size_world: numpy.ndarray, 形如 (3,), 表示当前 BOX 中每个体素的世界物理尺寸, 顺序为 (x, y, z). 
+        - box_shape_zyx: numpy.ndarray, 形如 (3,), 表示当前 BOX 的体素网格大小, 顺序为 (Z, Y, X), 对应 (depth, height, width). 
+        - buffer_radius: float, 标量, 表示在 box 外部额外扩展接受原子的世界坐标半径. 
 
     输出:
         - 返回一个 dict[str, numpy.ndarray] 字典:
-            - "selected_idx": numpy.ndarray, 形如 (N_selected,), int64，表示被选中（包含在 box 或扩展 buffer 内）的原子的原始(全局)索引。
-            - "atom_is_in_core_box": numpy.ndarray, 形如 (N_selected,), bool，表示被选中的原子是否位于 box 内(另一部分是buffer外边界)
+            - "selected_idx": numpy.ndarray, 形如 (N_selected,), int64, 表示被选中（包含在 box 或扩展 buffer 内）的原子的原始(全局)索引. 
+            - "atom_is_in_core_box": numpy.ndarray, 形如 (N_selected,), bool, 表示被选中的原子是否位于 box 内(另一部分是buffer外边界)
     """
     box_shape_xyz = box_shape_zyx[[2, 1, 0]].astype(np.float32)   # Z/Y/X -> X/Y/Z
-    # numpy.ndarray, (3,), 类型 float32，表示当前 BOX 在世界坐标系下的最大边界坐标 (x_max, y_max, z_max)
+    # numpy.ndarray, (3,), 类型 float32, 表示当前 BOX 在世界坐标系下的最大边界坐标 (x_max, y_max, z_max)
     box_max_world = box_origin_world + box_shape_xyz * voxel_size_world
 
-    # core_mask: 落在当前 BOX 内部的原子。
-    # numpy.ndarray, (N_atom,), 类型 bool，将会标记哪些原子在当前 BOX 内
+    # core_mask: 落在当前 BOX 内部的原子. 
+    # numpy.ndarray, (N_atom,), 类型 bool, 将会标记哪些原子在当前 BOX 内
     core_mask = np.all(atom_coords_world >= box_origin_world[None, :], axis=1)
     core_mask &= np.all(atom_coords_world < box_max_world[None, :], axis=1)
 
     buffer_min_world = box_origin_world - float(buffer_radius)
     buffer_max_world = box_max_world + float(buffer_radius)
-    # numpy.ndarray, (N_atom,), 类型 bool，将会表示外扩 buffer 最小边界内的原子
+    # numpy.ndarray, (N_atom,), 类型 bool, 将会表示外扩 buffer 最小边界内的原子
     selected_mask = np.all(atom_coords_world >= buffer_min_world[None, :], axis=1)
     selected_mask &= np.all(atom_coords_world < buffer_max_world[None, :], axis=1)
 
-    # numpy.ndarray, (N_selected,), 类型 int64，从 selected_mask 提取出的选中原子的下标数组
-    # 当传入一个 1D 布尔数组时，np.where(selected_mask) 返回的是一个元组，例如 (array([1, 4, 5...]),), 其中的第一个元素就是所有值为 True 的元素的下标数组。加上 [0] 把这个下标数组单独提取出来。
+    # numpy.ndarray, (N_selected,), 类型 int64, 从 selected_mask 提取出的选中原子的下标数组
+    # 当传入一个 1D 布尔数组时, np.where(selected_mask) 返回的是一个元组, 例如 (array([1, 4, 5...]),), 其中的第一个元素就是所有值为 True 的元素的下标数组. 加上 [0] 把这个下标数组单独提取出来. 
     selected_idx = np.where(selected_mask)[0].astype(np.int64)
-    # numpy.ndarray, (N_selected,), 类型 bool，对应于选中的原子的是否在 box 内(另一部分是buffer外边界)
+    # numpy.ndarray, (N_selected,), 类型 bool, 对应于选中的原子的是否在 box 内(另一部分是buffer外边界)
     atom_is_in_core_box = core_mask[selected_idx]
     
     return {
@@ -67,37 +67,37 @@ def build_atom_coordinates(
     box_shape_zyx: np.ndarray,
 ) -> dict[str, np.ndarray]:
     """
-    为选中的原子同时生成三套坐标表示。
+    为选中的原子同时生成三套坐标表示. 
 
     返回的三套坐标分别是:
-        - `atom_coord_world`: 世界坐标，顺序 `(x, y, z)`。
-        - `atom_coord_local_voxel`: 连续 voxel 坐标，顺序仍是 `(x, y, z)`，数值语义是"距离 BOX (左下)原点多少个 voxel"。
-          这里保留的是角点语义：若原子正好位于第 `i/j/k` 个 voxel 的中心，则坐标应为 `(i+0.5, j+0.5, k+0.5)`。
-        - `atom_coord_centered_world`: 以 BOX 中心为原点的世界坐标，顺序 `(x, y, z)`。
+        - atom_coord_world: 世界坐标, 顺序 `(x, y, z)`. 
+        - atom_coord_local_voxel: 连续 voxel 坐标, 顺序仍是 `(x, y, z)`, 数值语义是"距离 BOX (左下)原点多少个 voxel". 
+          这里保留的是角点语义: 若原子正好位于第 `i/j/k` 个 voxel 的中心, 则坐标应为 `(i+0.5, j+0.5, k+0.5)`. 
+        - atom_coord_centered_world: 以 BOX 中心为原点的世界坐标, 顺序 `(x, y, z)`. 
 
     输入:
-        - atom_coords_world: numpy.ndarray, 形如 (N_atom, 3), 所有原子的世界坐标。
-        - selected_idx: numpy.ndarray, 形如 (N_selected,), 选中的原子索引。
-        - box_origin_world: numpy.ndarray, 形如 (3,), BOX的原点世界坐标 (x,y,z)。
-        - voxel_size_world: numpy.ndarray, 形如 (3,), BOX的世界物理体素大小 (x,y,z)。
-        - box_shape_zyx: numpy.ndarray, 形如 (3,), BOX的体素网格大小，顺序 (Z,Y,X)。
+        - atom_coords_world: numpy.ndarray, 形如 (N_atom, 3), 所有原子的世界坐标. 
+        - selected_idx: numpy.ndarray, 形如 (N_selected,), 选中的原子索引. 
+        - box_origin_world: numpy.ndarray, 形如 (3,), BOX的原点世界坐标 (x,y,z). 
+        - voxel_size_world: numpy.ndarray, 形如 (3,), BOX的世界物理体素大小 (x,y,z). 
+        - box_shape_zyx: numpy.ndarray, 形如 (3,), BOX的体素网格大小, 顺序 (Z,Y,X). 
 
     输出:
         - dict[str, numpy.ndarray] 字典:
-            - "atom_coord_world": numpy.ndarray, (N_selected, 3), 原子的纯世界坐标 (X,Y,Z)。
-            - "atom_coord_local_voxel": numpy.ndarray, (N_selected, 3), 连续的体素网格空间坐标 (X,Y,Z), 采用角点语义。
-            - "atom_coord_centered_world": numpy.ndarray, (N_selected, 3), 以 BOX 中心为原点的世界坐标 (X,Y,Z)。
+            - "atom_coord_world": numpy.ndarray, (N_selected, 3), 原子的纯世界坐标 (X,Y,Z). 
+            - "atom_coord_local_voxel": numpy.ndarray, (N_selected, 3), 连续的体素网格空间坐标 (X,Y,Z), 采用角点语义. 
+            - "atom_coord_centered_world": numpy.ndarray, (N_selected, 3), 以 BOX 中心为原点的世界坐标 (X,Y,Z). 
     """
-    # numpy.ndarray, (N_selected, 3), float32 类型，选中原子的世界坐标
+    # numpy.ndarray, (N_selected, 3), float32 类型, 选中原子的世界坐标
     selected_coord_world = atom_coords_world[selected_idx].astype(np.float32, copy=False)
-    # numpy.ndarray, (N_selected, 3), float32 类型，基于 BOX 原点及 voxel 大小映射后的连续体素坐标(角点语义)
+    # numpy.ndarray, (N_selected, 3), float32 类型, 基于 BOX 原点及 voxel 大小映射后的连续体素坐标(角点语义)
     atom_coord_local_voxel = (
         (selected_coord_world - box_origin_world[None, :]) / voxel_size_world[None, :]
     ).astype(np.float32, copy=False)
     box_shape_xyz = box_shape_zyx[[2, 1, 0]].astype(np.float32)
-    # numpy.ndarray, (3,), float32 类型，BOX 的中心世界坐标
+    # numpy.ndarray, (3,), float32 类型, BOX 的中心世界坐标
     box_center_world = box_origin_world + 0.5 * box_shape_xyz * voxel_size_world
-    # numpy.ndarray, (N_selected, 3), float32 类型，每个原子相对于当前 BOX 中心的世界坐标
+    # numpy.ndarray, (N_selected, 3), float32 类型, 每个原子相对于当前 BOX 中心的世界坐标
     atom_coord_centered_world = selected_coord_world - box_center_world[None, :]
 
     return {
@@ -112,16 +112,16 @@ def build_atom_features(
     selected_idx: np.ndarray,
 ) -> np.ndarray:
     """
-    构造 atom_feat。
+    构造 atom_feat. 
 
     输入:
-        - atom_features_raw: numpy.ndarray, 形如 (N_atom, F_raw), 所有原子的原始特征。
-        - selected_idx: numpy.ndarray, 形如 (N_selected,), 被选中原子的下标。
+        - atom_features_raw: numpy.ndarray, 形如 (N_atom, F_raw), 所有原子的原始特征. 
+        - selected_idx: numpy.ndarray, 形如 (N_selected,), 被选中原子的下标. 
 
     输出:
-        - numpy.ndarray, 形如 (N_selected, F_raw), 最终传入 point branch 的原子级别特征。
+        - numpy.ndarray, 形如 (N_selected, F_raw), 最终传入 point branch 的原子级别特征. 
     """
-    # numpy.ndarray, (N_selected, F_raw), float32 类型，取出被选中原子的原始特征，F_raw 一般为 49
+    # numpy.ndarray, (N_selected, F_raw), float32 类型, 取出被选中原子的原始特征, F_raw 一般为 49
     selected_raw = atom_features_raw[selected_idx].astype(np.float32, copy=False)        # (N_selected, F_raw)
     return selected_raw.astype(np.float32, copy=False)
 
@@ -132,7 +132,7 @@ def build_hardmask_from_atom_coordinates(
     box_shape_zyx: np.ndarray,
 ) -> np.ndarray:
     """
-    基于原子几何位置构造 voxel hardmask。
+    基于原子几何位置构造 voxel hardmask. 
 
     hardmask 的语义固定为:
         - 只统计 core box 内的原子
@@ -185,7 +185,7 @@ def build_hardmask_from_world_coordinates(
     box_shape_zyx: np.ndarray,
 ) -> np.ndarray:
     """
-    基于世界坐标下的原子位置直接构造 voxel hardmask。
+    基于世界坐标下的原子位置直接构造 voxel hardmask. 
 
     输入:
         - atom_coords_world: numpy.ndarray, 形如 (N_atom, 3), 原子的世界坐标, 顺序为 (x, y, z)

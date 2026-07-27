@@ -13,7 +13,7 @@ from .validation import nearest_neighbor_stats
 
 def as_list(value: Any) -> list[Any]:
     """
-    将 MMCIF2Dict 的标量或列表字段统一为列表。
+    将 MMCIF2Dict 的标量或列表字段统一为列表. 
 
     输入参数:
         - value: Any, MMCIF2Dict 返回的字段值
@@ -29,7 +29,7 @@ def as_list(value: Any) -> list[Any]:
 
 def load_cif_dict(cif_path: Path) -> dict[str, list[Any]]:
     """
-    读取 RCSB full CIF 为字段字典。
+    读取 RCSB full CIF 为字段字典. 
 
     输入参数:
         - cif_path: Path, full CIF 文件路径
@@ -44,7 +44,7 @@ def load_cif_dict(cif_path: Path) -> dict[str, list[Any]]:
 
 def parse_nonpoly_scheme(cif_dict: dict[str, list[Any]]) -> list[NonpolySchemeRow]:
     """
-    解析 _pdbx_nonpoly_scheme 为结构化行。
+    解析 _pdbx_nonpoly_scheme 为结构化行. 
 
     输入参数:
         - cif_dict: dict[str, list[Any]], load_cif_dict 返回的 CIF 字段字典
@@ -78,7 +78,7 @@ def parse_nonpoly_scheme(cif_dict: dict[str, list[Any]]) -> list[NonpolySchemeRo
 
 def parse_branch_scheme(cif_dict: dict[str, list[Any]]) -> list[NonpolySchemeRow]:
     """
-    解析 _pdbx_branch_scheme 为与 nonpoly scheme 兼容的结构化行。
+    解析 _pdbx_branch_scheme 为与 nonpoly scheme 兼容的结构化行. 
 
     输入参数:
         - cif_dict: dict[str, list[Any]], load_cif_dict 返回的 CIF 字段字典
@@ -111,7 +111,7 @@ def parse_branch_scheme(cif_dict: dict[str, list[Any]]) -> list[NonpolySchemeRow
 
 def match_make_data_ligand_to_rcsb(ligand: MakeDataLigand, rows: list[NonpolySchemeRow]) -> RCSBInstanceMatch:
     """
-    将 Make_Data ligand instance 唯一匹配到 RCSB nonpoly scheme 行。
+    将 Make_Data ligand instance 唯一匹配到 RCSB nonpoly scheme 行. 
 
     输入参数:
         - ligand: MakeDataLigand, Make_Data ligand candidate
@@ -156,7 +156,7 @@ def match_make_data_ligand_to_rcsb(ligand: MakeDataLigand, rows: list[NonpolySch
 
 def extract_rcsb_atom_site_ligand(cif_dict: dict[str, list[Any]], ligand: MakeDataLigand, match: RCSBInstanceMatch) -> RCSBAtomSiteLigand:
     """
-    从 _atom_site 中提取 RCSB ligand instance 重原子。
+    从 _atom_site 中提取 RCSB ligand instance 重原子. 
 
     输入参数:
         - cif_dict: dict[str, list[Any]], load_cif_dict 返回的 CIF 字段字典
@@ -231,7 +231,7 @@ def preferred_alt_ids(raw_alt_ids: list[str]) -> set[str]:
 
 def atom_site_groups_for_comp(cif_dict: dict[str, list[Any]], ccd_id: str) -> list[dict[str, Any]]:
     """
-    从 _atom_site 中按 ligand instance 分组。
+    从 _atom_site 中按 ligand instance 分组. 
 
     输入参数:
         - cif_dict: dict[str, list[Any]], load_cif_dict 返回的 CIF 字段字典
@@ -309,7 +309,7 @@ def atom_site_groups_for_comp(cif_dict: dict[str, list[Any]], ccd_id: str) -> li
 
 def match_atom_site_ligand(ligand: MakeDataLigand, cif_dict: dict[str, list[Any]]) -> RCSBInstanceMatch:
     """
-    当 scheme 表缺失时, 用 _atom_site 直接兜底匹配 ligand instance。
+    当 scheme 表缺失时, 用 _atom_site 直接兜底匹配 ligand instance. 
 
     输入参数:
         - ligand: MakeDataLigand, Make_Data ligand candidate
@@ -354,7 +354,7 @@ def match_atom_site_ligand(ligand: MakeDataLigand, cif_dict: dict[str, list[Any]
 
 def _atom_site_group_to_match(ligand: MakeDataLigand, group: dict[str, Any], method: str) -> RCSBInstanceMatch:
     """
-    将 atom_site 分组包装成 RCSBInstanceMatch。
+    将 atom_site 分组包装成 RCSBInstanceMatch. 
 
     输入参数:
         - ligand: MakeDataLigand, Make_Data ligand candidate

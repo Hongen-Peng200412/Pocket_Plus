@@ -48,7 +48,7 @@ GLYCAN_CCD_IDS = {
 
 def main() -> None:
     """
-    统计 full80 中适合快速验证的 easy20 样本集合。
+    统计 full80 中适合快速验证的 easy20 样本集合. 
 
     输入参数:
         - CLI 参数, 包括 prescan_run_id、样本数量和保守 instance 合并参数
@@ -115,7 +115,7 @@ def sample_prescan_row(
     large_heavy_atoms: int,
 ) -> dict[str, Any]:
     """
-    构造单个样本的 easy20 统计行。
+    构造单个样本的 easy20 统计行. 
 
     输入参数:
         - paths: ServerPaths, 服务器路径配置
@@ -165,7 +165,7 @@ def sample_prescan_row(
 
 def load_ligands_by_sample(mapping_csv: Path, sample_ids: set[str]) -> dict[str, list[LigandCandidate]]:
     """
-    一次性读取 ligand mapping, 避免每个样本重复扫描大 CSV。
+    一次性读取 ligand mapping, 避免每个样本重复扫描大 CSV. 
 
     输入参数:
         - mapping_csv: Path, ligand mapping CSV
@@ -212,7 +212,7 @@ def load_ligands_by_sample(mapping_csv: Path, sample_ids: set[str]) -> dict[str,
 
 def is_dockable_mapping_row(row: dict[str, str]) -> bool:
     """
-    判断 mapping 行是否属于当前 docking 可用 ligand。
+    判断 mapping 行是否属于当前 docking 可用 ligand. 
 
     输入参数:
         - row: dict[str, str], ligand_mapping.csv 的一行
@@ -234,7 +234,7 @@ def is_dockable_mapping_row(row: dict[str, str]) -> bool:
 
 def center_merge_sites(sites: list[InferenceSite], merge_center_distance: float) -> list[InferenceSite]:
     """
-    仅按 instance center 距离合并 site, 不读取 instance label 体素坐标。
+    仅按 instance center 距离合并 site, 不读取 instance label 体素坐标. 
 
     输入参数:
         - sites: list[InferenceSite], 原始推理 instance 列表
@@ -290,7 +290,7 @@ def center_merge_sites(sites: list[InferenceSite], merge_center_distance: float)
 
 def load_instance_metrics(inference_root: Path) -> dict[str, dict[str, Any]]:
     """
-    从推理输出中读取逐样本前置网络指标。
+    从推理输出中读取逐样本前置网络指标. 
 
     输入参数:
         - inference_root: Path, stage2 推理输出目录
@@ -320,7 +320,7 @@ def load_instance_metrics(inference_root: Path) -> dict[str, dict[str, Any]]:
 
 
 def normalize_metric_mapping(data: Any) -> dict[str, dict[str, Any]]:
-    """把不同 JSON 形态统一成 `{sample_id: metrics}`。"""
+    """把不同 JSON 形态统一成 `{sample_id: metrics}`. """
     if isinstance(data, dict):
         if "samples" in data and isinstance(data["samples"], list):
             return normalize_metric_mapping(data["samples"])
@@ -342,7 +342,7 @@ def normalize_metric_mapping(data: Any) -> dict[str, dict[str, Any]]:
 
 
 def flatten_metric_dict(data: dict[str, Any]) -> dict[str, Any]:
-    """抽取常用 instance/voxel 指标字段。"""
+    """抽取常用 instance/voxel 指标字段. """
     flat = dict(data)
     for nested_key in ("metrics", "best_metrics", "summary"):
         nested = data.get(nested_key)
@@ -360,7 +360,7 @@ def flatten_metric_dict(data: dict[str, Any]) -> dict[str, Any]:
 
 
 def first_present(data: dict[str, Any], names: tuple[str, ...]) -> Any:
-    """返回第一个存在的字段值。"""
+    """返回第一个存在的字段值. """
     for name in names:
         if name in data:
             return data[name]
@@ -368,7 +368,7 @@ def first_present(data: dict[str, Any], names: tuple[str, ...]) -> Any:
 
 
 def missing_to_negative_inf(value: Any) -> float:
-    """排序时把缺失指标放到最后。"""
+    """排序时把缺失指标放到最后. """
     try:
         return float(value)
     except (TypeError, ValueError):
@@ -376,7 +376,7 @@ def missing_to_negative_inf(value: Any) -> float:
 
 
 def numeric_or_blank(value: Any) -> float | str:
-    """把 JSON 字段转成 float; 缺失或不可转时保留空字符串。"""
+    """把 JSON 字段转成 float; 缺失或不可转时保留空字符串. """
     try:
         return float(value)
     except (TypeError, ValueError):
@@ -384,7 +384,7 @@ def numeric_or_blank(value: Any) -> float | str:
 
 
 def write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
-    """写出 CSV 表。"""
+    """写出 CSV 表. """
     path.parent.mkdir(parents=True, exist_ok=True)
     fieldnames = sorted({key for row in rows for key in row})
     with path.open("w", newline="", encoding="utf-8") as handle:
@@ -395,7 +395,7 @@ def write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
 
 
 def write_sample_list(path: Path, rows: list[dict[str, Any]]) -> None:
-    """写出样本 ID 文本列表。"""
+    """写出样本 ID 文本列表. """
     path.write_text("\n".join(row["sample_id"] for row in rows) + "\n", encoding="utf-8")
 
 

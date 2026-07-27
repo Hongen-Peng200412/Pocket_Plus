@@ -7,7 +7,7 @@ import torch
 
 class WarmupThenReduceLROnPlateau:
     """
-    组合 step 级 warmup 与 validation 级 ReduceLROnPlateau。
+    组合 step 级 warmup 与 validation 级 ReduceLROnPlateau. 
 
     输入参数:
         - optimizer: torch.optim.Optimizer, 被调度的优化器
@@ -78,7 +78,7 @@ class WarmupThenReduceLROnPlateau:
 
     def lightning_warmup_config(self) -> dict[str, Any]:
         """
-        返回 Lightning 管理 warmup scheduler 所需的配置字典。
+        返回 Lightning 管理 warmup scheduler 所需的配置字典. 
 
         输出:
             - config: dict[str, Any], 包含 scheduler/interval/frequency/name 的 Lightning lr_scheduler 配置
@@ -92,7 +92,7 @@ class WarmupThenReduceLROnPlateau:
 
     def step_plateau(self, metric: torch.Tensor | float, *, global_step: int) -> bool:
         """
-        在 validation end 后按主指标推进 plateau scheduler。
+        在 validation end 后按主指标推进 plateau scheduler. 
 
         输入参数:
             - metric: torch.Tensor 或 float, 当前 validation 聚合后的主指标值
@@ -113,7 +113,7 @@ class WarmupThenReduceLROnPlateau:
 
     def state_dict(self) -> dict[str, Any]:
         """
-        导出手动管理的 plateau scheduler 状态。
+        导出手动管理的 plateau scheduler 状态. 
 
         输出:
             - state: dict[str, Any], 可写入 Lightning checkpoint 的 plateau 状态字典
@@ -125,7 +125,7 @@ class WarmupThenReduceLROnPlateau:
 
     def load_state_dict(self, state: dict[str, Any]) -> None:
         """
-        恢复手动管理的 plateau scheduler 状态。
+        恢复手动管理的 plateau scheduler 状态. 
 
         输入参数:
             - state: dict[str, Any], state_dict() 导出的状态字典
@@ -137,7 +137,7 @@ class WarmupThenReduceLROnPlateau:
 
     def get_last_lr(self) -> list[float]:
         """
-        读取 optimizer 当前学习率。
+        读取 optimizer 当前学习率. 
 
         输出:
             - last_lr: list[float], 每个 param group 当前学习率

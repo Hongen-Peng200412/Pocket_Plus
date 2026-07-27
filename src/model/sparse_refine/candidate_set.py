@@ -8,7 +8,7 @@ from torch import nn
 
 class SparseCandidateSetBuilder(nn.Module):
     """
-    从 voxel ligand logits 生成 sparse candidate voxel set C。
+    从 voxel ligand logits 生成 sparse candidate voxel set C. 
 
     输入参数:
         - candidate_class_ids: Sequence[int], (K,), 候选前景类别 ID; 单通道 sigmoid 只允许 [1]
@@ -37,8 +37,8 @@ class SparseCandidateSetBuilder(nn.Module):
             - "candidate_target_counts_by_class": torch.Tensor, (B, K), 每个 BOX/候选类 原本打算的选取体素数目(不被最大值限制前)
 
     说明:
-        - `warmup_topc_per_class` 是 warmup fixed top-C 配置名, 保持历史字段名。
-        - 正式 `selection_mode="topk"` 使用 `max_candidate_voxels_per_class` 作为每 BOX/类别 top-k 请求数。
+        - `warmup_topc_per_class` 是 warmup fixed top-C 配置名, 保持历史字段名. 
+        - 正式 `selection_mode="topk"` 使用 `max_candidate_voxels_per_class` 作为每 BOX/类别 top-k 请求数. 
     """
 
     def __init__(
@@ -89,7 +89,7 @@ class SparseCandidateSetBuilder(nn.Module):
 
     def _prob_by_candidate_class(self, voxel_logits_ligand: torch.Tensor) -> torch.Tensor:
         """
-        生成候选类别概率张量。
+        生成候选类别概率张量. 
 
         输入参数:
             - voxel_logits_ligand: torch.Tensor, (B,1,D,H,W) 或 (B,C,D,H,W), ligand head logits
@@ -115,7 +115,7 @@ class SparseCandidateSetBuilder(nn.Module):
 
     def _check_threshold_tensor(self, threshold: torch.Tensor | None, threshold_name: str) -> torch.Tensor:
         """
-        校验非 fixed topk 模式需要的阈值缓存。
+        校验非 fixed topk 模式需要的阈值缓存. 
 
         输入参数:
             - threshold: torch.Tensor | None, (K,), 阈值缓存
@@ -142,7 +142,7 @@ class SparseCandidateSetBuilder(nn.Module):
         dtype: torch.dtype,
     ) -> dict[str, torch.Tensor]:
         """
-        构造空 C 输出字典。
+        构造空 C 输出字典. 
 
         输入参数:
             - batch_size: int, batch 内 BOX 数
@@ -173,7 +173,7 @@ class SparseCandidateSetBuilder(nn.Module):
         spatial_shape_zyx: torch.Size,
     ) -> torch.Tensor:
         """
-        按物理 voxel 唯一化候选，并对类别冲突执行均匀随机路由。
+        按物理 voxel 唯一化候选, 并对类别冲突执行均匀随机路由. 
 
         输入参数:
             - candidate_voxel_zyx: torch.Tensor, (sumR, 3), 按类别提名得到的 provisional voxel 坐标
@@ -181,7 +181,7 @@ class SparseCandidateSetBuilder(nn.Module):
             - spatial_shape_zyx: torch.Size, (D,H,W), voxel 网格空间形状
 
         输出:
-            - routed_index: torch.Tensor, (sumC,), 唯一 C 对应的 provisional 行号(取值 0~sumR-1)，保持原始提名顺序
+            - routed_index: torch.Tensor, (sumC,), 唯一 C 对应的 provisional 行号(取值 0~sumR-1), 保持原始提名顺序
         """
         num_rows = int(candidate_batch_index.shape[0])
         if num_rows == 0:
@@ -196,7 +196,7 @@ class SparseCandidateSetBuilder(nn.Module):
         )
         # torch.Tensor, (sumR,), 每条 provisional 行所属的物理 voxel 分组位置
         # out[0]: 去重后的唯一值（unique values）
-        # out[1]: inverse indices，形状与 key 相同，表示 key 中每个元素对应 unique 里的哪个位置
+        # out[1]: inverse indices, 形状与 key 相同, 表示 key 中每个元素对应 unique 里的哪个位置
         inverse = torch.unique(key, sorted=True, return_inverse=True)[1]
         # torch.Tensor, (sumR,), 按物理 voxel 分组后的 provisional 行号
         sorted_row_index = torch.argsort(inverse, stable=True)
@@ -226,7 +226,7 @@ class SparseCandidateSetBuilder(nn.Module):
         use_fixed_warmup: bool,
     ) -> dict[str, torch.Tensor]:
         """
-        从 ligand logits 生成当前 batch 的 sparse candidate set C。
+        从 ligand logits 生成当前 batch 的 sparse candidate set C. 
 
         输入参数:
             - voxel_logits_ligand: torch.Tensor, (B,1,D,H,W) 或 (B,C,D,H,W), ligand head logits

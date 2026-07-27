@@ -7,7 +7,7 @@ from src.wrappers.voxel_point_stage1_diagnostics import CpcDiagnosticsConfig, Cp
 
 def _config() -> CpcDiagnosticsConfig:
     """
-    构造测试用 diagnostics 配置。
+    构造测试用 diagnostics 配置. 
 
     输出:
         - config: CpcDiagnosticsConfig, 4-bin global-only diagnostics 配置
@@ -24,7 +24,7 @@ def _config() -> CpcDiagnosticsConfig:
 
 def _diagnostics() -> CpcValidationDiagnostics:
     """
-    构造二分类 CPC diagnostics 测试对象。
+    构造二分类 CPC diagnostics 测试对象. 
 
     输出:
         - diagnostics: CpcValidationDiagnostics, 候选类为 foreground 的测试对象
@@ -40,7 +40,7 @@ def _diagnostics() -> CpcValidationDiagnostics:
 
 def _hist_count(payload, hist_name: str, bin_index: int) -> float:
     """
-    从 histogram payload 中取 foreground 指定 bin 的计数。
+    从 histogram payload 中取 foreground 指定 bin 的计数. 
 
     输入参数:
         - payload: CpcDiagnosticsPayload, diagnostics epoch 输出
@@ -59,7 +59,7 @@ def _hist_count(payload, hist_name: str, bin_index: int) -> float:
 
 def test_uncapped_best_outputs_global_f1_and_sampling_threshold() -> None:
     """
-    验证 dense best-F1 diagnostics 输出 global 标量和 supervised p_sampling。
+    验证 dense best-F1 diagnostics 输出 global 标量和 supervised p_sampling. 
     """
     diagnostics = _diagnostics()
     logits = torch.logit(torch.tensor([[[[[0.9, 0.1]]]]]), eps=1e-6)
@@ -80,7 +80,7 @@ def test_uncapped_best_outputs_global_f1_and_sampling_threshold() -> None:
 
 def test_reset_preserves_threshold_grid_and_clears_histograms() -> None:
     """
-    验证 reset 保留阈值网格并清空统计 histogram。
+    验证 reset 保留阈值网格并清空统计 histogram. 
     """
     diagnostics = _diagnostics()
     grid_before = diagnostics.threshold_grid.clone()
@@ -94,7 +94,7 @@ def test_reset_preserves_threshold_grid_and_clears_histograms() -> None:
 
 def test_uncapped_sampling_uses_real_per_box_boundary() -> None:
     """
-    验证 val_uncapped_sampling 使用 candidate builder 记录的 per-BOX 边界统计。
+    验证 val_uncapped_sampling 使用 candidate builder 记录的 per-BOX 边界统计. 
     """
     diagnostics = _diagnostics()
     logits = torch.logit(torch.tensor([[[[[0.9, 0.6, 0.4, 0.1]]]]]), eps=1e-6)
@@ -126,7 +126,7 @@ def test_uncapped_sampling_uses_real_per_box_boundary() -> None:
 
 def test_uncapped_sampling_nan_boundary_counts_false_negatives() -> None:
     """
-    验证缺失 sampling boundary 时不会跳过 dense GT 正例统计。
+    验证缺失 sampling boundary 时不会跳过 dense GT 正例统计. 
     """
     diagnostics = _diagnostics()
     logits = torch.logit(torch.tensor([[[[[0.9, 0.1, 0.8, 0.2]]]]]), eps=1e-6)
@@ -156,7 +156,7 @@ def test_uncapped_sampling_nan_boundary_counts_false_negatives() -> None:
 
 def test_uncapped_sampling_uses_builder_candidate_rows() -> None:
     """
-    验证 sampling 统计使用 builder 已输出的候选行, 不在 diagnostics 内按 cutoff 重选。
+    验证 sampling 统计使用 builder 已输出的候选行, 不在 diagnostics 内按 cutoff 重选. 
     """
     diagnostics = _diagnostics()
     logits = torch.zeros(1, 1, 1, 1, 4)
@@ -184,7 +184,7 @@ def test_uncapped_sampling_uses_builder_candidate_rows() -> None:
 
 def test_capped_recall_and_routed_prob_hist_use_final_C() -> None:
     """
-    验证 val_capped recall 和 capped_routed_prob_hist 基于最终唯一 C 统计。
+    验证 val_capped recall 和 capped_routed_prob_hist 基于最终唯一 C 统计. 
     """
     diagnostics = _diagnostics()
     target = torch.tensor([[[[1, 1, 1, 1]]]])
@@ -211,7 +211,7 @@ def test_capped_recall_and_routed_prob_hist_use_final_C() -> None:
 
 def test_refined_local_f1_and_score_f1_use_different_fn_spaces() -> None:
     """
-    验证 val_refined/F1 使用 C 内 FN, val_score/refined_F1 使用 dense 全空间 FN。
+    验证 val_refined/F1 使用 C 内 FN, val_score/refined_F1 使用 dense 全空间 FN. 
     """
     diagnostics = _diagnostics()
     refined_logits_C = torch.tensor([[6.0]])
@@ -241,7 +241,7 @@ def test_refined_local_f1_and_score_f1_use_different_fn_spaces() -> None:
 
 def test_refined_score_f1_is_zero_when_C_misses_dense_positive() -> None:
     """
-    验证 C 内无正例但 dense 空间有正例时端到端 refined_F1 记为 0。
+    验证 C 内无正例但 dense 空间有正例时端到端 refined_F1 记为 0. 
     """
     diagnostics = _diagnostics()
 

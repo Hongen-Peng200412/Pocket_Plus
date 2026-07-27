@@ -1,10 +1,10 @@
 # --------------------------------------------------------
-"""假设坐标的二进制表示为：
+"""假设坐标的二进制表示为: 
 
 $x = x_2 x_1 x_0$
 $y = y_2 y_1 y_0$
 $z = z_2 z_1 z_0$
-莫顿码会将它们交织在一起，顺序通常是 $X$ 在高位，$Y$ 居中，$Z$ 在低位（每个位轮回一次）： 结果二进制序列为：$x_2 y_2 z_2 x_1 y_1 z_1  x_0 y_0 z_0$"""
+莫顿码会将它们交织在一起, 顺序通常是 $X$ 在高位, $Y$ 居中, $Z$ 在低位（每个位轮回一次）: 结果二进制序列为: $x_2 y_2 z_2 x_1 y_1 z_1  x_0 y_0 z_0$"""
 # --------------------------------------------------------
 
 import torch
@@ -13,8 +13,8 @@ from typing import Optional, Union
 
 class KeyLUT:
     """
-    Morton 编码/解码查询表 (Look-Up Table)。
-    用于通过查表法快速转换坐标与莫顿码，避开费时的循环计算。
+    Morton 编码/解码查询表 (Look-Up Table). 
+    用于通过查表法快速转换坐标与莫顿码, 避开费时的循环计算. 
     """
     def __init__(self):
         # torch.Tensor, (256,), 0-255 的长整型序列, 用于生成 8 位深度查询表
@@ -39,7 +39,7 @@ class KeyLUT:
 
     def encode_lut(self, device=torch.device("cpu")):
         """
-        获取指定设备上的编码查询表。
+        获取指定设备上的编码查询表. 
         输出:
             - lut: tuple of torch.Tensor, 包含 3 个 (256,) 的表格, 分别对应轴坐标位偏移后的键值
         """
@@ -50,7 +50,7 @@ class KeyLUT:
 
     def decode_lut(self, device=torch.device("cpu")):
         """
-        获取指定设备上的解码查询表。
+        获取指定设备上的解码查询表. 
         输出:
             - lut: tuple of torch.Tensor, 解码后的 (x, y, z) 坐标分量表
         """
@@ -62,7 +62,7 @@ class KeyLUT:
 
     def xyz2key(self, x, y, z, depth):
         """
-        计算坐标对应的莫顿键值 (循环法，仅用于初始化 LUT)。
+        计算坐标对应的莫顿键值 (循环法, 仅用于初始化 LUT). 
 
         输入参数:
             - x: torch.Tensor, x 轴分量
@@ -88,7 +88,7 @@ class KeyLUT:
 
     def key2xyz(self, key, depth):
         """
-        将莫顿键还原为坐标 (循环法，仅用于初始化 LUT)。
+        将莫顿键还原为坐标 (循环法, 仅用于初始化 LUT). 
 
         输入参数:
             - key: torch.Tensor, 莫顿键
@@ -121,7 +121,7 @@ def xyz2key(
     depth: int = 16,
 ):
     """
-    查表计算莫顿编码。支持 batch 索引的高位编码。
+    查表计算莫顿编码. 支持 batch 索引的高位编码. 
 
     输入参数:
         - x: torch.Tensor, (N,), x 轴网格坐标
@@ -158,7 +158,7 @@ def xyz2key(
 
 def key2xyz(key: torch.Tensor, depth: int = 16):
     """
-    查表解码莫顿编码。
+    查表解码莫顿编码. 
 
     输入参数:
         - key: torch.Tensor, (N,), 莫顿编码

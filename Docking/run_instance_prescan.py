@@ -19,7 +19,7 @@ from docking_pipeline.io_utils import (
 
 def main() -> None:
     """
-    运行不调用 Rosetta 的 instance 后处理参数预扫描。
+    运行不调用 Rosetta 的 instance 后处理参数预扫描. 
 
     输入参数:
         - CLI 参数, 包括 run_id、样本列表、参数网格和并发数
@@ -62,7 +62,7 @@ def main() -> None:
 
 def scan_one(payload: dict[str, Any]) -> list[dict[str, Any]]:
     """
-    扫描单个样本的参数网格。
+    扫描单个样本的参数网格. 
 
     输入参数:
         - payload: dict[str, Any], 包含样本 ID、路径、run_id 和参数列表
@@ -119,7 +119,7 @@ def scan_one(payload: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _build_option_grid(args: argparse.Namespace) -> list[InstancePostprocessOptions]:
-    """根据 CLI 参数构造后处理参数网格。"""
+    """根据 CLI 参数构造后处理参数网格. """
     min_voxels_values = [int(value) for value in args.min_voxels_grid.split(",") if value]
     if args.disable_merge:
         return [
@@ -153,7 +153,7 @@ def _build_option_grid(args: argparse.Namespace) -> list[InstancePostprocessOpti
 
 
 def _parallel_map(payloads: list[dict[str, Any]], jobs: int) -> list[list[dict[str, Any]]]:
-    """使用 joblib 并行扫描样本; joblib 不可用时退回顺序执行。"""
+    """使用 joblib 并行扫描样本; joblib 不可用时退回顺序执行. """
     if jobs <= 1:
         return [scan_one(payload) for payload in payloads]
     try:
@@ -164,7 +164,7 @@ def _parallel_map(payloads: list[dict[str, Any]], jobs: int) -> list[list[dict[s
 
 
 def _resolve_sample_ids(paths: ServerPaths, sample_list: str | None) -> list[str]:
-    """解析样本列表或从推理根目录自动发现样本。"""
+    """解析样本列表或从推理根目录自动发现样本. """
     if sample_list:
         path = Path(sample_list)
         if path.exists():
@@ -174,7 +174,7 @@ def _resolve_sample_ids(paths: ServerPaths, sample_list: str | None) -> list[str
 
 
 def _summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
-    """按参数组合汇总预扫描统计。"""
+    """按参数组合汇总预扫描统计. """
     ok_rows = [row for row in rows if row.get("status") == "ok"]
     by_option: dict[int, list[dict[str, Any]]] = {}
     for row in ok_rows:

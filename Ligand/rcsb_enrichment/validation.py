@@ -11,7 +11,7 @@ from .models import ChemCompDescriptors, MakeDataLigand, Mol2Info, RCSBAtomSiteL
 
 def element_counts(elements: list[str]) -> dict[str, int]:
     """
-    统计元素组成。
+    统计元素组成. 
 
     输入参数:
         - elements: list[str], 元素符号列表
@@ -25,7 +25,7 @@ def element_counts(elements: list[str]) -> dict[str, int]:
 
 def nearest_neighbor_stats(query_coords: np.ndarray, target_coords: np.ndarray) -> tuple[float | None, float | None]:
     """
-    计算无元素约束的最近邻距离统计。
+    计算无元素约束的最近邻距离统计. 
 
     输入参数:
         - query_coords: np.ndarray, (N, 3), 查询坐标
@@ -45,7 +45,7 @@ def nearest_neighbor_stats(query_coords: np.ndarray, target_coords: np.ndarray) 
 
 def nearest_same_element_stats(query_coords: np.ndarray, query_elements: list[str], target_coords: np.ndarray, target_elements: list[str]) -> tuple[float | None, float | None]:
     """
-    计算同元素约束的最近邻距离统计。
+    计算同元素约束的最近邻距离统计. 
 
     输入参数:
         - query_coords: np.ndarray, (N, 3), 查询坐标
@@ -74,7 +74,7 @@ def nearest_same_element_stats(query_coords: np.ndarray, query_elements: list[st
 
 def validate_ligand_pair(make_data_ligand: MakeDataLigand, rcsb_atom_site: RCSBAtomSiteLigand, mol2_info: Mol2Info, descriptors: ChemCompDescriptors) -> ValidationMetrics:
     """
-    执行 Make_Data、RCSB CIF 和 RCSB native mol2 的一致性校验。
+    执行 Make_Data、RCSB CIF 和 RCSB native mol2 的一致性校验. 
 
     输入参数:
         - make_data_ligand: MakeDataLigand, Make_Data ligand candidate
@@ -127,7 +127,7 @@ def validate_ligand_pair(make_data_ligand: MakeDataLigand, rcsb_atom_site: RCSBA
 
 def evaluate_tool_readiness(mol2_info: Mol2Info | None, has_smiles: bool, pair_valid: bool) -> ToolReadiness:
     """
-    判断 DockEM、EMERALD-ID 和 PocketXMol 的输入格式状态。
+    判断 DockEM、EMERALD-ID 和 PocketXMol 的输入格式状态. 
 
     输入参数:
         - mol2_info: Mol2Info | None, native mol2 解析结果; 缺失时为 None

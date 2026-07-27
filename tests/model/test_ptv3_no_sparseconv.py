@@ -8,7 +8,7 @@ from src.model.PTV3bakcbone.model import Block, Embedding, Point, PointConvCPE, 
 
 def test_block_rejects_sparseconv_cpe() -> None:
     """
-    验证 Block 不再接受 sparseconv CPE。
+    验证 Block 不再接受 sparseconv CPE. 
     """
     with pytest.raises(ValueError, match="pointconv"):
         Block(
@@ -24,7 +24,7 @@ def test_block_rejects_sparseconv_cpe() -> None:
 
 def test_embedding_rejects_sparseconv_impl() -> None:
     """
-    验证 Embedding 不再接受 sparseconv stem。
+    验证 Embedding 不再接受 sparseconv stem. 
     """
     with pytest.raises(ValueError, match="pointconv"):
         Embedding(
@@ -36,7 +36,7 @@ def test_embedding_rejects_sparseconv_impl() -> None:
 
 def test_point_transformer_defaults_pointconv() -> None:
     """
-    验证 PointTransformerV3 默认 embedding_impl 与 cpe_impl 均为 pointconv。
+    验证 PointTransformerV3 默认 embedding_impl 与 cpe_impl 均为 pointconv. 
     """
     model = PointTransformerV3(
         in_channels=4,
@@ -64,7 +64,7 @@ def test_point_transformer_defaults_pointconv() -> None:
 
 def test_ptv3_module_has_no_spconv_dependency() -> None:
     """
-    验证新 PTV3 模块不再暴露 spconv 相关成员。
+    验证新 PTV3 模块不再暴露 spconv 相关成员. 
     """
     import src.model.PTV3bakcbone.model as ptv3_model
 
@@ -96,7 +96,7 @@ def test_ptv3_module_has_no_spconv_dependency() -> None:
 
 def _make_point_input(num_points: int, channels: int) -> dict[str, torch.Tensor | float]:
     """
-    构造单 BOX 的 PTV3 Point 输入字典。
+    构造单 BOX 的 PTV3 Point 输入字典. 
 
     输入参数:
         - num_points: int, 点数 N
@@ -129,7 +129,7 @@ def _make_serialized_point(
     call_sparsify: bool,
 ) -> Point:
     """
-    构造已 serialization 的 Point, 可选调用 no-op sparsify。
+    构造已 serialization 的 Point, 可选调用 no-op sparsify. 
 
     输入参数:
         - data_dict: dict[str, torch.Tensor | float], Point 输入字典
@@ -147,7 +147,7 @@ def _make_serialized_point(
 
 def _make_tiny_point_transformer() -> PointTransformerV3:
     """
-    构造最小 pointconv PTV3 测试网络。
+    构造最小 pointconv PTV3 测试网络. 
 
     输出:
         - model: PointTransformerV3, 两层 encoder + 一层 decoder 的小网络
@@ -181,7 +181,7 @@ def _make_tiny_point_transformer() -> PointTransformerV3:
 
 def test_point_sparsify_no_sparse_conv_feat() -> None:
     """
-    验证 Point.sparsify 只补充 grid_coord, 不产生 sparse_conv_feat。
+    验证 Point.sparsify 只补充 grid_coord, 不产生 sparse_conv_feat. 
     """
     point = Point(_make_point_input(num_points=3, channels=4))
     point.sparsify()
@@ -191,7 +191,7 @@ def test_point_sparsify_no_sparse_conv_feat() -> None:
 
 def test_pointconv_embedding_same_with_or_without_sparsify() -> None:
     """
-    验证 pointconv embedding 不依赖 Point.sparsify 的副作用。
+    验证 pointconv embedding 不依赖 Point.sparsify 的副作用. 
     """
     data_dict = _make_point_input(num_points=6, channels=4)
     point_without_sparsify = _make_serialized_point(data_dict, call_sparsify=False)
@@ -213,7 +213,7 @@ def test_pointconv_embedding_same_with_or_without_sparsify() -> None:
 
 def test_pointconv_cpe_same_with_or_without_sparsify() -> None:
     """
-    验证 pointconv CPE 不依赖 Point.sparsify 的副作用。
+    验证 pointconv CPE 不依赖 Point.sparsify 的副作用. 
     """
     data_dict = _make_point_input(num_points=6, channels=8)
     point_without_sparsify = _make_serialized_point(data_dict, call_sparsify=False)
@@ -234,7 +234,7 @@ def test_pointconv_cpe_same_with_or_without_sparsify() -> None:
 
 def test_block_pointconv_same_with_or_without_sparsify() -> None:
     """
-    验证 pointconv CPE + attention Block 不依赖 Point.sparsify 的副作用。
+    验证 pointconv CPE + attention Block 不依赖 Point.sparsify 的副作用. 
     """
     torch.manual_seed(7)
     data_dict = _make_point_input(num_points=6, channels=8)
@@ -263,7 +263,7 @@ def test_block_pointconv_same_with_or_without_sparsify() -> None:
 
 def test_point_transformer_same_with_or_without_sparsify_after_serialization() -> None:
     """
-    验证整网从已 serialization Point 开始时, 旧 no-op sparsify 不改变 pointconv PTV3 输出。
+    验证整网从已 serialization Point 开始时, 旧 no-op sparsify 不改变 pointconv PTV3 输出. 
     """
     torch.manual_seed(11)
     data_dict = _make_point_input(num_points=8, channels=4)
@@ -281,7 +281,7 @@ def test_point_transformer_same_with_or_without_sparsify_after_serialization() -
 
 def test_point_transformer_forward_keeps_grid_coord_without_sparsify() -> None:
     """
-    验证 PointTransformerV3.forward 删除 point.sparsify 调用后仍保留 grid_coord 与输出点数。
+    验证 PointTransformerV3.forward 删除 point.sparsify 调用后仍保留 grid_coord 与输出点数. 
     """
     torch.manual_seed(13)
     model = _make_tiny_point_transformer()

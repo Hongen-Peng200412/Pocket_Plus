@@ -1,4 +1,4 @@
-"""AdaLigand Stage1 producer 名单的单一来源。"""
+"""AdaLigand Stage1 producer 名单的单一来源. """
 
 from __future__ import annotations
 

@@ -15,7 +15,7 @@ from .validation import evaluate_tool_readiness, validate_ligand_pair
 
 def empty_mol2_info() -> Mol2Info:
     """
-    构造空 mol2 信息。
+    构造空 mol2 信息. 
 
     输出:
         - info: Mol2Info, 所有计数为 0 的占位对象
@@ -37,7 +37,7 @@ def empty_mol2_info() -> Mol2Info:
 
 def load_descriptors(path: Path) -> ChemCompDescriptors:
     """
-    从 RCSB chemcomp JSON 中读取 SMILES/InChI 描述符。
+    从 RCSB chemcomp JSON 中读取 SMILES/InChI 描述符. 
 
     输入参数:
         - path: Path, chemcomp JSON 文件路径
@@ -61,7 +61,7 @@ def load_descriptors(path: Path) -> ChemCompDescriptors:
 
 def base_row(sample: SampleRef, ligand) -> MappingRow:
     """
-    构造包含 Make_Data 基本字段的 MappingRow。
+    构造包含 Make_Data 基本字段的 MappingRow. 
 
     输入参数:
         - sample: SampleRef, 当前 PDB 样本引用
@@ -89,7 +89,7 @@ def base_row(sample: SampleRef, ligand) -> MappingRow:
 
 def process_one_pdb(sample: SampleRef, output_root: Path, force_download: bool, max_retries: int, retry_sleep: float) -> PDBProcessResult:
     """
-    处理一个 PDB 样本。
+    处理一个 PDB 样本. 
 
     输入参数:
         - sample: SampleRef, 待处理 PDB 样本

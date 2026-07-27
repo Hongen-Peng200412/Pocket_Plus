@@ -11,7 +11,7 @@ from .records import InferenceSite
 @dataclass(frozen=True)
 class InstancePostprocessOptions:
     """
-    推理 instance 后处理参数。
+    推理 instance 后处理参数. 
 
     输入参数:
         - min_voxels: int, 最小体素数; 小于该值的 instance 会在 docking 前被过滤
@@ -32,7 +32,7 @@ class InstancePostprocessOptions:
 
     @staticmethod
     def conservative() -> "InstancePostprocessOptions":
-        """返回低误删倾向的经验参数。"""
+        """返回低误删倾向的经验参数. """
         return InstancePostprocessOptions(
             min_voxels=30,
             enable_merge=True,
@@ -45,7 +45,7 @@ class InstancePostprocessOptions:
 @dataclass(frozen=True)
 class PostprocessResult:
     """
-    instance 后处理结果。
+    instance 后处理结果. 
 
     输入参数:
         - sites: tuple[InferenceSite, ...], 后处理后进入 docking 的预测位点
@@ -70,7 +70,7 @@ class PostprocessResult:
 
     def audit_dict(self) -> dict[str, Any]:
         """
-        转成 JSON 友好的审计字典。
+        转成 JSON 友好的审计字典. 
 
         输出:
             - audit: dict[str, Any], 包含参数、原始数量、过滤记录、合并候选、实际合并和输出位点
@@ -95,7 +95,7 @@ def postprocess_sites(
     options: InstancePostprocessOptions,
 ) -> PostprocessResult:
     """
-    对推理 instance 执行最小体素数过滤和保守合并。
+    对推理 instance 执行最小体素数过滤和保守合并. 
 
     输入参数:
         - sites: list[InferenceSite], 原始预测位点列表
@@ -147,7 +147,7 @@ def postprocess_sites(
 
 def estimate_job_count(num_sites: int, num_ligands: int, num_receptors: int) -> int:
     """
-    估计 Rosetta job 数。
+    估计 Rosetta job 数. 
 
     输入参数:
         - num_sites: int, 后处理后预测 site 数
@@ -161,7 +161,7 @@ def estimate_job_count(num_sites: int, num_ligands: int, num_receptors: int) -> 
 
 
 def _site_dict(site: InferenceSite) -> dict[str, Any]:
-    """返回单个 site 的 JSON 友好摘要。"""
+    """返回单个 site 的 JSON 友好摘要. """
     return {
         "site_id": site.site_id,
         "instance_id": site.instance_id,
@@ -174,7 +174,7 @@ def _site_dict(site: InferenceSite) -> dict[str, Any]:
 
 def _instance_world_xyz(label: np.ndarray, instance_id: int, origin: np.ndarray, voxel_size: np.ndarray) -> np.ndarray:
     """
-    提取一个 instance 的世界坐标点云。
+    提取一个 instance 的世界坐标点云. 
 
     输入参数:
         - label: np.ndarray, (D, H, W), int, instance 标签图
@@ -201,7 +201,7 @@ def _build_merge_candidates(
     coords_by_id: dict[int, np.ndarray],
     options: InstancePostprocessOptions,
 ) -> list[dict[str, Any]]:
-    """计算所有两两 instance 合并候选特征。"""
+    """计算所有两两 instance 合并候选特征. """
     candidates: list[dict[str, Any]] = []
     center_only = options.merge_min_voxel_distance >= 1.0e8 and options.merge_max_bbox_span_increase >= 1.0e8
     for left_index, left in enumerate(sites):
@@ -236,7 +236,7 @@ def _build_merge_candidates(
 
 
 def _nearest_point_distance(left: np.ndarray, right: np.ndarray) -> float:
-    """分块计算两个点云之间的最近欧氏距离。"""
+    """分块计算两个点云之间的最近欧氏距离. """
     if len(left) > len(right):
         left, right = right, left
     best = float("inf")
@@ -249,7 +249,7 @@ def _nearest_point_distance(left: np.ndarray, right: np.ndarray) -> float:
 
 
 def _bbox_span_increase(left: np.ndarray, right: np.ndarray) -> float:
-    """计算合并后包围盒对角线相对较大单体包围盒的增加量。"""
+    """计算合并后包围盒对角线相对较大单体包围盒的增加量. """
     left_diag = _bbox_diag(left)
     right_diag = _bbox_diag(right)
     merged_diag = _bbox_diag(np.vstack([left, right]))
@@ -257,13 +257,13 @@ def _bbox_span_increase(left: np.ndarray, right: np.ndarray) -> float:
 
 
 def _bbox_diag(coords: np.ndarray) -> float:
-    """返回点云包围盒对角线长度。"""
+    """返回点云包围盒对角线长度. """
     span = coords.max(axis=0) - coords.min(axis=0)
     return float(np.linalg.norm(span))
 
 
 def _merge_groups(instance_ids: list[int], accepted: list[dict[str, Any]]) -> list[list[int]]:
-    """根据已接受的两两合并边构造连通合并组。"""
+    """根据已接受的两两合并边构造连通合并组. """
     parent = {instance_id: instance_id for instance_id in instance_ids}
 
     def find(value: int) -> int:
@@ -293,7 +293,7 @@ def _apply_merge_groups(
     coords_by_id: dict[int, np.ndarray],
     groups: list[list[int]],
 ) -> tuple[np.ndarray, list[InferenceSite], list[dict[str, Any]]]:
-    """把合并组应用到标签图和 site 列表。"""
+    """把合并组应用到标签图和 site 列表. """
     site_by_id = {site.instance_id: site for site in sites}
     merged_label = label.copy()
     merged_sites: list[InferenceSite] = []

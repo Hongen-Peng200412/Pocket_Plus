@@ -11,7 +11,7 @@ from torch import nn
 
 def _sort_by_prob_desc(prob: torch.Tensor) -> torch.Tensor:
     """
-    按概率降序返回排序下标, 不保证同概率稳定 tie-break。
+    按概率降序返回排序下标, 不保证同概率稳定 tie-break. 
 
     输入参数:
         - prob: torch.Tensor, (M,), 每个候选的概率
@@ -30,7 +30,7 @@ def build_anchor_coordinates(
     box_shape_zyx: torch.Tensor,
 ) -> dict[str, torch.Tensor]:
     """
-    将 P anchor 的离散 voxel 坐标转换为 local/world/centered-world 坐标。
+    将 P anchor 的离散 voxel 坐标转换为 local/world/centered-world 坐标. 
 
     输入参数:
         - anchor_voxel_zyx: torch.Tensor, (sumP, 3), P 来源 voxel 坐标, 轴顺序 z/y/x
@@ -82,7 +82,7 @@ class SparseAnchorSampler(nn.Module):
         random_start: bool,
     ) -> None:
         """
-        从 sparse candidate voxel set C 中采样少量 P anchors。
+        从 sparse candidate voxel set C 中采样少量 P anchors. 
 
         输入参数:
             - candidate_class_ids: Sequence[int], (K,), 候选前景类别 ID
@@ -153,7 +153,7 @@ class SparseAnchorSampler(nn.Module):
         max_count: int,
     ) -> torch.Tensor:
         """
-        对单个 BOX/类别执行 probability-weighted FPS。
+        对单个 BOX/类别执行 probability-weighted FPS. 
 
         输入参数:
             - candidate_index: torch.Tensor, (M,), 当前组原始 C 行号
@@ -209,7 +209,7 @@ class SparseAnchorSampler(nn.Module):
         max_count: int,
     ) -> torch.Tensor:
         """
-        对单个 BOX/类别调用 torch_cluster.fps 执行无权重 FPS。
+        对单个 BOX/类别调用 torch_cluster.fps 执行无权重 FPS. 
 
         输入参数:
             - candidate_index: torch.Tensor, (M,), 当前组原始 C 行号
@@ -232,7 +232,7 @@ class SparseAnchorSampler(nn.Module):
         # float, FPS 采样比例
         ratio = min(1.0, float(max_count) / float(group_size))
         # torch.Tensor, (P_raw,), FPS 返回的局部下标
-        # 兼容不同 torch_cluster 版本对首参命名(`src`/`x`)的差异, 这里使用位置参数传坐标。
+        # 兼容不同 torch_cluster 版本对首参命名(`src`/`x`)的差异, 这里使用位置参数传坐标. 
         fps_index = torch_cluster.fps(
             voxel_xyz_float,
             batch=None,
@@ -250,7 +250,7 @@ class SparseAnchorSampler(nn.Module):
         box_shape_zyx: torch.Tensor,
     ) -> torch.Tensor:
         """
-        对单个 BOX/类别执行 dense grid topk-NMS。
+        对单个 BOX/类别执行 dense grid topk-NMS. 
 
         输入参数:
             - candidate_index: torch.Tensor, (M,), 当前组原始 C 行号
@@ -295,7 +295,7 @@ class SparseAnchorSampler(nn.Module):
         batch: dict[str, Any],
     ) -> dict[str, torch.Tensor]:
         """
-        从 C 输出中采样 P anchors 并构造坐标与 metadata。
+        从 C 输出中采样 P anchors 并构造坐标与 metadata. 
 
         输入参数:
             - candidate_outputs: dict[str, torch.Tensor], C 输出字段
@@ -340,7 +340,7 @@ class SparseAnchorSampler(nn.Module):
         # int, 候选类别数量
         num_classes = len(self.candidate_class_ids)
 
-        # torch.Tensor, (sumC,), C 已由 builder 按物理 voxel 唯一化，sampler 仅做采样
+        # torch.Tensor, (sumC,), C 已由 builder 按物理 voxel 唯一化, sampler 仅做采样
         kept_index = torch.arange(int(candidate_prob.shape[0]), device=candidate_prob.device, dtype=torch.long)
 
         # 删掉了以下逻辑, 因为输入的 C 本身就不重复了, 原逻辑保证 sumC_unique =sum_C

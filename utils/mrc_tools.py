@@ -7,15 +7,15 @@ import torch
 
 def get_class_weights(npy_folder, csv_file):
     """
-    遍历指定文件夹中的所有NPY标签文件，统计各类别体素数量，
-    并计算逆频率类别权重。
+    遍历指定文件夹中的所有NPY标签文件, 统计各类别体素数量, 
+    并计算逆频率类别权重. 
 
     Args:
-        npy_folder (str): 存储三分类NPY标签文件的根目录。
-        csv_file (str): 包含文件列表信息的CSV文件路径。
+        npy_folder (str): 存储三分类NPY标签文件的根目录. 
+        csv_file (str): 包含文件列表信息的CSV文件路径. 
 
     Returns:
-        torch.Tensor: 包含三个类别逆频率权重的张量。
+        torch.Tensor: 包含三个类别逆频率权重的张量. 
     """
     print("--- 正在统计数据集中的类别体素数量 ---")
 
@@ -61,7 +61,7 @@ def get_class_weights(npy_folder, csv_file):
         class_weights = torch.ones(3)  # 避免除以零
     else:
         class_frequencies = np.array([class_counts[i] for i in range(3)]) / total_voxels
-        # 使用 np.where 处理频率为零的情况，避免除以零
+        # 使用 np.where 处理频率为零的情况, 避免除以零
         inverse_frequencies = np.where(class_frequencies > 0, 1.0 / class_frequencies, 0)
         class_weights = torch.from_numpy(inverse_frequencies).float()
 
@@ -73,19 +73,19 @@ def get_class_weights(npy_folder, csv_file):
 
 def load_map(mrc_fn:str,multiply_global_origin:bool=True):
     """ 
-       从一个 MRC 文件读取体密度数组及其与世界坐标的几何元数据，并把数组轴重排为 (Z, Y, X)（即 grid[z,y,x]）。
-    #   返回：(grid, voxel_size, global_origin)
-       - grid: numpy.ndarray，shape == (nz, ny, nx)（ZYX），数据即密度值，dtype 与文件一致
-       - voxel_size: np.array([vx, vy, vz])，每轴像素大小（单位通常为 Å/voxel），顺序为 X, Y, Z
-       - global_origin: np.array([ox, oy, oz])，表示体素 (0,0,0) 在世界坐标系中的坐标（单位取决于 multiply_global_origin，参见下文）
-       - (废弃)nstart: np.array([nxstart, nystart, nzstart])，文件 header 中起始索引（可为 0 或其它偏移）     【自：默认为体素坐标而非世界坐标】
+       从一个 MRC 文件读取体密度数组及其与世界坐标的几何元数据, 并把数组轴重排为 (Z, Y, X)（即 grid[z,y,x]）. 
+    #   返回: (grid, voxel_size, global_origin)
+       - grid: numpy.ndarray, shape == (nz, ny, nx)（ZYX）, 数据即密度值, dtype 与文件一致
+       - voxel_size: np.array([vx, vy, vz]), 每轴像素大小（单位通常为 Å/voxel）, 顺序为 X, Y, Z
+       - global_origin: np.array([ox, oy, oz]), 表示体素 (0,0,0) 在世界坐标系中的坐标（单位取决于 multiply_global_origin, 参见下文）
+       - (废弃)nstart: np.array([nxstart, nystart, nzstart]), 文件 header 中起始索引（可为 0 或其它偏移）     【自: 默认为体素坐标而非世界坐标】
     
     # 调用关系与上下文
-       - multiply_global_origin 控制返回的 global_origin 单位：True 则单位为 Å（通过乘以 voxel_size），False 则为体素单位（index）。
+       - multiply_global_origin 控制返回的 global_origin 单位: True 则单位为 Å（通过乘以 voxel_size）, False 则为体素单位（index）. 
     
     # 重要前提 / 术语说明
-       - MRC header 的 mapc/mapr/maps: 指明 data array 三个维度分别对应 X/Y/Z 中哪一个轴（取 1/2/3 表示 X/Y/Z）。
-       - 例如 mapc=1,mapr=2,maps=3 表示数据的第一个维度对应 X（columns），第二维对应 Y（rows），第三维对应 Z（sections）。
+       - MRC header 的 mapc/mapr/maps: 指明 data array 三个维度分别对应 X/Y/Z 中哪一个轴（取 1/2/3 表示 X/Y/Z）. 
+       - 例如 mapc=1,mapr=2,maps=3 表示数据的第一个维度对应 X（columns）, 第二维对应 Y（rows）, 第三维对应 Z（sections）. 
     """
     mrc_file=mrc.open(mrc_fn,'r')
     voxel_size=mrc_file.voxel_size

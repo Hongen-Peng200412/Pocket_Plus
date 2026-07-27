@@ -11,7 +11,7 @@ from docking_pipeline.io_utils import write_json
 
 def main() -> None:
     """
-    汇总 array 分片产生的样本级 docking summary。
+    汇总 array 分片产生的样本级 docking summary. 
 
     输入参数:
         - run_id: str, pipeline run ID
@@ -37,7 +37,7 @@ def main() -> None:
 
 
 def read_sample_summaries(run_root: Path) -> list[dict[str, Any]]:
-    """读取每个样本的 `audit/summary.json`，并按样本 ID 排序。"""
+    """读取每个样本的 `audit/summary.json`, 并按样本 ID 排序. """
     summaries: list[dict[str, Any]] = []
     for path in sorted((run_root / "samples").glob("*/audit/summary.json")):
         summaries.append(json.loads(path.read_text(encoding="utf-8")))
@@ -45,7 +45,7 @@ def read_sample_summaries(run_root: Path) -> list[dict[str, Any]]:
 
 
 def read_shard_summaries(run_root: Path) -> list[dict[str, Any]]:
-    """读取 array shard 的局部 summary，主要用于审计 array 是否都结束。"""
+    """读取 array shard 的局部 summary, 主要用于审计 array 是否都结束. """
     shard_dir = run_root / "tables" / "shards"
     if not shard_dir.exists():
         return []
@@ -58,7 +58,7 @@ def build_batch_summary(
     summaries: list[dict[str, Any]],
     shard_summaries: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    """根据样本级 summary 构造与原批处理格式兼容的总表。"""
+    """根据样本级 summary 构造与原批处理格式兼容的总表. """
     common = {
         "run_id": run_id,
         "mode": mode,

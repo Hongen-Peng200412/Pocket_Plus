@@ -1,15 +1,15 @@
 # -*- coding: utf-8 -*-
 """
 ================================================================================
-生成 Chimera 命令文件：用 cryoatom 建模结构按真实分辨率生成模拟密度图
+生成 Chimera 命令文件: 用 cryoatom 建模结构按真实分辨率生成模拟密度图
 ================================================================================
 
 核心流程:
-  1. 读取 CSV (EMDB_ID, Resolution, PDB_ID)，每个 EMDB 取第一个有效 PDB
+  1. 读取 CSV (EMDB_ID, Resolution, PDB_ID), 每个 EMDB 取第一个有效 PDB
   2. 按 cryoatom 嵌套路径生成受体 CIF 路径
   3. 分批生成 .cmd Chimera 命令文件（每批 ~100 条）
   4. 生成 SLURM 提交脚本（支持 sbatch 批量提交）
-  5. 导出 manifest.csv（任务清单，含成功/失败统计）
+  5. 导出 manifest.csv（任务清单, 含成功/失败统计）
 
 输出文件结构:
   {OUTPUT_DIR}/
@@ -29,7 +29,7 @@
   conda activate Pocket_Plus_centos7_cu121_allgpu
   python /home/penghongen/My_Project/Pocket_Plus/Bundle_of_Maps/simulated_map/gen_chimera_cmds.py
 
-  生成完毕后，将 cmd/ slurm/ log/ 上传至服务器对应目录，
+  生成完毕后, 将 cmd/ slurm/ log/ 上传至服务器对应目录, 
   在服务器上执行: bash /home/penghongen/My_Project/Pocket_Plus/Bundle_of_Maps/simulated_map/cryatom_output/slurm/run_all.sh
 ================================================================================
 """
@@ -59,7 +59,7 @@ RECEPTOR_CIF_DIR = "/storage/chenzhaoyang/cryo_em/result_split"
 # NEST_OR_NOT = False
 NEST_OR_NOT = True
 
-# bool, 是否在生成 .cmd 前检查服务器端 CIF/map 文件存在；服务器运行时默认检查
+# bool, 是否在生成 .cmd 前检查服务器端 CIF/map 文件存在; 服务器运行时默认检查
 VALIDATE_FILES = True
 
 # str, 原始 EMDB 密度图所在目录
@@ -70,7 +70,7 @@ EMDB_MAP_DIR = "/storage/chenzhaoyang/cryo_em/EMDB_3.5"
 SIMU_OUTPUT_DIR = "/storage/penghongen/simulated_cryoatom_map"
 
 # str, 服务器上存放 .cmd 的绝对路径
-# 本地 output/ 由 run_sync.bat 自动同步至此路径，与本地目录结构完全一致
+# 本地 output/ 由 run_sync.bat 自动同步至此路径, 与本地目录结构完全一致
 # SERVER_OUTPUT_DIR = "/home/penghongen/My_Project/Pocket_Plus/Bundle_of_Maps/simulated_map/output"
 SERVER_OUTPUT_DIR = "/home/penghongen/My_Project/Pocket_Plus/Bundle_of_Maps/simulated_map/cryatom_output"
 
@@ -81,10 +81,10 @@ SERVER_OUTPUT_DIR = "/home/penghongen/My_Project/Pocket_Plus/Bundle_of_Maps/simu
 #   open ...                 — 打开 cryoatom 建模 CIF
 #   open ...                 — 打开原始 EMDB 密度图（定义目标网格）
 #   volume #1 step 1         — 设置密度图采样步长为 1 Å
-#   molmap #0 X onGrid #1     — 将受体结构按分辨率 X 生成模拟密度图，
+#   molmap #0 X onGrid #1     — 将受体结构按分辨率 X 生成模拟密度图, 
 #                               使用原始 EMDB map 的网格（对齐）
 #   volume #2 save ...       — 将模拟图保存为 MRC 文件
-#   close all                — 关闭当前样本，释放内存
+#   close all                — 关闭当前样本, 释放内存
 # ============================================================================
 CHIMERA_CMD_TEMPLATE = (
     "open {receptor_cif_path}\n"
@@ -102,11 +102,11 @@ CHIMERA_STOP_CMD = "stop\n"
 # 生成配置
 # ============================================================================
 
-# int, 每批 Chimera 命令的最大条数（建议值 100，超出过长的任务可降低此值）
+# int, 每批 Chimera 命令的最大条数（建议值 100, 超出过长的任务可降低此值）
 BATCH_SIZE = 100
 
 # NOTE
-# str, 本地输出根目录（生成的文件在此目录下，生成完毕后再上传至服务器）
+# str, 本地输出根目录（生成的文件在此目录下, 生成完毕后再上传至服务器）
 OUTPUT_DIR = os.path.join(
     os.path.dirname(os.path.abspath(__file__)),
     # "output", 
@@ -123,12 +123,12 @@ def normalize_emdb_id(emdb_id: str) -> str:
     将 EMDB ID 标准化为文件名字格式.
 
     输入参数:
-        - emdb_id: str, 标量, 原始 EMDB ID，如 "EMD-63092" 或 "emd-63092"
+        - emdb_id: str, 标量, 原始 EMDB ID, 如 "EMD-63092" 或 "emd-63092"
 
     输出:
-        - str, 标量, 文件名格式，如 "emd_63092"
+        - str, 标量, 文件名格式, 如 "emd_63092"
     """
-    # 去除空格，转为小写，去除 "EMD-" / "emd-" 前缀，拼回 emd_ 前缀
+    # 去除空格, 转为小写, 去除 "EMD-" / "emd-" 前缀, 拼回 emd_ 前缀
     return "emd_" + emdb_id.strip().lower().replace("emd-", "").replace("EMD-", "")
 
 
@@ -137,10 +137,10 @@ def normalize_pdb_id(pdb_id: str) -> str:
     将 PDB ID 标准化为大写格式.
 
     输入参数:
-        - pdb_id: str, 标量, 原始 PDB ID，如 "9lhb" 或 "9Lhb"
+        - pdb_id: str, 标量, 原始 PDB ID, 如 "9lhb" 或 "9Lhb"
 
     输出:
-        - str, 标量, 大写格式，如 "9LHB"
+        - str, 标量, 大写格式, 如 "9LHB"
     """
     return pdb_id.strip().upper()
 
@@ -149,14 +149,14 @@ def expand_csv_rows(csv_path: str) -> List[Dict]:
     """
     读取 CSV 文件并为每个 EMDB 选择第一个有效 PDB 条目.
 
-    原始 CSV 中 fitted_pdbs 列可能包含逗号分隔的多个 PDB（如 "6j8g,6j8h"），
-    本函数只保留第一个非空、非 nan 的 PDB，避免同一 EMDB 的模拟图输出互相覆盖。
+    原始 CSV 中 fitted_pdbs 列可能包含逗号分隔的多个 PDB（如 "6j8g,6j8h"）, 
+    本函数只保留第一个非空、非 nan 的 PDB, 避免同一 EMDB 的模拟图输出互相覆盖. 
 
     输入参数:
         - csv_path: str, CSV 文件路径
 
     输出:
-        - list[dict], 条目列表，每个 dict 含:
+        - list[dict], 条目列表, 每个 dict 含:
             - emdb_id: str, 标准化后的 EMDB ID
             - resolution: float, 分辨率（Å）
             - pdb_id: str, 标准化后的 PDB ID
@@ -205,7 +205,7 @@ def expand_csv_rows(csv_path: str) -> List[Dict]:
 
 
 # ============================================================================
-# 核心：生成 Chimera 命令文件
+# 核心: 生成 Chimera 命令文件
 # ============================================================================
 
 def build_receptor_cif_path(receptor_dir: str, pdb_id: str, nest_or_not: bool) -> str:
@@ -247,7 +247,7 @@ def validate_input_files(
     nest_or_not: bool,
 ) -> Tuple[List[Dict], List[Dict], List[Dict]]:
     """
-    检查受体 CIF 与 EMDB map 是否存在，并过滤缺失样本.
+    检查受体 CIF 与 EMDB map 是否存在, 并过滤缺失样本.
 
     输入参数:
         - rows: list[dict], 待检查条目列表
@@ -302,7 +302,7 @@ def build_chimera_commands(
         emdb_id = row["emdb_id"]
         resolution = row["resolution"]
         pdb_id = row["pdb_id"]
-        # str, 受体 CIF 路径；cryoatom 使用嵌套小写路径，真实结构使用平铺大写路径
+        # str, 受体 CIF 路径; cryoatom 使用嵌套小写路径, 真实结构使用平铺大写路径
         receptor_cif_path = build_receptor_cif_path(receptor_dir, pdb_id, nest_or_not)
         # str, 原始 EMDB 密度图路径（尝试 .map 后缀）
         emdb_map_path = build_emdb_map_path(emdb_dir, emdb_id)
@@ -363,7 +363,7 @@ def write_batch_cmd_files(
 
 
 # ============================================================================
-# 核心：生成 SLURM 提交脚本
+# 核心: 生成 SLURM 提交脚本
 # ============================================================================
 
 def write_slurm_scripts(
@@ -375,7 +375,7 @@ def write_slurm_scripts(
     """
     生成 SLURM 提交脚本.
 
-    脚本文件本身写入本地 output_dir（供上传），但脚本内容里所有路径（cmd 文件、log/err 日志、sbatch 路径）均使用 server_output_dir 下的服务器端 Linux 绝对路径，确保上传后可直接在服务器执行。
+    脚本文件本身写入本地 output_dir（供上传）, 但脚本内容里所有路径（cmd 文件、log/err 日志、sbatch 路径）均使用 server_output_dir 下的服务器端 Linux 绝对路径, 确保上传后可直接在服务器执行. 
 
     输入参数:
         - batch_paths: list[str], 本地 .cmd 文件路径列表（仅用于提取文件名）
@@ -390,13 +390,13 @@ def write_slurm_scripts(
     # str, 本地写文件用的目录
     slurm_dir = os.path.join(output_dir, "slurm")
     os.makedirs(slurm_dir, exist_ok=True)
-    os.makedirs(os.path.join(output_dir, "log"), exist_ok=True)  # 占位，上传后用
+    os.makedirs(os.path.join(output_dir, "log"), exist_ok=True)  # 占位, 上传后用
 
     individual_scripts = []         # list[str], 本地脚本路径列表
     server_script_paths = []        # list[str], 服务器侧脚本路径列表（供 run_all.sh 引用）
 
     for batch_path in batch_paths:
-        # str, 批次文件名（无路径、无扩展名），如 "batch_000"
+        # str, 批次文件名（无路径、无扩展名）, 如 "batch_000"
         batch_name = Path(batch_path).stem
 
         # 服务器侧路径（全部使用正斜杠）
@@ -444,7 +444,7 @@ def write_slurm_scripts(
         individual_scripts.append(local_script_path)
         server_script_paths.append(server_script_path)
 
-    # 生成 run_all.sh：按顺序提交所有批次（sbatch 引用服务器侧路径）
+    # 生成 run_all.sh: 按顺序提交所有批次（sbatch 引用服务器侧路径）
     run_all_path = os.path.join(slurm_dir, "run_all.sh")
     run_all_content = "#!/bin/bash\n"
     run_all_content += "# " + "=" * 70 + "\n"
@@ -471,7 +471,7 @@ def write_slurm_scripts(
 
 
 # ============================================================================
-# 核心：生成 manifest.csv
+# 核心: 生成 manifest.csv
 # ============================================================================
 
 def write_manifest(
@@ -540,7 +540,7 @@ def main(
     validate_files: bool = VALIDATE_FILES,
     server_output_dir: str = SERVER_OUTPUT_DIR,
 ):
-    """主流程：读取 CSV → 验证文件 → 生成命令文件 + SLURM 脚本 + manifest."""
+    """主流程: 读取 CSV → 验证文件 → 生成命令文件 + SLURM 脚本 + manifest."""
     print("=" * 70)
     print("Chimera 模拟密度图命令生成器")
     print("=" * 70)

@@ -1,4 +1,4 @@
-"""正式 checkpoint loader 的 strict wrapper 生命周期测试。"""
+"""正式 checkpoint loader 的 strict wrapper 生命周期测试. """
 
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ from src.inference.checkpoint import (
 
 
 class _DummyWrapper(torch.nn.Module):
-    """记录 `on_load_checkpoint` 是否在 strict 权重恢复后执行。"""
+    """记录 `on_load_checkpoint` 是否在 strict 权重恢复后执行. """
 
     def __init__(self) -> None:
         super().__init__()
@@ -99,7 +99,7 @@ def test_process_rejects_a_second_snapshot(
 
 
 def test_loader_instantiates_wrapper_from_run_snapshot(tmp_path: Path) -> None:
-    """实际 Hydra 导入必须使用运行目录的 wrapper，不能回落到工作区。"""
+    """实际 Hydra 导入必须使用运行目录的 wrapper, 不能回落到工作区. """
     run_directory = tmp_path / "run"
     checkpoint_path = run_directory / "checkpoints" / "BEST.ckpt"
     source_path = run_directory / "src_snapshot" / "src"

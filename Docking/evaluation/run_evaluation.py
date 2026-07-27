@@ -25,7 +25,7 @@ RMSD_THRESHOLDS = (2.0, 3.0, 5.0)
 
 def main() -> None:
     """
-    评估已有 docking run 的前置位点和 pose 几何质量。
+    评估已有 docking run 的前置位点和 pose 几何质量. 
 
     输入参数:
         - CLI 参数, 包括 eval_run_id、一个或多个 docking_run_id、是否限制样本数
@@ -91,7 +91,7 @@ def main() -> None:
 
 def load_docking_tables(paths: ServerPaths, docking_run_ids: list[str]) -> tuple[list[dict[str, Any]], ...]:
     """
-    从一个或多个 docking run 的 audit 目录提取基础表。
+    从一个或多个 docking run 的 audit 目录提取基础表. 
 
     输入参数:
         - paths: ServerPaths, 服务器路径配置
@@ -137,7 +137,7 @@ def load_docking_tables(paths: ServerPaths, docking_run_ids: list[str]) -> tuple
 
 def load_truth_instances(paths: ServerPaths, sample_ids: list[str]) -> list[dict[str, Any]]:
     """
-    从 ligand mapping 和 native mol2 构建 GT ligand instance 表。
+    从 ligand mapping 和 native mol2 构建 GT ligand instance 表. 
 
     输入参数:
         - paths: ServerPaths, 服务器路径配置
@@ -190,7 +190,7 @@ def load_truth_instances(paths: ServerPaths, sample_ids: list[str]) -> list[dict
 
 def evaluate_site_hits(truth_rows: list[dict[str, Any]], pred_site_rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """
-    计算预测 instance center 到 GT center 的宽松命中和一一匹配命中。
+    计算预测 instance center 到 GT center 的宽松命中和一一匹配命中. 
 
     输入参数:
         - truth_rows: list[dict[str, Any]], GT ligand instance 表
@@ -251,7 +251,7 @@ def evaluate_site_hits(truth_rows: list[dict[str, Any]], pred_site_rows: list[di
 
 def match_site_centers(truths: list[dict[str, Any]], preds: list[dict[str, Any]]) -> tuple[dict[int, dict[str, Any]], str]:
     """
-    对同一样本内的 GT center 和预测 center 做一一距离最小匹配。
+    对同一样本内的 GT center 和预测 center 做一一距离最小匹配. 
 
     输入参数:
         - truths: list[dict[str, Any]], 同一样本内有效 GT ligand instance 行
@@ -274,7 +274,7 @@ def match_site_centers(truths: list[dict[str, Any]], preds: list[dict[str, Any]]
 
 def site_center_distance_matrix(truths: list[dict[str, Any]], preds: list[dict[str, Any]]) -> np.ndarray:
     """
-    构建 GT center 到预测 center 的欧氏距离矩阵。
+    构建 GT center 到预测 center 的欧氏距离矩阵. 
 
     输入参数:
         - truths: list[dict[str, Any]], 长度 T, 每项包含 truth_center_x/y/z
@@ -291,7 +291,7 @@ def site_center_distance_matrix(truths: list[dict[str, Any]], preds: list[dict[s
 
 def solve_rectangular_assignment(cost: np.ndarray) -> tuple[np.ndarray, np.ndarray, str]:
     """
-    求解矩形 Hungarian assignment, 返回参与一一匹配的行列索引。
+    求解矩形 Hungarian assignment, 返回参与一一匹配的行列索引. 
 
     输入参数:
         - cost: np.ndarray, (T, P), GT 与预测 site 的距离成本矩阵
@@ -313,7 +313,7 @@ def solve_rectangular_assignment(cost: np.ndarray) -> tuple[np.ndarray, np.ndarr
 
 def solve_rectangular_assignment_dp(cost: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """
-    用 bitmask DP 求解小规模矩形 assignment。
+    用 bitmask DP 求解小规模矩形 assignment. 
 
     输入参数:
         - cost: np.ndarray, (T, P), GT 与预测 site 的距离成本矩阵; `min(T, P) <= 16`
@@ -349,7 +349,7 @@ def solve_rectangular_assignment_dp(cost: np.ndarray) -> tuple[np.ndarray, np.nd
 
 def evaluate_pose_rmsd(truth_rows: list[dict[str, Any]], pose_rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """
-    计算 docked pose 到同标签 GT ligand 的第一版 RMSD。
+    计算 docked pose 到同标签 GT ligand 的第一版 RMSD. 
 
     输入参数:
         - truth_rows: list[dict[str, Any]], GT ligand instance 表
@@ -386,7 +386,7 @@ def evaluate_pose_rmsd(truth_rows: list[dict[str, Any]], pose_rows: list[dict[st
 
 def evaluate_rank_metrics(assignment_rows: list[dict[str, Any]], truth_rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """
-    计算真实 ligand 在当前 assignment pairs 中的 rank/top k 接近程度。
+    计算真实 ligand 在当前 assignment pairs 中的 rank/top k 接近程度. 
 
     输入参数:
         - assignment_rows: list[dict[str, Any]], assignment pair 表
@@ -423,7 +423,7 @@ def evaluate_rank_metrics(assignment_rows: list[dict[str, Any]], truth_rows: lis
 
 
 def sample_summary_row(run_id: str, sample_id: str, summary: dict[str, Any]) -> dict[str, Any]:
-    """把 summary.json 压平成样本级表行。"""
+    """把 summary.json 压平成样本级表行. """
     return {
         "run_id": run_id,
         "sample_id": sample_id,
@@ -439,7 +439,7 @@ def sample_summary_row(run_id: str, sample_id: str, summary: dict[str, Any]) -> 
 
 
 def pred_site_table(run_id: str, sample_id: str, summary: dict[str, Any]) -> list[dict[str, Any]]:
-    """从 summary.json 提取进入 docking 的预测位点表。"""
+    """从 summary.json 提取进入 docking 的预测位点表. """
     rows: list[dict[str, Any]] = []
     for site in summary.get("selected_sites", []):
         xyz = site.get("center_world_xyz") or ("", "", "")
@@ -461,7 +461,7 @@ def pred_site_table(run_id: str, sample_id: str, summary: dict[str, Any]) -> lis
 
 
 def pose_result_table(run_id: str, sample_id: str, results: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """从 results.json 提取 Rosetta job / pose 级表。"""
+    """从 results.json 提取 Rosetta job / pose 级表. """
     rows: list[dict[str, Any]] = []
     for result in results:
         job = result.get("job", {})
@@ -500,7 +500,7 @@ def pose_result_table(run_id: str, sample_id: str, results: list[dict[str, Any]]
 
 
 def assignment_pair_table(run_id: str, sample_id: str, assignments: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """从 assignments.json 提取当前 matching 输出的 pair 表。"""
+    """从 assignments.json 提取当前 matching 输出的 pair 表. """
     rows: list[dict[str, Any]] = []
     for assignment_index, assignment in enumerate(assignments):
         receptor_scope = assignment.get("receptor_scope", "")
@@ -526,7 +526,7 @@ def assignment_pair_table(run_id: str, sample_id: str, assignments: list[dict[st
 
 def first_output_ligand_xyz(output_dir: Path, rosetta_name: str) -> np.ndarray:
     """
-    从 Rosetta 输出 PDB 中读取第一个 ligand 坐标。
+    从 Rosetta 输出 PDB 中读取第一个 ligand 坐标. 
 
     输入参数:
         - output_dir: Path, 当前 Rosetta job 输出目录
@@ -554,7 +554,7 @@ def first_output_ligand_xyz(output_dir: Path, rosetta_name: str) -> np.ndarray:
 
 
 def direct_rmsd(truth_xyz: np.ndarray, pose_xyz: np.ndarray) -> tuple[float, str]:
-    """按 atom order 直接计算 RMSD, 并返回可靠性 warning。"""
+    """按 atom order 直接计算 RMSD, 并返回可靠性 warning. """
     if truth_xyz.shape != pose_xyz.shape:
         n = min(len(truth_xyz), len(pose_xyz))
         if n == 0:
@@ -566,7 +566,7 @@ def direct_rmsd(truth_xyz: np.ndarray, pose_xyz: np.ndarray) -> tuple[float, str
 
 
 def nearest_pred_site(truth: dict[str, Any], preds: list[dict[str, Any]]) -> dict[str, Any]:
-    """返回离一个 GT center 最近的预测 site。"""
+    """返回离一个 GT center 最近的预测 site. """
     if not preds:
         return {}
     truth_xyz = np.asarray([truth["truth_center_x"], truth["truth_center_y"], truth["truth_center_z"]], dtype=float)
@@ -583,7 +583,7 @@ def nearest_pred_site(truth: dict[str, Any], preds: list[dict[str, Any]]) -> dic
 
 
 def write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
-    """写出 CSV; 空表也保留表头占位文件。"""
+    """写出 CSV; 空表也保留表头占位文件. """
     path.parent.mkdir(parents=True, exist_ok=True)
     fieldnames = sorted({key for row in rows for key in row})
     with path.open("w", newline="", encoding="utf-8") as handle:
@@ -594,12 +594,12 @@ def write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
 
 
 def read_json(path: Path) -> Any:
-    """读取 JSON 文件。"""
+    """读取 JSON 文件. """
     return json.loads(path.read_text(encoding="utf-8"))
 
 
 def group_by(rows: list[dict[str, Any]], key: str) -> dict[str, list[dict[str, Any]]]:
-    """按一个字段分组。"""
+    """按一个字段分组. """
     grouped: dict[str, list[dict[str, Any]]] = {}
     for row in rows:
         grouped.setdefault(str(row.get(key, "")), []).append(row)
@@ -607,14 +607,14 @@ def group_by(rows: list[dict[str, Any]], key: str) -> dict[str, list[dict[str, A
 
 
 def mean_bool(rows: list[dict[str, Any]], key: str) -> float | None:
-    """计算 bool 字段均值; 空列表返回 None。"""
+    """计算 bool 字段均值; 空列表返回 None. """
     if not rows:
         return None
     return sum(bool(row.get(key)) for row in rows) / len(rows)
 
 
 def safe_float(value: Any, default: float) -> float:
-    """把表字段转成 float; 失败时返回 default。"""
+    """把表字段转成 float; 失败时返回 default. """
     try:
         return float(value)
     except (TypeError, ValueError):

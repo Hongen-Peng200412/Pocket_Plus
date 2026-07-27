@@ -6,7 +6,7 @@ from pathlib import Path
 
 def resolve_previous_best_checkpoint_by_job(feedback_root: Path, current_run_dir: Path) -> Path:
     """
-    为 `init_from="***"` 解析同一 Slurm job 内上一阶段的 BEST.ckpt。
+    为 `init_from="***"` 解析同一 Slurm job 内上一阶段的 BEST.ckpt. 
 
     输入参数:
         - feedback_root: Path, feedback_plus 根目录; 其下应包含 `logs/*/<tag>____job<id>` run 目录

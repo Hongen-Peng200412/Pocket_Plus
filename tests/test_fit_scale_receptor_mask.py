@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-测试 _fit_scale_params 的密度筛选 + 受体原子优先选取逻辑。
+测试 _fit_scale_params 的密度筛选 + 受体原子优先选取逻辑. 
 
 验证:
     1. 有足够受体原子通过密度筛选时, 仅用受体体素拟合, 结果更准确
@@ -41,10 +41,10 @@ def make_synthetic_density_pair(
     rng: np.random.Generator,
 ) -> tuple[np.ndarray, np.ndarray]:
     """
-    构造一对合成 (exp, sim) 密度图, 其中 exp = a * sim + b + noise。
+    构造一对合成 (exp, sim) 密度图, 其中 exp = a * sim + b + noise. 
 
     sim 在 atom_mask 区域有高信号, 在其余区域有低信号/噪声,
-    模拟真实密度图中蛋白质区域信号较强的特征。
+    模拟真实密度图中蛋白质区域信号较强的特征. 
 
     输入参数:
         - shape: tuple[int, int, int], (D, H, W), 密度图尺寸
@@ -77,7 +77,7 @@ def make_synthetic_density_pair(
 class TestFitScaleWithReceptorMask:
 
     def test_receptor_mask_produces_accurate_fit(self):
-        """有足够原子体素通过密度筛选时, 仅用受体体素拟合, 结果更精确。"""
+        """有足够原子体素通过密度筛选时, 仅用受体体素拟合, 结果更精确. """
         rng = np.random.default_rng(42)
         shape = (32, 32, 32)
         # float, 标量, 真实尺度因子
@@ -109,7 +109,7 @@ class TestFitScaleWithReceptorMask:
         assert abs(b_atom - true_b) < 0.5, f"atom mask fit b 偏差过大: {b_atom} vs {true_b}"
 
     def test_receptor_mask_none_falls_back_to_density_filter(self):
-        """receptor_mask=None 时应使用全部密度筛选候选体素, 且不报错。"""
+        """receptor_mask=None 时应使用全部密度筛选候选体素, 且不报错. """
         rng = np.random.default_rng(123)
         shape = (20, 20, 20)
         # np.ndarray, (D, H, W), bool, 用于构造信号
@@ -132,7 +132,7 @@ class TestFitScaleWithReceptorMask:
 class TestDensityFilterSupplement:
 
     def test_sparse_mask_triggers_supplement(self):
-        """受体 mask 通过密度筛选的体素数 < min_voxels 时, 自动用全部候选补充。"""
+        """受体 mask 通过密度筛选的体素数 < min_voxels 时, 自动用全部候选补充. """
         rng = np.random.default_rng(77)
         shape = (32, 32, 32)
 
@@ -158,7 +158,7 @@ class TestDensityFilterSupplement:
         assert np.isfinite(a) and np.isfinite(b)
 
     def test_empty_mask_returns_identity(self):
-        """全空的 receptor_mask 且密度也全零时, 应返回 (1.0, 0.0)。"""
+        """全空的 receptor_mask 且密度也全零时, 应返回 (1.0, 0.0). """
         shape = (8, 8, 8)
         # np.ndarray, (D, H, W), float32, 几乎无信号
         exp = np.zeros(shape, dtype=np.float32)
@@ -178,7 +178,7 @@ class TestDensityFilterSupplement:
 class TestBuildDensityChannelsTransparency:
 
     def test_receptor_mask_transparent_to_diff_channel(self):
-        """build_density_channels 应将 receptor_mask 透传给 diff/posdiff 通道。"""
+        """build_density_channels 应将 receptor_mask 透传给 diff/posdiff 通道. """
         rng = np.random.default_rng(99)
         shape = (16, 16, 16)
         # np.ndarray, (D, H, W), bool, 原子区域
@@ -210,7 +210,7 @@ class TestBuildDensityChannelsTransparency:
         assert result_with.dtype == np.float32
 
     def test_exp_only_channel_ignores_receptor_mask(self):
-        """只启用 exp 通道时, receptor_mask 对结果无影响(exp 不需要 a, b 拟合)。"""
+        """只启用 exp 通道时, receptor_mask 对结果无影响(exp 不需要 a, b 拟合). """
         rng = np.random.default_rng(42)
         shape = (16, 16, 16)
         exp = rng.normal(0, 1, size=shape).astype(np.float32)
@@ -239,7 +239,7 @@ class TestBuildDensityChannelsTransparency:
 class TestBuildHardmaskIntegration:
 
     def test_hardmask_marks_correct_voxels(self):
-        """原子坐标应被正确映射到对应体素。"""
+        """原子坐标应被正确映射到对应体素. """
         box_origin = np.array([0.0, 0.0, 0.0], dtype=np.float32)
         voxel_size = np.array([1.0, 1.0, 1.0], dtype=np.float32)
         box_shape_zyx = np.array([10, 10, 10], dtype=np.int64)
@@ -267,7 +267,7 @@ class TestBuildHardmaskIntegration:
         print(f"\n  hardmask 构造正确: {n_marked} 个体素被标记 ✓")
 
     def test_hardmask_as_receptor_mask_for_fitting(self):
-        """端到端: hardmask → receptor_mask → _fit_scale_params 全链路。"""
+        """端到端: hardmask → receptor_mask → _fit_scale_params 全链路. """
         rng = np.random.default_rng(2024)
 
         box_origin = np.array([0.0, 0.0, 0.0], dtype=np.float32)
@@ -306,7 +306,7 @@ class TestBuildHardmaskIntegration:
 class TestSupplementRatio:
 
     def test_supplement_reaches_min_voxels_when_needed(self):
-        """当受体 mask 通过筛选不足时, 用全部候选体素补充, 拟合不崩溃。"""
+        """当受体 mask 通过筛选不足时, 用全部候选体素补充, 拟合不崩溃. """
         rng = np.random.default_rng(55)
         shape = (32, 32, 32)
 
@@ -335,8 +335,8 @@ class TestDensityFilterSemantics:
 
     def test_drifted_voxels_excluded_from_fit(self):
         """
-        构造密度漂移场景: 受体 mask 中部分体素在 exp 中有信号但 sim 中没有(模拟漂移)。
-        密度筛选应排除这些体素, 使拟合不被漂移污染。
+        构造密度漂移场景: 受体 mask 中部分体素在 exp 中有信号但 sim 中没有(模拟漂移). 
+        密度筛选应排除这些体素, 使拟合不被漂移污染. 
         """
         rng = np.random.default_rng(314)
         shape = (32, 32, 32)
@@ -367,7 +367,7 @@ class TestDensityFilterSemantics:
         assert abs(b - true_b) < 1.0, f"b 偏差过大: {b} vs {true_b}"
 
     def test_density_filter_uses_5x_percentile(self):
-        """验证密度筛选确实使用 5×percentile 作为阈值, 而非 1×percentile。"""
+        """验证密度筛选确实使用 5×percentile 作为阈值, 而非 1×percentile. """
         rng = np.random.default_rng(271)
         shape = (20, 20, 20)
         # float, 标量, percentile 参数

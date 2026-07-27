@@ -44,7 +44,7 @@ def build_graph_edges_sparse(
     # cKDTree, 用于快速范围查询
     tree = cKDTree(coords)
     # 查询所有在 cutoff 范围内的邻居对
-    # pairs 是 (N_pairs, 2)，每行是 (i, j) 且 i < j
+    # pairs 是 (N_pairs, 2), 每行是 (i, j) 且 i < j
     pairs = tree.query_pairs(r=cutoff, output_type='ndarray')
     if len(pairs) == 0:
         return np.zeros(0, dtype=np.int32), np.zeros(0, dtype=np.int32), np.zeros(0, dtype=np.float32)
@@ -136,7 +136,7 @@ def save_graph_npz(
     Save graph structure data to .npz file (memory-optimized)
     
     内存优化 / Memory Optimization:
-        - 如果 atom_dist_matrix 为 None，使用 KD-Tree 直接计算边
+        - 如果 atom_dist_matrix 为 None, 使用 KD-Tree 直接计算边
         - 避免存储完整的 N×N 距离矩阵
     
     输入参数 / Input:

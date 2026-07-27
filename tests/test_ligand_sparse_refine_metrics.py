@@ -10,7 +10,7 @@ from src.wrappers.voxel_point_stage1_diagnostics import (
 
 def _config() -> CpcDiagnosticsConfig:
     """
-    构造测试用 diagnostics 配置。
+    构造测试用 diagnostics 配置. 
     """
     return CpcDiagnosticsConfig(
         enabled=True,
@@ -24,7 +24,7 @@ def _config() -> CpcDiagnosticsConfig:
 
 def _diagnostics(num_classes: int, candidate_class_ids: tuple[int, ...]) -> CpcValidationDiagnostics:
     """
-    构造 sparse refine diagnostics 测试对象。
+    构造 sparse refine diagnostics 测试对象. 
     """
     class_names = ["background", "foreground"] if num_classes == 2 else ["background", "metal_ion", "small_molecule"]
     return CpcValidationDiagnostics(
@@ -38,7 +38,7 @@ def _diagnostics(num_classes: int, candidate_class_ids: tuple[int, ...]) -> CpcV
 
 def test_sparse_refine_score_f1_counts_missing_candidates_as_fn() -> None:
     """
-    验证 val_score/refined_F1 的 FN 包含未进入 C 的 GT 正体素。
+    验证 val_score/refined_F1 的 FN 包含未进入 C 的 GT 正体素. 
     """
     diagnostics = _diagnostics(num_classes=2, candidate_class_ids=(1,))
     candidate_outputs = {"candidate_logits": torch.tensor([[6.0]])}
@@ -58,7 +58,7 @@ def test_sparse_refine_score_f1_counts_missing_candidates_as_fn() -> None:
 
 def test_candidate_recall_is_covered_positive_over_total_positive() -> None:
     """
-    验证 val_capped recall 等于 C 覆盖正体素数除以 dense GT 正体素数。
+    验证 val_capped recall 等于 C 覆盖正体素数除以 dense GT 正体素数. 
     """
     diagnostics = _diagnostics(num_classes=2, candidate_class_ids=(1,))
     target = torch.tensor([[[[1, 1, 1, 1]]]])
@@ -82,7 +82,7 @@ def test_candidate_recall_is_covered_positive_over_total_positive() -> None:
 
 def test_candidate_recall_zero_when_gt_exists_but_C_misses_all() -> None:
     """
-    验证有 GT 但 C 无正例覆盖时 val_capped recall 为 0。
+    验证有 GT 但 C 无正例覆盖时 val_capped recall 为 0. 
     """
     diagnostics = _diagnostics(num_classes=2, candidate_class_ids=(1,))
     target = torch.tensor([[[[1, 0]]]])
@@ -106,7 +106,7 @@ def test_candidate_recall_zero_when_gt_exists_but_C_misses_all() -> None:
 
 def test_sparse_refine_metric_names_follow_tri_class_names() -> None:
     """
-    验证三分类 val_refined 与 val_score 指标名使用配置类别名后缀。
+    验证三分类 val_refined 与 val_score 指标名使用配置类别名后缀. 
     """
     diagnostics = _diagnostics(num_classes=3, candidate_class_ids=(1, 2))
     candidate_outputs = {"candidate_logits": torch.tensor([[0.0, 6.0, -6.0], [0.0, -6.0, 6.0]])}
@@ -128,7 +128,7 @@ def test_sparse_refine_metric_names_follow_tri_class_names() -> None:
 
 def test_num_candidate_and_anchor_points_are_mean_per_box() -> None:
     """
-    验证 C/P 数量日志为 validation loop 内平均每 BOX 数量。
+    验证 C/P 数量日志为 validation loop 内平均每 BOX 数量. 
     """
     diagnostics = _diagnostics(num_classes=2, candidate_class_ids=(1,))
     target = torch.tensor([[[[1, 1]]], [[[1, 0]]]], dtype=torch.long)

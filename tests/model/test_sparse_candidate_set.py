@@ -15,7 +15,7 @@ def _make_builder(
     selection_mode: str,
 ) -> SparseCandidateSetBuilder:
     """
-    构造当前 SparseCandidateSetBuilder。
+    构造当前 SparseCandidateSetBuilder. 
 
     输入参数:
         - candidate_class_ids: list[int], 候选前景类别 ID
@@ -40,7 +40,7 @@ def _make_builder(
 
 def test_binary_sigmoid_candidate_generation_uses_all_voxels() -> None:
     """
-    验证单通道 sigmoid 路径直接在全 BOX 体素上生成 C。
+    验证单通道 sigmoid 路径直接在全 BOX 体素上生成 C. 
     """
     builder = _make_builder([1], [2], [2.0], [10], [0], "adaptive_threshold")
     logits = torch.tensor([[[[[0.0, 2.0], [3.0, -1.0]]]]], requires_grad=True)
@@ -63,7 +63,7 @@ def test_binary_sigmoid_candidate_generation_uses_all_voxels() -> None:
 
 def test_binary_rejects_non_one_class_id() -> None:
     """
-    验证单通道 sigmoid 路径拒绝非 1 的前景类别 ID。
+    验证单通道 sigmoid 路径拒绝非 1 的前景类别 ID. 
     """
     builder = _make_builder([2], [1], [2.0], [10], [0], "adaptive_threshold")
     logits = torch.zeros(1, 1, 1, 1, 1)
@@ -79,7 +79,7 @@ def test_binary_rejects_non_one_class_id() -> None:
 
 def test_multiclass_softmax_candidate_generation_routes_same_voxel_once() -> None:
     """
-    验证多通道 softmax 路径将多类提名冲突 voxel 合并为一条随机路由记录。
+    验证多通道 softmax 路径将多类提名冲突 voxel 合并为一条随机路由记录. 
     """
     builder = _make_builder([1, 2], [1, 1], [2.0, 2.0], [10, 10], [0, 0], "adaptive_threshold")
     logits = torch.zeros(1, 3, 1, 1, 2)
@@ -102,7 +102,7 @@ def test_multiclass_softmax_candidate_generation_routes_same_voxel_once() -> Non
 
 def test_adaptive_threshold_applies_min_candidate_floor() -> None:
     """
-    验证 adaptive_threshold 先按 p_best 估计规模，再用 min_candidate_voxels_per_class 抬下限。
+    验证 adaptive_threshold 先按 p_best 估计规模, 再用 min_candidate_voxels_per_class 抬下限. 
     """
     builder = _make_builder([1], [1], [2.0], [4], [3], "adaptive_threshold")
     logits = torch.logit(torch.tensor([[[[[0.1, 0.2, 0.3, 0.4, 0.5]]]]]), eps=1e-6)
@@ -121,7 +121,7 @@ def test_adaptive_threshold_applies_min_candidate_floor() -> None:
 
 def test_adaptive_threshold_requires_finite_p_best() -> None:
     """
-    验证 adaptive_threshold 非 warmup 阶段要求完整有限的 p_best。
+    验证 adaptive_threshold 非 warmup 阶段要求完整有限的 p_best. 
     """
     builder = _make_builder([1], [1], [2.0], [10], [0], "adaptive_threshold")
     logits = torch.zeros(1, 1, 1, 1, 1)
@@ -137,7 +137,7 @@ def test_adaptive_threshold_requires_finite_p_best() -> None:
 
 def test_recorded_threshold_uses_cached_p_sampling() -> None:
     """
-    验证 recorded_threshold 使用全局 p_sampling 阈值筛选候选。
+    验证 recorded_threshold 使用全局 p_sampling 阈值筛选候选. 
     """
     builder = _make_builder([1], [3], [2.0], [10], [0], "recorded_threshold")
     logits = torch.logit(torch.tensor([[[[[0.2, 0.8, 0.9]]]]]), eps=1e-6)
@@ -155,7 +155,7 @@ def test_recorded_threshold_uses_cached_p_sampling() -> None:
 
 def test_topk_mode_uses_max_candidate_count_without_threshold_cache() -> None:
     """
-    验证正式 topk 模式使用 max_candidate_voxels_per_class，且不读取阈值缓存。
+    验证正式 topk 模式使用 max_candidate_voxels_per_class, 且不读取阈值缓存. 
     """
     builder = _make_builder([1], [1], [2.0], [2], [0], "topk")
     logits = torch.logit(torch.tensor([[[[[0.2, 0.8, 0.9]]]]]), eps=1e-6)
@@ -175,7 +175,7 @@ def test_topk_mode_uses_max_candidate_count_without_threshold_cache() -> None:
 
 def test_topk_mode_zero_count_keeps_empty_sampling_boundary_nan() -> None:
     """
-    验证正式 topk 模式请求 0 个候选时保留空 C 与 nan 截断概率。
+    验证正式 topk 模式请求 0 个候选时保留空 C 与 nan 截断概率. 
     """
     builder = _make_builder([1], [1], [2.0], [0], [0], "topk")
     logits = torch.zeros(1, 1, 1, 1, 2)

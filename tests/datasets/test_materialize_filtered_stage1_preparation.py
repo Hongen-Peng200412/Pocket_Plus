@@ -1,4 +1,4 @@
-"""验证正式 Stage1 训练准备产物的筛除与复制工具。"""
+"""验证正式 Stage1 训练准备产物的筛除与复制工具. """
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ import ops.materialize_filtered_stage1_preparation as materialize_module
 
 
 def _write_box_file(path: Path, pdb_id: str, occurrence_id: int) -> None:
-    """写出一个字段完整、数组规模很小的单 PDB BOX 文件。"""
+    """写出一个字段完整、数组规模很小的单 PDB BOX 文件. """
 
     path.parent.mkdir(parents=True, exist_ok=True)
     np.savez(
@@ -26,7 +26,7 @@ def _write_box_file(path: Path, pdb_id: str, occurrence_id: int) -> None:
 
 
 def _write_source_preparation(source_root: Path) -> None:
-    """写出同时包含保留 PDB 和排除 PDB 的最小源 preparation。"""
+    """写出同时包含保留 PDB 和排除 PDB 的最小源 preparation. """
 
     inventory_root = source_root / "inventory"
     split_root = source_root / "split"
@@ -35,7 +35,7 @@ def _write_source_preparation(source_root: Path) -> None:
     split_root.mkdir()
     box_pool_root.mkdir()
 
-    # final_keep_list 保留原始 JSON 文本的字段顺序和附加字段。
+    # final_keep_list 保留原始 JSON 文本的字段顺序和附加字段. 
     keep_list_records = [
         {"pdb_id": "1aaa", "candidate_id": 11, "note": "train-retained"},
         {"pdb_id": "1bad", "candidate_id": 12, "note": "train-excluded"},
@@ -89,7 +89,7 @@ def _write_source_preparation(source_root: Path) -> None:
     _write_box_file(box_pool_root / "validation" / "2bbb.npz", "2bbb", 21)
     _write_box_file(box_pool_root / "validation" / "2bad.npz", "2bad", 22)
 
-    # validation_pdb_id 的旧编号 0 指向 2bbb，旧编号 1 指向待排除的 2bad。
+    # validation_pdb_id 的旧编号 0 指向 2bbb, 旧编号 1 指向待排除的 2bad. 
     np.savez_compressed(
         box_pool_root / "validation_selection.npz",
         validation_pdb_id=np.asarray(["2bbb", "2bad"], dtype="U4"),
@@ -114,7 +114,7 @@ def _redirect_fixed_paths(
     target_root: Path,
     excluded_pdb_ids: frozenset[str],
 ) -> None:
-    """把脚本顶部的固定路径和排除集合临时指向 pytest 临时目录。"""
+    """把脚本顶部的固定路径和排除集合临时指向 pytest 临时目录. """
 
     monkeypatch.setattr(materialize_module, "SOURCE_PREPARATION_ROOT", source_root)
     monkeypatch.setattr(
@@ -159,7 +159,7 @@ def test_materialize_filters_every_reference_and_preserves_retained_box_files(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """筛除必须同步覆盖所有清单、BOX 文件引用和三类冻结验证请求。"""
+    """筛除必须同步覆盖所有清单、BOX 文件引用和三类冻结验证请求. """
 
     source_root = tmp_path / "source"
     target_root = tmp_path / "target"
@@ -273,7 +273,7 @@ def test_missing_excluded_pdb_only_prints_notice(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """未出现在源产物中的排除编号只提示，不阻止正式产物生成。"""
+    """未出现在源产物中的排除编号只提示, 不阻止正式产物生成. """
 
     source_root = tmp_path / "source"
     target_root = tmp_path / "target"
@@ -298,7 +298,7 @@ def test_existing_target_output_is_not_overwritten(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """任一正式输出入口已经存在时，脚本必须在读取和复制前停止。"""
+    """任一正式输出入口已经存在时, 脚本必须在读取和复制前停止. """
 
     source_root = tmp_path / "source"
     target_root = tmp_path / "target"
@@ -325,7 +325,7 @@ def test_invalid_validation_reference_stops_before_target_creation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """冻结验证请求引用不存在的 PDB 表编号时不得留下部分输出。"""
+    """冻结验证请求引用不存在的 PDB 表编号时不得留下部分输出. """
 
     source_root = tmp_path / "source"
     target_root = tmp_path / "target"

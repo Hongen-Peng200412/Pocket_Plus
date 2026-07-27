@@ -2,14 +2,14 @@
 =============================================================================
 RAUNet (Recycling Attention UNet) 模型文件
 =============================================================================
-本文件实现了一个用于3D体素数据的U-Net变体模型。该模型的核心特点是：
+本文件实现了一个用于3D体素数据的U-Net变体模型. 该模型的核心特点是: 
 1. 使用多尺度特征金字塔结构
 2. 使用注意力门控机制(Attention Gate)进行特征融合
 3. 使用循环迭代(Recycling)机制提高预测精度
 4. 融合了3D旋转位置编码(3D RoPE)的自注意力机制
 
 输入输出说明:
-- 输入: torch, (B, 13, D, H, W), 表示批量B个样本，每个样本有13通道的3D体素特征
+- 输入: torch, (B, 13, D, H, W), 表示批量B个样本, 每个样本有13通道的3D体素特征
 - 输出: torch, (B, 1, D, H, W), 表示批量B个样本的单通道3D预测结果(如口袋检测概率图)
 =============================================================================
 """
@@ -28,12 +28,12 @@ from attention_3d_rope import *
 
 class Bottleneck(nn.Module):
     """
-    使用1x1卷积，3x3卷积，1x1卷积。
+    使用1x1卷积, 3x3卷积, 1x1卷积. 
     
     输入参数 (Input Parameters):
         - in_planes: int, 输入特征图的通道数
         - planes: int, 中间层的基础通道数(瓶颈处通道数)
-        - stride: int, 默认=1, 卷积步长，stride=2时进行下采样
+        - stride: int, 默认=1, 卷积步长, stride=2时进行下采样
         - groups: int, 默认=1, 分组卷积的组数
         - activation_class: nn.Module, 默认=nn.ReLU, 激活函数类
         - conv_class: nn.Module, 默认=nn.Conv3d, 卷积层类
@@ -42,10 +42,10 @@ class Bottleneck(nn.Module):
         - **kwargs: 其他关键字参数
     
     类属性 (Class Attributes):
-        - expansion: int = 4, 通道扩展倍数，输出通道数=planes * expansion
+        - expansion: int = 4, 通道扩展倍数, 输出通道数=planes * expansion
     
     输出 (Output):
-        - forward返回: torch, (B, planes*expansion, D', H', W'), 其中D', H', W'由stride决定，stride=2时各维度减半
+        - forward返回: torch, (B, planes*expansion, D', H', W'), 其中D', H', W'由stride决定, stride=2时各维度减半
     """
     expansion = 4
 
@@ -82,7 +82,7 @@ class Bottleneck(nn.Module):
         )
         self.norm3 = nn.InstanceNorm3d(self.expansion * planes, affine=affine)
 
-        # 当stride!=1或通道数不匹配时，需要用1x1卷积调整维度
+        # 当stride!=1或通道数不匹配时, 需要用1x1卷积调整维度
         self.shortcut_conv = nn.Identity()
         if stride != 1 or in_planes != self.expansion * planes:
             self.shortcut_conv = nn.Conv3d(
@@ -173,7 +173,7 @@ class ShortConvAdd(nn.Module):
     
     输入参数 (Input Parameters):
         - input_channels: int 或 None, 第一个输入(x0)的通道数; None 时使用 LazyConv3d 延迟初始化
-        - output_channels: int, 输出通道数，同时也是第二个输入(x1)的通道数
+        - output_channels: int, 输出通道数, 同时也是第二个输入(x1)的通道数
     """
     def __init__(self, input_channels, output_channels: int):
         super().__init__()
@@ -328,10 +328,10 @@ class AttentionGate(nn.Module):
         value = self.conv_v(ds)
         
         # value: torch, (B, afz, ahz, D, H, W)
-        # 将value重排为多头形式，其中 up_features = afz * ahz
+        # 将value重排为多头形式, 其中 up_features = afz * ahz
         value = einops.rearrange(value, "N (afz ahz) d h w -> N afz ahz d h w", ahz=self.ahz)
         
-        # gate: torch, (B, ahz, D, H, W), 注意力权重，范围[0,1]
+        # gate: torch, (B, ahz, D, H, W), 注意力权重, 范围[0,1]
         # 通过query和key的加法融合计算得到
         gate = self.gate(query+key)  # N ahz d h w
         
@@ -343,7 +343,7 @@ class AttentionGate(nn.Module):
         # 将多头输出重排回原始形式
         out = einops.rearrange(out,"N afz ahz d h w -> N (afz ahz) d h w", ahz=self.ahz)
         
-        # 将注意力加权的输出与上采样特征相加，经ReLU激活后通过输出卷积块
+        # 将注意力加权的输出与上采样特征相加, 经ReLU激活后通过输出卷积块
         return self.conv_back(self.relu(out+upsampled))
 
 
@@ -380,37 +380,37 @@ class SimpleUnet(nn.Module):
         enable_multiscale_output: bool = True,
     ):
         super(SimpleUnet, self).__init__()
-        # planes 映射映射固定为：(enc0, enc1, enc2, enc3, bottleneck, dec3, dec2, dec1, dec0)
+        # planes 映射映射固定为: (enc0, enc1, enc2, enc3, bottleneck, dec3, dec2, dec1, dec0)
         enc0, enc1, enc2, enc3, bottleneck, dec3, dec2, dec1, dec0 = planes
         self._planes_for_reinit = planes
 
-        # 如果 in_channels 为 None，则由 wrapper 在 forward 时自动识别
+        # 如果 in_channels 为 None, 则由 wrapper 在 forward 时自动识别
         self.in_channels = in_channels
         self.out_channels = out_channels
         self.gradient_checkpoint = bool(gradient_checkpoint)
         self.enable_multiscale_output = bool(enable_multiscale_output)
         
-        # 如果 self.in_channels 是 None，这里的第一个卷积层将在 forward 中或包装器中被延迟初始化或重新创建
+        # 如果 self.in_channels 是 None, 这里的第一个卷积层将在 forward 中或包装器中被延迟初始化或重新创建
         self.shortconvadd = ShortConvAdd(input_channels=in_channels, output_channels=enc0)   # 用于原始输入 or 循环融合
         self.shortconv1 = ShortConv(enc0, enc0 * 4)   # 经过上面的shortcovadd之后进行初始的 "特征提取"
         
-        # ===== 编码器：4次下采样 =====
-        # downsample1: Bottleneck, 第1次下采样，(enc0*4) -> (enc1)
+        # ===== 编码器: 4次下采样 =====
+        # downsample1: Bottleneck, 第1次下采样, (enc0*4) -> (enc1)
         self.downsample1 = Bottleneck(enc0 * 4, enc1 // 4, stride=2, affine=True)
-        # downsample2: Bottleneck, 第2次下采样，(enc1) -> (enc2)
+        # downsample2: Bottleneck, 第2次下采样, (enc1) -> (enc2)
         self.downsample2 = Bottleneck(enc1, enc2 // 4, stride=2, affine=True)
-        # downsample3: Bottleneck, 第3次下采样，(enc2) -> (enc3)
+        # downsample3: Bottleneck, 第3次下采样, (enc2) -> (enc3)
         self.downsample3 = Bottleneck(enc2, enc3 // 4, stride=2, affine=True)
-        # downsample4: Bottleneck, 第4次下采样，(enc3) -> (bottleneck)
+        # downsample4: Bottleneck, 第4次下采样, (enc3) -> (bottleneck)
         self.downsample4 = Bottleneck(enc3, bottleneck // 4, stride=2, affine=True)
         
-        # ===== 瓶颈层：3D旋转位置编码自注意力 =====
+        # ===== 瓶颈层: 3D旋转位置编码自注意力 =====
         # A_block: nn.Sequential, 4层3D RoPE自注意力
         self.A_block = nn.Sequential(*[AttentionWith3DRoPE(bottleneck, 8, bottleneck // 8 * 6) for _ in range(4)])
         
 
-        # ===== 解码器：4次上采样 =====
-        # main1: nn.Sequential, 4层Res2NetBlock，处理1/8分辨率特征, (bottleneck) -> (dec3), scale=3
+        # ===== 解码器: 4次上采样 =====
+        # main1: nn.Sequential, 4层Res2NetBlock, 处理1/8分辨率特征, (bottleneck) -> (dec3), scale=3
         self.main1 = self.main_layer(dec3, 3, 4)
         
         # attn2: AttentionGate, 融合1/4分辨率的跳跃连接特征, (dec3, enc2) -> (dec2)
@@ -449,7 +449,7 @@ class SimpleUnet(nn.Module):
 
     def set_input_channels(self, in_channels: int):  # 将会在包装器 src\wrappers\volume_segmentation.py 中被调用
         """
-        动态设置输入通道并重新初始化输入层。
+        动态设置输入通道并重新初始化输入层. 
         """
         self.in_channels = in_channels
         # 重新初始化 shortconvadd
@@ -515,18 +515,18 @@ class SimpleUnet(nn.Module):
         - f: torch, (B, 1, D, H, W), 预测结果
           1: 输出通道数(如口袋存在概率)
         
-        注意：
-        - 只有最后一次迭代会计算梯度，前面的迭代在no_grad模式下运行, 这种设计可以在保持循环机制优势的同时减少显存消耗
+        注意: 
+        - 只有最后一次迭代会计算梯度, 前面的迭代在no_grad模式下运行, 这种设计可以在保持循环机制优势的同时减少显存消耗
         """
         B, C, D, H, W = voxel_grid.shape
         
-        # voxel_recycle: torch, (B, 64, D, H, W), 循环特征的初始化. 初始为全零，后续迭代中会被更新为上一次的输出特征
+        # voxel_recycle: torch, (B, 64, D, H, W), 循环特征的初始化. 初始为全零, 后续迭代中会被更新为上一次的输出特征
         voxel_recycle = torch.zeros((B, 64, D, H, W), device=voxel_grid.device, dtype=voxel_grid.dtype)
 
         for run_iter in range(run_iters):
             not_last_iter = (run_iter != (run_iters - 1))
             
-            # 只有最后一次迭代计算梯度，其他迭代在no_grad模式下运行
+            # 只有最后一次迭代计算梯度, 其他迭代在no_grad模式下运行
             with torch.no_grad() if not_last_iter else contextlib.nullcontext():
                 # fused_input: torch, (B, 64, D, H, W), 融合输入特征和循环特征
                 fused_input = self.shortconvadd(voxel_grid,voxel_recycle)
@@ -543,7 +543,7 @@ class SimpleUnet(nn.Module):
                 # ds_4: torch, (B, 256, D/16, H/16, W/16), 第4次下采样(瓶颈层)
                 ds_4 = self._checkpoint_call(self.downsample4, ds_3)
                 
-                # ===== 瓶颈层：3D RoPE自注意力 =====
+                # ===== 瓶颈层: 3D RoPE自注意力 =====
                 # c4: torch, (B, 256, D/16, H/16, W/16), 经自注意力处理的瓶颈特征
                 c4 = self._checkpoint_call(self.A_block, ds_4)
                 

@@ -1,4 +1,4 @@
-"""Selector 三项 loss 与条件权重作用域测试。"""
+"""Selector 三项 loss 与条件权重作用域测试. """
 
 from __future__ import annotations
 
@@ -9,15 +9,15 @@ from src.selector.wrapper import SelectorWrapper
 
 
 class _UnusedModel(nn.Module):
-    """测试只传预计算 outputs 时使用的占位模型。"""
+    """测试只传预计算 outputs 时使用的占位模型. """
 
     def forward(self, sample: dict) -> dict:
-        """该测试路径不应调用占位模型。"""
+        """该测试路径不应调用占位模型. """
         raise AssertionError(sample)
 
 
 def test_negative_clg_blob_loss_trains_but_antichain_does_not() -> None:
-    """oracle 模式的负 CLG 仍应产生 qhat 梯度，但不得产生 z 反链梯度。"""
+    """oracle 模式的负 CLG 仍应产生 qhat 梯度, 但不得产生 z 反链梯度. """
     wrapper = SelectorWrapper(
         model=_UnusedModel(),
         lambda_count=0.05,

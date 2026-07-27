@@ -1,9 +1,9 @@
-"""从训练运行目录的代码快照严格恢复 Stage1 wrapper。
+"""从训练运行目录的代码快照严格恢复 Stage1 wrapper. 
 
 主要入口 ``load_stage1_wrapper`` 优先使用 checkpoint 所属运行目录中的
-``src_snapshot/src/`` 与 resolved config，再 strict 加载 ``state_dict`` 并执行
-``on_load_checkpoint``。缺少完整快照时默认报错；只有调用者显式允许时才使用
-当前工作区代码。同一 Python 进程不得混用两个训练运行的快照。
+``src_snapshot/src/`` 与 resolved config, 再 strict 加载 ``state_dict`` 并执行
+``on_load_checkpoint``. 缺少完整快照时默认报错; 只有调用者显式允许时才使用
+当前工作区代码. 同一 Python 进程不得混用两个训练运行的快照. 
 """
 
 from __future__ import annotations
@@ -28,7 +28,7 @@ _REQUIRED_SNAPSHOT_PACKAGES = (
 
 
 def _checkpoint_run_directory(checkpoint_path: str | Path) -> Path:
-    """返回 checkpoint 所属的训练运行目录。"""
+    """返回 checkpoint 所属的训练运行目录. """
     checkpoint = Path(checkpoint_path).resolve()
     if checkpoint.parent.name == "checkpoints":
         return checkpoint.parent.parent
@@ -40,10 +40,10 @@ def resolve_checkpoint_source_path(
     allow_current_workspace_code: bool,
 ) -> Path | None:
     """
-    解析运行目录的完整 ``src`` 快照。
+    解析运行目录的完整 ``src`` 快照. 
 
-    返回 ``run/src_snapshot/src``；该目录缺失时，只有
-    ``allow_current_workspace_code=True`` 才返回 ``None``。
+    返回 ``run/src_snapshot/src``; 该目录缺失时, 只有
+    ``allow_current_workspace_code=True`` 才返回 ``None``. 
     """
     source_path = _checkpoint_run_directory(checkpoint_path) / "src_snapshot" / "src"
     missing = [
@@ -69,11 +69,11 @@ def resolve_checkpoint_source_path(
 
 def _activate_checkpoint_source(source_path: Path | None) -> None:
     """
-    让 Hydra 后续导入从唯一训练快照的 ``src`` 目录解析。
+    让 Hydra 后续导入从唯一训练快照的 ``src`` 目录解析. 
 
-    推理编排模块已从当前工作区导入；Dataset、模型、wrapper、损失模块
-    与共享工具必须尚未导入，才能统一从快照根目录解析。如果其中任一
-    子包已经从其他位置导入，直接报错，不在活跃进程中删除已加载模块。
+    推理编排模块已从当前工作区导入; Dataset、模型、wrapper、损失模块
+    与共享工具必须尚未导入, 才能统一从快照根目录解析. 如果其中任一
+    子包已经从其他位置导入, 直接报错, 不在活跃进程中删除已加载模块. 
     """
     global _ACTIVE_SNAPSHOT_SOURCE
 
@@ -113,7 +113,7 @@ def _activate_checkpoint_source(source_path: Path | None) -> None:
 
     import src
 
-    # 只保留快照根，防止快照缺失子模块时从当前工作区静默补齐。
+    # 只保留快照根, 防止快照缺失子模块时从当前工作区静默补齐. 
     src.__path__[:] = [str(source_path)]
     importlib.invalidate_caches()
     _ACTIVE_SNAPSHOT_SOURCE = source_path
@@ -124,11 +124,11 @@ def resolve_checkpoint_config_path(
     resolved_config_path: str | Path | None,
 ) -> Path:
     """
-    解析调用者指定或训练 run 中与 checkpoint 相邻的 resolved config。
+    解析调用者指定或训练 run 中与 checkpoint 相邻的 resolved config. 
 
     输入参数:
         - checkpoint_path: str | Path, 调用者明确选中的 Stage1 checkpoint
-        - resolved_config_path: str | Path | None, 显式 config 路径；为 None 时只检查
+        - resolved_config_path: str | Path | None, 显式 config 路径; 为 None 时只检查
           训练运行目录的 `config.yaml` 与 `resolved_config.yaml`
 
     输出:
@@ -140,10 +140,10 @@ def resolve_checkpoint_config_path(
         if not config_path.is_file():
             raise FileNotFoundError(f"resolved config 不存在: {config_path}")
         return config_path
-    # tuple[Path,Path], 只检查 checkpoint 所属运行目录的两个 resolved config 标准名称。
+    # tuple[Path,Path], 只检查 checkpoint 所属运行目录的两个 resolved config 标准名称. 
     run_directory = _checkpoint_run_directory(checkpoint)
     candidates = (run_directory / "config.yaml", run_directory / "resolved_config.yaml")
-    # tuple[Path,...], 去重后真实存在的候选；必须恰有一个，避免静默选错实验配置。
+    # tuple[Path,...], 去重后真实存在的候选; 必须恰有一个, 避免静默选错实验配置. 
     existing = tuple(dict.fromkeys(path for path in candidates if path.is_file()))
     if len(existing) != 1:
         raise FileNotFoundError(
@@ -161,21 +161,21 @@ def load_stage1_wrapper(
     allow_current_workspace_code: bool = False,
 ):
     """
-    从 resolved config 严格恢复完整 Stage1 wrapper 并执行 checkpoint 生命周期。
+    从 resolved config 严格恢复完整 Stage1 wrapper 并执行 checkpoint 生命周期. 
 
     输入参数:
         - checkpoint_path: str | Path, 调用者选中的 `BEST.ckpt` 或等价完整 checkpoint
-        - resolved_config_path: str | Path | None, resolved `config.yaml`；None 时按训练
-          run 固定相邻关系解析，不计算 hash 或查询 registry
-        - map_location: str, `torch.load` 的设备位置，正式 CPU 恢复传 `"cpu"`
+        - resolved_config_path: str | Path | None, resolved `config.yaml`; None 时按训练
+          run 固定相邻关系解析, 不计算 hash 或查询 registry
+        - map_location: str, `torch.load` 的设备位置, 正式 CPU 恢复传 `"cpu"`
         - lazy_initializer: Callable | None, 仅当当前模型仍含未初始化参数时由调用者
           提供的 `(wrapper,resolved_cfg)->None` 初始化函数
-        - allow_current_workspace_code: bool，缺少 ``src_snapshot/src`` 时是否
-          显式允许使用当前工作区代码；默认为 False
+        - allow_current_workspace_code: bool, 缺少 ``src_snapshot/src`` 时是否
+          显式允许使用当前工作区代码; 默认为 False
 
     输出:
         - wrapper: torch.nn.Module, strict state_dict、`on_load_checkpoint`、eval 已完成的
-          完整 wrapper，而不是裸 backbone
+          完整 wrapper, 而不是裸 backbone
     """
     import hydra
     import torch
@@ -190,12 +190,12 @@ def load_stage1_wrapper(
     )
     _activate_checkpoint_source(source_path)
     config_path = resolve_checkpoint_config_path(checkpoint, resolved_config_path)
-    # DictConfig, 训练时保存的完整 resolved 配置；model/train 已无 Hydra 插值歧义。
+    # DictConfig, 训练时保存的完整 resolved 配置; model/train 已无 Hydra 插值歧义. 
     resolved_cfg = OmegaConf.load(config_path)
     OmegaConf.resolve(resolved_cfg)
     if "model" not in resolved_cfg or "train" not in resolved_cfg:
         raise KeyError("resolved config 必须包含 model 与 train")
-    # LightningModule, 由 resolved_cfg.model 重建的完整 wrapper，尚未加载参数与 runtime cache。
+    # LightningModule, 由 resolved_cfg.model 重建的完整 wrapper, 尚未加载参数与 runtime cache. 
     wrapper = hydra.utils.instantiate(
         resolved_cfg.model,
         optimizer=resolved_cfg.train.optimizer,
@@ -204,7 +204,7 @@ def load_stage1_wrapper(
     )
     if lazy_initializer is not None:
         lazy_initializer(wrapper, resolved_cfg)
-    # dict[str,Any], Lightning checkpoint；state_dict 之外还含 wrapper 的候选阈值 cache。
+    # dict[str,Any], Lightning checkpoint; state_dict 之外还含 wrapper 的候选阈值 cache. 
     checkpoint_payload = torch.load(
         str(checkpoint), map_location=map_location, weights_only=False
     )

@@ -35,7 +35,7 @@ ADALIGAND_CPC2_NAMES = set(FIND_MODEL_NAMES)
 
 def _yaml_files(group: str) -> list[Path]:
     """
-    列出指定 CPC experiment 目录下的实体 YAML 文件。
+    列出指定 CPC experiment 目录下的实体 YAML 文件. 
 
     输入参数:
         - group: str, experiment 子目录名, 例如 CPC1/CPC2/CPC3
@@ -48,7 +48,7 @@ def _yaml_files(group: str) -> list[Path]:
 
 def _load_yaml(path: Path) -> dict:
     """
-    读取 YAML 配置为 dict。
+    读取 YAML 配置为 dict. 
 
     输入参数:
         - path: Path, YAML 文件路径
@@ -64,7 +64,7 @@ def _load_yaml(path: Path) -> dict:
 
 def _defaults(data: dict) -> list:
     """
-    返回 Hydra defaults 列表。
+    返回 Hydra defaults 列表. 
 
     输入参数:
         - data: dict, YAML 顶层映射
@@ -79,7 +79,7 @@ def _defaults(data: dict) -> list:
 
 def _flat_default_strings(defaults: list) -> set[str]:
     """
-    将 defaults 条目转换成便于断言的字符串集合。
+    将 defaults 条目转换成便于断言的字符串集合. 
 
     输入参数:
         - defaults: list, Hydra defaults 原始列表
@@ -101,7 +101,7 @@ def _flat_default_strings(defaults: list) -> set[str]:
 
 def test_cpc_v3_config_files_are_materialized() -> None:
     """
-    验证 CPC1/CPC2/CPC3 按 v3 计划实体落盘为 4/4/9 个 YAML。
+    验证 CPC1/CPC2/CPC3 按 v3 计划实体落盘为 4/4/9 个 YAML. 
     """
     assert (CPC1_NAMES | ADALIGAND_CPC1_NAMES).issubset({path.stem for path in _yaml_files("CPC1")})
     assert (CPC2_NAMES | ADALIGAND_CPC2_NAMES).issubset({path.stem for path in _yaml_files("CPC2")})
@@ -110,7 +110,7 @@ def test_cpc_v3_config_files_are_materialized() -> None:
 
 def test_cpc_v3_files_start_with_launch_command() -> None:
     """
-    验证每个 CPC v3 YAML 顶部都写有自己的启动命令。
+    验证每个 CPC v3 YAML 顶部都写有自己的启动命令. 
     """
     for group in ("CPC1", "CPC2", "CPC3"):
         for path in _yaml_files(group):
@@ -125,7 +125,7 @@ def test_cpc_v3_files_start_with_launch_command() -> None:
 
 def test_cpc1_trunk_main_is_final_main_entry() -> None:
     """
-    验证最终 `_main` 入口固定为 CPC1/trunk_main, 不再回到旧 CPC_main。
+    验证最终 `_main` 入口固定为 CPC1/trunk_main, 不再回到旧 CPC_main. 
     """
     data = _load_yaml(EXPERIMENT_ROOT / "CPC1" / "trunk_main.yaml")
     defaults = _flat_default_strings(_defaults(data))
@@ -137,7 +137,7 @@ def test_cpc1_trunk_main_is_final_main_entry() -> None:
 
 def test_cpc2_and_cpc3_encode_stage_boundaries() -> None:
     """
-    验证阶段二/三配置显式包含 init_from、small_increment 与冻结阶段。
+    验证阶段二/三配置显式包含 init_from、small_increment 与冻结阶段. 
     """
     for path in _yaml_files("CPC2"):
         if path.stem in ADALIGAND_CPC2_NAMES:
@@ -166,7 +166,7 @@ def test_cpc2_and_cpc3_encode_stage_boundaries() -> None:
 
 def test_cpc3_refine_grid_ratios_and_losses() -> None:
     """
-    验证 CPC3 的 3x3 refine 网格表达了 ratio 与 loss 轴。
+    验证 CPC3 的 3x3 refine 网格表达了 ratio 与 loss 轴. 
     """
     for path in _yaml_files("CPC3"):
         data = _load_yaml(path)
@@ -194,7 +194,7 @@ def test_cpc3_refine_grid_ratios_and_losses() -> None:
 
 def test_cpc_v3_hydra_compose() -> None:
     """
-    在安装 Hydra 的环境中验证所有 CPC v3 配置可 compose。
+    在安装 Hydra 的环境中验证所有 CPC v3 配置可 compose. 
     """
     hydra = pytest.importorskip("hydra")
     initialize_config_dir = hydra.initialize_config_dir

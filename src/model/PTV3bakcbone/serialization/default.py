@@ -8,11 +8,11 @@ from .hilbert import decode as hilbert_decode_
 @torch.inference_mode()
 def encode(grid_coord, batch=None, depth=16, order="z"):
     """
-    点云序列化编码主接口。根据指定的排序方式（Z-Order 或 Hilbert）将三维网格坐标编码为一维整数。
+    点云序列化编码主接口. 根据指定的排序方式（Z-Order 或 Hilbert）将三维网格坐标编码为一维整数. 
 
     输入参数:
         - grid_coord: torch.Tensor, (N, 3), 整数类型的点云网格坐标 (x, y, z)
-        - batch: torch.Tensor | None, (N,), 每个点所属的 batch 索引。若提供, 则拼接在编码高位
+        - batch: torch.Tensor | None, (N,), 每个点所属的 batch 索引. 若提供, 则拼接在编码高位
         - depth: int, 编码深度, 决定了坐标的分辨率, 通常为 16 (支持 2^16 的范围)
         - order: str, 排序方式, 支持 "z", "z-trans", "hilbert", "hilbert-trans"
 
@@ -46,7 +46,7 @@ def encode(grid_coord, batch=None, depth=16, order="z"):
 @torch.inference_mode()
 def decode(code, depth=16, order="z"):
     """
-    点云序列化解码主接口。将一维编码还原为三维网格坐标及 batch 索引。
+    点云序列化解码主接口. 将一维编码还原为三维网格坐标及 batch 索引. 
 
     输入参数:
         - code: torch.Tensor, (N,), 包含 batch 信息的一维编码张量
@@ -76,7 +76,7 @@ def decode(code, depth=16, order="z"):
 
 def z_order_encode(grid_coord: torch.Tensor, depth: int = 16):
     """
-    Z-Order (莫顿编码) 封装函数。
+    Z-Order (莫顿编码) 封装函数. 
 
     输入参数:
         - grid_coord: torch.Tensor, (N, 3), 网格坐标 (x, y, z)
@@ -93,7 +93,7 @@ def z_order_encode(grid_coord: torch.Tensor, depth: int = 16):
 
 def z_order_decode(code: torch.Tensor, depth):
     """
-    Z-Order (莫顿编码) 解码封装函数。
+    Z-Order (莫顿编码) 解码封装函数. 
 
     输入参数:
         - code: torch.Tensor, (N,), Z-Order 编码值
@@ -109,7 +109,7 @@ def z_order_decode(code: torch.Tensor, depth):
 
 def hilbert_encode(grid_coord: torch.Tensor, depth: int = 16):
     """
-    Hilbert 曲线编码封装函数。
+    Hilbert 曲线编码封装函数. 
 
     输入参数:
         - grid_coord: torch.Tensor, (N, 3), 网格坐标
@@ -123,7 +123,7 @@ def hilbert_encode(grid_coord: torch.Tensor, depth: int = 16):
 
 def hilbert_decode(code: torch.Tensor, depth: int = 16):
     """
-    Hilbert 曲线解码封装函数。
+    Hilbert 曲线解码封装函数. 
 
     输入参数:
         - code: torch.Tensor, (N,), Hilbert 编码值

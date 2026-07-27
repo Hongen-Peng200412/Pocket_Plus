@@ -13,15 +13,15 @@ from torch import nn
 
 class VoxelPointStage1Wrapper(pl.LightningModule):
     """
-    Stage1 体素+点融合模型的 Lightning 训练封装。
+    Stage1 体素+点融合模型的 Lightning 训练封装. 
 
     负责将 backbone（VolumePointStage1Model）、损失函数、优化器、调度器以及
-    验证指标统一在一个 LightningModule 中管理，完成训练/验证/优化器配置的全流程。
+    验证指标统一在一个 LightningModule 中管理, 完成训练/验证/优化器配置的全流程. 
 
     输入参数:
         - backbone: nn.Module, VolumePointStage1Model 实例或 Hydra 配置
         - atom_loss: nn.Module, 原子级二分类损失（如 BinaryFocalLossWithAlpha）
-        - voxel_aux_loss: nn.Module | None, 体素辅助监督损失；为 None 时不启用
+        - voxel_aux_loss: nn.Module | None, 体素辅助监督损失; 为 None 时不启用
         - optimizer: dict | None, 优化器的 Hydra 配置字典
         - scheduler: dict | None, 学习率调度器的 Hydra 配置字典
         - atom_loss_weight: float, 标量, 原子损失权重, 建议值 1.0
@@ -57,7 +57,7 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
         **kwargs: Any,
     ) -> None:
         super().__init__()
-        # 将除 nn.Module 以外的超参数保存到 self.hparams，方便日志和检查点恢复
+        # 将除 nn.Module 以外的超参数保存到 self.hparams, 方便日志和检查点恢复
         self.save_hyperparameters(ignore=["backbone", "atom_loss", "voxel_aux_loss", "voxel_ligand_loss", "ligand_sparse_refine_loss"])
 
         # nn.Module, 体素+点融合主干网络（VolumePointStage1Model）
@@ -68,7 +68,7 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
             if (atom_loss is None or isinstance(atom_loss, nn.Module))
             else instantiate(atom_loss)
         )
-        # nn.Module | None, 体素辅助监督损失函数；为 None 时不参与梯度
+        # nn.Module | None, 体素辅助监督损失函数; 为 None 时不参与梯度
         self.voxel_aux_loss = (
             voxel_aux_loss
             if (voxel_aux_loss is None or isinstance(voxel_aux_loss, nn.Module))
@@ -111,8 +111,8 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
         )
         self._candidate_warmup_steps = 0
 
-        # BinaryAveragePrecision, 验证阶段的 PR-AUC 指标；binned 指标默认在 GPU 更新，非 binned 指标默认在 CPU 累积状态
-        # 各指标仅在对应损失启用时构建; 一个 epoch 可能多次验证，每次都会 reset/update/compute
+        # BinaryAveragePrecision, 验证阶段的 PR-AUC 指标; binned 指标默认在 GPU 更新, 非 binned 指标默认在 CPU 累积状态
+        # 各指标仅在对应损失启用时构建; 一个 epoch 可能多次验证, 每次都会 reset/update/compute
         from torchmetrics.classification import BinaryAveragePrecision
         self._val_metric_update_counts: dict[str, int] = {}
         self._val_metric_specs: dict[str, dict[str, Any]] = {}
@@ -198,7 +198,7 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
 
     def _unwrap_backbone(self) -> nn.Module:
         """
-        返回未被 torch.compile 包装的 backbone。
+        返回未被 torch.compile 包装的 backbone. 
 
         输出:
             - backbone: nn.Module, 原始 VolumePointStage1Model 或等价模块
@@ -207,7 +207,7 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
 
     def _resolve_sparse_candidate_class_ids(self) -> tuple[int, ...] | None:
         """
-        从 backbone 的 candidate builder 读取候选类别 ID。
+        从 backbone 的 candidate builder 读取候选类别 ID. 
 
         输出:
             - class_ids: tuple[int, ...] | None, builder 未启用时为 None; 启用时为前景类别 ID
@@ -231,7 +231,7 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
 
     def _validate_ligand_sparse_refine_loss_config(self) -> None:
         """
-        校验 sparse refine loss 与 candidate class 配置是否一致。
+        校验 sparse refine loss 与 candidate class 配置是否一致. 
 
         输出:
             - None, 配置不一致时 fail-fast
@@ -255,7 +255,7 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
         value_name: str,
     ) -> torch.Tensor | None:
         """
-        从显式 initial 参数初始化 candidate threshold cache。
+        从显式 initial 参数初始化 candidate threshold cache. 
 
         输入参数:
             - initial_values: list[float] | tuple[float, ...] | None, (K,), 用户显式给定的初始阈值
@@ -279,7 +279,7 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
 
     def _normalize_candidate_checkpoint_tensor(self, value: Any, value_name: str) -> torch.Tensor:
         """
-        将 checkpoint 中的 candidate cache 规范化为 CPU float 向量。
+        将 checkpoint 中的 candidate cache 规范化为 CPU float 向量. 
 
         输入参数:
             - value: Any, checkpoint 中读取的张量或可转张量对象
@@ -296,7 +296,7 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
 
     def _load_candidate_checkpoint_finite_tensor(self, value: Any, value_name: str) -> torch.Tensor:
         """
-        从 checkpoint 读取并校验 candidate finite cache。
+        从 checkpoint 读取并校验 candidate finite cache. 
 
         输入参数:
             - value: Any, checkpoint 中读取的张量或可转张量对象
@@ -313,7 +313,7 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
     @staticmethod
     def _resolve_class_names(kwargs: dict[str, Any]) -> list[str]:
         """
-        从 wrapper 额外配置中解析类别名列表。
+        从 wrapper 额外配置中解析类别名列表. 
 
         输入参数:
             - kwargs: dict[str, Any], Hydra 传入 wrapper 但未显式声明的额外配置项
@@ -329,7 +329,7 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
 
     def _register_val_metric(self, metric_name: str, thresholds: Optional[int], branch: str, class_id: int | None = None) -> None:
         """
-        注册验证指标的更新策略元信息。
+        注册验证指标的更新策略元信息. 
 
         输入参数:
             - metric_name: str, Lightning 日志中的指标名
@@ -350,7 +350,7 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
 
     def _init_multiclass_ap_metrics(self, prefix: str, loss_module: nn.Module, metric_cls: Any, thresholds: Optional[int]) -> None:
         """
-        为多分类前景类别创建逐类 AP 指标对象。
+        为多分类前景类别创建逐类 AP 指标对象. 
 
         输入参数:
             - prefix: str, 指标名前缀, 例如 atom / voxel_aux / voxel_ligand
@@ -398,19 +398,19 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
     @staticmethod
     def _loss_output_to_tensor(loss_out: Any) -> torch.Tensor:
         """
-        统一损失函数返回格式：若返回 tuple，取第 0 项作为标量损失
+        统一损失函数返回格式: 若返回 tuple, 取第 0 项作为标量损失
         """
         return loss_out[0] if isinstance(loss_out, tuple) else loss_out
 
     def _mark_val_metric_updated(self, metric_name: str) -> None:
         """
-        记录当前验证轮次内某个 metric 收到过至少一次有效 update。
+        记录当前验证轮次内某个 metric 收到过至少一次有效 update. 
         """
         self._val_metric_update_counts[metric_name] = self._val_metric_update_counts.get(metric_name, 0) + 1
 
     def _reset_voxel_ligand_threshold_histograms(self) -> None:
         """
-        清空 voxel ligand candidate threshold histogram。
+        清空 voxel ligand candidate threshold histogram. 
 
         输出:
             - None, 原地清零 pos/neg histogram; builder 未启用时 no-op
@@ -422,7 +422,7 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
 
     def _reset_ligand_sparse_refine_metric_buffers(self) -> None:
         """
-        清空 sparse refine validation metric buffers。
+        清空 sparse refine validation metric buffers. 
 
         输出:
             - None, 原地清零 C 级 histogram、dense GT 计数与 C/P/BOX 数量累计
@@ -443,7 +443,7 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
         valid_mask: torch.Tensor,
     ) -> None:
         """
-        累加 candidate threshold best-F1 使用的 voxel ligand 概率 histogram。
+        累加 candidate threshold best-F1 使用的 voxel ligand 概率 histogram. 
 
         输入参数:
             - logits: torch.Tensor, (B,1,D,H,W) 或 (B,C,D,H,W), ligand head logits
@@ -502,7 +502,7 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
     @staticmethod
     def _is_tuning_trainer(trainer: Any) -> bool:
         """
-        判断当前 trainer 是否处于 Lightning tuner 生命周期。
+        判断当前 trainer 是否处于 Lightning tuner 生命周期. 
 
         输入参数:
             - trainer: Any, Lightning Trainer 或测试 stub
@@ -517,7 +517,7 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
 
     def _sync_sparse_candidate_runtime_to_backbone(self) -> None:
         """
-        将 wrapper 中的 candidate runtime/cache 同步给 backbone。
+        将 wrapper 中的 candidate runtime/cache 同步给 backbone. 
 
         输出:
             - None, builder 未启用时 no-op
@@ -555,7 +555,7 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
 
     def _resolve_metric_update_device(self, metric_name: str, source_device: torch.device) -> torch.device:
         """
-        根据指标类型选择 update 设备。
+        根据指标类型选择 update 设备. 
 
         输入参数:
             - metric_name: str, Lightning 日志中的指标名
@@ -579,7 +579,7 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
 
     def _update_val_metric(self, metric_name: str, metric_obj: Any, preds: torch.Tensor, targets: torch.Tensor) -> None:
         """
-        按指标设备策略更新 torchmetrics 指标。
+        按指标设备策略更新 torchmetrics 指标. 
 
         输入参数:
             - metric_name: str, Lightning 日志中的指标名
@@ -591,7 +591,7 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
             - None, 原地更新 metric_obj 状态
         """
         device = self._resolve_metric_update_device(metric_name, preds.device)
-        # GPU -> CPU 的异步拷贝不能立刻交给 CPU metric 读取，否则标签可能仍是未就绪内容。
+        # GPU -> CPU 的异步拷贝不能立刻交给 CPU metric 读取, 否则标签可能仍是未就绪内容. 
         non_blocking = device.type != "cpu"
         preds = preds.to(device, non_blocking=non_blocking)
         targets = targets.to(device, non_blocking=non_blocking)
@@ -608,7 +608,7 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
         dtype: torch.dtype,
     ) -> torch.Tensor:
         """
-        从 voxel ligand loss 配置生成验证指标使用的硬标签。
+        从 voxel ligand loss 配置生成验证指标使用的硬标签. 
 
         输入参数:
             - ligand_dist_map: torch.Tensor, 二分类 (B,D,H,W)/(B,1,D,H,W) 或多分类 (B,C,D,H,W), ligand 距离监督图
@@ -638,7 +638,7 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
         binary_metric_name: str,
     ) -> None:
         """
-        根据 logits 通道数更新二分类 PR-AUC 或多分类逐前景类 AP。
+        根据 logits 通道数更新二分类 PR-AUC 或多分类逐前景类 AP. 
 
         输入参数:
             - prefix: str, 指标名前缀, 例如 atom / voxel_aux / voxel_ligand
@@ -685,13 +685,13 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
 
     def forward(self, batch: dict[str, Any]) -> dict[str, Any]:
         """
-        前向推理，直接委托给 backbone。
+        前向推理, 直接委托给 backbone. 
 
         输入参数:
             - batch: dict[str, Any], 包含体素网格、原子特征等的 batch 字典
 
         输出:
-            - outputs: dict[str, Any], backbone 输出字典，至少包含:
+            - outputs: dict[str, Any], backbone 输出字典, 至少包含:
                 - "atom_logits": torch.Tensor, (sumN, 1), 原子级预测 logits
                 - "recycle_passes_used": int, 实际使用的 recycle 轮数
                 - "voxel_logits_aux": torch.Tensor | None, (B, 1, D, H, W), 体素辅助预测(可选)
@@ -700,7 +700,7 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
 
     def _compute_atom_loss(self, outputs: dict[str, Any], batch: dict[str, Any]) -> torch.Tensor | None:
         """
-        计算原子级二分类损失。若 atom_loss 模块为 None 则返回 None。
+        计算原子级二分类损失. 若 atom_loss 模块为 None 则返回 None. 
 
         输入参数:
             - outputs: dict[str, Any], backbone 前向输出
@@ -751,14 +751,14 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
         batch: dict[str, Any],
     ) -> torch.Tensor | None:
         """
-        计算体素辅助监督损失。若未配置辅助损失或 backbone 未产出辅助 logits，则返回 None。
+        计算体素辅助监督损失. 若未配置辅助损失或 backbone 未产出辅助 logits, 则返回 None. 
 
         输入参数:
             - outputs: dict[str, Any], backbone 前向输出
             - batch: dict[str, Any], 当前 batch 字典
 
         输出:
-            - voxel_aux_loss: torch.Tensor | None, 标量, 体素辅助损失值；为 None 表示不参与总损失
+            - voxel_aux_loss: torch.Tensor | None, 标量, 体素辅助损失值; 为 None 表示不参与总损失
         """
         if self.voxel_aux_loss is None:
             return None
@@ -800,7 +800,7 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
         spatial_shape_zyx: tuple[int, int, int],
     ) -> torch.Tensor:
         """
-        将 voxel_valid_mask 规范化为 `(B,D,H,W)` bool 掩码。
+        将 voxel_valid_mask 规范化为 `(B,D,H,W)` bool 掩码. 
 
         输入参数:
             - voxel_valid_mask: torch.Tensor, (B,D,H,W) 或 (B,1,D,H,W), 有效体素掩码
@@ -825,7 +825,7 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
         batch: dict[str, Any],
     ) -> dict[str, torch.Tensor]:
         """
-        从 dense ligand 距离图采样 C 级 sparse refine 监督。
+        从 dense ligand 距离图采样 C 级 sparse refine 监督. 
 
         输入参数:
             - outputs: dict[str, Any], backbone 输出, 包含 ligand_refine_logits_C/candidate_batch_index/candidate_voxel_zyx
@@ -871,7 +871,7 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
         batch: dict[str, Any],
     ) -> torch.Tensor | None:
         """
-        计算体素 ligand 占据损失。若未配置或数据中无 ligand_dist_map，返回 None。
+        计算体素 ligand 占据损失. 若未配置或数据中无 ligand_dist_map, 返回 None. 
 
         输入参数:
             - outputs: dict[str, Any], backbone 前向输出
@@ -917,7 +917,7 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
 
     def _resolve_ligand_sparse_refine_loss_warmup_steps(self) -> int:
         """
-        解析 sparse refine loss 独立 linear warmup 步数。
+        解析 sparse refine loss 独立 linear warmup 步数. 
 
         输出:
             - warmup_steps: int, sparse refine loss 从 start_weight 到 final_weight 的步数
@@ -943,7 +943,7 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
 
     def _ligand_sparse_refine_loss_effective_weight(self) -> torch.Tensor:
         """
-        计算当前 global_step 下 sparse refine loss 的有效权重。
+        计算当前 global_step 下 sparse refine loss 的有效权重. 
 
         输出:
             - weight: torch.Tensor, (), 当前 step 使用的 loss 权重
@@ -971,7 +971,7 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
         batch: dict[str, Any],
     ) -> torch.Tensor | None:
         """
-        计算 C 级 sparse refine loss。
+        计算 C 级 sparse refine loss. 
 
         输入参数:
             - outputs: dict[str, Any], backbone 输出, 可包含 ligand_refine_logits_C
@@ -998,7 +998,7 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
         batch: dict[str, Any],
     ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
         """
-        汇总原子损失、体素辅助损失和体素 ligand 损失，得到加权总损失。
+        汇总原子损失、体素辅助损失和体素 ligand 损失, 得到加权总损失. 
 
         输入参数:
             - outputs: dict[str, Any], backbone 前向输出
@@ -1047,10 +1047,10 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
 
     def _update_val_atom_metric(self, outputs: dict[str, Any], batch: dict[str, Any]) -> None:
         """
-        用当前 batch 的预测与真值更新验证阶段的 atom PR-AUC 指标。
-        当 atom_loss 为 None (UNet-only 模式) 时直接跳过。
+        用当前 batch 的预测与真值更新验证阶段的 atom PR-AUC 指标. 
+        当 atom_loss 为 None (UNet-only 模式) 时直接跳过. 
 
-        仅对 atom_valid_mask 为 True 且标签不等于 ignore_index 的原子进行统计。
+        仅对 atom_valid_mask 为 True 且标签不等于 ignore_index 的原子进行统计. 
 
         输入参数:
             - outputs: dict[str, Any], backbone 前向输出
@@ -1093,8 +1093,8 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
 
     def _update_val_voxel_aux_metric(self, outputs: dict[str, Any], batch: dict[str, Any]) -> None:
         """
-        用当前 batch 的体素辅助预测更新验证指标。
-        掩码逻辑与 voxel_aux_loss 完全一致: hardmask AND valid_mask。
+        用当前 batch 的体素辅助预测更新验证指标. 
+        掩码逻辑与 voxel_aux_loss 完全一致: hardmask AND valid_mask. 
 
         输入参数:
             - outputs: dict[str, Any], backbone 前向输出
@@ -1120,7 +1120,7 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
 
     def _update_val_ligand_sparse_refine_metric(self, outputs: dict[str, Any], batch: dict[str, Any]) -> None:
         """
-        用当前 batch 的 C 级 refined logits 更新 sparse refine 验证指标。
+        用当前 batch 的 C 级 refined logits 更新 sparse refine 验证指标. 
 
         输入参数:
             - outputs: dict[str, Any], backbone 输出, 包含 ligand_refine_logits_C 与 C/P 计数字段
@@ -1164,8 +1164,8 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
 
     def _update_val_voxel_ligand_metric(self, outputs: dict[str, Any], batch: dict[str, Any]) -> None:
         """
-        用当前 batch 的体素 ligand 预测更新验证指标。
-        掩码逻辑与 voxel_ligand_loss 完全一致: 仅 valid_mask, 不使用 hardmask。
+        用当前 batch 的体素 ligand 预测更新验证指标. 
+        掩码逻辑与 voxel_ligand_loss 完全一致: 仅 valid_mask, 不使用 hardmask. 
 
         输入参数:
             - outputs: dict[str, Any], backbone 前向输出
@@ -1212,7 +1212,7 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
 
     def training_step(self, batch: Any, batch_idx: int) -> torch.Tensor:
         """
-        单个训练步：前向 → 计算总损失 → 记录日志。
+        单个训练步: 前向 → 计算总损失 → 记录日志. 
 
         输入参数:
             - batch: Any, DataLoader 产出的 batch
@@ -1288,7 +1288,7 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
 
     def validation_step(self, batch: Any, batch_idx: int) -> torch.Tensor:
         """
-        单个验证步：前向 → 计算总损失 → 更新 PR-AUC 指标 → 记录日志。
+        单个验证步: 前向 → 计算总损失 → 更新 PR-AUC 指标 → 记录日志. 
 
         输入参数:
             - batch: Any, DataLoader 产出的 batch
@@ -1301,7 +1301,7 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
         self._sync_sparse_candidate_runtime_to_backbone()
         outputs = self(batch_dict)
         total_loss, loss_dict = self._compute_total_loss(outputs=outputs, batch=batch_dict)
-        # 用当前 batch 更新 PR-AUC 指标；tuner 阶段也完整计算，以便尽早暴露真实验证链路问题
+        # 用当前 batch 更新 PR-AUC 指标; tuner 阶段也完整计算, 以便尽早暴露真实验证链路问题
         self._update_val_atom_metric(outputs=outputs, batch=batch_dict)
         self._update_val_voxel_aux_metric(outputs=outputs, batch=batch_dict)
         self._update_val_voxel_ligand_metric(outputs=outputs, batch=batch_dict)
@@ -1369,8 +1369,8 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
 
     def _compute_log_reset_metric(self, metric_obj, metric_name: str) -> None:
         """
-        通用的验证指标计算-日志-重置流程。
-        在本地 GPU 上 compute, 通过 sync_dist 跨卡汇聚, 然后 reset。
+        通用的验证指标计算-日志-重置流程. 
+        在本地 GPU 上 compute, 通过 sync_dist 跨卡汇聚, 然后 reset. 
 
         输入参数:
             - metric_obj: BinaryAveragePrecision, torchmetrics 指标对象
@@ -1383,7 +1383,7 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
                 metric_obj.reset()
                 return
 
-        # 临时禁用 torchmetrics 内部同步，手动在 GPU 上做 sync_dist
+        # 临时禁用 torchmetrics 内部同步, 手动在 GPU 上做 sync_dist
         prev_to_sync = getattr(metric_obj, "_to_sync", True)
         metric_obj._to_sync = False
         # float, 标量, 当前 GPU 本地 PR-AUC 值
@@ -1411,7 +1411,7 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
 
     def _compute_log_reset_metric_safe(self, metric_obj, metric_name: str) -> torch.Tensor | None:
         """
-        有有效 update 时计算、日志记录并重置单个 metric。
+        有有效 update 时计算、日志记录并重置单个 metric. 
 
         输入参数:
             - metric_obj: BinaryAveragePrecision, torchmetrics 指标对象
@@ -1458,7 +1458,7 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
 
     def _compute_log_reset_multiclass_metrics(self) -> dict[str, torch.Tensor]:
         """
-        计算、日志记录并重置所有多分类逐类 AP 与 macro AP 指标。
+        计算、日志记录并重置所有多分类逐类 AP 与 macro AP 指标. 
 
         输出:
             - computed_metrics: dict[str, torch.Tensor], 当前 validation end 中已计算出的指标名到标量张量的映射
@@ -1525,7 +1525,7 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
 
     def _compute_log_update_voxel_ligand_best_f1_thresholds(self) -> dict[str, torch.Tensor]:
         """
-        从本轮 validation histogram 计算并缓存 voxel ligand best-F1 与 sampling 阈值。
+        从本轮 validation histogram 计算并缓存 voxel ligand best-F1 与 sampling 阈值. 
 
         输出:
             - metrics: dict[str, torch.Tensor], 当前 validation end 现场计算出的阈值指标
@@ -1625,7 +1625,7 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
 
     def _compute_log_reset_ligand_sparse_refine_metrics(self) -> dict[str, torch.Tensor]:
         """
-        计算、记录并重置 sparse refine best-F1、candidate recall 与 C/P 数量指标。
+        计算、记录并重置 sparse refine best-F1、candidate recall 与 C/P 数量指标. 
 
         输出:
             - metrics: dict[str, torch.Tensor], 当前 validation end 现场计算出的 sparse refine 指标
@@ -1703,7 +1703,7 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
 
     def _sync_metric_for_scheduler(self, metric_value: torch.Tensor) -> torch.Tensor:
         """
-        将 plateau scheduler 使用的主指标同步为各 rank 一致的标量。
+        将 plateau scheduler 使用的主指标同步为各 rank 一致的标量. 
 
         输入参数:
             - metric_value: torch.Tensor, (), 当前 rank 上的主指标值
@@ -1721,7 +1721,7 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
 
     def _step_warmup_plateau_scheduler(self, computed_metrics: dict[str, torch.Tensor]) -> None:
         """
-        在每次 validation end 后按主指标推进 warmup_plateau 的 plateau 部分。
+        在每次 validation end 后按主指标推进 warmup_plateau 的 plateau 部分. 
 
         输入参数:
             - computed_metrics: dict[str, torch.Tensor], on_validation_epoch_end 现场计算出的指标名到标量张量的映射
@@ -1753,7 +1753,7 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
 
     def on_validation_epoch_start(self) -> None:
         """
-        验证 epoch 开始时清空 candidate threshold histogram 与 sparse refine metric buffers。
+        验证 epoch 开始时清空 candidate threshold histogram 与 sparse refine metric buffers. 
 
         输出:
             - None, 原地清空本轮 validation metric 状态
@@ -1763,12 +1763,12 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
 
     def on_validation_epoch_end(self) -> None:
         """
-        验证 epoch 结束时，计算并日志所有已启用的 PR-AUC 指标，然后推进 plateau 调度器。
+        验证 epoch 结束时, 计算并日志所有已启用的 PR-AUC 指标, 然后推进 plateau 调度器. 
 
         流程:
-            1. 临时关闭 torchmetrics 自动同步，在各 GPU 本地 compute
+            1. 临时关闭 torchmetrics 自动同步, 在各 GPU 本地 compute
             2. 将结果通过 self.log(sync_dist=True) 写入日志
-            3. reset 指标状态，为下一次验证做准备
+            3. reset 指标状态, 为下一次验证做准备
             4. 若启用 warmup_plateau, 用主指标推进 ReduceLROnPlateau
         """
         # dict[str, torch.Tensor], 当前 validation end 已计算出的指标集合
@@ -1801,7 +1801,7 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
 
     def on_save_checkpoint(self, checkpoint: dict[str, Any]) -> None:
         """
-        保存手动管理的 warmup_plateau plateau 状态。
+        保存手动管理的 warmup_plateau plateau 状态. 
 
         输入参数:
             - checkpoint: dict[str, Any], Lightning 即将写入磁盘的 checkpoint 字典
@@ -1846,7 +1846,7 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
 
     def on_load_checkpoint(self, checkpoint: dict[str, Any]) -> None:
         """
-        恢复手动管理的 warmup_plateau plateau 状态。
+        恢复手动管理的 warmup_plateau plateau 状态. 
 
         输入参数:
             - checkpoint: dict[str, Any], Lightning 从磁盘读取的 checkpoint 字典
@@ -1891,7 +1891,7 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
 
     def _resolve_warmup_steps(self, sched_cfg: Any) -> int:
         """
-        从 scheduler 配置中解析 warmup step 数。
+        从 scheduler 配置中解析 warmup step 数. 
 
         输入参数:
             - sched_cfg: Any, Hydra scheduler 配置, 需要包含 total_steps/warmup_steps/warmup_ratio
@@ -1926,7 +1926,7 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
         warmup_steps: int,
     ) -> torch.optim.lr_scheduler.LRScheduler:
         """
-        构建仅包含 step 级线性 warmup 的 scheduler。
+        构建仅包含 step 级线性 warmup 的 scheduler. 
 
         输入参数:
             - optimizer: torch.optim.Optimizer, 被调度的优化器
@@ -1957,7 +1957,7 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
         warmup_steps: int,
     ) -> WarmupThenReduceLROnPlateau:
         """
-        构建 step 级 warmup + validation 级 plateau 的组合 scheduler。
+        构建 step 级 warmup + validation 级 plateau 的组合 scheduler. 
 
         输入参数:
             - optimizer: torch.optim.Optimizer, 被调度的优化器
@@ -1987,15 +1987,15 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
 
     def configure_optimizers(self) -> dict[str, Any]:
         """
-        配置优化器与学习率调度器。
+        配置优化器与学习率调度器. 
 
         支持三种优化器配置方式:
             1. opt_cfg 为 None → 使用默认 AdamW(lr=1e-4, weight_decay=1e-2)
             2. opt_cfg 为 functools.partial 或 callable → 直接调用
             3. opt_cfg 为 Hydra 配置字典 → 通过 instantiate 实例化
 
-        调度器配置同理：functools.partial / callable / Hydra 字典，
-        返回的 lr_scheduler 字典会自动绑定 monitor_metric 用于 ReduceLROnPlateau 等。
+        调度器配置同理: functools.partial / callable / Hydra 字典, 
+        返回的 lr_scheduler 字典会自动绑定 monitor_metric 用于 ReduceLROnPlateau 等. 
 
         输出:
             - config: dict[str, Any], 包含 "optimizer" 以及可选的 "lr_scheduler" 子字典
@@ -2058,7 +2058,7 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
             self._candidate_warmup_steps = 0
             self._sync_sparse_candidate_runtime_to_backbone()
             scheduler = instantiate(sched_cfg, optimizer=optimizer)
-            # 某些调度器工厂返回的是 callable 而非真正的 scheduler 实例，需要额外调用一次
+            # 某些调度器工厂返回的是 callable 而非真正的 scheduler 实例, 需要额外调用一次
             if hasattr(scheduler, "__call__") and not hasattr(scheduler, "step"):
                 scheduler = scheduler()
 

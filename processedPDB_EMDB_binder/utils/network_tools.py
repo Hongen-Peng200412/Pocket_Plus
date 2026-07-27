@@ -7,14 +7,14 @@ import random
 class RandomCrop(object):
     def __init__(self, output_size: int, ispadding: bool = True):
         """ 只能用在3D
-         - output_size: int, 输出尺寸。
-         - 注意！！！：o输出的形状就是 (output_size, output_size, output_size) """
+         - output_size: int, 输出尺寸. 
+         - 注意！！！: o输出的形状就是 (output_size, output_size, output_size) """
         assert isinstance(output_size, int)
         self.output_size = (output_size, output_size, output_size)
         # ispadding 标志（是否进行填充）
         self.ispadding = ispadding
 
-    # 定义 __call__ "魔术方法"，这使得类的实例可以像函数一样被调用
+    # 定义 __call__ "魔术方法", 这使得类的实例可以像函数一样被调用
     # 例如: cropped_img, cropped_mask = crop_transform(image, mask)
     def __call__(self, *x):
         # *x 会将所有传入的参数（例如 image, mask）打包成一个元组 x
@@ -31,11 +31,11 @@ class RandomCrop(object):
         if self.ispadding:
             x = list(x)
             # --- 计算深度(D)方向的填充 ---
-            # k1: 需要填充的总深度。如果输入d >= od，则 k1=0
+            # k1: 需要填充的总深度. 如果输入d >= od, 则 k1=0
             k1 = max(od - d, 0)
             # pad1: 基础填充量（分到一侧的量）
             pad1 = k1 // 2
-            # pads1: (pad_before, pad_after) 元组。如果 k1 是奇数，则在后面(after)多填充1个
+            # pads1: (pad_before, pad_after) 元组. 如果 k1 是奇数, 则在后面(after)多填充1个
             pads1 = (pad1, pad1) if k1 % 2 == 0 else (pad1, pad1 + 1)
             
             # --- 计算高度(H)方向的填充 ---
@@ -55,15 +55,15 @@ class RandomCrop(object):
                 # mode='constant' 表示使用默认值 0.0 进行填充
                 x[i] = np.pad(x[i], (pads1, pads2, pads3), mode='constant')
 
-        # 在填充后，重新获取第一个数组的（可能已经增大了的）形状
+        # 在填充后, 重新获取第一个数组的（可能已经增大了的）形状
         d, h, w = x[0].shape
 
         # --- 计算随机裁剪的起始坐标 ---
-        # sd: 随机起始深度。范围是从 0 到 (d - od)
+        # sd: 随机起始深度. 范围是从 0 到 (d - od)
         sd = random.randint(0, d - od)
-        # sh: 随机起始高度。范围是从 0 到 (h - oh)
+        # sh: 随机起始高度. 范围是从 0 到 (h - oh)
         sh = random.randint(0, h - oh)
-        # sw: 随机起始宽度。范围是从 0 到 (w - ow)
+        # sw: 随机起始宽度. 范围是从 0 到 (w - ow)
         sw = random.randint(0, w - ow)
 
         # 再次遍历 x 中的所有（可能已填充的）数组
@@ -83,14 +83,14 @@ class RandomCrop(object):
 class RandomCrop_4D(object):
     def __init__(self, output_size: int, ispadding: bool = True):
         """ 只能用在4D
-         - output_size: int, 输出尺寸。
-         - 注意！！！：o输出的形状就是 (output_size, output_size, output_size) """
+         - output_size: int, 输出尺寸. 
+         - 注意！！！: o输出的形状就是 (output_size, output_size, output_size) """
         assert isinstance(output_size, int)
         self.output_size = (output_size, output_size, output_size)
         # ispadding 标志（是否进行填充）
         self.ispadding = ispadding
 
-    # 定义 __call__ "魔术方法"，这使得类的实例可以像函数一样被调用
+    # 定义 __call__ "魔术方法", 这使得类的实例可以像函数一样被调用
     # 例如: cropped_img, cropped_mask = crop_transform(image, mask)
     def __call__(self, *x):
         # *x 会将所有传入的参数（例如 image, mask）打包成一个元组 x
@@ -107,11 +107,11 @@ class RandomCrop_4D(object):
         if self.ispadding:
             x = list(x)
             # --- 计算深度(D)方向的填充 ---
-            # k1: 需要填充的总深度。如果输入d >= od，则 k1=0
+            # k1: 需要填充的总深度. 如果输入d >= od, 则 k1=0
             k1 = max(od - d, 0)
             # pad1: 基础填充量（分到一侧的量）
             pad1 = k1 // 2
-            # pads1: (pad_before, pad_after) 元组。如果 k1 是奇数，则在后面(after)多填充1个
+            # pads1: (pad_before, pad_after) 元组. 如果 k1 是奇数, 则在后面(after)多填充1个
             pads1 = (pad1, pad1) if k1 % 2 == 0 else (pad1, pad1 + 1)
             
             # --- 计算高度(H)方向的填充 ---
@@ -131,15 +131,15 @@ class RandomCrop_4D(object):
                 # mode='constant' 表示使用默认值 0.0 进行填充
                 x[i] = np.pad(x[i], ((0, 0), pads1, pads2, pads3), mode='constant')
 
-        # 在填充后，重新获取第一个数组的（可能已经增大了的）形状
+        # 在填充后, 重新获取第一个数组的（可能已经增大了的）形状
         c, d, h, w = x[0].shape
 
         # --- 计算随机裁剪的起始坐标 ---
-        # sd: 随机起始深度。范围是从 0 到 (d - od)
+        # sd: 随机起始深度. 范围是从 0 到 (d - od)
         sd = random.randint(0, d - od)
-        # sh: 随机起始高度。范围是从 0 到 (h - oh)
+        # sh: 随机起始高度. 范围是从 0 到 (h - oh)
         sh = random.randint(0, h - oh)
-        # sw: 随机起始宽度。范围是从 0 到 (w - ow)
+        # sw: 随机起始宽度. 范围是从 0 到 (w - ow)
         sw = random.randint(0, w - ow)
 
         # 再次遍历 x 中的所有（可能已填充的）数组
@@ -160,8 +160,8 @@ class RandomCrop_plus(object):
     def __init__(self, output_size: int, ispadding: bool = True):
         """ 
         Args:
-         - output_size: int, 输出尺寸。
-         - 注意！！！：输出的形状就是 (output_size, output_size, output_size)
+         - output_size: int, 输出尺寸. 
+         - 注意！！！: 输出的形状就是 (output_size, output_size, output_size)
          
         Forward args:
          - *x 里面可以是3D或4D图的混合, 可以是tensor或者ndarray.但最后三维必须是空间维 D H W 用于裁剪
@@ -171,7 +171,7 @@ class RandomCrop_plus(object):
         # ispadding 标志（是否进行填充）
         self.ispadding = ispadding
 
-    # 定义 __call__ "魔术方法"，这使得类的实例可以像函数一样被调用
+    # 定义 __call__ "魔术方法", 这使得类的实例可以像函数一样被调用
     # 例如: cropped_img, cropped_mask = crop_transform(image, mask)
     def __call__(self, *x):
         # *x 会将所有传入的参数（例如 image, mask）打包成一个元组 x
@@ -188,11 +188,11 @@ class RandomCrop_plus(object):
         if self.ispadding:
             x = list(x)
             # --- 计算深度(D)方向的填充 ---
-            # k1: 需要填充的总深度。如果输入d >= od，则 k1=0
+            # k1: 需要填充的总深度. 如果输入d >= od, 则 k1=0
             k1 = max(od - d, 0)
             # pad1: 基础填充量（分到一侧的量）
             pad1 = k1 // 2
-            # pads1: (pad_before, pad_after) 元组。如果 k1 是奇数，则在后面(after)多填充1个
+            # pads1: (pad_before, pad_after) 元组. 如果 k1 是奇数, 则在后面(after)多填充1个
             pads1 = (pad1, pad1) if k1 % 2 == 0 else (pad1, pad1 + 1)
             
             # --- 计算高度(H)方向的填充 ---
@@ -208,21 +208,21 @@ class RandomCrop_plus(object):
             # 遍历列表 x 中的所有数组（例如 image 和 mask）
             for i in range(len(x)):
                 # 使用 np.pad 对当前数组 x[i] 进行填充
-                # (pads1, pads2, pads3) 指定了三个维度的 (before, after) 填充量， mode='constant' 表示使用默认值 0.0 进行填充
+                # (pads1, pads2, pads3) 指定了三个维度的 (before, after) 填充量, mode='constant' 表示使用默认值 0.0 进行填充
                 if len(x[i].shape) == 3:
                     x[i] = np.pad(x[i], (pads1, pads2, pads3), mode='constant')
                 elif len(x[i].shape) == 4:
                     x[i] = np.pad(x[i], ((0, 0), pads1, pads2, pads3), mode='constant')
 
-        # 在填充后，重新获取第一个数组的（可能已经增大了的）形状
+        # 在填充后, 重新获取第一个数组的（可能已经增大了的）形状
         d, h, w = x[0].shape[-3:]
 
         # --- 计算随机裁剪的起始坐标 ---
-        # sd: 随机起始深度。范围是从 0 到 (d - od)
+        # sd: 随机起始深度. 范围是从 0 到 (d - od)
         sd = random.randint(0, d - od)
-        # sh: 随机起始高度。范围是从 0 到 (h - oh)
+        # sh: 随机起始高度. 范围是从 0 到 (h - oh)
         sh = random.randint(0, h - oh)
-        # sw: 随机起始宽度。范围是从 0 到 (w - ow)
+        # sw: 随机起始宽度. 范围是从 0 到 (w - ow)
         sw = random.randint(0, w - ow)
 
         # 再次遍历 x 中的所有（可能已填充的）数组
@@ -439,15 +439,15 @@ def map_reconstruction(
     blocks_weight=None,
 ):
     """
-    提取预测块重建出整体的图像 (滑窗推理重构), 要重建的图像可以是三维或四维。
+    提取预测块重建出整体的图像 (滑窗推理重构), 要重建的图像可以是三维或四维. 
 
     Args:
-        - blocks: numpy.ndarray, (N, D, H, W) 或 (N, C, D, H, W), 表示包含的 N 个网络预测出的块的集合。
-        - image_shape: tuple, (D, H, W) 或 (C, D, H, W), 想要重构出的完整 3D 目标区域的通道数与尺寸形状。
-        - coords: list[tuple], (N, 3), 表示各 patch 的坐标起始位置。
-        - windows_size: int, 分割切块时所采用的窗格边缘长度，默认为 64。
-        - core_offset: int, 默认 2，每个 block 各个有效数据表面因为感受野截断效应而被抛弃减去的大小。
-        - blocks_weight: numpy.ndarray 或 None, (D,H,W) 或 (N,C,D,H,W), 各预测图对应位置融合权值。默认为 None。
+        - blocks: numpy.ndarray, (N, D, H, W) 或 (N, C, D, H, W), 表示包含的 N 个网络预测出的块的集合. 
+        - image_shape: tuple, (D, H, W) 或 (C, D, H, W), 想要重构出的完整 3D 目标区域的通道数与尺寸形状. 
+        - coords: list[tuple], (N, 3), 表示各 patch 的坐标起始位置. 
+        - windows_size: int, 分割切块时所采用的窗格边缘长度, 默认为 64. 
+        - core_offset: int, 默认 2, 每个 block 各个有效数据表面因为感受野截断效应而被抛弃减去的大小. 
+        - blocks_weight: numpy.ndarray 或 None, (D,H,W) 或 (N,C,D,H,W), 各预测图对应位置融合权值. 默认为 None. 
 
     Return:
         - reconstruction: numpy.ndarray, (C, D, H, W)
@@ -456,8 +456,8 @@ def map_reconstruction(
     blocks_np = _to_numpy(blocks)
     # parsed_weight: numpy.ndarray 或 None, 形状 (D, H, W) 或 (N, C, D, H, W)
     parsed_weight = _to_numpy(blocks_weight) if blocks_weight is not None else None
-    # C: 通道数, Z, Y, X: 空间维度。如果 image_shape 是 (D, H, W)，则 C 默认为 1。
-    # 注意：image_shape 通常为 tuple，不支持 .ndim 属性，故使用 len() 判断。
+    # C: 通道数, Z, Y, X: 空间维度. 如果 image_shape 是 (D, H, W), 则 C 默认为 1. 
+    # 注意: image_shape 通常为 tuple, 不支持 .ndim 属性, 故使用 len() 判断. 
     C, Z, Y, X = image_shape if len(image_shape) == 4 else (1, *image_shape)
 
     if blocks_np.ndim == 4:
@@ -539,21 +539,21 @@ def map_reconstruction(
 
 def random_rotation90(*x):
     """
-    对输入的 3D 数组应用随机的 90 度旋转。旋转操作选择两个随机空间轴并执行 90、180、270 或 360 度的旋转。
+    对输入的 3D 数组应用随机的 90 度旋转. 旋转操作选择两个随机空间轴并执行 90、180、270 或 360 度的旋转. 
     
     参数:
-        *x: 一个或多个 3D 数组。
+        *x: 一个或多个 3D 数组. 
 
     返回:
-        tuple: 包含旋转后的 3D 数组的元组。
+        tuple: 包含旋转后的 3D 数组的元组. 
     """
     y = []  # 用于存储旋转后的数组
     
     # 随机选择两个不同的空间轴（0, 1, 2 分别代表 D, H, W 轴）
     axis1, axis2 = np.random.choice([0, 1, 2], size=2, replace=False)
-    # 随机选择旋转的次数（k: 0 - 不旋转, 1 - 旋转 90°，2 - 旋转 180°，3 - 旋转 270°）
+    # 随机选择旋转的次数（k: 0 - 不旋转, 1 - 旋转 90°, 2 - 旋转 180°, 3 - 旋转 270°）
     k = random.randint(0, 3)
-    # 遍历所有输入数组，执行旋转
+    # 遍历所有输入数组, 执行旋转
     for ix in x:
         rotated_view = np.rot90(ix, k, (axis1, axis2))
         # 对每个数组在选定的两个空间轴上进行旋转
@@ -566,42 +566,42 @@ def random_rotation90(*x):
 
 def random_rotation90_4D(*x):
     """
-    对传入的 3D (D, H, W) 或 4D (C, D, H, W) 数组应用相同的随机空间旋转。
+    对传入的 3D (D, H, W) 或 4D (C, D, H, W) 数组应用相同的随机空间旋转. 
     
-    该函数随机选择两个空间轴，并在这些轴上对数组进行 90 度旋转，旋转角度为 90、180、270 或 360 度。
-    对 4D 数组，旋转操作应用到每个通道 (C 维度)，而对 3D 数组则直接应用旋转。
+    该函数随机选择两个空间轴, 并在这些轴上对数组进行 90 度旋转, 旋转角度为 90、180、270 或 360 度. 
+    对 4D 数组, 旋转操作应用到每个通道 (C 维度), 而对 3D 数组则直接应用旋转. 
     
     参数:
-        - *x: 一个或多个 3D (D, H, W) 或 4D (C, D, H, W) 数组。
+        - *x: 一个或多个 3D (D, H, W) 或 4D (C, D, H, W) 数组. 
         - 4D 数组 (C, D, H, W)时, 通道维度 (C 维度)一定不能被旋转
 
     返回:
-        tuple: 包含旋转后的 3D 或 4D 数组的元组。
+        tuple: 包含旋转后的 3D 或 4D 数组的元组. 
     """
     y = []  # 用于存储旋转后的数组
     
     # 从 3 个空间轴 (D, H, W) 中随机选择两个轴进行旋转
     axis1, axis2 = np.random.choice([0, 1, 2], size=2, replace=False)
-    #  随机选择旋转次数（k: 0 - 不旋转, 1 - 旋转 90°，2 - 旋转 180°，3 - 旋转 270°）
+    #  随机选择旋转次数（k: 0 - 不旋转, 1 - 旋转 90°, 2 - 旋转 180°, 3 - 旋转 270°）
     k = random.randint(0, 3)
 
     # 遍历所有传入的数组
     for ix in x:
         if ix.ndim == 4:
-            # 4D 数组 (C, D, H, W)：通道维度 (C 维度)一定不能被旋转
-            # 对于 4D 数组，空间轴 D, H, W 对应于 (1, 2, 3)，因此需要将旋转轴加 1
+            # 4D 数组 (C, D, H, W): 通道维度 (C 维度)一定不能被旋转
+            # 对于 4D 数组, 空间轴 D, H, W 对应于 (1, 2, 3), 因此需要将旋转轴加 1
             rot_axes = (axis1 + 1, axis2 + 1)
             rotated_view = np.rot90(ix, k, rot_axes)
             y.append(rotated_view.copy())  # 对整个 4D 数组进行旋转
             
         elif ix.ndim == 3:
-            # 3D 数组 (D, H, W)：直接对 (D, H, W) 轴进行旋转
+            # 3D 数组 (D, H, W): 直接对 (D, H, W) 轴进行旋转
             rot_axes = (axis1, axis2)
             rotated_view = np.rot90(ix, k, rot_axes)
             y.append(rotated_view.copy())  # 对 3D 数组进行旋转
             
         else:
-            # 如果输入的数据不是 3D 或 4D 数组，则不做旋转，原样返回
+            # 如果输入的数据不是 3D 或 4D 数组, 则不做旋转, 原样返回
             y.append(ix)
 
     # 返回旋转后的结果元组
@@ -612,21 +612,21 @@ def random_rotation90_4D(*x):
 
 def random_rotation90_plus(*x):
     """
-    对输入的 数组(3D,4D都可以)应用随机的 90 度旋转。旋转操作选择两个随机空间轴并执行 90、180、270 或 360 度的旋转。
+    对输入的 数组(3D,4D都可以)应用随机的 90 度旋转. 旋转操作选择两个随机空间轴并执行 90、180、270 或 360 度的旋转. 
     
     参数:
-        *x: 一个或多个数组, 它们都要在3D以上， 对最后三维旋转， 最后三个维度必须是 D H W
+        *x: 一个或多个数组, 它们都要在3D以上, 对最后三维旋转, 最后三个维度必须是 D H W
 
     返回:
-        tuple: 包含旋转后数组的元组。
+        tuple: 包含旋转后数组的元组. 
     """
     y = []  # 用于存储旋转后的数组
     
-    # 随机选择两个不同的空间轴（三维时， 0, 1, 2 分别代表 D, H, W 轴）
+    # 随机选择两个不同的空间轴（三维时, 0, 1, 2 分别代表 D, H, W 轴）
     axis1, axis2 = np.random.choice([0, 1, 2], size=2, replace=False)
-    # 随机选择旋转的次数（k: 0 - 不旋转, 1 - 旋转 90°，2 - 旋转 180°，3 - 旋转 270°）
+    # 随机选择旋转的次数（k: 0 - 不旋转, 1 - 旋转 90°, 2 - 旋转 180°, 3 - 旋转 270°）
     k = random.randint(0, 3)
-    # 遍历所有输入数组，执行旋转
+    # 遍历所有输入数组, 执行旋转
     for ix in x:
         ix_dim = len(ix.shape)
         rotated_view = np.rot90(ix, k, (axis1 + (ix_dim-3), axis2 + (ix_dim-3)))
@@ -717,7 +717,7 @@ import tempfile
 
 def atomic_np_save(filename, arr, do_not_replace=True):
     """
-    原子地保存 numpy .npy 文件，用法为：atomic_np_save(target_file, data_array)
+    原子地保存 numpy .npy 文件, 用法为: atomic_np_save(target_file, data_array)
     """
     if do_not_replace and os.path.exists(filename):
         return
@@ -730,18 +730,18 @@ def atomic_np_save(filename, arr, do_not_replace=True):
     fd = None
     tmp_filename = None
     try:
-        # 使用 mkstemp 得到文件描述符，避免 Windows 上 NamedTemporaryFile 的删除/重命名问题
+        # 使用 mkstemp 得到文件描述符, 避免 Windows 上 NamedTemporaryFile 的删除/重命名问题
         fd, tmp_filename = tempfile.mkstemp(suffix='.npy', dir=target_dir)
         # 将 fd 转为文件对象以便 np.save
         with os.fdopen(fd, 'wb') as f:
-            fd = None  # 表示 fd 已经由 fdopen 管理，不需要再次关闭
+            fd = None  # 表示 fd 已经由 fdopen 管理, 不需要再次关闭
             np.save(f, arr)
             f.flush()
             os.fsync(f.fileno())
-        # 此时临时文件已关闭，可以安全替换
+        # 此时临时文件已关闭, 可以安全替换
         os.replace(tmp_filename, filename)
     except Exception:
-        # 若出错，尝试关闭并删除临时文件（注意 fd 可能还未被 fdopen 管理）
+        # 若出错, 尝试关闭并删除临时文件（注意 fd 可能还未被 fdopen 管理）
         try:
             if fd is not None:
                 os.close(fd)
@@ -751,7 +751,7 @@ def atomic_np_save(filename, arr, do_not_replace=True):
             try:
                 os.remove(tmp_filename)
             except Exception:
-                # 不要阻塞原始异常，记录或忽略
+                # 不要阻塞原始异常, 记录或忽略
                 pass
         raise
 
@@ -787,7 +787,7 @@ def atomic_np_save(filename, arr, do_not_replace=True):
 
 def atomic_np_savez(filename, do_not_replace=True, **kwargs):
     """
-    原子地保存 numpy .npz 文件,用法为：
+    原子地保存 numpy .npz 文件,用法为: 
     atomic_np_savez(target_file, array_a=data_a, array_b=data_b)
     读取时loaded_data = np.load(target_file) 包含了loaded_data['array_a']和loaded_data['array_b']这两个变量
     """
@@ -857,30 +857,30 @@ import mrcfile
 import mrcfile as mrc
 def save_map_perfect_copy(file_path, data, original_map_path, new_origin_xyz):
     """
-    将给定的数据写为新的 MRC 文件，同时尽量保留原 MRC 的头信息（voxel_size, cella, map axes 等），并设置新的 origin。
-    常见调用方式：
+    将给定的数据写为新的 MRC 文件, 同时尽量保留原 MRC 的头信息（voxel_size, cella, map axes 等）, 并设置新的 origin. 
+    常见调用方式: 
     save_map_perfect_copy(out_path_1, grid_self, original_map_path, origin)
-    这里  origin由：   grid,voxel_size,global_origin = load_map_and_origin(original_map_path) 得到。
-    grid_self是自己要可视化的坐标网格，它与原始密度图 original_map_path 必须是匹配的(由它生成的)
+    这里  origin由: grid,voxel_size,global_origin = load_map_and_origin(original_map_path) 得到. 
+    grid_self是自己要可视化的坐标网格, 它与原始密度图 original_map_path 必须是匹配的(由它生成的)
 
     Inputs:
-      - file_path (str): 新 MRC 文件保存路径（若存在将被覆盖）。
-      - data (np.ndarray): 要写入的密度数据，假定轴顺序为 (z, y, x)。
-      - original_map_path (str): 原始 MRC 文件路径，用于读取并复制头信息（metadata）。
-      - new_origin_xyz (array-like, length 3): 要写入的新 origin，按 (x, y, z)。
+      - file_path (str): 新 MRC 文件保存路径（若存在将被覆盖）. 
+      - data (np.ndarray): 要写入的密度数据, 假定轴顺序为 (z, y, x). 
+      - original_map_path (str): 原始 MRC 文件路径, 用于读取并复制头信息（metadata）. 
+      - new_origin_xyz (array-like, length 3): 要写入的新 origin, 按 (x, y, z). 
     Outputs:
       - None（函数在磁盘上创建/覆盖 file_path）
 
     Key steps / 关键步骤:
-      1. 打开原始 MRC，读取 voxel_size、cella 与 mapc/mapr/maps（轴映射信息），以便新文件与原文件保持一致性。
-      2. 新建 MRC 并写入 data（cast 为 float32）。
-      3. 将 header.origin 设置为 new_origin_xyz（x,y,z），并把 nxstart/nystart/nzstart 设为 0（表示从数据开头写）。
-      4. 恢复原始 voxel_size、cella 与 mapc/mapr/maps，并更新头部统计信息。
+      1. 打开原始 MRC, 读取 voxel_size、cella 与 mapc/mapr/maps（轴映射信息）, 以便新文件与原文件保持一致性. 
+      2. 新建 MRC 并写入 data（cast 为 float32）. 
+      3. 将 header.origin 设置为 new_origin_xyz（x,y,z）, 并把 nxstart/nystart/nzstart 设为 0（表示从数据开头写）. 
+      4. 恢复原始 voxel_size、cella 与 mapc/mapr/maps, 并更新头部统计信息. 
 
     Caveats / 注意事项:
-      - 函数假定 data 的形状与期望的头信息兼容；若不兼容，需要先 reshape/transpose 或调整头信息（例如 mapc/mapr/maps）。
-      - 将 nxstart/nystart/nzstart 设为 0 是简化处理；若你需要保留原始 nxstart/nystart/nzstart，请读取并恢复它们。
-      - 强制把数据转为 float32 可能改变原始数据类型与精度；如需保留 dtype，可读取 original_mrc.data.dtype 并据此处理。
+      - 函数假定 data 的形状与期望的头信息兼容; 若不兼容, 需要先 reshape/transpose 或调整头信息（例如 mapc/mapr/maps）. 
+      - 将 nxstart/nystart/nzstart 设为 0 是简化处理; 若你需要保留原始 nxstart/nystart/nzstart, 请读取并恢复它们. 
+      - 强制把数据转为 float32 可能改变原始数据类型与精度; 如需保留 dtype, 可读取 original_mrc.data.dtype 并据此处理. 
     """
     # 读取原始文件的关键头信息以便复制
     with mrcfile.open(original_map_path, permissive=True) as original_mrc:
@@ -889,7 +889,7 @@ def save_map_perfect_copy(file_path, data, original_map_path, new_origin_xyz):
         original_map_axes = (original_mrc.header.mapc, original_mrc.header.mapr, original_mrc.header.maps)
     # 创建新 MRC 并写入数据与头信息
     with mrcfile.new(file_path, overwrite=True) as mrc:
-        # 写入数据，转换为 float32
+        # 写入数据, 转换为 float32
         mrc.set_data(data.astype(np.float32))
         # 设置新的 origin（header 中保存为 x,y,z）
         mrc.header.origin.x, mrc.header.origin.y, mrc.header.origin.z = new_origin_xyz
@@ -898,13 +898,13 @@ def save_map_perfect_copy(file_path, data, original_map_path, new_origin_xyz):
         # 恢复原始 voxel size 与 cella
         mrc.voxel_size = original_voxel_size
         mrc.header.cella = original_cella
-        # 恢复原始轴映射信息，确保其他软件读取时轴含义一致
+        # 恢复原始轴映射信息, 确保其他软件读取时轴含义一致
         mrc.header.mapc, mrc.header.mapr, mrc.header.maps = original_map_axes
         # 更新头部统计（min/max/mean 等）以保持一致性
         mrc.update_header_stats()
 def clean_temp_file(temp_file_path):  # str | list[str]
     """
-    删除文件夹或文件夹列表 temp_file_path 里面的所有临时文件。
+    删除文件夹或文件夹列表 temp_file_path 里面的所有临时文件. 
     这里认为临时文件是开头为'temp'的文件, 文件名形如 tmpXXXXXX.*
     """
     if isinstance(temp_file_path, str):

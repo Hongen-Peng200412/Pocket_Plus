@@ -27,7 +27,7 @@ import src.model.stage1_model as stage1_model_mod
 # ==================================================================
 def _make_mock_voxel_backbone(expected_in_channels: int | None = None):
     """
-    构建一个带 set_input_channels 的 mock voxel_backbone。
+    构建一个带 set_input_channels 的 mock voxel_backbone. 
 
     输入参数:
         - expected_in_channels: int|None, 若非 None, 则在调用 set_input_channels 时校验实际值
@@ -55,8 +55,8 @@ def _make_minimal_stage1_model(
     online_pdb_feature_add_centroid: bool = False,
 ):
     """
-    构建只含 set_input_channels 相关逻辑的最小 Stage1Model 模拟对象。
-    直接访问 Stage1Model 构造函数需要大量真实模块依赖, 此处用 SimpleNamespace 模拟关键属性。
+    构建只含 set_input_channels 相关逻辑的最小 Stage1Model 模拟对象. 
+    直接访问 Stage1Model 构造函数需要大量真实模块依赖, 此处用 SimpleNamespace 模拟关键属性. 
 
     输入参数:
         - online_pdb_feature: bool, 是否启用在线 scatter
@@ -88,12 +88,12 @@ def _make_minimal_stage1_model(
 # Test 1: set_input_channels 通道计算
 # ==================================================================
 class TestSetInputChannels:
-    """验证 set_input_channels 在不同配置下的通道累加逻辑。"""
+    """验证 set_input_channels 在不同配置下的通道累加逻辑. """
 
     def test_no_online_no_embed(self):
         """
         既不启用 online_pdb_feature 也不启用 embed_head 时,
-        voxel_backbone 收到的通道数应等于数据集原始通道数。
+        voxel_backbone 收到的通道数应等于数据集原始通道数. 
         """
         model = _make_minimal_stage1_model(online_pdb_feature=False, embed_head=None)
         model.set_input_channels(1)
@@ -102,7 +102,7 @@ class TestSetInputChannels:
     def test_online_adds_49(self):
         """
         online_pdb_feature=True 且 embed_head=None 时,
-        voxel_backbone 收到的通道数应为 data_ch + 49。
+        voxel_backbone 收到的通道数应为 data_ch + 49. 
         """
         model = _make_minimal_stage1_model(online_pdb_feature=True, online_pdb_feature_dim=49)
         model.set_input_channels(1)
@@ -111,7 +111,7 @@ class TestSetInputChannels:
     def test_online_gauss27_adds_auxiliary_channels(self):
         """
         gauss27 且开启 occupancy/centroid 时,
-        voxel_backbone 收到的通道数应为 data_ch + raw_dim + 2 + 3。
+        voxel_backbone 收到的通道数应为 data_ch + raw_dim + 2 + 3. 
         """
         model = _make_minimal_stage1_model(
             online_pdb_feature=True,
@@ -125,7 +125,7 @@ class TestSetInputChannels:
 
     def test_online_custom_dim(self):
         """
-        当 online_pdb_feature_dim 为自定义值时, 通道计算也应正确。
+        当 online_pdb_feature_dim 为自定义值时, 通道计算也应正确. 
         """
         model = _make_minimal_stage1_model(online_pdb_feature=True, online_pdb_feature_dim=32)
         model.set_input_channels(3)
@@ -134,7 +134,7 @@ class TestSetInputChannels:
     def test_embed_head_takes_precedence(self):
         """
         embed_head 启用时, 即使 online_pdb_feature=True,
-        通道增量应来自 embed_head 而非 online scatter。
+        通道增量应来自 embed_head 而非 online scatter. 
         """
         mock_eh = MagicMock()
         mock_eh.has_voxel_output = True
@@ -151,7 +151,7 @@ class TestSetInputChannels:
     def test_point_only_embed_head_keeps_online_scatter(self):
         """
         point-only embed_head 没有 voxel_pdb_embed_grid,
-        因此 online scatter 仍应作为 voxel 分支的原子注入路径。
+        因此 online scatter 仍应作为 voxel 分支的原子注入路径. 
         """
         mock_eh = MagicMock()
         mock_eh.has_voxel_output = False
@@ -173,12 +173,12 @@ class TestSetInputChannels:
 # Test 2: scatter_to_voxel_grid 输出形状
 # ==================================================================
 class TestScatterToVoxelGrid:
-    """验证 scatter_to_voxel_grid 在简单输入下的输出形状。"""
+    """验证 scatter_to_voxel_grid 在简单输入下的输出形状. """
 
     def test_basic_shape(self):
         """
         3 个原子, 特征维度 49, 网格 (4, 4, 4), batch_size=1
-        输出应为 (1, 49, 4, 4, 4)。
+        输出应为 (1, 49, 4, 4, 4). 
         """
         # torch.Tensor, (3, 49), 随机原子特征
         point_feat = torch.randn(3, 49)
@@ -202,7 +202,7 @@ class TestScatterToVoxelGrid:
 
     def test_empty_atoms(self):
         """
-        0 个原子时, 输出应为全零张量且形状正确。
+        0 个原子时, 输出应为全零张量且形状正确. 
         """
         point_feat = torch.zeros(0, 49)
         coord = torch.zeros(0, 3)
@@ -222,7 +222,7 @@ class TestScatterToVoxelGrid:
 
     def test_empty_atoms_with_occupancy_channels(self):
         """
-        0 个原子且开启 occupancy 通道时, 输出仍应保留额外 2 个通道。
+        0 个原子且开启 occupancy 通道时, 输出仍应保留额外 2 个通道. 
         """
         point_feat = torch.zeros(0, 49)
         coord = torch.zeros(0, 3)
@@ -243,7 +243,7 @@ class TestScatterToVoxelGrid:
 
     def test_empty_atoms_with_soft_scatter_occupancy_channels(self):
         """
-        soft scatter 的空输入路径应与 hard scatter 保持相同通道约定。
+        soft scatter 的空输入路径应与 hard scatter 保持相同通道约定. 
         """
         point_feat = torch.zeros(0, 16)
         coord = torch.zeros(0, 3)
@@ -264,7 +264,7 @@ class TestScatterToVoxelGrid:
 
     def test_out_of_bound_atoms_discarded(self):
         """
-        超出体素网格范围的原子应被丢弃, 不影响输出形状。
+        超出体素网格范围的原子应被丢弃, 不影响输出形状. 
         """
         point_feat = torch.ones(2, 10)
         # 第一个在范围内 (x=1, y=1, z=1), 第二个越界 (x=100)
@@ -286,7 +286,7 @@ class TestScatterToVoxelGrid:
 
     def test_multi_batch(self):
         """
-        多 batch 情况下的 scatter。
+        多 batch 情况下的 scatter. 
         """
         # batch 0: 2 个原子; batch 1: 1 个原子
         point_feat = torch.randn(3, 5)
@@ -306,7 +306,7 @@ class TestScatterToVoxelGrid:
 
     def test_occupancy_channels(self):
         """
-        add_occupancy_channels=True 时, 输出通道数应增加 2。
+        add_occupancy_channels=True 时, 输出通道数应增加 2. 
         """
         point_feat = torch.randn(2, 49)
         coord = torch.tensor([[1.0, 1.0, 1.0], [2.0, 2.0, 2.0]])
@@ -329,11 +329,11 @@ class TestScatterToVoxelGrid:
 # Test 2.5: embed head 裁剪到空点集
 # ==================================================================
 class TestStage1EmbedHeadEmptyTrim:
-    """验证 embed head block 后裁剪为空时不会继续序列化空 Point。"""
+    """验证 embed head block 后裁剪为空时不会继续序列化空 Point. """
 
     def test_run_blocks_returns_empty_state_after_trim_all_atoms(self):
         """
-        当 buffer 裁剪移除全部原子时, _run_blocks_with_trim 应返回 None point 和空字段。
+        当 buffer 裁剪移除全部原子时, _run_blocks_with_trim 应返回 None point 和空字段. 
         """
         class IdentityBlock(torch.nn.Module):
             def forward(self, point):
@@ -380,7 +380,7 @@ class TestStage1EmbedHeadEmptyTrim:
 
 
 def test_find1_voxel_only_matches_full_embed_voxel_branch() -> None:
-    """验证 Find_1 非块式 MLP/centroid/residual/Gaussian 最短路径逐元素等价。"""
+    """验证 Find_1 非块式 MLP/centroid/residual/Gaussian 最短路径逐元素等价. """
 
     torch.manual_seed(17)
     head = Stage1EmbedHead(
@@ -462,7 +462,7 @@ def test_find1_voxel_only_matches_full_embed_voxel_branch() -> None:
 def test_embed_gaussian_scatter_takes_priority_over_soft_scatter(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """同时打开两个开关时复现旧 Find_1 的 Gaussian scatter。"""
+    """同时打开两个开关时复现旧 Find_1 的 Gaussian scatter. """
 
     head = Stage1EmbedHead.__new__(Stage1EmbedHead)
     torch.nn.Module.__init__(head)
@@ -499,7 +499,7 @@ def test_embed_gaussian_scatter_takes_priority_over_soft_scatter(
 
 
 def test_find2_voxel_tune_is_56d_without_voxel_raw_residual() -> None:
-    """验证 Find_2 固定输出 56D Gaussian tune，并保留 point residual 路径。"""
+    """验证 Find_2 固定输出 56D Gaussian tune, 并保留 point residual 路径. """
 
     torch.manual_seed(23)
     head = Stage1EmbedHead(
@@ -582,7 +582,7 @@ def test_find2_voxel_tune_is_56d_without_voxel_raw_residual() -> None:
 
 
 def test_find2_voxel_input_adds_tune_instead_of_concatenating() -> None:
-    """验证 Find_2 的 56D voxel embed 与 density56 逐元素直接相加。"""
+    """验证 Find_2 的 56D voxel embed 与 density56 逐元素直接相加. """
 
     model = SimpleNamespace()
     model.embed_head = SimpleNamespace(voxel_embed_as_tune=True)
@@ -604,12 +604,12 @@ def test_find2_voxel_input_adds_tune_instead_of_concatenating() -> None:
 # Test 3: 梯度隔离
 # ==================================================================
 class TestGradientIsolation:
-    """验证在线 scatter 的输出不参与梯度回传。"""
+    """验证在线 scatter 的输出不参与梯度回传. """
 
     def test_no_grad_scatter(self):
         """
         在 torch.no_grad + detach 下执行 scatter,
-        输出应 requires_grad=False。
+        输出应 requires_grad=False. 
         """
         point_feat = torch.randn(3, 49, requires_grad=True)
         coord = torch.tensor([[1.0, 1.0, 1.0], [2.0, 2.0, 2.0], [0.5, 0.5, 0.5]])
@@ -632,13 +632,13 @@ class TestGradientIsolation:
 # Test 4: point-only embed head 下的 raw scatter 语义
 # ==================================================================
 class TestPointOnlyEmbedHeadOnlineScatter:
-    """验证 point-only embed head 不会污染 online raw scatter 的输入。"""
+    """验证 point-only embed head 不会污染 online raw scatter 的输入. """
 
     def test_build_voxel_input_uses_trimmed_raw_atom_feat(self, monkeypatch):
         """
-        _run_embed_head_once 会把 batch["atom_feat"] 替换成 embed 后特征。
+        _run_embed_head_once 会把 batch["atom_feat"] 替换成 embed 后特征. 
         但 online voxel scatter 的语义是 raw atom_feat, 因此 _build_voxel_input
-        必须优先使用同步裁剪后的 _online_pdb_raw_atom_feat。
+        必须优先使用同步裁剪后的 _online_pdb_raw_atom_feat. 
         """
         model = SimpleNamespace()
         model.online_pdb_feature = True
@@ -679,12 +679,12 @@ class TestPointOnlyEmbedHeadOnlineScatter:
 # Test 5: split_and_select_box hardmask 逻辑
 # ==================================================================
 class TestHardmaskFromAtoms:
-    """验证从 atom_coords 计算 hardmask 的逻辑正确性 (对应 split_and_select_box.py 修改)。"""
+    """验证从 atom_coords 计算 hardmask 的逻辑正确性 (对应 split_and_select_box.py 修改). """
 
     def test_basic_hardmask(self):
         """
         给定若干原子坐标和体素网格参数,
-        验证计算出的 hardmask 在对应体素位置为 True。
+        验证计算出的 hardmask 在对应体素位置为 True. 
         """
         # 模拟参数
         origin_arr = np.array([0.0, 0.0, 0.0], dtype=np.float32)
@@ -719,7 +719,7 @@ class TestHardmaskFromAtoms:
 
     def test_empty_atoms(self):
         """
-        当 atom_coords 为空时, hardmask 应全 False。
+        当 atom_coords 为空时, hardmask 应全 False. 
         """
         origin_arr = np.array([0.0, 0.0, 0.0], dtype=np.float32)
         voxel_size_arr = np.array([1.0, 1.0, 1.0], dtype=np.float32)
@@ -742,7 +742,7 @@ class TestHardmaskFromAtoms:
 
     def test_non_unit_voxel_size(self):
         """
-        当 voxel_size 非 1.0 时, 体素索引计算应正确缩放。
+        当 voxel_size 非 1.0 时, 体素索引计算应正确缩放. 
         """
         origin_arr = np.array([10.0, 20.0, 30.0], dtype=np.float32)
         voxel_size_arr = np.array([0.7, 0.7, 0.7], dtype=np.float32)

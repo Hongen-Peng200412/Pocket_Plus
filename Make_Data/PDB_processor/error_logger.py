@@ -3,7 +3,7 @@
 统一预处理系统 - 错误日志工具 / Unified Preprocessing System - Error Logging
 ================================================================================
 
-记录处理错误到 JSON 文件，便于后续分析和调试。
+记录处理错误到 JSON 文件, 便于后续分析和调试. 
 Log processing errors to JSON files for analysis and debugging.
 ================================================================================
 """
@@ -47,7 +47,7 @@ def return_error_info(
         - error_type: str, 错误类型 (如 'MISSING_BACKBONE', 'NO_LIGAND', 'PARSE_ERROR')
         - error_detail: str, 错误详细描述
         - output_dir: str, 输出目录 (错误日志将存储在 {output_dir}/error_logs/)
-        - sample_id: str, 样本ID (可选，如果不提供则从文件名推断)
+        - sample_id: str, 样本ID (可选, 如果不提供则从文件名推断)
     
     输出 / Output:
         - None, 直接写入文件
@@ -100,7 +100,7 @@ def return_error_info(
                     if content:
                         existing_logs = json.loads(content)
             except (json.JSONDecodeError, IOError):
-                # 文件损坏或为空，重新开始
+                # 文件损坏或为空, 重新开始
                 existing_logs = []
         
         # 添加新条目
@@ -111,7 +111,7 @@ def return_error_info(
             json.dump(existing_logs, f, indent=2, ensure_ascii=False)
             
     except Exception as e:
-        # 兜底日志，防止日志记录本身导致程序崩溃
+        # 兜底日志, 防止日志记录本身导致程序崩溃
         print(f"[Error] Failed to write error log for {sample_id}: {e}")
         print(f"  Error type: {error_type}")
         print(f"  Error detail: {error_detail}")

@@ -1,9 +1,9 @@
-"""把 Stage1 模型输出与批次监督字段转换为可加权的标量损失项。
+"""把 Stage1 模型输出与批次监督字段转换为可加权的标量损失项. 
 
-``voxel_point_stage1.py`` 调用本模块的 ``compute_*_loss_term`` 函数，
-再按 :class:`LossTerm.weight` 汇总总损失。分类分支把具体 Focal 与 Dice
-计算交给配置实例化的复合损失模块；本模块负责选择预测、监督和有效掩码。
-配体距离分支单独对完整 BOX 的反距离值计算逐体素平均 MSE。
+``voxel_point_stage1.py`` 调用本模块的 ``compute_*_loss_term`` 函数, 
+再按 :class:`LossTerm.weight` 汇总总损失. 分类分支把具体 Focal 与 Dice
+计算交给配置实例化的复合损失模块; 本模块负责选择预测、监督和有效掩码. 
+配体距离分支单独对完整 BOX 的反距离值计算逐体素平均 MSE. 
 """
 
 from __future__ import annotations
@@ -22,13 +22,13 @@ from src.modules.losses import AdaptiveClassificationCompositeLoss, LigandSparse
 @dataclass(frozen=True)
 class LossTerm:
     """
-    单个损失分支的数值、权重与日志值。
+    单个损失分支的数值、权重与日志值. 
 
     输入参数:
-        - name: str，损失分支名称；日志使用 atom、receptor、voxel_ligand 等固定名称。
-        - value: 标量张量，参与反向传播的未加权损失。
-        - weight: float，总损失使用的静态系数。
-        - logged_value: 标量张量，从计算图分离后写入日志的未加权损失。
+        - name: str, 损失分支名称; 日志使用 atom、receptor、voxel_ligand 等固定名称. 
+        - value: 标量张量, 参与反向传播的未加权损失. 
+        - weight: float, 总损失使用的静态系数. 
+        - logged_value: 标量张量, 从计算图分离后写入日志的未加权损失. 
     """
 
     name: str
@@ -38,7 +38,7 @@ class LossTerm:
 
 def loss_output_to_tensor(loss_out: torch.Tensor | Mapping[str, Any]) -> torch.Tensor:
     """
-    将损失模块输出规范化为标量 tensor。
+    将损失模块输出规范化为标量 tensor. 
 
     输入参数:
         - loss_out: torch.Tensor 或 Mapping[str, Any], 损失模块返回值; Mapping 必须包含 loss 或 total_loss
@@ -58,7 +58,7 @@ def loss_output_to_tensor(loss_out: torch.Tensor | Mapping[str, Any]) -> torch.T
 
 
 # -------------------------------------------- 各监督分支 --------------------------------------------
-# 受体原子是否属于结合区域。
+# 受体原子是否属于结合区域. 
 def compute_atom_loss_term(
     *,
     outputs: Mapping[str, Any],
@@ -67,7 +67,7 @@ def compute_atom_loss_term(
     weight: float,
 ) -> LossTerm:
     """
-    计算最终 atom 分支损失项。
+    计算最终 atom 分支损失项. 
 
     输入参数:
         - outputs: Mapping[str, Any], backbone 输出; 包含 atom_logits、atom_target 与 atom_is_in_core_box
@@ -78,11 +78,11 @@ def compute_atom_loss_term(
     输出:
         - loss_term: LossTerm, atom 分支损失项
     """
-    # (N_atom, C_atom)，拼接受体原子的分类 logits。
+    # (N_atom, C_atom), 拼接受体原子的分类 logits. 
     atom_logits = outputs["atom_logits"]
-    # (N_atom,)，与 atom_logits 第 0 维逐原子对齐的类别标签。
+    # (N_atom,), 与 atom_logits 第 0 维逐原子对齐的类别标签. 
     atom_target = outputs.get("atom_target", batch["atom_label"])
-    # bool, (N_atom,)，True 表示该受体原子位于核心 BOX 并参加原子分类损失。
+    # bool, (N_atom,), True 表示该受体原子位于核心 BOX 并参加原子分类损失. 
     atom_core_mask = outputs.get("atom_is_in_core_box", batch["atom_is_in_core_box"])
     if atom_logits.shape[0] != atom_target.shape[0]:
         raise RuntimeError(
@@ -105,7 +105,7 @@ def compute_atom_loss_term(
     value = loss_output_to_tensor(loss_out)
     return LossTerm(name="atom", value=value, weight=float(weight), logged_value=value.detach())
 
-# 虚拟 P 锚点是否属于配体区域。
+# 虚拟 P 锚点是否属于配体区域. 
 def compute_pseudo_loss_term(
     *,
     outputs: Mapping[str, Any],
@@ -115,7 +115,7 @@ def compute_pseudo_loss_term(
     valid_mask: torch.Tensor,
 ) -> LossTerm:
     """
-    计算最终 P(虚拟原子) ligand 区域归属损失项。
+    计算最终 P(虚拟原子) ligand 区域归属损失项. 
 
     输入参数:
         - outputs: Mapping[str, Any], backbone 输出; 包含 pseudo_logits
@@ -127,7 +127,7 @@ def compute_pseudo_loss_term(
     输出:
         - loss_term: LossTerm, pseudo 分支损失项
     """
-    # (N_pseudo, C_pseudo)，每个虚拟 P 锚点的配体区域分类 logits。
+    # (N_pseudo, C_pseudo), 每个虚拟 P 锚点的配体区域分类 logits. 
     pseudo_logits = outputs["pseudo_logits"]
     if pseudo_logits.shape[0] != target.shape[0]:
         raise RuntimeError(
@@ -142,7 +142,7 @@ def compute_pseudo_loss_term(
     value = loss_output_to_tensor(loss_out)
     return LossTerm(name="pseudo", value=value, weight=float(weight), logged_value=value.detach())
 
-# 体素是否属于受体结合区域。
+# 体素是否属于受体结合区域. 
 def compute_receptor_loss_term(
     *,
     outputs: Mapping[str, Any],
@@ -151,7 +151,7 @@ def compute_receptor_loss_term(
     weight: float,
 ) -> LossTerm | None:
     """
-    计算 receptor 对外语义的体素辅助监督损失项。
+    计算 receptor 对外语义的体素辅助监督损失项. 
 
     输入参数:
         - outputs: Mapping[str, Any], backbone 输出; 可包含 voxel_logits_aux
@@ -162,14 +162,14 @@ def compute_receptor_loss_term(
     输出:
         - loss_term: LossTerm | None, receptor 分支损失项; 未产出 voxel_logits_aux 时为 None
     """
-    # (B, C_aux, D, H, W) 或 None，受体结合区域体素预测 logits。
+    # (B, C_aux, D, H, W) 或 None, 受体结合区域体素预测 logits. 
     voxel_logits_aux = outputs.get("voxel_logits_aux")
     if voxel_logits_aux is None:
         return None
 
-    # (B, D, H, W)，每个体素的受体结合区域标签。
+    # (B, D, H, W), 每个体素的受体结合区域标签. 
     voxel_target = batch["voxel_label"]
-    # bool, (B, 1, D, H, W)，受体原子占据掩码；仅掩码覆盖的体素参加该损失。
+    # bool, (B, 1, D, H, W), 受体原子占据掩码; 仅掩码覆盖的体素参加该损失. 
     hardmask = batch["hardmask"]
     if isinstance(loss_module, (UnifiedCompositeLoss, AdaptiveClassificationCompositeLoss)):
         loss_out = loss_module(
@@ -183,7 +183,7 @@ def compute_receptor_loss_term(
     value = loss_output_to_tensor(loss_out)
     return LossTerm(name="receptor", value=value, weight=float(weight), logged_value=value.detach())
 
-# 体素是否属于配体区域。
+# 体素是否属于配体区域. 
 def compute_voxel_ligand_loss_term(
     *,
     outputs: Mapping[str, Any],
@@ -192,22 +192,22 @@ def compute_voxel_ligand_loss_term(
     weight: float,
 ) -> LossTerm | None:
     """
-    计算 dense voxel ligand 占据损失项。
+    计算 dense voxel ligand 占据损失项. 
 
     输入参数:
         - outputs: Mapping[str, Any], backbone 输出; 可包含 voxel_logits_ligand
-        - batch: Mapping[str, Any], 当前 batch; AdaLigand 使用 ligand_area_target，旧配置可含 ligand_dist_map
+        - batch: Mapping[str, Any], 当前 batch; AdaLigand 使用 ligand_area_target, 旧配置可含 ligand_dist_map
         - loss_module: nn.Module, voxel ligand 损失模块
         - weight: float, voxel ligand 损失权重
 
     输出:
         - loss_term: LossTerm | None, voxel_ligand 分支损失项; 缺少 logits 或任何 target 时为 None
     """
-    # (B, C_ligand, D, H, W) 或 None，配体区域体素预测 logits。
+    # (B, C_ligand, D, H, W) 或 None, 配体区域体素预测 logits. 
     voxel_logits_ligand = outputs.get("voxel_logits_ligand")
     if voxel_logits_ligand is None:
         return None
-    # bool, (B, D, H, W) 或 None，所有配体 occurrence 并集在当前 80³ BOX 中的裁剪。
+    # bool, (B, D, H, W) 或 None, 所有配体 occurrence 并集在当前 80³ BOX 中的裁剪. 
     ligand_area_target = batch.get("ligand_area_target")
     if ligand_area_target is not None:
         if isinstance(loss_module, (UnifiedCompositeLoss, AdaptiveClassificationCompositeLoss)):
@@ -222,7 +222,7 @@ def compute_voxel_ligand_loss_term(
         value = loss_output_to_tensor(loss_out)
         return LossTerm(name="voxel_ligand", value=value, weight=float(weight), logged_value=value.detach())
 
-    # 旧 Pocket_Plus 配置继续允许以 ligand_dist_map 派生 target；AdaLigand 配置不会进入此分支。
+    # 旧 Pocket_Plus 配置继续允许以 ligand_dist_map 派生 target; AdaLigand 配置不会进入此分支. 
     ligand_dist_map = batch.get("ligand_dist_map")
     if ligand_dist_map is None:
         return None
@@ -249,29 +249,29 @@ def compute_mainchain_class_loss_term(
     weight: float,
     polymer_name: str,
 ) -> LossTerm | None:
-    """计算蛋白或核酸主链原子类别的全体素复合分类损失。
+    """计算蛋白或核酸主链原子类别的全体素复合分类损失. 
 
     输入参数:
-        - outputs: 模型输出字典；读取 ``voxel_logits_{polymer_name}``。
-        - batch: Stage1 批次字典；读取 ``{polymer_name}_mainchain_target``。
-        - loss_module: 多分类 Focal 与 Dice 复合损失。
-        - weight: 该分支进入总损失的静态系数。
-        - polymer_name: ``protein`` 或 ``nucleic``，同时决定预测和监督字段名。
+        - outputs: 模型输出字典; 读取 ``voxel_logits_{polymer_name}``. 
+        - batch: Stage1 批次字典; 读取 ``{polymer_name}_mainchain_target``. 
+        - loss_module: 多分类 Focal 与 Dice 复合损失. 
+        - weight: 该分支进入总损失的静态系数. 
+        - polymer_name: ``protein`` 或 ``nucleic``, 同时决定预测和监督字段名. 
 
     输出:
-        - loss_term: 未启用对应预测头时为 None；否则保存全体素平均分类损失。
+        - loss_term: 未启用对应预测头时为 None; 否则保存全体素平均分类损失. 
 
-    类别 0 是背景。每个正类分别作为唯一前景计算 Dice，再在正类之间平均；
-    Focal 与 Dice 的具体系数由 ``loss_module`` 保存。
+    类别 0 是背景. 每个正类分别作为唯一前景计算 Dice, 再在正类之间平均; 
+    Focal 与 Dice 的具体系数由 ``loss_module`` 保存. 
     """
 
     if polymer_name not in {"protein", "nucleic"}:
         raise ValueError("polymer_name 只允许 protein 或 nucleic。")
-    # (B, C_polymer, D, H, W) 或 None，类别通道顺序由 auxiliary_supervision.py 固定。
+    # (B, C_polymer, D, H, W) 或 None, 类别通道顺序由 auxiliary_supervision.py 固定. 
     logits = outputs.get(f"voxel_logits_{polymer_name}")
     if logits is None:
         return None
-    # int64, (B, D, H, W)，0 为背景，其余编号与 logits 的类别维一一对应。
+    # int64, (B, D, H, W), 0 为背景, 其余编号与 logits 的类别维一一对应. 
     target = batch[f"{polymer_name}_mainchain_target"]
     if not isinstance(loss_module, AdaptiveClassificationCompositeLoss):
         raise TypeError("主链类别损失必须使用 AdaptiveClassificationCompositeLoss。")
@@ -290,17 +290,17 @@ def compute_ligand_distance_loss_term(
     batch: Mapping[str, Any],
     weight: float,
 ) -> LossTerm | None:
-    """计算最近配体距离变换值的全体素平均 MSE。
+    """计算最近配体距离变换值的全体素平均 MSE. 
 
-    模型输出先经 sigmoid 映射到 ``[0, 1]``，再与
-    ``ligand_inverse_distance_target = 1 / (1 + distance_Å)`` 比较。
-    没有配体原子的结构在距离文件中保存全正无穷，Dataset 将其监督值转换为 0。
+    模型输出先经 sigmoid 映射到 ``[0, 1]``, 再与
+    ``ligand_inverse_distance_target = 1 / (1 + distance_Å)`` 比较. 
+    没有配体原子的结构在距离文件中保存全正无穷, Dataset 将其监督值转换为 0. 
     """
 
     logits = outputs.get("voxel_logits_distance")
     if logits is None:
         return None
-    # (B, D, H, W)，每个体素中心到最近配体原子的反距离监督值。
+    # (B, D, H, W), 每个体素中心到最近配体原子的反距离监督值. 
     target = batch["ligand_inverse_distance_target"].to(device=logits.device, dtype=logits.dtype)
     if logits.ndim != 5 or logits.shape[1] != 1 or logits[:, 0].shape != target.shape:
         raise ValueError(
@@ -330,10 +330,10 @@ def compute_sparse_refine_loss_term(
     w_rank: float = 0.0,
 ) -> tuple[LossTerm, torch.Tensor, dict[str, torch.Tensor]]:
     """
-    计算 C 级 sparse refine 组合损失项: L_cls + w_rank·L_rank。
+    计算 C 级 sparse refine 组合损失项: L_cls + w_rank·L_rank. 
 
     两项 refine 损失共用同一 schedule(effective_weight)与同一静态 weight, 合成单个 ligand_sparse_refine term;
-    delta_loss_module 为 None 或 w_rank=0 时退化为纯分类 L_cls(就是分类损失, AdaptiveClassificationCompositeLoss, focal+dice)。
+    delta_loss_module 为 None 或 w_rank=0 时退化为纯分类 L_cls(就是分类损失, AdaptiveClassificationCompositeLoss, focal+dice). 
 
     输入参数:
         - logits_C: torch.Tensor, (sumC, C_ligand), C 级 refined logits

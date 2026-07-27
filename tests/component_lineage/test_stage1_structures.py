@@ -1,4 +1,4 @@
-"""组件森林数值往返、树关系和 WorkingTree D(g) 测试。"""
+"""组件森林数值往返、树关系和 WorkingTree D(g) 测试. """
 
 from __future__ import annotations
 

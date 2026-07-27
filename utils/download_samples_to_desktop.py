@@ -9,12 +9,12 @@ from pathlib import Path
 
 def download_samples(json_path: str, ssh_user_host: str, num_samples: int = 30):
     """
-    读取 JSON 映射文件, 将远程服务器上的对应文件批量下载到本地桌面上指定的四个文件夹。
+    读取 JSON 映射文件, 将远程服务器上的对应文件批量下载到本地桌面上指定的四个文件夹. 
 
     输入参数:
         - json_path: str, 标量, 生成的 JSON 映射文件路径(本地的 json 路径)
-        - ssh_user_host: str, 标量, SCP 登录凭据字符串。建议值 'user@192.168.0.1'
-        - num_samples: int, 标量, 尝试下载的最大样本组数目。建议值 100
+        - ssh_user_host: str, 标量, SCP 登录凭据字符串. 建议值 'user@192.168.0.1'
+        - num_samples: int, 标量, 尝试下载的最大样本组数目. 建议值 100
 
     输出:
         - 无返回值, 副作用是调用 SCP 并写入文件至本地
@@ -58,7 +58,7 @@ def download_samples(json_path: str, ssh_user_host: str, num_samples: int = 30):
             if not remote_path:
                 continue
                 
-            # list[str], 标量, SCP 调用列表。使用系统内置命令
+            # list[str], 标量, SCP 调用列表. 使用系统内置命令
             cmd = ["scp", f"{ssh_user_host}:{remote_path}", folder_path]
             try:
                 subprocess.run(cmd, check=True)
@@ -69,8 +69,8 @@ def download_samples(json_path: str, ssh_user_host: str, num_samples: int = 30):
 
 
 if __name__ == "__main__":
-    # 需要先将前面第一步生成的 dataset_mapping.json 从服务器拿到本地，再执行此文件
-    # SSH请确保配好了密钥免密登录，或者能够正常手动输入密码
+    # 需要先将前面第一步生成的 dataset_mapping.json 从服务器拿到本地, 再执行此文件
+    # SSH请确保配好了密钥免密登录, 或者能够正常手动输入密码
     download_samples(
         json_path=r"C:\Users\15919\Desktop\dataset_mapping.json", 
         ssh_user_host="penghongen@10.102.33.220", 

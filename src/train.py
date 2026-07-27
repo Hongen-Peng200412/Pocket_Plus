@@ -27,7 +27,7 @@ from src.utils.slurm_utils import (
 )
 from src.utils.module_freeze import set_fully_frozen_submodules_eval
 
-# 统一使用 slurm_utils 中的网卡推导逻辑，避免本地旧实现与 sbatch helper 出现分叉。
+# 统一使用 slurm_utils 中的网卡推导逻辑, 避免本地旧实现与 sbatch helper 出现分叉. 
 _fix_gloo_socket_ifname()
 
 import torch
@@ -60,10 +60,10 @@ from src.utils.fault_tolerant_dataset import maybe_wrap_dataset
 
 def _resolve_init_checkpoint(init_from: str, feedback_root: Path, current_run_dir: Path) -> Path:
     """
-    解析 model-only 初始化 ckpt 路径。
+    解析 model-only 初始化 ckpt 路径. 
 
     输入参数:
-        - init_from: str, `.ckpt` 文件、run 目录，或 `"***"` 作业内上一阶段哨兵
+        - init_from: str, `.ckpt` 文件、run 目录, 或 `"***"` 作业内上一阶段哨兵
         - feedback_root: Path, feedback_plus 根目录
         - current_run_dir: Path, 当前 run 目录; 解析 `"***"` 时用于排除自身
 
@@ -92,11 +92,11 @@ def _resolve_init_checkpoint(init_from: str, feedback_root: Path, current_run_di
 
 def _load_model_only_checkpoint(model: torch.nn.Module, ckpt_path: Path, verbose: bool) -> None:
     """
-    只加载 checkpoint 中的模型权重，不恢复 optimizer、scheduler 与 global_step。
+    只加载 checkpoint 中的模型权重, 不恢复 optimizer、scheduler 与 global_step. 
 
-    AdaLigand 用它把同名 Find 的 CPC1 BEST 交给 CPC2。``state_dict`` 加载后仍调用
-    wrapper 的 ``on_load_checkpoint``，使 P 候选阈值等模型运行状态与 CPC1 对齐；
-    epoch 和优化器时间线则从 CPC2 自己的第 0 步重新开始。
+    AdaLigand 用它把同名 Find 的 CPC1 BEST 交给 CPC2. ``state_dict`` 加载后仍调用
+    wrapper 的 ``on_load_checkpoint``, 使 P 候选阈值等模型运行状态与 CPC1 对齐; 
+    epoch 和优化器时间线则从 CPC2 自己的第 0 步重新开始. 
 
     输入参数:
         - model: torch.nn.Module, 已实例化并完成 lazy 初始化的 LightningModule
@@ -120,7 +120,7 @@ def _load_model_only_checkpoint(model: torch.nn.Module, ckpt_path: Path, verbose
 
 def _apply_frozen_module(model: torch.nn.Module, frozen_cfg: DictConfig, verbose: bool) -> None:
     """
-    按显式 name-pattern 冻结参数。
+    按显式 name-pattern 冻结参数. 
 
     输入参数:
         - model: torch.nn.Module, 当前 LightningModule
@@ -166,8 +166,8 @@ def _apply_frozen_module(model: torch.nn.Module, frozen_cfg: DictConfig, verbose
     if trainable_count == 0:
         raise RuntimeError("frozen_module 应用后没有任何可训练参数。")
 
-    # 冻结仅设 requires_grad=False 不会停住 BN 的 running stats 与 Dropout; 让完全冻结子树进入 eval, 固定其前向。
-    # wrapper.train() 覆写会在每个 epoch 后重复维持; 这里做一次初始 eval 并取计数用于日志/自检。
+    # 冻结仅设 requires_grad=False 不会停住 BN 的 running stats 与 Dropout; 让完全冻结子树进入 eval, 固定其前向. 
+    # wrapper.train() 覆写会在每个 epoch 后重复维持; 这里做一次初始 eval 并取计数用于日志/自检. 
     # int, int: 被切到 eval 的极大冻结子树数; 其中带 running 统计的 BN 数(本会漂移、现已固定)
     num_frozen_subtrees, num_frozen_bn = set_fully_frozen_submodules_eval(model)
 
@@ -189,15 +189,15 @@ def _apply_frozen_module(model: torch.nn.Module, frozen_cfg: DictConfig, verbose
 
 class LearningRateReductionStopper(Callback):
     """
-    通用 LR 衰减计数停训回调。
+    通用 LR 衰减计数停训回调. 
 
     输入参数:
         - stop_after_lr_reductions: int, 任一 optimizer param group 的学习率实际下降达到该次数后停止训练
 
     行为:
-        - 只观察 optimizer 当前 lr，不关心 scheduler 类型或触发位置。
-        - 在 validation end 和下一次 train batch 前都检查一次，避免依赖 LightningModule 与 Callback 的 hook 顺序。
-        - 计数写入 checkpoint，可用于断点续训；model-only 初始化不会恢复该 callback state。
+        - 只观察 optimizer 当前 lr, 不关心 scheduler 类型或触发位置. 
+        - 在 validation end 和下一次 train batch 前都检查一次, 避免依赖 LightningModule 与 Callback 的 hook 顺序. 
+        - 计数写入 checkpoint, 可用于断点续训; model-only 初始化不会恢复该 callback state. 
     """
 
     def __init__(self, stop_after_lr_reductions: int) -> None:
@@ -211,7 +211,7 @@ class LearningRateReductionStopper(Callback):
     @staticmethod
     def _current_lrs(trainer: pl.Trainer) -> tuple[float, ...]:
         """
-        读取 trainer 当前所有 optimizer param group 的学习率。
+        读取 trainer 当前所有 optimizer param group 的学习率. 
 
         输入参数:
             - trainer: pl.Trainer, 当前训练器
@@ -227,11 +227,11 @@ class LearningRateReductionStopper(Callback):
 
     def _observe(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
         """
-        比较当前 LR 与上一次记录值，若发生实际下降则累加并按阈值停训。
+        比较当前 LR 与上一次记录值, 若发生实际下降则累加并按阈值停训. 
 
         输入参数:
             - trainer: pl.Trainer, 当前训练器
-            - pl_module: pl.LightningModule, 当前 Lightning 模型，用于记录 runtime 日志
+            - pl_module: pl.LightningModule, 当前 Lightning 模型, 用于记录 runtime 日志
 
         输出:
             - None, 原地更新计数或 trainer.should_stop
@@ -301,7 +301,7 @@ class LearningRateReductionStopper(Callback):
 
 def _resolve_scheduler_warmup_steps(*, trainer: pl.Trainer, sched_cfg: Mapping[str, Any]) -> int:
     """
-    从 cfg.train.scheduler 解析 warmup step 数。
+    从 cfg.train.scheduler 解析 warmup step 数. 
 
     输入参数:
         - trainer: pl.Trainer, 当前训练器; 提供 estimated_stepping_batches
@@ -333,7 +333,7 @@ def _resolve_scheduler_warmup_steps(*, trainer: pl.Trainer, sched_cfg: Mapping[s
 
 class WarmupPlateauController(Callback):
     """
-    通用 validation 级 ReduceLROnPlateau 控制器。
+    通用 validation 级 ReduceLROnPlateau 控制器. 
 
     输入参数:
         - sched_cfg: Mapping[str, Any], cfg.train.scheduler 中 warmup_plateau 的完整配置
@@ -342,7 +342,7 @@ class WarmupPlateauController(Callback):
     行为:
         - step 级 warmup 仍交给 Lightning 原生 lr_scheduler;
         - plateau 部分在每次 validation 完成后按 monitor_metric 手动推进;
-        - plateau 状态由本 callback 写入 Lightning checkpoint, 不再下沉到 wrapper。
+        - plateau 状态由本 callback 写入 Lightning checkpoint, 不再下沉到 wrapper. 
     """
 
     def __init__(self, *, sched_cfg: Mapping[str, Any], monitor_metric: str) -> None:
@@ -357,7 +357,7 @@ class WarmupPlateauController(Callback):
 
     def _build_schedulers(self, trainer: pl.Trainer) -> None:
         """
-        在 optimizer 已由 LightningModule 构建后创建 plateau scheduler。
+        在 optimizer 已由 LightningModule 构建后创建 plateau scheduler. 
 
         输入参数:
             - trainer: pl.Trainer, 当前训练器; trainer.optimizers 必须已初始化
@@ -395,7 +395,7 @@ class WarmupPlateauController(Callback):
 
     def _monitor_value(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> float | None:
         """
-        读取当前 validation 的 plateau 监控指标。
+        读取当前 validation 的 plateau 监控指标. 
 
         输入参数:
             - trainer: pl.Trainer, 当前训练器
@@ -423,7 +423,7 @@ class WarmupPlateauController(Callback):
 
     def _step_if_ready(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
         """
-        若当前 validation 指标可用，则推进 plateau scheduler。
+        若当前 validation 指标可用, 则推进 plateau scheduler. 
 
         输入参数:
             - trainer: pl.Trainer, 当前训练器
@@ -493,7 +493,7 @@ class WarmupPlateauController(Callback):
 
 class BestCheckpointAlias(Callback):
     """
-    维护 `checkpoints/BEST.ckpt` 稳定别名。
+    维护 `checkpoints/BEST.ckpt` 稳定别名. 
 
     输入参数:
         - checkpoint_callback: ModelCheckpoint, 主 TOP checkpoint 回调
@@ -507,7 +507,7 @@ class BestCheckpointAlias(Callback):
 
     def _refresh_alias(self, trainer: pl.Trainer) -> None:
         """
-        若主 checkpoint 已有 best_model_path，则复制为固定 BEST.ckpt。
+        若主 checkpoint 已有 best_model_path, 则复制为固定 BEST.ckpt. 
 
         输入参数:
             - trainer: pl.Trainer, 当前训练器
@@ -539,7 +539,7 @@ class BestCheckpointAlias(Callback):
 
 class PeriodicCheckpointSaver(Callback):
     """
-    按固定 epoch 间隔保存独立的 PERIODIC checkpoint。
+    按固定 epoch 间隔保存独立的 PERIODIC checkpoint. 
 
     输入参数:
         - dirpath: Path, checkpoint 输出目录
@@ -557,7 +557,7 @@ class PeriodicCheckpointSaver(Callback):
 
     def on_train_epoch_end(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
         """
-        在 epoch 结束时按间隔保存完整训练断点。
+        在 epoch 结束时按间隔保存完整训练断点. 
 
         输入参数:
             - trainer: pl.Trainer, 当前训练器
@@ -580,7 +580,7 @@ class PeriodicCheckpointSaver(Callback):
 
 def _get_config_name() -> str:
     """
-    从命令行参数中解析 --config 参数，用于指定 Hydra 配置文件名。
+    从命令行参数中解析 --config 参数, 用于指定 Hydra 配置文件名. 
     用法: python src/train.py --config baseline  或  python src/train.py --config=baseline
     默认值: "default"
     """
@@ -589,7 +589,7 @@ def _get_config_name() -> str:
     parser.add_argument("--config", type=str, default="base",
                         help="Hydra config file name (without .yaml)")
     args, _ = parser.parse_known_args()
-    # 从 sys.argv 中移除 --config 及其值，防止 Hydra 解析时报错
+    # 从 sys.argv 中移除 --config 及其值, 防止 Hydra 解析时报错
     cleaned = []
     skip_next = False
     for i, arg in enumerate(sys.argv):
@@ -731,7 +731,7 @@ def _restore_model_after_batch_size_tuning(model: torch.nn.Module, state: dict[s
 
 def _find_strict_batch_size(safe_bs: int, num_devices: int, global_batch_size: int) -> int | None:
     """
-    从 safe_bs 向下搜索满足 global_batch_size % (bs * num_devices) == 0 的最大 bs。
+    从 safe_bs 向下搜索满足 global_batch_size % (bs * num_devices) == 0 的最大 bs. 
 
     输入参数:
         - safe_bs: int, 标量, 安全系数缩放后的单卡 batch size 上界
@@ -755,7 +755,7 @@ def _align_global_batch_size(
     verbose: bool,
 ) -> tuple[int, int]:
     """
-    根据 per_device_bs 与 num_devices 反算 accumulate_steps, 可选严格对齐。
+    根据 per_device_bs 与 num_devices 反算 accumulate_steps, 可选严格对齐. 
 
     输入参数:
         - per_device_bs: int, 标量, 当前单卡 batch size
@@ -820,7 +820,7 @@ class SeededEpochRandomSampler(Sampler[int]):
 
 
 class EpochAwareDistributedSampler(DistributedSampler):
-    """在 DDP sampler epoch 切换时同步刷新动态 Stage1 请求源。"""
+    """在 DDP sampler epoch 切换时同步刷新动态 Stage1 请求源. """
 
     def set_epoch(self, epoch: int) -> None:
         super().set_epoch(epoch)
@@ -830,11 +830,11 @@ class EpochAwareDistributedSampler(DistributedSampler):
 
 
 class DatasetEpochController(Callback):
-    """在每个训练 epoch 开始前同步动态请求源与 sampler 的 epoch。"""
+    """在每个训练 epoch 开始前同步动态请求源与 sampler 的 epoch. """
 
     @staticmethod
     def _set_epoch(trainer: pl.Trainer, epoch: int) -> None:
-        """同步 DataModule 持有的 Dataset 与当前 train DataLoader sampler。"""
+        """同步 DataModule 持有的 Dataset 与当前 train DataLoader sampler. """
 
         datamodule = getattr(trainer, "datamodule", None)
         train_dataset = getattr(datamodule, "train_ds", None)
@@ -848,13 +848,13 @@ class DatasetEpochController(Callback):
             set_sampler_epoch(int(epoch))
 
     def on_train_epoch_start(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
-        """在当前 epoch 消费前刷新；普通 Dataset 无副作用。"""
+        """在当前 epoch 消费前刷新; 普通 Dataset 无副作用. """
 
         del pl_module
         self._set_epoch(trainer, int(trainer.current_epoch))
 
     def on_train_epoch_end(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
-        """预先发布下一 epoch 请求，覆盖 DataLoader 可能提前创建 iterator 的实现差异。"""
+        """预先发布下一 epoch 请求, 覆盖 DataLoader 可能提前创建 iterator 的实现差异. """
 
         del pl_module
         self._set_epoch(trainer, int(trainer.current_epoch) + 1)
@@ -873,9 +873,9 @@ def _seed_worker(worker_id: int) -> None:
 
 def main(cfg: DictConfig):
     """
-    主训练入口点。
+    主训练入口点. 
     Args:
-        - cfg: DictConfig, (Dict-like), Hydra 解析后的完整配置对象，包含 model, dataset, train 等所有参数
+        - cfg: DictConfig, (Dict-like), Hydra 解析后的完整配置对象, 包含 model, dataset, train 等所有参数
     Returns:
         - None
     """
@@ -893,7 +893,7 @@ def main(cfg: DictConfig):
         print(f"[Train] Global seed set to {int(train_seed)}")
 
     # 1. -------------- 初始化实验管理器, 创建目录并立即保存配置 --------------
-    # ExperimentManager, (Object), 自定义的实验管理器实例，负责目录创建、配置备份和清理
+    # ExperimentManager, (Object), 自定义的实验管理器实例, 负责目录创建、配置备份和清理
     exp_manager = ExperimentManager(
         config=cfg,
         project_root=str(ROOT),
@@ -931,7 +931,7 @@ def main(cfg: DictConfig):
         print(f"[Train] Instantiating DataModule with: {cfg.dataset.name}")
     class UnifiedDataModule(pl.LightningDataModule):
         """
-        训练的统一数据模块。
+        训练的统一数据模块. 
         """
         def __init__(self, dataset_cfg, train_cfg):
             """
@@ -1012,7 +1012,7 @@ def main(cfg: DictConfig):
 
         def _get_dataloader(self, ds, stage: str, shuffle: bool = False):
             """
-            统一 DataLoader 的创建逻辑。
+            统一 DataLoader 的创建逻辑. 
             支持根据样本类型自动选择 torch_geometric 或 torch.utils.data.DataLoader
             """
             backend = self.train_cfg.dataloader_backend
@@ -1141,9 +1141,9 @@ def main(cfg: DictConfig):
 
     # ---- WandB 在线模式真实连通性兜底 ----
     # WandbLogger 构造时不会调用 wandb.init(), 而是延迟到 trainer.fit() 内部
-    # 首次访问 logger.experiment 时才触发。如果此时超时, 会直接崩溃且无法回退。
-    # 因此在此处主动提前触发 wandb.init(), 捕获任何异常后自动回退为离线模式。
-    # 注意: 由于此时 Lightning 尚未初始化分布式环境，只有真实 Rank 0 才能访问 logger.experiment，否则会导致多进程并发写 WandB 发生死锁。
+    # 首次访问 logger.experiment 时才触发. 如果此时超时, 会直接崩溃且无法回退. 
+    # 因此在此处主动提前触发 wandb.init(), 捕获任何异常后自动回退为离线模式. 
+    # 注意: 由于此时 Lightning 尚未初始化分布式环境, 只有真实 Rank 0 才能访问 logger.experiment, 否则会导致多进程并发写 WandB 发生死锁. 
     if not is_offline and exp_manager.is_rank_zero:
         try:
             _ = logger.experiment          # 触发 wandb.init()
@@ -1159,8 +1159,8 @@ def main(cfg: DictConfig):
             os.environ["WANDB_MODE"] = "offline"
             is_offline = True
             
-    # 如果 Rank 0 决定降级为离线模式，在此重建 logger。
-    # 其他进程的 logger 可能仍是在线模式对象，但在其他进程仅是 Dummy，不影响训练。
+    # 如果 Rank 0 决定降级为离线模式, 在此重建 logger. 
+    # 其他进程的 logger 可能仍是在线模式对象, 但在其他进程仅是 Dummy, 不影响训练. 
     if is_offline and exp_manager.is_rank_zero:
         logger = WandbLogger(
             project=cfg.project_name,
@@ -1176,13 +1176,13 @@ def main(cfg: DictConfig):
 
 
     # 6. -------------- 模型检查点回调(Callback), 用于保存最佳模型 --------------
-    # monitor 和 monitor_mode 统一从 cfg.model 读取，与 Wrapper 中 self.log() 和 configure_optimizers() 使用的 monitor_metric 保持一致
+    # monitor 和 monitor_mode 统一从 cfg.model 读取, 与 Wrapper 中 self.log() 和 configure_optimizers() 使用的 monitor_metric 保持一致
     _monitor = cfg.model.monitor_metric
     _monitor_mode = cfg.model.monitor_mode
     checkpoint_callback = ModelCheckpoint(
         dirpath=os.path.join(run_dir, "checkpoints"),    # str, save path
         filename="TOP_epoch_{epoch:02d}_score_{" + _monitor + ":.4f}", # str, 带有 TOP_ 前缀的文件名
-        auto_insert_metric_name=False,                   # bool, 关闭指标自动拼接，防止基于 '/' 创建意外的子文件夹
+        auto_insert_metric_name=False,                   # bool, 关闭指标自动拼接, 防止基于 '/' 创建意外的子文件夹
         monitor=_monitor,
         mode=_monitor_mode,                              # str, 'min' or 'max'
         save_top_k=cfg.output.save_top_k,                # int, number of models to save
@@ -1267,21 +1267,21 @@ def main(cfg: DictConfig):
     #             test_dataloaders[name] = dl
     #         else:
     #             if exp_manager.is_rank_zero:
-    #                 print(f"[Train] 警告：测试集{name}或者划分文件未找到：{split_path}。请检查路径。")
+    #                 print(f"[Train] 警告: 测试集{name}或者划分文件未找到: {split_path}. 请检查路径. ")
     # else:
     #     if exp_manager.is_rank_zero:
     #         print("[Train] No 'split_test' found in dataset config. Periodic testing disabled.")
         
 
-    # # 暂且不实现 periodic_test.py，但在此留下接口并说明。
+    # # 暂且不实现 periodic_test.py, 但在此留下接口并说明. 
     # # 回调类(训练时测试)
     # # 实例化类是 src.callbacks.periodic_test.PeriodicTestCallback ,只需传入通用参数 dataloaders_dict=test_dataloaders (如前所述的字典) 和 interval (间隔的epoch)
     # if len(test_dataloaders) > 0:
-    #     # 此回调的作用是在训练过程中（特定epoch间隔）调用测试流程，以监控全集或其它测试集的表现。
-    #     # 未来的实现应大部分调用推断程序 (src/infer.py) 中的代码逻辑（例如导入相关推断函数），
-    #     # 从而避免在训练代码中重新写一遍推断逻辑并确保二者一致性。
+    #     # 此回调的作用是在训练过程中（特定epoch间隔）调用测试流程, 以监控全集或其它测试集的表现. 
+    #     # 未来的实现应大部分调用推断程序 (src/infer.py) 中的代码逻辑（例如导入相关推断函数）, 
+    #     # 从而避免在训练代码中重新写一遍推断逻辑并确保二者一致性. 
     #     #
-    #     # 下面为原本的调用接口，当前已注释：
+    #     # 下面为原本的调用接口, 当前已注释: 
 
     #     # callback_class = hydra.utils.get_class("src.callbacks.periodic_test.PeriodicTestCallback")
     #     # periodic_eval_cb = callback_class(
@@ -1290,7 +1290,7 @@ def main(cfg: DictConfig):
     #     # )
     #     # callbacks.append(periodic_eval_cb)
     #     if exp_manager.is_rank_zero:
-    #         print("[Train] TODO: callbacks.periodic_test 暂未实现。正在按要求显式跳过周期测试回调。")
+    #         print("[Train] TODO: callbacks.periodic_test 暂未实现. 正在按要求显式跳过周期测试回调. ")
 
 
     # # 可视化回调(暂略)
@@ -1464,11 +1464,11 @@ def main(cfg: DictConfig):
         print(f" Output Dir: {run_dir}")
         print("============================================================")
     try:
-        # trainer.fit 触发整个 Lightning 生命周期：
+        # trainer.fit 触发整个 Lightning 生命周期: 
         # 1. dm.setup("fit") → 创建 train/val 数据集
         # 2. model.configure_optimizers() → 从 cfg.train 创建 optimizer 与 step 级 scheduler
-        # 3. 每个 batch：model.training_step() → _extract_batch → forward → _compute_total_loss → log("train_loss/*")
-        # 4. 每次 validation 结束：wrapper 聚合 payload; train.py 的 callbacks 负责 checkpoint、plateau 与 small-increment 停训
+        # 3. 每个 batch: model.training_step() → _extract_batch → forward → _compute_total_loss → log("train_loss/*")
+        # 4. 每次 validation 结束: wrapper 聚合 payload; train.py 的 callbacks 负责 checkpoint、plateau 与 small-increment 停训
         _fix_gloo_socket_ifname()
         _log_distributed_launch_state("即将调用trainer.fit")
         trainer.fit(model, datamodule=dm)
@@ -1477,7 +1477,7 @@ def main(cfg: DictConfig):
         exp_manager.check_and_cleanup(error=e)
         raise e
     finally:
-        # 如果没有传递 error，check_and_cleanup 视为正常退出 (会检查是否太短)
+        # 如果没有传递 error, check_and_cleanup 视为正常退出 (会检查是否太短)
         exp_manager.check_and_cleanup()
 
 if __name__ == "__main__":

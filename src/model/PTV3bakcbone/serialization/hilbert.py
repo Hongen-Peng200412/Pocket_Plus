@@ -40,8 +40,8 @@ Hilbert编码的形式化定义
 
 6. 局部保持性:
    对于任意两个点 p, q ∈ [0, 2^k-1]^d, 若它们在 d 维空间中的欧氏距离为 d(p,q),
-   则其 Hilbert 编码差值 |H(p) - H(q)| 与 d(p,q) 成正比。
-   这保证了空间邻近的点在编码后仍然保持邻近性。
+   则其 Hilbert 编码差值 |H(p) - H(q)| 与 d(p,q) 成正比. 
+   这保证了空间邻近的点在编码后仍然保持邻近性. 
 
 7. 时间复杂度:
    - 编码: O(d·k)
@@ -59,7 +59,7 @@ import torch
 
 def right_shift(binary, k=1, axis=-1):
     """
-    对二进制张量沿指定轴进行右移。
+    对二进制张量沿指定轴进行右移. 
 
     # 输入参数:
         - binary: torch.Tensor, 输入的二进制张量 (通常包含 0 或 1)
@@ -88,7 +88,7 @@ def right_shift(binary, k=1, axis=-1):
 
 def binary2gray(binary, axis=-1):
     """
-    将二进制编码转换为格雷码 (Gray Code)。使用经典公式: G = B ^ (B >> 1)。
+    将二进制编码转换为格雷码 (Gray Code). 使用经典公式: G = B ^ (B >> 1). 
 
     # 输入参数:
         - binary: torch.Tensor, 二进制张量
@@ -109,7 +109,7 @@ def binary2gray(binary, axis=-1):
 
 def gray2binary(gray, axis=-1):
     """
-    将格雷码转换回二进制编码。使用循环位移取异或的方法。
+    将格雷码转换回二进制编码. 使用循环位移取异或的方法. 
 
     # 输入参数:
         - gray: torch.Tensor, 格雷码张量
@@ -132,8 +132,8 @@ def gray2binary(gray, axis=-1):
 
 def encode(locs, num_dims, num_bits):
     """
-    将高维空间坐标编码为希尔伯特整数 (Hilbert Integer)。
-    采用 John Skilling 的向量化实现。
+    将高维空间坐标编码为希尔伯特整数 (Hilbert Integer). 
+    采用 John Skilling 的向量化实现. 
 
     # 输入参数:
         - locs: torch.Tensor, (..., num_dims), 整数坐标张量
@@ -245,7 +245,7 @@ def encode(locs, num_dims, num_bits):
 
 def decode(hilberts, num_dims, num_bits):
     """
-    将希尔伯特整数解码为高维网格坐标。
+    将希尔伯特整数解码为高维网格坐标. 
 
     # 输入参数:
         - hilberts: torch.Tensor, 一维或多维编码张量

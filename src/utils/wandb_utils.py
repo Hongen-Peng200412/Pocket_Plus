@@ -3,7 +3,7 @@ import os
 # ==============================================================================
 def _check_wandb_connectivity(timeout: float = 10.0) -> bool:
     """
-    检查是否能够连接到 WandB 服务器。
+    检查是否能够连接到 WandB 服务器. 
     Args:
         - timeout: float, 连接超时时间 (秒)
     Returns:
@@ -30,14 +30,14 @@ def _check_wandb_connectivity(timeout: float = 10.0) -> bool:
 
 def _setup_wandb_mode(prefer_online: bool = True, verbose: bool = True) -> str:
     """
-    根据网络状态和用户配置设置 WandB 模式。
+    根据网络状态和用户配置设置 WandB 模式. 
     Args:
         - prefer_online: bool, 用户是否希望使用在线模式 (来自配置 offline=False)
         - verbose: bool, 是否打印日志信息 (DDP 模式下仅 rank 0 应设为 True)
     Returns:
         - str, 'online', 'offline'
     """
-    # 如果用户明确指定离线模式，直接使用
+    # 如果用户明确指定离线模式, 直接使用
     if not prefer_online:
         os.environ["WANDB_MODE"] = "offline"
         return "offline"
@@ -60,7 +60,7 @@ def _setup_wandb_mode(prefer_online: bool = True, verbose: bool = True) -> str:
             return "offline"
         if verbose:
             print("[Train] [OK] 网络可达, 使用在线模式 (Network reachable, using online mode)")
-        # 在线模式成功时，设置 WANDB_DIR 为临时目录以避免保存本地日志
+        # 在线模式成功时, 设置 WANDB_DIR 为临时目录以避免保存本地日志
         import tempfile
         os.environ["WANDB_DIR"] = tempfile.gettempdir()
         if verbose:

@@ -3,9 +3,9 @@
 Part 2 操作（标签计算）:
   - 接受 PDB_processor\ligand_candidates.py 产生的 List[LigandCandidate]
   - 经 PDB_processor\ligand_candidates.py 的 compute_contact_attributes() 填充接触属性后,  由 labels\ligand_filter.py 的 filter_and_classify() 筛选
-  - 最后对受体原子打标签: 用 candidate_id 作为实例 ID，输出多类别的口袋实例分割标签 + 背景
+  - 最后对受体原子打标签: 用 candidate_id 作为实例 ID, 输出多类别的口袋实例分割标签 + 背景
 
-输出标签语义：
+输出标签语义: 
   逐原子字段:
     - instance_ids[i] = candidate_id  → 原子 i 属于距离最近的配体口袋 (独占分配)
     - instance_ids[i] = -1            → 原子 i 是背景（不属于任何口袋）
@@ -37,7 +37,7 @@ def compute_binding_labels(
     require_binding_site: bool = True,
 ) -> Optional[Dict]:
     """
-    计算多类别实例分割标签。
+    计算多类别实例分割标签. 
 
     输入参数 / Input:
         - parsed_data: ParsedStructure, PDB_processor\parser.py 产生, 解析后的结构数据（提供受体原子坐标 atom_coords）
@@ -67,7 +67,7 @@ def compute_binding_labels(
         return None
 
     if n_ligands == 0:
-        # 严格模式：无配体时计入错误日志 + 删掉已有的样本文件夹
+        # 严格模式: 无配体时计入错误日志 + 删掉已有的样本文件夹
         if require_binding_site:
             if error_dir is not None:
                 return_error_info(
@@ -79,7 +79,7 @@ def compute_binding_labels(
                     sample_id=sample_id,
                 )
             return None
-        # 非严格模式：无配体时返回全背景(-1)标签
+        # 非严格模式: 无配体时返回全背景(-1)标签
         return {
             'instance_ids':        np.full(n_atoms, -1, dtype=np.int32),
             'ligand_ids':          np.full(n_atoms, -1, dtype=np.int32),
@@ -149,7 +149,7 @@ def compute_binding_labels(
                               error_dir, sample_id)
         return None
 
-    # np.ndarray, (N_atoms,), int32, 实例 ID(最近配体的 candidate_id；背景 = -1)
+    # np.ndarray, (N_atoms,), int32, 实例 ID(最近配体的 candidate_id; 背景 = -1)
     instance_ids = np.full(n_atoms, -1, dtype=np.int32)
     instance_ids[binding_mask] = closest_candidate_ids[binding_mask]
 
@@ -211,27 +211,27 @@ def save_labels_npz(
     output_path: str,
 ) -> None:
     """
-    保存标签数据到 .npz 文件。
+    保存标签数据到 .npz 文件. 
 
     输入参数 / Input:
         - parsed_data: ParsedStructure, 解析后的结构数据（当前仅用于类型一致性）
         - binding_labels: dict, compute_binding_labels() 的返回值
         - selected_candidates: list[LigandCandidate], 筛选后的候选列表
-        - pocket_class_names: dict[int, str], 口袋类别 ID → 名称映射（由 get_pocket_class_name_map() 生成，总是包含 0='background'）
+        - pocket_class_names: dict[int, str], 口袋类别 ID → 名称映射（由 get_pocket_class_name_map() 生成, 总是包含 0='background'）
         - pocket_class_map: dict[int, tuple[int, str, float]], candidate_id → (class_id, class_name, binding_threshold), 由 filter_and_classify() 返回
         - output_path: str, 输出 .npz 文件路径
 
     输出文件内容 / Output file contents:
-        - instance_ids:         np.ndarray, (N_atoms,), int32,  实例 ID（= 最近配体的 candidate_id；背景为 -1；独占分配）
+        - instance_ids:         np.ndarray, (N_atoms,), int32,  实例 ID（= 最近配体的 candidate_id; 背景为 -1; 独占分配）
         - ligand_ids:           np.ndarray, (N_atoms,), int32,  最近配体的 candidate_id（即使距离很远）
         - distances:            np.ndarray, (N_atoms,), float32, 到最近配体原子的距离
         - binding_mask:         np.ndarray, (N_atoms,), bool, 结合位点掩码 (各配体独立阈值的并集)
-        - pocket_class_ids:     np.ndarray, (N_atoms,), int32, 口袋类别 ID（0=背景；基于最近配体独占分配）
+        - pocket_class_ids:     np.ndarray, (N_atoms,), int32, 口袋类别 ID（0=背景; 基于最近配体独占分配）
 
         - num_ligands:          int, 筛选后的配体数量
-        - pocket_centers:       np.ndarray, (N_ligands, 3), float32, 口袋几何中心（按 candidate_id 升序；基于该配体完整结合原子集合计算）
+        - pocket_centers:       np.ndarray, (N_ligands, 3), float32, 口袋几何中心（按 candidate_id 升序; 基于该配体完整结合原子集合计算）
         - ligand_resnames:      np.ndarray, (N_ligands,), object/str, 配体残基名（按 candidate_id 升序）
-        - ligand_candidate_ids: np.ndarray, (N_ligands,), int32, 配体的 candidate_id（按升序，与 ligand_resnames 对齐）
+        - ligand_candidate_ids: np.ndarray, (N_ligands,), int32, 配体的 candidate_id（按升序, 与 ligand_resnames 对齐）
         - ligand_class_ids:     np.ndarray, (N_ligands,), int32, 每个配体的口袋类别 ID（与 ligand_candidate_ids 按同序对齐, 由 filter_and_classify() 直接产出）
         - ligand_coords_{id}:   np.ndarray, (M, 3), float32, 第 id 个候选配体的原子坐标（id = candidate_id）
         - pocket_atom_indices_{id}: np.ndarray, (K_id,), int32, 第 id 个配体阈值内的所有结合原子全局索引 (不受独占约束; 同一原子可出现在多个配体中)
@@ -258,7 +258,7 @@ def save_labels_npz(
     ligand_resnames = []
     # list[int], 配体 candidate_id 列表
     ligand_candidate_ids = []
-    # list[int], 每个配体的口袋类别 ID 列表（由 filter_and_classify 产出，直接持久化）
+    # list[int], 每个配体的口袋类别 ID 列表（由 filter_and_classify 产出, 直接持久化）
     ligand_class_ids = []
     # dict[int, np.ndarray], candidate_id → 该配体阈值内的所有受体原子索引
     pocket_atom_indices = binding_labels['pocket_atom_indices']
@@ -278,7 +278,7 @@ def save_labels_npz(
     save_dict['ligand_class_ids'] = np.array(ligand_class_ids, dtype=np.int32)
 
     # 口袋类别名称映射（格式: "0:background,1:druggable,2:metal_ion"）
-    # str, 类别映射字符串; ','.join(...)：将上述生成的所有小字符串，用逗号 , 连接起来
+    # str, 类别映射字符串; ','.join(...): 将上述生成的所有小字符串, 用逗号 , 连接起来
     class_str = ','.join(f'{k}:{v}' for k, v in sorted(pocket_class_names.items()))  # 字符串
     save_dict['pocket_class_name_map'] = np.array(class_str, dtype=object)
 

@@ -92,8 +92,8 @@ def Split_Data_into_Box_PocketCentered(
         - origin:                   numpy, (3,), float, 密度图全局坐标原点 (x,y,z), 单位 Å
         - voxel_size:               numpy, (3,), float, 体素尺寸 (dx,dy,dz), 单位 Å
         - pdb_id:                   str, 如 "3q0l", 用于文件命名 (小写)
-        - class_ids_per_pocket:     list[int], 长度 N_pocket, 每个口袋的类别 ID(目前为1~4)， 用来构造文件名
-        - class_names_per_pocket:   list[str], 长度 N_pocket, 每个口袋的类别名称(如"metal_ion")， 用来构造文件名
+        - class_ids_per_pocket:     list[int], 长度 N_pocket, 每个口袋的类别 ID(目前为1~4), 用来构造文件名
+        - class_names_per_pocket:   list[str], 长度 N_pocket, 每个口袋的类别名称(如"metal_ion"), 用来构造文件名
 
         - pocket_centers_world:     numpy, (N_pockets, 3), float, 各口袋中心的世界坐标 (x,y,z), 单位 Å
         - pocket_atom_coords_list:  list[numpy], 长度 N_pockets, 每个元素 (M_i, 3) float, 代表第 i 个口袋中所有结合原子的世界坐标
@@ -167,13 +167,13 @@ def Split_Data_into_Box_PocketCentered(
         vmin = np.min(pocket_atoms_voxel, axis=0)
         # numpy, (3,), int, 各轴最大体素坐标 (顺序: x, y, z)
         vmax = np.max(pocket_atoms_voxel, axis=0)
-        # numpy, (3,), int, 包络长方体各轴跨度 (体素数, 顺序: x, y, z); 原先是取 max 变为正方体，现在保留各轴独立跨度
+        # numpy, (3,), int, 包络长方体各轴跨度 (体素数, 顺序: x, y, z); 原先是取 max 变为正方体, 现在保留各轴独立跨度
         envelope_rect = (vmax - vmin).astype(int)  # shape: (3,)
 
 
         # ---- 计算大长方体 (large cuboid) ----
         # numpy, (3,), int, 大长方体各轴边长: 各轴分别 = window_size*edge_expand + r_expand * envelope_rect[i]
-        # 原先用单一 large_cube_side（各轴相同），现在各轴独立，精确覆盖该口袋的实际跨度
+        # 原先用单一 large_cube_side（各轴相同）, 现在各轴独立, 精确覆盖该口袋的实际跨度
         large_rect = np.array([
             int(window_size * edge_expand + r_expand * envelope_rect[0]),  # x 轴边长
             int(window_size * edge_expand + r_expand * envelope_rect[1]),  # y 轴边长
@@ -279,7 +279,7 @@ def Split_Data_into_Box_PocketCentered(
                         # numpy, (..., window_size, window_size, window_size), 当前 BOX 切片
                         block = grid[..., zz:zz + window_size, yy:yy + window_size, xx:xx + window_size]
 
-                        # numpy, (3,), int, 尺寸校验：剔除因越界导致非标准形状的BOX
+                        # numpy, (3,), int, 尺寸校验: 剔除因越界导致非标准形状的BOX
                         if block.shape[-3:] != (window_size, window_size, window_size):
                             break
 
@@ -463,7 +463,7 @@ def _process_one_sample(
             labels_data.close()
             return (pdb_id, 0, 0, 0, True, 'skipped (no binding site)', [], {})
 
-        # ---- ligand 数量自适应处理：最多保留 50 个配体 ----
+        # ---- ligand 数量自适应处理: 最多保留 50 个配体 ----
         if len(unique_inst_ids) > 50:
             print(f"[Warning] {pdb_id}: 检测到 {len(unique_inst_ids)} 个真实配体/口袋, 当前脚本将随机保留其中 50 个进行切块")
             rng = np.random.default_rng(42)
@@ -538,13 +538,13 @@ def _process_one_sample(
             else:
                 raise ValueError(f"ligand_coords_{inst_id_int} not found in labels.npz! 检查 instance_labels.py 是否跑了个坏文件.")
             
-            # int | None, 该 candidate_id 在 pocket_centers 中的行号（None 代表不存在，理论上不应发生）
+            # int | None, 该 candidate_id 在 pocket_centers 中的行号（None 代表不存在, 理论上不应发生）
             center_idx = cand_id_to_center_idx.get(inst_id_int)
             if center_idx is not None:
                 # numpy.ndarray, (3,), float32, 当前口袋中心的世界坐标
                 pocket_centers_matched.append(pocket_centers[center_idx])
             else:
-                # 如果发生，说明上游输出的 unique_inst_ids 中存在，却没有对应中心点，数据已损坏
+                # 如果发生, 说明上游输出的 unique_inst_ids 中存在, 却没有对应中心点, 数据已损坏
                 raise ValueError(f"候选配体 ID {inst_id_int} 在 pocket_centers 映射中不存在，请检查上游 labels.npz")
 
         labels_data.close()

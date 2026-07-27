@@ -1,31 +1,31 @@
 """
-Stage1 point backbone 的 PTV3/zeros 封装。
+Stage1 point backbone 的 PTV3/zeros 封装. 
 
 对齐契约（修改时必须全量同步）:
-    - 本段、CLAUDE/plans/implement/tri_ligand_sparse_refine/00-master.md、src/model/stage1_model.py::_run_point_backbone 和 tests/model/test_ptv3_no_sparseconv.py 必须同步更新。
-    - 输入可以是 real-only 或最后一轮 mixed batch; 若 mixed, 顺序必须与 pseudo_atoms.py 的 `[real_i..., pseudo_i...]` layout 一致。
-    - embedding_impl 只支持 "pointconv"; cpe_impl 只支持 "pointconv" 或 "none"; PTV3 点分支不得重新引入旧稀疏卷积依赖或旧稀疏卷积特征字段。
+    - 本段、CLAUDE/plans/implement/tri_ligand_sparse_refine/00-master.md、src/model/stage1_model.py::_run_point_backbone 和 tests/model/test_ptv3_no_sparseconv.py 必须同步更新. 
+    - 输入可以是 real-only 或最后一轮 mixed batch; 若 mixed, 顺序必须与 pseudo_atoms.py 的 `[real_i..., pseudo_i...]` layout 一致. 
+    - embedding_impl 只支持 "pointconv"; cpe_impl 只支持 "pointconv" 或 "none"; PTV3 点分支不得重新引入旧稀疏卷积依赖或旧稀疏卷积特征字段. 
 
 forward 输入字段契约:
-    - atom_feat: torch.Tensor, (N_all, F_atom), floating, real-only 或 mixed 全点特征。
-    - atom_coord_centered_world: torch.Tensor, (N_all, 3), floating, 点坐标, 轴顺序 (x, y, z)。
-    - atom_batch_index: torch.Tensor, (N_all,), int64/long, 每个点所属 BOX 索引。
-    - atom_offsets: torch.Tensor, (B,), int64/long, 每个 BOX 在展平点序列中的结束偏移。
-    - recycle_in: torch.Tensor | None, (N_all, C_recycle), floating, 上一轮 point recycle 状态; mixed 最后一轮由 Stage1 主模型补齐 P anchor 槽位。
-    - pseudo_mask: torch.Tensor | None, (N_all,), bool, True 表示 P anchor; None 表示未携带 type 标注。
-    - point_feature_hook: Callable[[str, Any], Any] | None, 可选 hook, 在导出命名点特征时注入 voxel-to-point 融合。
-    - return_feature_names: Sequence[str], 可变长度, 请求导出的点特征名, 必须属于 available_feature_names。
+    - atom_feat: torch.Tensor, (N_all, F_atom), floating, real-only 或 mixed 全点特征. 
+    - atom_coord_centered_world: torch.Tensor, (N_all, 3), floating, 点坐标, 轴顺序 (x, y, z). 
+    - atom_batch_index: torch.Tensor, (N_all,), int64/long, 每个点所属 BOX 索引. 
+    - atom_offsets: torch.Tensor, (B,), int64/long, 每个 BOX 在展平点序列中的结束偏移. 
+    - recycle_in: torch.Tensor | None, (N_all, C_recycle), floating, 上一轮 point recycle 状态; mixed 最后一轮由 Stage1 主模型补齐 P anchor 槽位. 
+    - pseudo_mask: torch.Tensor | None, (N_all,), bool, True 表示 P anchor; None 表示未携带 type 标注. 
+    - point_feature_hook: Callable[[str, Any], Any] | None, 可选 hook, 在导出命名点特征时注入 voxel-to-point 融合. 
+    - return_feature_names: Sequence[str], 可变长度, 请求导出的点特征名, 必须属于 available_feature_names. 
 
 forward 输出字段契约:
-    - point_feat: torch.Tensor, (N_all, C_point), floating, 点分支最终输出特征。
-    - point_state["coord"]: torch.Tensor, (N_all, 3), floating, atom head 复用的点坐标。
-    - point_state["batch"]: torch.Tensor, (N_all,), int64/long, atom head 复用的 BOX 索引。
-    - point_state["offset"]: torch.Tensor, (B,), int64/long, atom head 复用的结束偏移。
-    - point_state["grid_size"]: float, atom head/PTV3 复用的点云 grid size。
-    - point_state["grid_coord"]: torch.Tensor, (N_all, 3), int32/int64, 可选字段, PTV3 离散网格坐标。
-    - point_state["pseudo_mask"]: torch.Tensor, (N_all,), bool, 可选字段, 输入或中间 Point 携带 mask 时必须透传。
-    - point_recycle_out: torch.Tensor, (N_all, C_recycle), floating, 下一轮 recycle 输入; mixed 最后一轮后由 Stage1 主模型裁成 real-only。
-    - point_feature_dict: dict[str, torch.Tensor], 每个请求特征名对应一个 (N_current, C_name) floating 张量。
+    - point_feat: torch.Tensor, (N_all, C_point), floating, 点分支最终输出特征. 
+    - point_state["coord"]: torch.Tensor, (N_all, 3), floating, atom head 复用的点坐标. 
+    - point_state["batch"]: torch.Tensor, (N_all,), int64/long, atom head 复用的 BOX 索引. 
+    - point_state["offset"]: torch.Tensor, (B,), int64/long, atom head 复用的结束偏移. 
+    - point_state["grid_size"]: float, atom head/PTV3 复用的点云 grid size. 
+    - point_state["grid_coord"]: torch.Tensor, (N_all, 3), int32/int64, 可选字段, PTV3 离散网格坐标. 
+    - point_state["pseudo_mask"]: torch.Tensor, (N_all,), bool, 可选字段, 输入或中间 Point 携带 mask 时必须透传. 
+    - point_recycle_out: torch.Tensor, (N_all, C_recycle), floating, 下一轮 recycle 输入; mixed 最后一轮后由 Stage1 主模型裁成 real-only. 
+    - point_feature_dict: dict[str, torch.Tensor], 每个请求特征名对应一个 (N_current, C_name) floating 张量. 
 """
 from __future__ import annotations
 
@@ -55,15 +55,15 @@ PointFeatureHook = Callable[[str, Any], Any]
 
 class Stage1PointBackbone(nn.Module):
     """
-        Stage1 点分支。
+        Stage1 点分支. 
 
         init参数:
-            - backend: str, 点分支主干类型；当前支持 `ptv3` 或 `zeros`
+            - backend: str, 点分支主干类型; 当前支持 `ptv3` 或 `zeros`
             - atom_feature_dim: int, 输入的原子特征维度(底层特征或经embed head后的特征)
             - point_grid_size: float, 点分支内部离散化网格尺寸, 它与体素分支的 voxel size 不是同一个概念
             - input_embed_dim: int, 输入到 PTV3 前的点嵌入维度
             - input_embed_hidden_dim: int, 输入投影 MLP 的隐藏层维度
-            - out_channels: int, int, 点云分支最终输出维度, 它 = int(self.enc_channels[-1] if self.cls_mode else self.dec_channels[0]), 必须与 PTV3 最终输出维度保持一致。
+            - out_channels: int, int, 点云分支最终输出维度, 它 = int(self.enc_channels[-1] if self.cls_mode else self.dec_channels[0]), 必须与 PTV3 最终输出维度保持一致. 
             - recycle_feature_dim: int, 点分支 recycle 特征维度, PTV3最终输出将与最原始特征 atom_feature_dim 拼起来做MLP, 再送入PTV3
 
         其它与PTV3相同.
@@ -130,10 +130,10 @@ class Stage1PointBackbone(nn.Module):
         typed_point_cfg: dict[str, Any] | TypedPointConfig | None = None,
     ) -> None:
         """
-            Stage1 点分支。
+            Stage1 点分支. 
 
             init参数:
-                - backend: str, 点分支主干类型；当前支持 `ptv3` 或 `zeros`
+                - backend: str, 点分支主干类型; 当前支持 `ptv3` 或 `zeros`
                 - atom_feature_dim: int, 输入的原子特征维度(底层特征或经embed head后的特征)
                 - point_grid_size: float, 点分支内部离散化网格尺寸
                 - input_embed_dim: int, 输入到 PTV3 前的点嵌入维度
@@ -240,13 +240,13 @@ class Stage1PointBackbone(nn.Module):
         # 组件
         from src.model.PTV3bakcbone.model import resolve_act_layer as _resolve_act
         _act_cls = _resolve_act(self.act_layer_name)
-        # nn.Module | None, `(sumN, C_recycle) -> (sumN, C_recycle)`，recycle 输入的可选归一化层
+        # nn.Module | None, `(sumN, C_recycle) -> (sumN, C_recycle)`, recycle 输入的可选归一化层
         self.recycle_input_norm = (
             nn.LayerNorm(self.recycle_feature_dim)
             if self.recycle_in_norm_mode == "layernorm"
             else None
         )
-        # nn.Linear, `(sumN, C_recycle) -> (sumN, F_atom)`，将上一轮 point recycle 状态投影回当前 atom 特征空间
+        # nn.Linear, `(sumN, C_recycle) -> (sumN, F_atom)`, 将上一轮 point recycle 状态投影回当前 atom 特征空间
         self.recycle_input_proj = nn.Linear(self.recycle_feature_dim, self.atom_feature_dim)
         if self.typed_point_cfg.use_separate_point_input_proj:
             # nn.Sequential, real 点输入到点主干前的原子特征投影
@@ -255,7 +255,7 @@ class Stage1PointBackbone(nn.Module):
             self.atom_input_proj_pseudo = self._build_atom_input_proj(_act_cls, int(input_embed_hidden_dim))
             self.atom_input_proj = None
         else:
-            # nn.Sequential, `(sumN, F_atom) -> (sumN, C_input_embed)`，输入到点主干前的原子特征投影。
+            # nn.Sequential, `(sumN, F_atom) -> (sumN, C_input_embed)`, 输入到点主干前的原子特征投影. 
             self.atom_input_proj = self._build_atom_input_proj(_act_cls, int(input_embed_hidden_dim))
             self.atom_input_proj_real = None
             self.atom_input_proj_pseudo = None
@@ -345,7 +345,7 @@ class Stage1PointBackbone(nn.Module):
 
     def _build_atom_input_proj(self, act_cls: type[nn.Module], input_embed_hidden_dim: int) -> nn.Module:
         """
-        构造 atom feature 到 point input feature 的投影模块。
+        构造 atom feature 到 point input feature 的投影模块. 
 
         输入参数:
             - act_cls: type[nn.Module], 激活函数类
@@ -396,7 +396,7 @@ class Stage1PointBackbone(nn.Module):
         pseudo_mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """
-        按 AF2 风格将 recycle 状态投影回 atom 特征空间，并构造点主干输入特征。
+        按 AF2 风格将 recycle 状态投影回 atom 特征空间, 并构造点主干输入特征. 
 
         输入参数:
             - atom_feat: torch.Tensor, `(sumN, F_atom)`, 当前轮 real 或 mixed 视图下的 atom 特征
@@ -461,7 +461,7 @@ class Stage1PointBackbone(nn.Module):
         return_feature_names: tuple[str, ...],
     ) -> Any:
         """
-        在命名点变量产生后，按变量名即时执行外部融合 hook，并按需导出对应点特征。
+        在命名点变量产生后, 按变量名即时执行外部融合 hook, 并按需导出对应点特征. 
 
         输入参数:
             - feature_name: str, 当前点变量名
@@ -483,7 +483,7 @@ class Stage1PointBackbone(nn.Module):
         if point_feature_hook is not None:
             point_like = point_feature_hook(feature_name, point_like)
         if feature_name in return_feature_names:
-            # torch.Tensor, `(N_current, C_current)`，当前变量名对应的点特征张量。
+            # torch.Tensor, `(N_current, C_current)`, 当前变量名对应的点特征张量. 
             feature_dict[feature_name] = point_like.feat
         return point_like
 
@@ -499,7 +499,7 @@ class Stage1PointBackbone(nn.Module):
         pseudo_mask: torch.Tensor | None = None,
     ) -> dict[str, Any]:
         """
-        以显式阶段变量的方式执行 PTV3 前向。
+        以显式阶段变量的方式执行 PTV3 前向. 
 
         输入参数:
             - point_input_feat: torch.Tensor, `(sumN, C_input)`, 点分支输入特征, 目前为49维特征向量
@@ -538,7 +538,7 @@ class Stage1PointBackbone(nn.Module):
         if pseudo_mask is not None:
             # torch.Tensor, (N_all,), bool, P anchor 掩码
             point_dict["pseudo_mask"] = pseudo_mask
-        # 初始化的 Point: `(sumN, C_input)` + 坐标/批次信息，进入 PTV3 前的基础点对象。
+        # 初始化的 Point: `(sumN, C_input)` + 坐标/批次信息, 进入 PTV3 前的基础点对象. 
         point = Point(point_dict)
         point = self._apply_feature_hook(
             feature_name="point_input_feat",
@@ -609,14 +609,14 @@ class Stage1PointBackbone(nn.Module):
         pseudo_mask: torch.Tensor | None = None,
     ) -> dict[str, Any]:
         """
-        为 `backend="zeros"` 构造点分支占位输出。
+        为 `backend="zeros"` 构造点分支占位输出. 
         输入参数:
             - atom_feat: torch.Tensor, `(sumN, F_atom)`, 仅用于继承 device 与 dtype
             - atom_coord_centered_world: torch.Tensor, `(sumN, 3)`, 原子中心化世界坐标
             - atom_batch_index: torch.Tensor, `(sumN,)`, 每个原子所属 batch 索引
             - atom_offsets: torch.Tensor, `(B,)`, batch 视图下的结束偏移
             - return_feature_names: Sequence[str] | None, 需要导出的点变量名列表
-            - point_input_feat: torch.Tensor | None, `(sumN, C_input)`, 可选的输入投影特征；仅用于兼容直接调用 point_backbone.forward() 时的调试导出
+            - point_input_feat: torch.Tensor | None, `(sumN, C_input)`, 可选的输入投影特征; 仅用于兼容直接调用 point_backbone.forward() 时的调试导出
 
         输出:
             - output_dict: dict[str, Any]
@@ -628,7 +628,7 @@ class Stage1PointBackbone(nn.Module):
         requested_feature_names = (
             tuple() if return_feature_names is None else self._normalize_feature_names(return_feature_names)
         )
-        # torch.Tensor, `(sumN,)`, 点所属 batch 索引；保持与原始 voxel batch 轴一致
+        # torch.Tensor, `(sumN,)`, 点所属 batch 索引; 保持与原始 voxel batch 轴一致
         point_batch_index = atom_batch_index.to(dtype=torch.long)
         # torch.Tensor, `(B,)`, PTV3 风格结束偏移
         point_offsets = atom_offsets.to(device=atom_batch_index.device, dtype=torch.long)
@@ -671,7 +671,7 @@ class Stage1PointBackbone(nn.Module):
         pseudo_mask: torch.Tensor | None = None,
     ) -> dict[str, Any]:
         """
-        执行一次点分支前向。
+        执行一次点分支前向. 
 
         输入参数:
             - atom_feat: torch.Tensor, `(sumN, F_atom)`, batch 内全部原子的输入特征
@@ -699,9 +699,9 @@ class Stage1PointBackbone(nn.Module):
         requested_feature_names = (
             tuple() if return_feature_names is None else self._normalize_feature_names(return_feature_names)
         )
-        # torch.Tensor, `(sumN,)`, 点所属 batch 索引，保持与原始 voxel batch 轴一致。
+        # torch.Tensor, `(sumN,)`, 点所属 batch 索引, 保持与原始 voxel batch 轴一致. 
         point_batch_index = atom_batch_index.to(dtype=torch.long)
-        # torch.Tensor, `(B,)`, PTV3 风格结束偏移，保持原始 batch 视图不压缩。
+        # torch.Tensor, `(B,)`, PTV3 风格结束偏移, 保持原始 batch 视图不压缩. 
         point_offsets = atom_offsets.to(device=atom_batch_index.device, dtype=torch.long)
         atom_count = int(atom_feat.shape[0])
         # torch.Tensor | None, (N_all,), bool, 校验后的 P anchor 掩码
@@ -716,7 +716,7 @@ class Stage1PointBackbone(nn.Module):
 
 
         if atom_count == 0:
-            # torch.Tensor, `(0, C_point)`, 空 batch 下的最终点特征。
+            # torch.Tensor, `(0, C_point)`, 空 batch 下的最终点特征. 
             empty_point_feat = atom_feat.new_empty((0, self.out_channels))
             point_state = {
                 "coord": atom_coord_centered_world,

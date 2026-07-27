@@ -13,7 +13,7 @@ from src.utils.experiment_manager import ExperimentManager
 def test_process_rank_prefers_lightning_child_rank(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """同一 Slurm task 内的第二个 DDP 子进程不能再次写运行快照。"""
+    """同一 Slurm task 内的第二个 DDP 子进程不能再次写运行快照. """
 
     monkeypatch.setenv("SLURM_PROCID", "0")
     monkeypatch.setenv("LOCAL_RANK", "1")

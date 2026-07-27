@@ -3,8 +3,8 @@
 =============================================================================
 density_channel_builder — 密度通道在线计算模块
 =============================================================================
-给定原始密度图 (exp/sim)，按 (op, norm, post) 配置生成候选通道。
-所有计算在 CPU 上按顺序依次执行，返回 CPU numpy array。
+给定原始密度图 (exp/sim), 按 (op, norm, post) 配置生成候选通道. 
+所有计算在 CPU 上按顺序依次执行, 返回 CPU numpy array. 
 
 通道命名约定:
     {op}_{norm}_{post}
@@ -43,7 +43,7 @@ from typing import Optional
 @dataclass
 class DensityChannelConfig:
     """
-    密度通道配置。
+    密度通道配置. 
 
     输入参数:
         - clip_percentile: tuple[float, float], clip 范围百分位, 建议值 (0.001, 0.999)
@@ -65,8 +65,8 @@ def _fit_scale_params(
     receptor_mask: np.ndarray | None,
 ) -> tuple[float, float]:
     """
-    Masked least squares 拟合尺度参数 a, b。备选拟合对象的优先级: 含有原子的体素、通过密度筛选的体素.
-    所有参与拟合的体素(包括原子mask)必须同时通过密度筛选: 在模拟密度图和真实密度图中, 密度值均位于前 5×percentile 的高密度区间(用于应对密度漂移)。
+    Masked least squares 拟合尺度参数 a, b. 备选拟合对象的优先级: 含有原子的体素、通过密度筛选的体素.
+    所有参与拟合的体素(包括原子mask)必须同时通过密度筛选: 在模拟密度图和真实密度图中, 密度值均位于前 5×percentile 的高密度区间(用于应对密度漂移). 
 
     输入参数:
         - exp: np.ndarray, (D, H, W), float32, 真实密度
@@ -113,7 +113,7 @@ def _fit_scale_params(
     n_masked = int(mask.sum())
 
     if n_masked < 10:
-        # 极端情况：几乎无信号，返回恒等变换
+        # 极端情况: 几乎无信号, 返回恒等变换
         return 1.0, 0.0
 
     # np.ndarray, (n_masked,), float32, mask 内的 sim 体素值
@@ -138,7 +138,7 @@ def _compute_ops(
     receptor_mask: np.ndarray | None,
 ) -> dict[str, np.ndarray]:
     """
-    计算所有基本运算通道: exp, sim, diff, posdiff。
+    计算所有基本运算通道: exp, sim, diff, posdiff. 
 
     输入参数:
         - exp: np.ndarray, (D, H, W), float32, 原始真实密度
@@ -170,7 +170,7 @@ def _compute_ops(
 # ============================================================
 def _clip_and_norm(x: np.ndarray, clip_percentile: tuple[float, float]) -> np.ndarray:
     """
-    按自身数据分布 clip 极端值后 z-score 归一化，每个 op 通道(exp/sim/diff/posdiff)按各自值域 clip。
+    按自身数据分布 clip 极端值后 z-score 归一化, 每个 op 通道(exp/sim/diff/posdiff)按各自值域 clip. 
 
     输入参数:
         - x: np.ndarray, (D, H, W), float32, 输入体素
@@ -197,7 +197,7 @@ def _apply_norm(
     clip_percentile: tuple[float, float],
 ) -> np.ndarray:
     """
-    对单个 op 结果应用归一化。
+    对单个 op 结果应用归一化. 
 
     输入参数:
         - op_result: np.ndarray, (D, H, W), float32, 基本运算结果
@@ -223,7 +223,7 @@ def _apply_norm(
 # ============================================================
 def _gaussian_filter_3d(x: np.ndarray, sigma: float) -> np.ndarray:
     """
-    各向同性 3D Gaussian 滤波。
+    各向同性 3D Gaussian 滤波. 
 
     输入参数:
         - x: np.ndarray, (D, H, W), float32, 输入体素
@@ -236,10 +236,10 @@ def _gaussian_filter_3d(x: np.ndarray, sigma: float) -> np.ndarray:
 
 def _dog_3d(x: np.ndarray, sigma: float) -> np.ndarray:
     """
-    Difference of Gaussian (DoG) 算子。
+    Difference of Gaussian (DoG) 算子. 
 
-    DoG(σ, m=1.6) = G_{σ·m} * x - G_σ * x。
-    近似 LoG，用于 blob 检测，局部极值点约等于口袋候选位置。
+    DoG(σ, m=1.6) = G_{σ·m} * x - G_σ * x. 
+    近似 LoG, 用于 blob 检测, 局部极值点约等于口袋候选位置. 
 
     输入参数:
         - x: np.ndarray, (D, H, W), float32, 输入体素
@@ -260,7 +260,7 @@ def _build_smooth_strength(
     radius: float,
 ) -> np.ndarray:
     """
-    根据 receptor_mask 构建局部 Gaussian 扣除强度图。
+    根据 receptor_mask 构建局部 Gaussian 扣除强度图. 
 
     输入参数:
         - receptor_mask: np.ndarray, (D, H, W), bool, receptor 体素掩码
@@ -293,7 +293,7 @@ _POST_SIGMA_MAP: dict[str, Optional[float]] = {
 
 def _apply_post(x: np.ndarray, post: str) -> np.ndarray:
     """
-    对单个通道应用后处理算子。
+    对单个通道应用后处理算子. 
 
     输入参数:
         - x: np.ndarray, (D, H, W), float32, 输入体素
@@ -358,7 +358,7 @@ _OPS_NEEDING_BOTH: set[str] = {"diff", "posdiff"}
 
 def _parse_channel_name(name: str) -> tuple[str, str, str]:
     """
-    解析通道名, 提取 (op, norm, post)。
+    解析通道名, 提取 (op, norm, post). 
 
     输入参数:
         - name: str, 标量, 通道名, 如 "diff_clipnorm_DoG2"
@@ -409,8 +409,8 @@ def build_density_channels(
     receptor_mask: Optional[np.ndarray] = None,
 ) -> np.ndarray:
     """
-    密度通道在线计算主入口。
-    给定原始密度图和配置，按 (op, norm, post) 生成启用的通道子集，所有计算在 CPU 上执行，返回 CPU numpy array。
+    密度通道在线计算主入口. 
+    给定原始密度图和配置, 按 (op, norm, post) 生成启用的通道子集, 所有计算在 CPU 上执行, 返回 CPU numpy array. 
 
     输入参数:
         - exp_raw: np.ndarray 或 None, (D, H, W), float32, 原始真实密度
@@ -524,7 +524,7 @@ def build_density_channels(
 # ============================================================
 def detect_diff_posdiff_indices(enabled_channels: list[str]) -> list[int]:
     """
-    从 enabled_channels 列表中检测基本运算为 diff 或 posdiff 的通道索引。
+    从 enabled_channels 列表中检测基本运算为 diff 或 posdiff 的通道索引. 
 
     输入参数:
         - enabled_channels: list[str], 可变长度, 启用的通道名列表; ["all"] 代表全部 56 通道

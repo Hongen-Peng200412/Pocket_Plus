@@ -3,7 +3,7 @@
 统一预处理系统 - 配置文件 / Unified Preprocessing System - Configuration
 ================================================================================
 
-定义支持 Protein + RNA/DNA 的常量和编码。
+定义支持 Protein + RNA/DNA 的常量和编码. 
 Constants and encodings for Protein + RNA/DNA support.
 
 特征维度 / Feature Dimensions:
@@ -30,7 +30,7 @@ NUM_ELEMENTS: int = len(ALLOWED_ELEMENTS)  # 6
 ELEMENT_TO_IDX: Dict[str, int] = {e: i for i, e in enumerate(ALLOWED_ELEMENTS)}
 
 # dict[str, float], (6,), 原子质量字典
-# 含义: 归一化后的原子质量 (除以 32.0，使 S 约为 1.0)
+# 含义: 归一化后的原子质量 (除以 32.0, 使 S 约为 1.0)
 ATOM_MASS: Dict[str, float] = {
     'C': 12.011 / 32.0,   # ~0.375
     'N': 14.007 / 32.0,   # ~0.438
@@ -57,7 +57,7 @@ AMINO_ACIDS: List[str] = [
 
 # list[str], (4,), 标准核苷酸单字母/三字母代码
 # 含义: RNA/DNA 核苷酸 (A=腺嘌呤, U=尿嘧啶, C=胞嘧啶, G=鸟嘌呤)
-# 注意: DNA 中 T(胸腺嘧啶) 在结构文件中通常表示为 DT，此处统一映射
+# 注意: DNA 中 T(胸腺嘧啶) 在结构文件中通常表示为 DT, 此处统一映射
 NUCLEOTIDES: List[str] = ['A', 'U', 'C', 'G']
 
 # list[str], (4,), DNA 特定核苷酸
@@ -83,7 +83,7 @@ MODIFIED_RESIDUE_TO_PARENT: Dict[str, str] = {
     'OCS': 'CYS',  # 修饰半胱氨酸
     'SEC': 'CYS',  # 硒代半胱氨酸
     'PYL': 'LYS',  # 吡咯赖氨酸（保守映射到 LYS）
-    'PCA': 'GLU',  # 焦谷氨酸（常见母体为 GLU/GLN，此处保守映射到 GLU）
+    'PCA': 'GLU',  # 焦谷氨酸（常见母体为 GLU/GLN, 此处保守映射到 GLU）
 
     # ------------------------------ 核酸修饰 ------------------------------
     'PSU': 'U',    # 伪尿苷
@@ -275,7 +275,7 @@ DENSITY_BIN_EDGES: np.ndarray = np.array([0.0, 2.0, 4.0, 6.0, 8.0, 10.0, 12.0, 1
 # 水分子默认排除名 / Water residues in the default exclusion list
 # ============================================================================
 # set[str], 水分子残基名
-# 含义: 默认 preset 会在候选解析阶段排除这些残基；关闭 resname 排除列表后可进入候选
+# 含义: 默认 preset 会在候选解析阶段排除这些残基; 关闭 resname 排除列表后可进入候选
 WATER_RESIDUES: set = {'HOH', 'WAT', 'H2O', 'DOD'}
 
 
@@ -284,7 +284,7 @@ WATER_RESIDUES: set = {'HOH', 'WAT', 'H2O', 'DOD'}
 # ============================================================================
 # set[str], 金属元素符号集合
 # 含义: 用于判断单原子 HETATM 残基是否为金属离子
-#       当一个 HETATM 残基仅含 1 个重原子且该原子的元素在此集合中时，判定为金属离子
+#       当一个 HETATM 残基仅含 1 个重原子且该原子的元素在此集合中时, 判定为金属离子
 METAL_ELEMENTS: set = {
     # 碱金属 / Alkali metals
     'LI', 'NA', 'K', 'RB', 'CS',
@@ -328,8 +328,8 @@ HETATM_EXCLUSION_LIST: set = {
 
 
 
-# set[str], 经典配体豁免列表（兼容旧逻辑，当前流程默认不使用）
-# 含义: 若未来恢复“共价连接默认排除”策略，可用该列表将经典辅因子强制保留为配体
+# set[str], 经典配体豁免列表（兼容旧逻辑, 当前流程默认不使用）
+# 含义: 若未来恢复“共价连接默认排除”策略, 可用该列表将经典辅因子强制保留为配体
 CLASSIC_LIGAND_EXEMPTION_LIST: set = {
     'HEM', 'FAD', 'NAD', 'NADP', 'NAP', 'NDP',
     'ATP', 'ADP', 'AMP', 'GTP', 'GDP', 'GMP',
@@ -347,7 +347,7 @@ CLASSIC_LIGAND_EXEMPTION_LIST: set = {
 
 def normalize_residue_name(resname: str) -> str:
     """
-    归一化残基名：若是修饰残基则映射到标准母体残基。
+    归一化残基名: 若是修饰残基则映射到标准母体残基. 
 
     输入参数 / Input:
         - resname: str, 原始残基名

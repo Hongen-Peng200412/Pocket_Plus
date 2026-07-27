@@ -31,26 +31,26 @@ class SparseRefineHead(nn.Module):
         prior_prob: float | None = None,
     ) -> None:
         """
-        将 P anchor 内容沿稀疏邻居边聚合回唯一候选 C，并输出 refined ligand logits。
+        将 P anchor 内容沿稀疏邻居边聚合回唯一候选 C, 并输出 refined ligand logits. 
 
         输入参数:
-            - mode: str, 输出模式，取值 `direct` 或 `residual`
-            - edge_weight_activation: str, edge gate 激活，首版只支持 `sigmoid`
-            - distance_weight: Mapping[str, Any], 距离权重配置，包含 mode、temperature(初值，单位 Å²) 与 learnable(温度是否可学)
+            - mode: str, 输出模式, 取值 `direct` 或 `residual`
+            - edge_weight_activation: str, edge gate 激活, 首版只支持 `sigmoid`
+            - distance_weight: Mapping[str, Any], 距离权重配置, 包含 mode、temperature(初值, 单位 Å²) 与 learnable(温度是否可学)
             - message_dim: int, P -> C 聚合消息通道数
             - edge_hidden_dim: int, edge gate MLP 隐藏通道数
             - hidden_dim: int, C 输出 MLP 隐藏通道数
             - num_layers: int, C 输出 MLP 线性层数
-            - logit_dim: int, refined logits 输出通道数；二分类为 1，多分类为类别数
+            - logit_dim: int, refined logits 输出通道数; 二分类为 1, 多分类为类别数
             - C_voxel_backbone_dim: int, C 位置 `voxel_final` 通道数
             - P_final_point_dim: int, P 的 final point 特征通道数
             - P_after_interaction_dim: int, P 经 cross-attn 后的特征通道数
             - P_voxel_backbone_dim: int, P 位置 `voxel_final` 通道数
-            - inputs: Mapping[str, bool], 输入源开关字典，控制 logits、P/C 特征、相对坐标与类别 embedding
+            - inputs: Mapping[str, bool], 输入源开关字典, 控制 logits、P/C 特征、相对坐标与类别 embedding
             - candidate_class_ids: Sequence[int], (K,), 可用路由类别 ID
-            - candidate_class_embedding_dim: int, 类别 embedding 通道数；仅在 use_candidate_class_embedding=true 时使用
+            - candidate_class_embedding_dim: int, 类别 embedding 通道数; 仅在 use_candidate_class_embedding=true 时使用
             - zero_init_residual: bool, residual 输出增量末层是否零初始化
-            - enable_interface_norm: bool, 是否对 P/edge 学习特征源在拼接前各自 LayerNorm；几何量、类别 embedding 与末层 head 的 C_voxel 不归一化
+            - enable_interface_norm: bool, 是否对 P/edge 学习特征源在拼接前各自 LayerNorm; 几何量、类别 embedding 与末层 head 的 C_voxel 不归一化
             - prior_prob: float | None, direct 模式末层单通道 sigmoid 正类先验; None 表示跳过 bias 先验初始化; residual 模式忽略本值(走 zero_init_residual)
 
         前向输入:
@@ -180,7 +180,7 @@ class SparseRefineHead(nn.Module):
     @staticmethod
     def _build_output_mlp(input_dim: int, hidden_dim: int, output_dim: int, num_layers: int) -> nn.Sequential:
         """
-        构造 C logits 输出 MLP。
+        构造 C logits 输出 MLP. 
 
         输入参数:
             - input_dim: int, 拼接后的 C 特征通道数
@@ -201,7 +201,7 @@ class SparseRefineHead(nn.Module):
 
     def _anchor_class_embedding(self, anchor_class: torch.Tensor) -> torch.Tensor:
         """
-        将 P 路由类别 ID 映射到局部类别 embedding。
+        将 P 路由类别 ID 映射到局部类别 embedding. 
 
         输入参数:
             - anchor_class: torch.Tensor, (sumP,), P 路由类别 ID
@@ -231,7 +231,7 @@ class SparseRefineHead(nn.Module):
         candidate_neighbor_valid_mask: torch.Tensor,
     ) -> dict[str, torch.Tensor]:
         """
-        聚合 P 消息并输出 C 上 refined logits。
+        聚合 P 消息并输出 C 上 refined logits. 
 
         输入参数:
             - voxel_logits: torch.Tensor | None, (sumC, logit_dim), C 位置原始 ligand logits

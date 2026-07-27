@@ -7,7 +7,7 @@ import numpy as np
 
 def mol2_heavy_atom_xyz(path: Path) -> np.ndarray:
     """
-    读取 mol2 重原子坐标。
+    读取 mol2 重原子坐标. 
     输入参数:
         - path: Path, mol2 文件路径
 
@@ -31,7 +31,7 @@ def mol2_heavy_atom_xyz(path: Path) -> np.ndarray:
 
 def instance_voxel_xyz(label: np.ndarray, instance_id: int, origin: np.ndarray, voxel_size: np.ndarray) -> np.ndarray:
     """
-    将 instance label 中的一个 instance 转成近似世界坐标点云。
+    将 instance label 中的一个 instance 转成近似世界坐标点云. 
     输入参数:
         - label: np.ndarray, (D, H, W), int, instance 编号图
         - instance_id: int, 要提取的 instance 编号
@@ -54,7 +54,7 @@ def instance_voxel_xyz(label: np.ndarray, instance_id: int, origin: np.ndarray, 
 
 def radial_shape_score(pred_xyz: np.ndarray, ligand_xyz: np.ndarray, bins: np.ndarray) -> dict[str, float]:
     """
-    计算当前第一版径向 shape score。
+    计算当前第一版径向 shape score. 
     输入参数:
         - pred_xyz: np.ndarray, (N, 3), 网络预测 instance 的点云
         - ligand_xyz: np.ndarray, (M, 3), ligand mol2 或 docking pose 的点云
@@ -83,7 +83,7 @@ def radial_shape_score(pred_xyz: np.ndarray, ligand_xyz: np.ndarray, bins: np.nd
 
 def _radial_histogram(points: np.ndarray, bins: np.ndarray) -> tuple[np.ndarray, float]:
     """
-    计算点云到自身中心的半径分布。
+    计算点云到自身中心的半径分布. 
     输入参数:
         - points: np.ndarray, (N, 3), 输入点云
         - bins: np.ndarray, (K,), 半径 bin 边界

@@ -6,7 +6,7 @@ import random
 import einops
 
 
-# 第一部分：focal_loss
+# 第一部分: focal_loss
 
 
 
@@ -81,10 +81,10 @@ class BinaryFocalLossWithAlpha(nn.Module):
             valid_mask = (target_long != self.ignore_index)
         else:
             valid_mask = torch.ones_like(target_long, dtype=torch.bool, device=device)
-        # Compute counts per class (exclude ignored)，ensure only consider valid positions
+        # Compute counts per class (exclude ignored), ensure only consider valid positions
         valid_target = target_long[valid_mask]   # 按照张量索引valid_mask, 返回一维张量
         # If no valid points, handle gracefully
-        if valid_target.numel() == 0:  # numel() 是 PyTorch 张量的一个方法，用于返回张量中元素的总数
+        if valid_target.numel() == 0:  # numel() 是 PyTorch 张量的一个方法, 用于返回张量中元素的总数
             # return zero tensor (same dtype/device)
             if reduction == 'none':
                 return torch.zeros_like(logits, dtype=logits.dtype, device=device)
@@ -132,7 +132,7 @@ class BinaryFocalLossWithAlpha(nn.Module):
         loss *= self.scale
         effective_valid_mask = valid_mask
         if hardmask is not None:
-            # torch.Tensor, `(N, ...)`, 与 loss 对齐后的硬掩码；允许调用方额外保留 1 个通道维
+            # torch.Tensor, `(N, ...)`, 与 loss 对齐后的硬掩码; 允许调用方额外保留 1 个通道维
             hardmask_tensor = hardmask.to(device=device)
             if hardmask_tensor.dim() == loss.dim() + 1 and hardmask_tensor.shape[1] == 1:
                 hardmask_tensor = hardmask_tensor.squeeze(dim=1)
@@ -187,7 +187,7 @@ class BinaryFocalLossWithAlpha(nn.Module):
 
 
 
-# 使用要求：pred格式为 Tensor, shape (N, C, ...), logits (未 softmax)，其中Channels的个数=类别数。
+# 使用要求: pred格式为 Tensor, shape (N, C, ...), logits (未 softmax), 其中Channels的个数=类别数. 
 class MultiClassFocalLossWithAlpha(nn.Module):
     def __init__(self, from_logits=True, gamma=2.0, ignore_index=None, eps=1e-6, scale=None, 
                  flatten_count=10.0, alpha_tune=1.0, use_adaptive_alpha=False):
@@ -207,7 +207,7 @@ class MultiClassFocalLossWithAlpha(nn.Module):
             - alpha_tune (float or list): If use_adaptive_alpha is True, alpha_tune can be a list of values to tune over(after normalization then tune over).If not, alpha_tune will be used straighforwardly as loss weight for each class.
 
         Forward inputs:
-            - pred: Tensor, shape (N, C, ...), logits (未 softmax)，其中Channels的个数=类别数。典型例子为(N, C, D, H, W)
+            - pred: Tensor, shape (N, C, ...), logits (未 softmax), 其中Channels的个数=类别数. 典型例子为(N, C, D, H, W)
             - target: LongTensor, shape (N, ...), values in {0..C-1} (or ignore_index)
             - num_classes: optional int, defaults to pred.shape[1]
             - hardmask: shold have the same shape as target, and values in {0,1} or None. If not None, the loss will only be computed on the pixels with hardmask=1.
@@ -216,11 +216,11 @@ class MultiClassFocalLossWithAlpha(nn.Module):
                 channel_loss = loss[target==c].type_as(loss).sum() / ((target==c).type_as(loss).sum() + 0.1)
         """
         super().__init__()
-        # 修正1: 确保 alpha_tune 始终是 tensor，并且可以广播到 alpha_tensor
+        # 修正1: 确保 alpha_tune 始终是 tensor, 并且可以广播到 alpha_tensor
         if isinstance(alpha_tune, (list, tuple)):
             self.alpha_tune = torch.tensor(alpha_tune, dtype=torch.float32)
         else:
-            self.alpha_tune = torch.tensor([alpha_tune], dtype=torch.float32) # 如果是单一值，也转为张量
+            self.alpha_tune = torch.tensor([alpha_tune], dtype=torch.float32) # 如果是单一值, 也转为张量
         self.from_logits = from_logits
         self.gamma = float(gamma)
         self.ignore_index = ignore_index
@@ -247,7 +247,7 @@ class MultiClassFocalLossWithAlpha(nn.Module):
             valid_mask = (target != self.ignore_index)
         else:
             valid_mask = torch.ones_like(target, dtype=torch.bool, device=device)
-        # 在 forward 方法中，将 alpha_tune 转移到与 pred 相同的设备上，以确保计算正常进行。
+        # 在 forward 方法中, 将 alpha_tune 转移到与 pred 相同的设备上, 以确保计算正常进行. 
         self.alpha_tune = self.alpha_tune.to(pred.device).type_as(pred)
 
 
@@ -255,7 +255,7 @@ class MultiClassFocalLossWithAlpha(nn.Module):
         counts = torch.stack([
             (((target == i) & valid_mask).sum(dtype=torch.float))
             for i in range(num_classes)
-        ], dim=0)  # torch.stack是为了将列表堆叠为张量，shape (N,)表示每一类别的样本个数
+        ], dim=0)  # torch.stack是为了将列表堆叠为张量, shape (N,)表示每一类别的样本个数
         total = counts.sum()
         # if no valid pixels in batch (because of ignore_index), fallback to uniform counts
         if total.item() == 0:
@@ -276,13 +276,13 @@ class MultiClassFocalLossWithAlpha(nn.Module):
         # log softmax over class dim, mathematically equivalent to log(softmax(x))
         log_softmax = F.log_softmax(pred, dim=1) if self.from_logits else torch.log(pred + self.eps)  # shape (N, C, ...)
         index = target.unsqueeze(1)  # 在第一(从0开始)维的位置插入新的维度, 形状变为(N,1,...)
-        # torch.gather 会根据 index 张量中的值，在 input=log_softmax 的指定维度上收集相应的元素。收集到的元素会形成一个新的张量，形状为 (N, 1, ...)， 最后squeeze为(N,...)。
+        # torch.gather 会根据 index 张量中的值, 在 input=log_softmax 的指定维度上收集相应的元素. 收集到的元素会形成一个新的张量, 形状为 (N, 1, ...), 最后squeeze为(N,...). 
         log_probability = torch.gather(input=log_softmax, dim=1, index=index).squeeze(1)
         probability = log_probability.exp() # (N, ...) 无C
         cross_entropy_loss = -log_probability  # per-element cross-entropy
         # alpha per element has the same shape as target, but with values from alpha_tensor
-        alpha_per_element = alpha_tensor[target]  # shape (N,...) ; 不同于张量的布尔索引，这叫花式索引, 返回的形状与target相同
-        focal_term = (1.0 - probability).clamp(min=self.eps, max=1-self.eps) ** self.gamma    # clamp 确保 focal_term 不会出现负数(数学上确实不出现)，避免数值问题
+        alpha_per_element = alpha_tensor[target]  # shape (N,...) ; 不同于张量的布尔索引, 这叫花式索引, 返回的形状与target相同
+        focal_term = (1.0 - probability).clamp(min=self.eps, max=1-self.eps) ** self.gamma    # clamp 确保 focal_term 不会出现负数(数学上确实不出现), 避免数值问题
         loss = alpha_per_element * focal_term * cross_entropy_loss  # per-element loss (N,...)
 
 
@@ -352,24 +352,24 @@ class MultiClassFocalLossWithAlpha(nn.Module):
 
 class BinaryTverskyLoss(nn.Module):
     """
-    二值 Tversky Loss，用于单通道二分类分割。
+    二值 Tversky Loss, 用于单通道二分类分割. 
 
     Tversky 指数: TI = (TP + smooth) / (TP + α·FP + β·FN + smooth)
     Loss = 1 - TI
 
-    当 α=β=0.5 时等价于标准 Dice Loss。
-    增大 β 可以更重地惩罚 FN（漏报），适合小目标检测。
+    当 α=β=0.5 时等价于标准 Dice Loss. 
+    增大 β 可以更重地惩罚 FN（漏报）, 适合小目标检测. 
 
     输入参数:
         - alpha: float, FP 惩罚系数, 建议值 0.5
         - beta: float, FN 惩罚系数, 建议值 0.5
         - smooth: float, 拉普拉斯平滑项, 建议值 1.0 (nnU-Net 默认)
-        - from_logits: bool, True 表示输入 logits，内部自动 sigmoid
+        - from_logits: bool, True 表示输入 logits, 内部自动 sigmoid
 
     前向输入:
         - logits: torch.Tensor, (N, 1, ...) 或 (N, 1), 预测值
         - target: torch.Tensor, (N, ...) 或 (N,), 真值 {0, 1}
-        - reduction: str, 保留参数（与 BinaryFocalLossWithAlpha 接口一致），当前忽略
+        - reduction: str, 保留参数（与 BinaryFocalLossWithAlpha 接口一致）, 当前忽略
         - hardmask: torch.Tensor | None, 与 target 同形状的有效区域掩码
 
     前向输出:
@@ -402,13 +402,13 @@ class BinaryTverskyLoss(nn.Module):
         **_kwargs,
     ) -> torch.Tensor:
         """
-        前向计算 Tversky Loss。
+        前向计算 Tversky Loss. 
 
         输入参数:
             - logits: torch.Tensor, (N, 1, ...) 或 (N, 1)
             - target: torch.Tensor, (N, ...) 或 (N,), 真值 {0, 1}
-            - reduction: str, 保留参数，与调用协议对齐，当前不影响计算
-            - hardmask: torch.Tensor | None, 有效区域掩码，与 target 同形
+            - reduction: str, 保留参数, 与调用协议对齐, 当前不影响计算
+            - hardmask: torch.Tensor | None, 有效区域掩码, 与 target 同形
 
         输出:
             - loss: torch.Tensor, 标量
@@ -422,11 +422,11 @@ class BinaryTverskyLoss(nn.Module):
         target_float = target.to(dtype=prob.dtype, device=device)
 
         if hardmask is not None:
-            # torch.Tensor, (N, ...), float32 掩码；与 prob 对齐形状
+            # torch.Tensor, (N, ...), float32 掩码; 与 prob 对齐形状
             mask_float = hardmask.to(dtype=prob.dtype, device=device)
             if mask_float.ndim == prob.ndim + 1 and mask_float.shape[1] == 1:
                 mask_float = mask_float.squeeze(1)
-            # hardmask=0 的位置: prob 和 target 均置零，不贡献 TP/FP/FN
+            # hardmask=0 的位置: prob 和 target 均置零, 不贡献 TP/FP/FN
             prob = prob * mask_float
             target_float = target_float * mask_float
 
@@ -444,11 +444,11 @@ class BinaryTverskyLoss(nn.Module):
 
 # # ============================================================
 # # FocalTverskyCombinedLoss
-# # Focal Loss + Tversky Loss 的加权和，接口与 BinaryFocalLossWithAlpha 完全一致
+# # Focal Loss + Tversky Loss 的加权和, 接口与 BinaryFocalLossWithAlpha 完全一致
 # # ============================================================
 # class FocalTverskyCombinedLoss(nn.Module):
 #     """
-#     Focal Loss + Tversky Loss 加权求和的联合损失。
+#     Focal Loss + Tversky Loss 加权求和的联合损失. 
 
 #     输入参数:
 #         - focal_weight: float, Focal 损失权重, 建议值 1.0
@@ -469,7 +469,7 @@ class BinaryTverskyLoss(nn.Module):
 #     前向输入:
 #         - logits: torch.Tensor, (N, 1, ...)
 #         - target: torch.Tensor, (N, ...)
-#         - reduction: str, "mean" 传递给 Focal；Tversky 强制全局 mean
+#         - reduction: str, "mean" 传递给 Focal; Tversky 强制全局 mean
 #         - hardmask: torch.Tensor | None
 
 #     前向输出:
@@ -526,16 +526,16 @@ class BinaryTverskyLoss(nn.Module):
 #         **kwargs,
 #     ) -> torch.Tensor:
 #         """
-#         前向计算 Focal + Tversky 联合损失。
+#         前向计算 Focal + Tversky 联合损失. 
 
 #         输入参数:
 #             - logits: torch.Tensor, (N, 1, ...) 或 (N, 1)
 #             - target: torch.Tensor, (N, ...) 或 (N,)
-#             - reduction: str, 传递给 Focal 子模块；Tversky 固定为全局 mean
+#             - reduction: str, 传递给 Focal 子模块; Tversky 固定为全局 mean
 #             - hardmask: torch.Tensor | None
 
 #         输出:
-#             - loss: torch.Tensor, 标量，等于 focal_weight·focal + dice_weight·tversky
+#             - loss: torch.Tensor, 标量, 等于 focal_weight·focal + dice_weight·tversky
 #         """
 #         # torch.Tensor, 标量, Focal 损失值
 #         focal = self.focal_loss(
@@ -555,10 +555,10 @@ class BinaryTverskyLoss(nn.Module):
 # ============================================================
 class UnifiedCompositeLoss(nn.Module):
     """
-    统一复合损失，同时服务 atom、voxel_aux、voxel_ligand 三个分支。
+    统一复合损失, 同时服务 atom、voxel_aux、voxel_ligand 三个分支. 
 
-    总损失 = w_focal * FocalLoss + w_tversky * TverskyLoss + w_mse * MSELoss。
-    若启用 voxel_ligand 损失，训练数据需要提供 ligand_dist_map。
+    总损失 = w_focal * FocalLoss + w_tversky * TverskyLoss + w_mse * MSELoss. 
+    若启用 voxel_ligand 损失, 训练数据需要提供 ligand_dist_map. 
 
     标签构造:
         - hard_label: torch.Tensor, (*,), int64, 硬标签(取值0或1)
@@ -569,9 +569,9 @@ class UnifiedCompositeLoss(nn.Module):
             - focal_soft_negative_suppression=false 且 tversky_soft_target=false 且 w_mse=0 时不参与损失
 
     损失语义:
-        - Focal: 始终使用 hard_label；focal_soft_negative_suppression 控制是否用 y_soft 弱化硬负类损失
-        - Tversky: tversky_soft_target=true 时使用 y_soft，false 时使用 hard_label
-        - MSE: 有 y_soft 时使用 y_soft，否则使用 hard_label；w_mse=0 时关闭
+        - Focal: 始终使用 hard_label; focal_soft_negative_suppression 控制是否用 y_soft 弱化硬负类损失
+        - Tversky: tversky_soft_target=true 时使用 y_soft, false 时使用 hard_label
+        - MSE: 有 y_soft 时使用 y_soft, 否则使用 hard_label; w_mse=0 时关闭
 
     输入参数:
         - sigma: float, 距离高斯软标签标准差, 仅 ligand_dist_map 非 None 时用于构造 y_soft
@@ -646,13 +646,13 @@ class UnifiedCompositeLoss(nn.Module):
         self.w_mse = float(w_mse)
         # bool, 是否用 y_soft 对 hard_label=0 的 focal 损失做距离抑制
         self.focal_soft_negative_suppression = bool(focal_soft_negative_suppression)
-        # bool, Tversky 是否使用 y_soft；False 时使用 hard_label
+        # bool, Tversky 是否使用 y_soft; False 时使用 hard_label
         self.tversky_soft_target = bool(tversky_soft_target)
 
     @staticmethod
     def _maybe_squeeze_channel(x: torch.Tensor, ref_ndim: int) -> torch.Tensor:
         """
-        若 x 比参考维度多 1 且第 1 维大小为 1，则 squeeze(1)。
+        若 x 比参考维度多 1 且第 1 维大小为 1, 则 squeeze(1). 
 
         输入参数:
             - x: torch.Tensor, 待处理张量
@@ -673,7 +673,7 @@ class UnifiedCompositeLoss(nn.Module):
         dtype: torch.dtype,
     ) -> torch.Tensor:
         """
-        从二分类 ligand 距离图生成硬标签。
+        从二分类 ligand 距离图生成硬标签. 
 
         输入参数:
             - ligand_dist_map: torch.Tensor, (B,D,H,W) 或 (B,1,D,H,W), ligand 距离监督图
@@ -706,7 +706,7 @@ class UnifiedCompositeLoss(nn.Module):
         ligand_dist_map: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """
-        前向计算统一复合损失。
+        前向计算统一复合损失. 
 
         输入参数:
             - logits: torch.Tensor, (*, 1, ...), 单通道预测 logits
@@ -864,7 +864,7 @@ class UnifiedCompositeLoss(nn.Module):
 
 class AdaptiveClassificationCompositeLoss(nn.Module):
     """
-    同时适配单通道二分类与多通道多分类的硬标签复合损失。
+    同时适配单通道二分类与多通道多分类的硬标签复合损失. 
 
     输入参数:
         - num_classes: int, 任务类别数; 二分类单通道路径可保持 2, 三分类路径为 3
@@ -971,7 +971,7 @@ class AdaptiveClassificationCompositeLoss(nn.Module):
         dtype: torch.dtype,
     ) -> torch.Tensor:
         """
-        从 ligand 距离图生成 dense hard-label target。
+        从 ligand 距离图生成 dense hard-label target. 
 
         输入参数:
             - ligand_dist_map: torch.Tensor, 二分类 (B,D,H,W)/(B,1,D,H,W) 或多分类 (B,C,D,H,W), ligand 距离监督图
@@ -1008,7 +1008,7 @@ class AdaptiveClassificationCompositeLoss(nn.Module):
 
     def _target_from_multiclass_dist(self, ligand_dist_map: torch.Tensor, logits: torch.Tensor) -> torch.Tensor:
         """
-        从多分类 ligand 距离图生成类别 ID 硬标签。
+        从多分类 ligand 距离图生成类别 ID 硬标签. 
 
         输入参数:
             - ligand_dist_map: torch.Tensor, (B,C,D,H,W), 每类 ligand 距离图; 通道 0 为背景占位
@@ -1059,7 +1059,7 @@ class AdaptiveClassificationCompositeLoss(nn.Module):
         ligand_dist_map: torch.Tensor | None,
     ) -> torch.Tensor:
         """
-        计算多通道 softmax 多分类硬标签损失。
+        计算多通道 softmax 多分类硬标签损失. 
 
         输入参数:
             - logits: torch.Tensor, (N, C) 或 (B, C, D, H, W), 多分类 logits
@@ -1144,11 +1144,11 @@ class AdaptiveClassificationCompositeLoss(nn.Module):
 
 class LigandSparseRefineDeltaLoss(nn.Module):
     """
-    sparse refine 头"相对 base 改进"的 pairwise ranking 辅助损失。
+    sparse refine 头"相对 base 改进"的 pairwise ranking 辅助损失. 
 
     设计意图:
-        - ranking(L_rank): 对称难例挖掘——每个 BOX 取 base_prob 最低的若干正例(最难)与 base_prob 最高的若干负例(最难), 配对要求 refined 正例 logit 高于负例 logit 至少 m_rank。选择口径统一用 base_prob(静态,不随被优化的 refined logit 漂移)。
-        - base_prob 来源恒由调用方 detach(candidate_set 已 detach), 梯度只经 refined logit 回流。
+        - ranking(L_rank): 对称难例挖掘——每个 BOX 取 base_prob 最低的若干正例(最难)与 base_prob 最高的若干负例(最难), 配对要求 refined 正例 logit 高于负例 logit 至少 m_rank. 选择口径统一用 base_prob(静态,不随被优化的 refined logit 漂移). 
+        - base_prob 来源恒由调用方 detach(candidate_set 已 detach), 梯度只经 refined logit 回流. 
 
     输入参数:
         - m_rank: float, ranking 的 margin; 建议值 0.5

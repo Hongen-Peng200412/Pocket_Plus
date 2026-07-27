@@ -1,42 +1,42 @@
 """
-Stage1 体素-点云联合模型的清理后主流程。
+Stage1 体素-点云联合模型的清理后主流程. 
 
 对齐契约（修改时必须同步）:
-    - forward 输入 batch 在 _run_embed_head_once 之前必须是 real-only；P anchors 只允许在最后一次 recycle 的 _prepare_pseudo_batch 后进入 point backbone。
-    - mixed layout 必须来自 pseudo_atoms.inject_pseudo_atoms，每个 BOX 内顺序固定为 `[real_i..., pseudo_i...]`。
-    - C 候选集只在最后一轮 recycle 生成；SparseCandidateSetBuilder 直接在全 BOX 体素上从 voxel_logits_ligand 选取候选，不再消费体素有效掩码。
-    - atom 监督的唯一掩码是 atom_is_in_core_box；体素监督和候选选择默认覆盖整张 BOX。
+    - forward 输入 batch 在 _run_embed_head_once 之前必须是 real-only; P anchors 只允许在最后一次 recycle 的 _prepare_pseudo_batch 后进入 point backbone. 
+    - mixed layout 必须来自 pseudo_atoms.inject_pseudo_atoms, 每个 BOX 内顺序固定为 `[real_i..., pseudo_i...]`. 
+    - C 候选集只在最后一轮 recycle 生成; SparseCandidateSetBuilder 直接在全 BOX 体素上从 voxel_logits_ligand 选取候选, 不再消费体素有效掩码. 
+    - atom 监督的唯一掩码是 atom_is_in_core_box; 体素监督和候选选择默认覆盖整张 BOX. 
 
 关键输入字段:
-    - voxel_grid: torch.Tensor, (B,C_in,D,H,W), voxel backbone 输入密度/特征体。
-    - atom_feat: torch.Tensor, (N_real,F_atom) 或 mixed 路径下 (N_all,F_atom), 点分支输入特征。
-    - atom_coord_centered_world: torch.Tensor, (N,3), 以 BOX 中心为原点的连续世界坐标，XYZ 轴序，单位 Å；不是 voxel 坐标。
-    - atom_coord_local_voxel: torch.Tensor, (N,3), BOX-local 连续 voxel 坐标，XYZ 轴序，corner 语义；不是世界坐标或离散索引。
-    - atom_label: torch.Tensor, (N_real,) 或 (N_all,), real atom 监督标签；P anchor 槽位只作为占位。
-    - atom_is_in_core_box: torch.Tensor, (N_real,) 或 (N_all,), bool，real atom 是否参与 atom 监督。
-    - real_mask / pseudo_mask: torch.Tensor, (N_all,), mixed-only 点类型掩码。
+    - voxel_grid: torch.Tensor, (B,C_in,D,H,W), voxel backbone 输入密度/特征体. 
+    - atom_feat: torch.Tensor, (N_real,F_atom) 或 mixed 路径下 (N_all,F_atom), 点分支输入特征. 
+    - atom_coord_centered_world: torch.Tensor, (N,3), 以 BOX 中心为原点的连续世界坐标, XYZ 轴序, 单位 Å; 不是 voxel 坐标. 
+    - atom_coord_local_voxel: torch.Tensor, (N,3), BOX-local 连续 voxel 坐标, XYZ 轴序, corner 语义; 不是世界坐标或离散索引. 
+    - atom_label: torch.Tensor, (N_real,) 或 (N_all,), real atom 监督标签; P anchor 槽位只作为占位. 
+    - atom_is_in_core_box: torch.Tensor, (N_real,) 或 (N_all,), bool, real atom 是否参与 atom 监督. 
+    - real_mask / pseudo_mask: torch.Tensor, (N_all,), mixed-only 点类型掩码. 
 
 detach、refine 与 logit 残差:
-    - detach_real_point_feat_into_atomhead / detach_pseudo_point_feat_into_atomhead 控制进入最终 Stage1AtomHead 的 real/P 点特征是否 detach。
-    - detach_pseudo_point_feat_into_refine 单独控制 refine 消费的 P_final_point_feat；P_after_interaction_feat 在进入 refine 前始终 detach。
-    - detach_voxel_into_refine 统一控制 refine 消费的 base logits、C/P voxel_final 特征是否回传到 voxel backbone。
-    - refine_receptor_from_voxel 为 atom_logits 追加 home 体素 voxel_logits_aux.detach() 残差 base。
-    - sparse_refine_residual_mode / sparse_refine_use_C_voxel_logits 由 detach_residual 配置组注入 sparse_refine_head。
+    - detach_real_point_feat_into_atomhead / detach_pseudo_point_feat_into_atomhead 控制进入最终 Stage1AtomHead 的 real/P 点特征是否 detach. 
+    - detach_pseudo_point_feat_into_refine 单独控制 refine 消费的 P_final_point_feat; P_after_interaction_feat 在进入 refine 前始终 detach. 
+    - detach_voxel_into_refine 统一控制 refine 消费的 base logits、C/P voxel_final 特征是否回传到 voxel backbone. 
+    - refine_receptor_from_voxel 为 atom_logits 追加 home 体素 voxel_logits_aux.detach() 残差 base. 
+    - sparse_refine_residual_mode / sparse_refine_use_C_voxel_logits 由 detach_residual 配置组注入 sparse_refine_head. 
 
 forward 输出契约:
-    - voxel_logits_aux: (B,C_receptor,D,H,W)，受体结合区域体素预测。
-    - voxel_logits_ligand: (B,C_ligand,D,H,W)，配体区域体素预测。
-    - voxel_logits_protein: (B,5,D,H,W) 或 None，背景/N/CA/C/O 主链类别预测。
-    - voxel_logits_nucleic: (B,7,D,H,W) 或 None，背景/P/O5'/C5'/C4'/C3'/O3' 主链类别预测。
-    - voxel_logits_distance: (B,1,D,H,W) 或 None，sigmoid 后解释为配体反距离预测。
-    - point_feat_raw: torch.Tensor, (N_all,C_point), point backbone 原始输出。
-    - fused_point_feat: torch.Tensor, (N_all,C_point), 按 into_atomhead detach 路由后的最终分类头输入。
-    - real_feat_before_interaction / real_feat_after_interaction: torch.Tensor | None, (N_real,C_point), real cross-attn 前后特征。
-    - pseudo_feat_before_interaction / pseudo_feat_after_interaction: torch.Tensor | None, (N_pseudo,C_point), P cross-attn 前后特征。
-    - atom_logits: torch.Tensor | None, (N_real,atom_logit_dim), 最终 real atom logits。
-    - pseudo_logits: torch.Tensor | None, (N_pseudo,pseudo_ligand_logit_dim), 最终 P ligand 区域归属 logits。
-    - atom_target / atom_counts / atom_coord_local_voxel / atom_is_in_core_box / atom_global_indices: real-only wrapper-facing 字段。
-    - pseudo_voxel_zyx / pseudo_batch_index: P anchor home 体素与所属 BOX，供 wrapper 采样 P 监督。
+    - voxel_logits_aux: (B,C_receptor,D,H,W), 受体结合区域体素预测. 
+    - voxel_logits_ligand: (B,C_ligand,D,H,W), 配体区域体素预测. 
+    - voxel_logits_protein: (B,5,D,H,W) 或 None, 背景/N/CA/C/O 主链类别预测. 
+    - voxel_logits_nucleic: (B,7,D,H,W) 或 None, 背景/P/O5'/C5'/C4'/C3'/O3' 主链类别预测. 
+    - voxel_logits_distance: (B,1,D,H,W) 或 None, sigmoid 后解释为配体反距离预测. 
+    - point_feat_raw: torch.Tensor, (N_all,C_point), point backbone 原始输出. 
+    - fused_point_feat: torch.Tensor, (N_all,C_point), 按 into_atomhead detach 路由后的最终分类头输入. 
+    - real_feat_before_interaction / real_feat_after_interaction: torch.Tensor | None, (N_real,C_point), real cross-attn 前后特征. 
+    - pseudo_feat_before_interaction / pseudo_feat_after_interaction: torch.Tensor | None, (N_pseudo,C_point), P cross-attn 前后特征. 
+    - atom_logits: torch.Tensor | None, (N_real,atom_logit_dim), 最终 real atom logits. 
+    - pseudo_logits: torch.Tensor | None, (N_pseudo,pseudo_ligand_logit_dim), 最终 P ligand 区域归属 logits. 
+    - atom_target / atom_counts / atom_coord_local_voxel / atom_is_in_core_box / atom_global_indices: real-only wrapper-facing 字段. 
+    - pseudo_voxel_zyx / pseudo_batch_index: P anchor home 体素与所属 BOX, 供 wrapper 采样 P 监督. 
 """
 from __future__ import annotations
 
@@ -77,16 +77,16 @@ except Exception as exc:  # pragma: no cover - 依赖当前本地环境
 
 class VolumePointStage1Model(nn.Module):
     """
-    组合 voxel、point、候选与 refine 子系统的 Stage1 顶层模型。
+    组合 voxel、point、候选与 refine 子系统的 Stage1 顶层模型. 
 
-    AdaLigand 的四个 producer 复用本类，但通过配置关闭不同分支:
-        - ``unet_c1``: 只运行单通道 density 与 voxel backbone。
-        - ``Find_0``: 56D density 拼接 core receptor raw49 hard scatter。
-        - ``Find_1``: 56D density 拼接 embed head 生成的 49D value + 2D occupancy。
-        - ``Find_2``: 56D density与 embed head 生成的 56D Gaussian tune 逐元素相加。
+    AdaLigand 的四个 producer 复用本类, 但通过配置关闭不同分支:
+        - unet_c1: 只运行单通道 density 与 voxel backbone. 
+        - Find_0: 56D density 拼接 core receptor raw49 hard scatter. 
+        - Find_1: 56D density 拼接 embed head 生成的 49D value + 2D occupancy. 
+        - Find_2: 56D density与 embed head 生成的 56D Gaussian tune 逐元素相加. 
 
-    完整 :meth:`forward` 还会运行共同的 point 路径并发布 centered 所需特征；
-    :meth:`forward_voxel_probability` 只复现完整图推理所需的 voxel 前半段。
+    完整 :meth:`forward` 还会运行共同的 point 路径并发布 centered 所需特征; 
+    :meth:`forward_voxel_probability` 只复现完整图推理所需的 voxel 前半段. 
     输入参数:
         - 初始化参数: 见 `__init__` 的完整参数契约
 
@@ -166,7 +166,7 @@ class VolumePointStage1Model(nn.Module):
         fusion_cube_chunk_size: int = 16384,
     ) -> None:
         """
-        Stage1 体素-点云联合模型, voxel backbone 每轮 recycle, P anchors 只在最后一轮注入。
+        Stage1 体素-点云联合模型, voxel backbone 每轮 recycle, P anchors 只在最后一轮注入. 
 
         输入参数:
             - 直传(cfg)
@@ -258,7 +258,7 @@ class VolumePointStage1Model(nn.Module):
 
         # -------------------------------------------------------- 平凡初始化 --------------------------------------------------------
         # TypedPointConfig, Stage1 全局 typed point 配置
-        # type[nn.Module], 统一激活函数类；density/fusion/atom head 共用同一解析结果
+        # type[nn.Module], 统一激活函数类; density/fusion/atom head 共用同一解析结果
         if resolve_act_layer is None:
             pure_voxel_acts = {"gelu": nn.GELU, "silu": nn.SiLU, "relu": nn.ReLU}
             act_key = str(act_layer_name).lower()
@@ -742,7 +742,7 @@ class VolumePointStage1Model(nn.Module):
         detach_pseudo: bool,
     ) -> torch.Tensor:
         """
-        按真实/伪原子槽位对 point backbone 输出特征做选择性 detach。
+        按真实/伪原子槽位对 point backbone 输出特征做选择性 detach. 
 
         输入参数:
             - point_feat: torch.Tensor, (N_all, C_point), point backbone 输出特征(mixed 或 real-only)
@@ -776,7 +776,7 @@ class VolumePointStage1Model(nn.Module):
         pseudo_module: nn.Module,
     ) -> torch.Tensor:
         """
-        按 pseudo_mask 把 point/voxel 两路特征分成 real/pseudo 两组，分别送入对应 real_module、pseudo_module(实际上都是 FeatureCombine)后按原顺序合并。
+        按 pseudo_mask 把 point/voxel 两路特征分成 real/pseudo 两组, 分别送入对应 real_module、pseudo_module(实际上都是 FeatureCombine)后按原顺序合并. 
 
         输入参数:
             - point_feat: torch.Tensor, (N_all, C_point), mixed 或 real-only 点特征
@@ -813,11 +813,11 @@ class VolumePointStage1Model(nn.Module):
         box_shape_zyx: torch.Tensor,
     ) -> torch.Tensor:
         """
-        读取每个真实原子 home 体素处的 voxel aux logits, 作为 refine_receptor 残差 base, 并进行detach。
+        读取每个真实原子 home 体素处的 voxel aux logits, 作为 refine_receptor 残差 base, 并进行detach. 
 
         输入参数:
             - voxel_logits_aux: torch.Tensor, (B, C_aux, D, H, W), 体素辅助(receptor)预测 logits
-            - atom_coord_local_voxel: torch.Tensor, (N, 3), BOX-local 连续 voxel 坐标 XYZ，corner 语义
+            - atom_coord_local_voxel: torch.Tensor, (N, 3), BOX-local 连续 voxel 坐标 XYZ, corner 语义
             - atom_batch_index: torch.Tensor, (N,), 每个原子所属 BOX 索引
             - box_shape_zyx: torch.Tensor, (B, 3), 每个 BOX 离散 voxel 网格尺寸 ZYX
 
@@ -843,7 +843,7 @@ class VolumePointStage1Model(nn.Module):
         prior_probs: Sequence[float] | None,
     ) -> None:
         """
-        用先验概率初始化 atom logit head 末层 Linear 的 bias, 与后置头 prior 初始化保持一致。
+        用先验概率初始化 atom logit head 末层 Linear 的 bias, 与后置头 prior 初始化保持一致. 
 
         输入参数:
             - last_linear: nn.Module, atom logit head 末层, 必须是带 bias 的 nn.Linear
@@ -898,7 +898,7 @@ class VolumePointStage1Model(nn.Module):
     @staticmethod
     def _counts_from_offsets(atom_offsets: torch.Tensor) -> torch.Tensor:
         """
-        从累计 offset 算出每个 BOX 的点数。
+        从累计 offset 算出每个 BOX 的点数. 
 
         输入参数:
             - atom_offsets: torch.Tensor, (B,), long, PTV3 风格累计 offset(结束索引)
@@ -915,14 +915,14 @@ class VolumePointStage1Model(nn.Module):
     @staticmethod
     def _canonicalize_stage1_batch(batch: dict[str, Any]) -> dict[str, Any]:
         """
-        把 AdaLigand 外部字段适配为现有模型内部字段。
+        把 AdaLigand 外部字段适配为现有模型内部字段. 
 
-        外部统一使用 ``density_input`` 与 ``atom_offsets[B+1]``；现有 PTV3 内核仍
-        使用 ``voxel_grid`` 与 ``B`` 个累计结束偏移。适配只创建浅拷贝，不改写
-        Dataset/Collator 对外契约。
+        外部统一使用 ``density_input`` 与 ``atom_offsets[B+1]``; 现有 PTV3 内核仍
+        使用 ``voxel_grid`` 与 ``B`` 个累计结束偏移. 适配只创建浅拷贝, 不改写
+        Dataset/Collator 对外契约. 
 
         输入参数:
-            - batch: dict[str,Any], 外部 Stage1 batch; `density_input` 为 `(B,C,D,H,W)` voxel 网格，`atom_offsets` 为外部 `(B+1,)` ragged 边界
+            - batch: dict[str,Any], 外部 Stage1 batch; `density_input` 为 `(B,C,D,H,W)` voxel 网格, `atom_offsets` 为外部 `(B+1,)` ragged 边界
 
         输出:
             - result: dict[str,Any], 浅拷贝后的内部 batch; `voxel_grid` 与 `atom_offsets` 分别转换为内部别名和 `(B,)` 结束偏移
@@ -956,7 +956,7 @@ class VolumePointStage1Model(nn.Module):
 
     def set_input_channels(self, in_channels: int) -> None:
         """
-        将体素输入通道数设置请求透传给 voxel backbone。
+        将体素输入通道数设置请求透传给 voxel backbone. 
 
         输入参数:
             - in_channels: int, 数据集 voxel_grid 通道数, 不含 embed/online scatter 追加通道
@@ -984,7 +984,7 @@ class VolumePointStage1Model(nn.Module):
 
     def _online_pdb_voxel_channels(self) -> int:
         """
-        计算 online pdb_feature scatter 追加到 voxel backbone 的通道数。
+        计算 online pdb_feature scatter 追加到 voxel backbone 的通道数. 
 
         输出:
             - channels: int, raw atom feature 通道数加上当前 scatter 核会追加的辅助通道数
@@ -1020,10 +1020,10 @@ class VolumePointStage1Model(nn.Module):
         box_shape_zyx: torch.Tensor,
     ) -> torch.Tensor:
         """
-        计算每个原子 home 体素离散下标(z/y/x)。
+        计算每个原子 home 体素离散下标(z/y/x). 
 
         输入参数:
-            - atom_coord_local_voxel: torch.Tensor, (N,3), BOX-local 连续 voxel 坐标 XYZ，corner 语义
+            - atom_coord_local_voxel: torch.Tensor, (N,3), BOX-local 连续 voxel 坐标 XYZ, corner 语义
             - atom_batch_index: torch.Tensor, (N,), 每个原子所属 BOX 索引
             - box_shape_zyx: torch.Tensor, (B,3), 每个 BOX 离散 voxel 网格尺寸 ZYX
 
@@ -1040,10 +1040,10 @@ class VolumePointStage1Model(nn.Module):
 
     def _apply_real_atom_density_to_atom_feat(self, batch: dict[str, Any]) -> dict[str, Any]:
         """
-        为 real atom 编码属于它的 density box, 再对进行(可选)norm和调制: (embed head特征, density box 特征). 它是零初始化, 开局 = embed head特征。
+        为 real atom 编码属于它的 density box, 再对进行(可选)norm和调制: (embed head特征, density box 特征). 它是零初始化, 开局 = embed head特征. 
 
         过程:
-            - 在 _run_embed_head_once 之后无条件调用(只要 self.real_atom_density_cube), density box 特征和本融合都是跨 recycle 复用的。
+            - 在 _run_embed_head_once 之后无条件调用(只要 self.real_atom_density_cube), density box 特征和本融合都是跨 recycle 复用的. 
             - 编码 density box(self.real_atom_density_cube 去 forward) ————> Norm(self.interface_norm_real_density_to_point) ————> self.real_density_combine
 
         输入参数:
@@ -1085,13 +1085,13 @@ class VolumePointStage1Model(nn.Module):
         sampler_mode: str,
     ) -> torch.Tensor:
         """
-        对 batch 内所有点采样指定体素特征。
+        对 batch 内所有点采样指定体素特征. 
 
         输入参数:
             - voxel_feat: torch.Tensor, (B, C, D, H, W), 体素特征图
-            - point_coord_centered_world: torch.Tensor, (N,3), centered 连续世界坐标 XYZ，单位 Å
+            - point_coord_centered_world: torch.Tensor, (N,3), centered 连续世界坐标 XYZ, 单位 Å
             - point_batch_index: torch.Tensor, (N,), 当前点所属 BOX 索引
-            - voxel_size_world: torch.Tensor, (B,3), 世界坐标 XYZ 各轴的 voxel 间距，单位 Å/voxel
+            - voxel_size_world: torch.Tensor, (B,3), 世界坐标 XYZ 各轴的 voxel 间距, 单位 Å/voxel
             - box_shape_zyx: torch.Tensor, (B,3), 每个 BOX 离散 voxel 网格尺寸 ZYX
             - fusion_mode: str, 仅兼容无意义
             - sampler_mode: str, voxel 采样模式, 取值 trilinear / nearest
@@ -1155,11 +1155,11 @@ class VolumePointStage1Model(nn.Module):
         sampler_mode: str,
     ) -> torch.Tensor:
         """
-        以每个点 home 体素为中心抽取 3^3 邻域并做加权(weighted_cube)或均值(cube_mean)池化采样。
+        以每个点 home 体素为中心抽取 3^3 邻域并做加权(weighted_cube)或均值(cube_mean)池化采样. 
 
         输入参数:
             - voxel_feat: torch.Tensor, (B, C, D_l, H_l, W_l), 当前 hook 这一级体素特征(空间尺寸可小于全分辨率)
-            - point_like: Any, 当前 Point 对象, `point_like.coord` 为 centered 连续世界坐标 XYZ，`point_like.batch` 为 BOX 索引
+            - point_like: Any, 当前 Point 对象, `point_like.coord` 为 centered 连续世界坐标 XYZ, `point_like.batch` 为 BOX 索引
             - batch: dict[str, Any], 提供世界坐标 XYZ voxel 间距 `voxel_size_world(B,3)` 与离散网格尺寸 `box_shape_zyx(B,3)`
             - feature_name: str, 当前 point 变量名, 用于取 weighted_cube 的 per-hook 参数
             - pseudo_mask: torch.Tensor | None, (N,), True=P anchor; None=real-only(全部计入占据)
@@ -1170,8 +1170,8 @@ class VolumePointStage1Model(nn.Module):
             - sampled_feat: torch.Tensor, (N, C), 加权池化采样得到的点级体素特征
 
         Note:
-            - 权重 = softmax_有效邻居( {a|b|c}(按 home/含原子/其他) - dist^2 / d ); cube_mean 取均匀权重。
-            - 含原子的体素由当前 hook 这一级池化后的真实原子(point_like.coord[~pseudo_mask]) scatter 得到。
+            - 权重 = softmax_有效邻居( {a|b|c}(按 home/含原子/其他) - dist^2 / d ); cube_mean 取均匀权重. 
+            - 含原子的体素由当前 hook 这一级池化后的真实原子(point_like.coord[~pseudo_mask]) scatter 得到. 
         """
         _ = fusion_mode
         # int, 点数与体素通道数
@@ -1179,7 +1179,7 @@ class VolumePointStage1Model(nn.Module):
         channels = int(voxel_feat.shape[1])
         if num_points == 0:
             return voxel_feat.new_empty((0, channels))
-        # torch.Tensor, (N,3), centered 连续世界坐标 XYZ；torch.Tensor, (N,), 所属 BOX 索引
+        # torch.Tensor, (N,3), centered 连续世界坐标 XYZ; torch.Tensor, (N,), 所属 BOX 索引
         point_coord = point_like.coord
         point_batch = point_like.batch.to(torch.long)
         device = voxel_feat.device
@@ -1220,7 +1220,7 @@ class VolumePointStage1Model(nn.Module):
             occupancy[real_batch, real_home_zyx[:, 0], real_home_zyx[:, 1], real_home_zyx[:, 2]] = 1.0
         # torch.Tensor, (3,), 单轴邻居偏移 -1/0/1
         offsets = torch.arange(3, device=device, dtype=point_coord.dtype) - 1.0
-        # list[torch.Tensor], 每块 (N_chunk, C), 避免一次性展开 4000*B 个点的 3^3 邻域占用过高显存。
+        # list[torch.Tensor], 每块 (N_chunk, C), 避免一次性展开 4000*B 个点的 3^3 邻域占用过高显存. 
         sampled_parts: list[torch.Tensor] = []
         chunk_size = min(int(self.fusion_cube_chunk_size), num_points)
         for chunk_start in range(0, num_points, chunk_size):
@@ -1288,7 +1288,7 @@ class VolumePointStage1Model(nn.Module):
         require_pseudo_mask: bool = False,
     ) -> Any:
         """
-        对点云分支中名为 feature_name 的变量执行 voxel-to-point 融合。
+        对点云分支中名为 feature_name 的变量执行 voxel-to-point 融合. 
 
         输入参数:
             - feature_name: str, 当前 point 变量名
@@ -1377,7 +1377,7 @@ class VolumePointStage1Model(nn.Module):
     # ================================================================================================================================================
     def _run_embed_head_once(self, batch: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any] | None]:
         """
-        在 recycle 循环前运行 real-only embed head 并同步裁剪后的 atom 字段。
+        在 recycle 循环前运行 real-only embed head 并同步裁剪后的 atom 字段. 
 
         输入参数:
             - batch: dict[str, Any], collate 后的 real-only batch
@@ -1388,7 +1388,7 @@ class VolumePointStage1Model(nn.Module):
         """
         if self.embed_head is None:
             return batch, None
-        # torch.Tensor, (N_real, C_raw), embed head 裁剪前的原始原子特征; online voxel scatter 必须使用 raw 特征。
+        # torch.Tensor, (N_real, C_raw), embed head 裁剪前的原始原子特征; online voxel scatter 必须使用 raw 特征. 
         raw_atom_feat = batch["atom_feat"]
         # dict[str, Any], embed head 输出, 包含裁剪后的 real atom 字段与可选 voxel grid
         embed_output = self.embed_head(
@@ -1422,7 +1422,7 @@ class VolumePointStage1Model(nn.Module):
 
     def _build_voxel_input(self, batch: dict[str, Any], embed_output: dict[str, Any] | None) -> torch.Tensor:
         """
-        构造 voxel backbone 输入张量(不要在这里生成候选集合 C)。
+        构造 voxel backbone 输入张量(不要在这里生成候选集合 C). 
 
         输入参数:
             - batch: dict[str, Any], real-only canonical batch
@@ -1477,7 +1477,7 @@ class VolumePointStage1Model(nn.Module):
         voxel_recycle_in: torch.Tensor | None,
     ) -> dict[str, Any]:
         """
-        执行一轮 voxel backbone。
+        执行一轮 voxel backbone. 
 
         输入参数:
             - voxel_input: torch.Tensor, (B, C_in, D, H, W), voxel backbone 输入
@@ -1498,7 +1498,7 @@ class VolumePointStage1Model(nn.Module):
         voxel_output_dict: dict[str, Any],
     ) -> tuple[dict[str, Any], PseudoAtomLayout | None, dict[str, Any]]:
         """
-        在最后一轮 voxel backbone 后准备 sparse candidate C 与 P anchor mixed batch。
+        在最后一轮 voxel backbone 后准备 sparse candidate C 与 P anchor mixed batch. 
 
         输入参数:
             - batch: dict[str, Any], 当前 real-only canonical batch
@@ -1571,7 +1571,7 @@ class VolumePointStage1Model(nn.Module):
         pseudo_layout: PseudoAtomLayout | None = None,
     ) -> dict[str, Any]:
         """
-        执行一轮 point backbone, 它会顺便记录 real-only 形式的 recycle 输入。
+        执行一轮 point backbone, 它会顺便记录 real-only 形式的 recycle 输入. 
 
         输入参数:
             - batch: dict[str, Any], real-only 或 mixed batch, 与 pseudo_layout 对齐
@@ -1638,7 +1638,7 @@ class VolumePointStage1Model(nn.Module):
         pseudo_layout: PseudoAtomLayout | None,
     ) -> None:
         """
-        在最后一轮 point backbone 后运行 Stage1AtomHead, 并把监督字段裁成 real-only。
+        在最后一轮 point backbone 后运行 Stage1AtomHead, 并把监督字段裁成 real-only. 
 
         输入参数:
             - outputs: dict[str, Any], 最后一轮 backbone 输出汇总, 将会原地写入 atom head 输出
@@ -1667,7 +1667,7 @@ class VolumePointStage1Model(nn.Module):
                 box_shape_zyx=atom_head_batch["box_shape_zyx"],
             )
 
-        # 最终分类头: 产出 before/after 特征与 real/P logits。
+        # 最终分类头: 产出 before/after 特征与 real/P logits. 
         if self.atom_head is not None:
             # torch.Tensor | None, (N_all,), bool, mixed 路径下 True 表示 P anchor
             pseudo_mask = atom_head_batch.get("pseudo_mask") if pseudo_layout is not None else None
@@ -1708,14 +1708,14 @@ class VolumePointStage1Model(nn.Module):
                     atom_head_batch.get("atom_batch_index"), pseudo_layout
                 ).to(torch.long)
         else:
-            # atom head 关时仅置空 logits 与 interaction 特征, 真实原子监督字段已由 forward 用 real_batch 写好。
+            # atom head 关时仅置空 logits 与 interaction 特征, 真实原子监督字段已由 forward 用 real_batch 写好. 
             outputs["real_feat_before_interaction"] = None
             outputs["real_feat_after_interaction"] = None
             outputs["pseudo_feat_before_interaction"] = None
             outputs["pseudo_feat_after_interaction"] = None
             outputs["atom_logits"] = None
             outputs["pseudo_logits"] = None
-        # outputs["atom_logits"] 是最终 real_atom_head 产生的; refine_receptor 时末尾加残差。
+        # outputs["atom_logits"] 是最终 real_atom_head 产生的; refine_receptor 时末尾加残差. 
         if outputs.get("atom_logits") is not None and self.refine_receptor_from_voxel:
             outputs["atom_logits"] = outputs["atom_logits"] + base
 
@@ -1727,12 +1727,12 @@ class VolumePointStage1Model(nn.Module):
         pseudo_layout: PseudoAtomLayout | None,
     ) -> None:
         """
-        在 final atom head 后将 P 消息聚合回唯一候选 C 并输出 refined logits。
+        在 final atom head 后将 P 消息聚合回唯一候选 C 并输出 refined logits. 
 
         输入参数:
-            - outputs: dict[str, Any], final recycle 输出字典，将原地追加 sparse refine 的结果
+            - outputs: dict[str, Any], final recycle 输出字典, 将原地追加 sparse refine 的结果
             - voxel_output_dict: dict[str, Any], final voxel backbone 输出
-            - point_batch: dict[str, Any], final real/P mixed batch，提供 BOX 坐标字段
+            - point_batch: dict[str, Any], final real/P mixed batch, 提供 BOX 坐标字段
             - pseudo_layout: PseudoAtomLayout | None, final mixed 布局
 
         输出:
@@ -1827,15 +1827,15 @@ class VolumePointStage1Model(nn.Module):
         A_feat_L1: torch.Tensor | None,
         A_feat_L2: torch.Tensor | None,
     ) -> None:
-        """把 centered 生产所需的真实层出口发布为稳定直键。
+        """把 centered 生产所需的真实层出口发布为稳定直键. 
 
-        ``voxel_features`` 原样引用最终 recycle 的命名 V 字典。Find 另外发布：
+        ``voxel_features`` 原样引用最终 recycle 的命名 V 字典. Find 另外发布: 
         ``A_feat_L1`` 为 point-side embed/interface normalization 后、原子 density
-        调制前的 real 表示；``A_feat_L2`` 为调制后送入 point backbone 的 real
-        表示；L3/L4 分别引用 A/P interaction 前后且送入分类头的真实层张量。
-        ``P_feat_L2`` 引用 density/class/interface normalization 后的 P 初始表示，
-        P 的 L3/L4 同样引用 interaction 前后张量。这里不复制张量，也不改变训练
-        forward、梯度或旧输出键。
+        调制前的 real 表示; ``A_feat_L2`` 为调制后送入 point backbone 的 real
+        表示; L3/L4 分别引用 A/P interaction 前后且送入分类头的真实层张量. 
+        ``P_feat_L2`` 引用 density/class/interface normalization 后的 P 初始表示, 
+        P 的 L3/L4 同样引用 interaction 前后张量. 这里不复制张量, 也不改变训练
+        forward、梯度或旧输出键. 
         """
 
         outputs["voxel_features"] = voxel_output_dict["voxel_features"]
@@ -1860,27 +1860,27 @@ class VolumePointStage1Model(nn.Module):
 
     def forward_voxel_probability(self, batch: dict[str, Any]) -> torch.Tensor:
         """
-        运行三个 producer 与完整 forward 等价的最短 voxel-only 路径。
+        运行三个 producer 与完整 forward 等价的最短 voxel-only 路径. 
 
         输入参数:
-            - batch: dict[str,Any], `Stage1BatchCollator` 输出; Find 含 core+8 Å real atom 表，unet_c1 只需共同 dense voxel 字段
+            - batch: dict[str,Any], `Stage1BatchCollator` 输出; Find 含 core+8 Å real atom 表, unet_c1 只需共同 dense voxel 字段
 
         输出:
             - voxel_logits_ligand: torch.Tensor, (B,1,80,80,80), BOX-local 离散 ZYX voxel 网格上的 ligand logits; 仍为 sigmoid 前值
 
-        该入口固定执行三次 recycle，并跳过 point blocks、point backbone、候选 C、
-        P、A/P heads 与 sparse-refine。它不调用完整 ``forward``，也不抽取共享
-        ``_forward_voxel_branch``，从而保持现有训练 forward 的结构边界。
+        该入口固定执行三次 recycle, 并跳过 point blocks、point backbone、候选 C、
+        P、A/P heads 与 sparse-refine. 它不调用完整 ``forward``, 也不抽取共享
+        ``_forward_voxel_branch``, 从而保持现有训练 forward 的结构边界. 
         """
 
         if not self.enable_recycling or self.max_recycles != 3:
             raise RuntimeError("AdaLigand forward_voxel_probability 要求 enable_recycling=true 且 max_recycles=3。")
-        # dict[str,Any], 统一字段名后的 Stage1 batch；dense 与 ragged 原子字段仍保持原值。
+        # dict[str,Any], 统一字段名后的 Stage1 batch; dense 与 ragged 原子字段仍保持原值. 
         canonical = self._canonicalize_stage1_batch(batch)
-        # torch.Tensor, (B,C_density,80,80,80), Dataset 构造的 producer 密度通道。
+        # torch.Tensor, (B,C_density,80,80,80), Dataset 构造的 producer 密度通道. 
         density_input = canonical["voxel_grid"]
         if self.embed_head is not None and self.embed_head.has_voxel_output:
-            # torch.Tensor, (B,C_receptor,80,80,80), Find_1 的 49D+2D 网格或 Find_2 的 56D tune 网格。
+            # torch.Tensor, (B,C_receptor,80,80,80), Find_1 的 49D+2D 网格或 Find_2 的 56D tune 网格. 
             receptor_grid = self.embed_head.forward_voxel_only(
                 atom_feat=canonical["atom_feat"],
                 atom_coord_local_voxel=canonical["atom_coord_local_voxel"],
@@ -1888,7 +1888,7 @@ class VolumePointStage1Model(nn.Module):
                 box_shape_zyx=canonical["box_shape_zyx"],
                 atom_is_in_core_box=canonical["atom_is_in_core_box"],
             )
-            # torch.Tensor, (B,C_voxel,80,80,80), producer-specific voxel backbone 输入。
+            # torch.Tensor, (B,C_voxel,80,80,80), producer-specific voxel backbone 输入. 
             voxel_input = (
                 density_input + receptor_grid
                 if bool(getattr(self.embed_head, "voxel_embed_as_tune", False))
@@ -1900,7 +1900,7 @@ class VolumePointStage1Model(nn.Module):
             if self.online_pdb_feature_use_soft_splatting:
                 raise RuntimeError("Find_0 voxel-only 路径禁止 soft splatting。")
             core_keep = canonical["atom_is_in_core_box"].bool()
-            # torch.Tensor, (B,49,80,80,80), Find_0 core 原子 49D 特征的 hard-sum 网格。
+            # torch.Tensor, (B,49,80,80,80), Find_0 core 原子 49D 特征的 hard-sum 网格. 
             raw_grid = scatter_to_voxel_grid(
                 point_feat=canonical["atom_feat"][core_keep].detach(),
                 atom_coord_local_voxel=canonical["atom_coord_local_voxel"][core_keep],
@@ -1910,17 +1910,17 @@ class VolumePointStage1Model(nn.Module):
                 reduce="sum",
                 add_occupancy_channels=False,
             )
-            # torch.Tensor, (B,C_density+49,80,80,80), Find_0 voxel backbone 输入。
+            # torch.Tensor, (B,C_density+49,80,80,80), Find_0 voxel backbone 输入. 
             voxel_input = torch.cat([density_input, raw_grid], dim=1)
         elif self.embed_head is None and self.point_backbone is None:
-            # unet_c1 没有原子支路，voxel 输入就是单一实验密度通道。
+            # unet_c1 没有原子支路, voxel 输入就是单一实验密度通道. 
             voxel_input = density_input
         else:
             raise RuntimeError("当前模型不是受支持的 Find_0、Find_1、Find_2 或 unet_c1 producer 配置。")
 
-        # torch.Tensor | None, voxel backbone 的跨 recycle 隐状态；第 1 轮为 None。
+        # torch.Tensor | None, voxel backbone 的跨 recycle 隐状态; 第 1 轮为 None. 
         voxel_recycle_in: torch.Tensor | None = None
-        # dict[str,Any] | None, 当前 recycle 的 voxel 输出；最终从中读取 ligand logits。
+        # dict[str,Any] | None, 当前 recycle 的 voxel 输出; 最终从中读取 ligand logits. 
         voxel_output_dict: dict[str, Any] | None = None
         for recycle_index in range(3):
             voxel_output_dict = self._run_voxel_backbone(voxel_input, voxel_recycle_in)
@@ -1938,13 +1938,13 @@ class VolumePointStage1Model(nn.Module):
     # ================================================================================================================================================
     def forward(self, batch: dict[str, Any]) -> dict[str, Any]:
         """
-        执行完整 Stage1 前向并发布最后一轮 voxel、point、atom、candidate 与 refine 输出。
+        执行完整 Stage1 前向并发布最后一轮 voxel、point、atom、candidate 与 refine 输出. 
 
         输入参数:
             - batch: dict[str,Any], `Stage1BatchCollator` 输出的 real-only batch; 坐标字段包括 centered 连续世界 XYZ 与 BOX-local 连续 voxel XYZ
 
         输出:
-            - outputs: dict[str,Any], 最后一轮结构化输出，包含 `voxel_outputs`、`point_outputs`、real-only supervision 字段，以及按配置追加的 atom/candidate/refine 字段
+            - outputs: dict[str,Any], 最后一轮结构化输出, 包含 `voxel_outputs`、`point_outputs`、real-only supervision 字段, 以及按配置追加的 atom/candidate/refine 字段
         """
         batch = self._canonicalize_stage1_batch(batch)
         if not self.enable_recycling:
@@ -1954,8 +1954,8 @@ class VolumePointStage1Model(nn.Module):
         else:
             recycle_steps = self.max_recycles
 
-        # unet_c1 的 Dataset 不返回 atom 表；直接执行 density -> RAUNet，既不构造
-        # Point，也不运行 A/P 相关组件。
+        # unet_c1 的 Dataset 不返回 atom 表; 直接执行 density -> RAUNet, 既不构造
+        # Point, 也不运行 A/P 相关组件. 
         if "atom_feat" not in batch:
             if self.embed_head is not None or self.point_backbone is not None or self.enable_atom_head:
                 raise RuntimeError("无 atom 字段只允许 unet_c1 的纯 voxel 配置。")
@@ -1984,13 +1984,13 @@ class VolumePointStage1Model(nn.Module):
             return outputs
 
         batch, embed_output = self._run_embed_head_once(batch)
-        # torch.Tensor | None，(N_A,C_A1)，embed/interface norm 后、density 调制前的 A。
+        # torch.Tensor | None, (N_A,C_A1), embed/interface norm 后、density 调制前的 A. 
         A_feat_L1 = batch["atom_feat"] if embed_output is not None else None
         # torch.Tensor, (B, C_in, D, H, W), recycle 循环内复用的 voxel 输入
         voxel_input = self._build_voxel_input(batch, embed_output)
         # 第 3 点: 真实原子 density cube 叠加到 atom_feat(point 分支初始特征); 放在 voxel_input 之后避免污染 voxel 输入, recycle 前算一次
         batch = self._apply_real_atom_density_to_atom_feat(batch)
-        # torch.Tensor | None，(N_A,C_A2)，实际送入 point backbone 的 density-modulated A。
+        # torch.Tensor | None, (N_A,C_A2), 实际送入 point backbone 的 density-modulated A. 
         A_feat_L2 = batch["atom_feat"] if embed_output is not None else None
         voxel_recycle_in: torch.Tensor | None = None
         point_recycle_in: torch.Tensor | None = None
@@ -2098,7 +2098,7 @@ class VolumePointStage1Model(nn.Module):
     
     def get_sparse_candidate_class_ids(self) -> tuple[int, ...] | None:
         """
-        返回 sparse candidate builder 配置的候选类别 ID(1~K, K一般=C)。
+        返回 sparse candidate builder 配置的候选类别 ID(1~K, K一般=C). 
 
         输出:
             - class_ids: tuple[int, ...] | None, builder 未启用时为 None; 启用时为前景候选类别 ID
@@ -2115,7 +2115,7 @@ class VolumePointStage1Model(nn.Module):
         p_sampling_by_class: torch.Tensor | None,
     ) -> None:
         """
-        保存 wrapper 同步过来的 candidate threshold cache。
+        保存 wrapper 同步过来的 candidate threshold cache. 
 
         输入参数:
             - p_best_by_class: torch.Tensor | None, (K,), best-F1 阈值缓存; None 表示尚不可用
@@ -2145,7 +2145,7 @@ class VolumePointStage1Model(nn.Module):
         allow_warmup_fixed_topk: bool,
     ) -> None:
         """
-        保存 wrapper 同步过来的 candidate runtime 状态。
+        保存 wrapper 同步过来的 candidate runtime 状态. 
 
         输入参数:
             - global_step: int, 当前 optimizer step
@@ -2161,7 +2161,7 @@ class VolumePointStage1Model(nn.Module):
 
     def _should_use_candidate_fixed_topk(self) -> bool:
         """
-        判断当前 forward 是否处于 candidate fixed topk 阶段。
+        判断当前 forward 是否处于 candidate fixed topk 阶段. 
 
         输出:
             - use_fixed: bool, True 表示 scheduler warmup 内使用固定 per-class topc

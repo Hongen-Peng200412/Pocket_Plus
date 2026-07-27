@@ -11,7 +11,7 @@ from .records import AssignmentResult, PairScore
 @dataclass(frozen=True)
 class RawPairFeatures:
     """
-    未归一化的 site-ligand pair 特征。
+    未归一化的 site-ligand pair 特征. 
     输入参数:
         - site_id: str, site 标签
         - ligand_label: str, ligand 标签
@@ -32,7 +32,7 @@ class RawPairFeatures:
 
 def build_pair_scores(features: list[RawPairFeatures], options: MatchingOptions) -> list[PairScore]:
     """
-    将原始 pair 特征归一化并合成为匹配成本。
+    将原始 pair 特征归一化并合成为匹配成本. 
     输入参数:
         - features: list[RawPairFeatures], 同一个 receptor_scope 下的 pair 特征
         - options: MatchingOptions, 匹配权重
@@ -59,7 +59,7 @@ def build_pair_scores(features: list[RawPairFeatures], options: MatchingOptions)
 
 def solve_assignment(scores: list[PairScore], site_ids: list[str], ligand_labels: list[str]) -> AssignmentResult:
     """
-    求解当前 site-ligand assignment。
+    求解当前 site-ligand assignment. 
     输入参数:
         - scores: list[PairScore], 真实 site-ligand 边成本
         - site_ids: list[str], 真实预测 site 标签
@@ -83,7 +83,7 @@ def solve_assignment_with_virtual_nodes(
     ligand_missing_costs: dict[str, float],
 ) -> AssignmentResult:
     """
-    使用虚拟节点求解方阵 assignment。
+    使用虚拟节点求解方阵 assignment. 
     输入参数:
         - scores: list[PairScore], 真实 site-ligand 边成本
         - site_ids: list[str], 真实预测 site 标签
@@ -129,7 +129,7 @@ def _solve_virtual_assignment_edges(
     ligand_missing_costs: dict[str, float],
 ) -> tuple[list[tuple[str, str, float]], float, str]:
     """
-    求解带虚拟节点的 assignment 边。
+    求解带虚拟节点的 assignment 边. 
 
     输入参数:
         - score_map: dict[tuple[str, str], PairScore], 真实 site-ligand 边成本
@@ -163,7 +163,7 @@ def _assignment_scipy(
     ligand_missing_costs: dict[str, float],
 ) -> tuple[list[tuple[str, str, float]], float]:
     """
-    使用 scipy 的 Hungarian solver 求解较大方阵。
+    使用 scipy 的 Hungarian solver 求解较大方阵. 
 
     输入参数:
         - padded_sites: list[str], 补齐后的左侧 site 节点
@@ -198,7 +198,7 @@ def _assignment_scipy(
 
 
 def _minmax(values: list[float]) -> list[float]:
-    """对一组数做 min-max 归一化, 常数列返回全 0。"""
+    """对一组数做 min-max 归一化, 常数列返回全 0. """
     lower = min(values)
     upper = max(values)
     if abs(upper - lower) < 1e-12:
@@ -212,7 +212,7 @@ def _assign_sites_to_ligands(
     site_ids: list[str],
     ligand_labels: list[str],
 ) -> AssignmentResult:
-    """处理 site 数不多于 ligand 数的矩形 assignment。"""
+    """处理 site 数不多于 ligand 数的矩形 assignment. """
     chosen, total = _assignment_dp(
         site_ids,
         ligand_labels,
@@ -235,7 +235,7 @@ def _assign_ligands_to_subset_of_sites(
     site_ids: list[str],
     ligand_labels: list[str],
 ) -> AssignmentResult:
-    """处理 site 数多于 ligand 数的矩形 assignment。"""
+    """处理 site 数多于 ligand 数的矩形 assignment. """
     chosen, total = _assignment_dp(
         ligand_labels,
         site_ids,
@@ -258,7 +258,7 @@ def _assignment_dp(
     cost_fn,
 ) -> tuple[list[tuple[str, str, float]], float]:
     """
-    用 bitmask DP 求解小到中等规模 assignment。
+    用 bitmask DP 求解小到中等规模 assignment. 
     输入参数:
         - left_nodes: list[str], 左侧节点, 数量不应大于右侧
         - right_nodes: list[str], 右侧节点
@@ -292,7 +292,7 @@ def _virtual_aware_cost(
     site_ignore_costs: dict[str, float],
     ligand_missing_costs: dict[str, float],
 ) -> float:
-    """返回真实边或虚拟边成本。"""
+    """返回真实边或虚拟边成本. """
     site_is_virtual = site.startswith("__virtual_site_")
     ligand_is_virtual = ligand.startswith("__virtual_ligand_")
     if site_is_virtual and ligand_is_virtual:

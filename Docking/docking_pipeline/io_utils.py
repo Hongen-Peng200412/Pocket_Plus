@@ -18,7 +18,7 @@ ROSETTA_UNSUPPORTED_POLYMER_RESIDUES = {"UNK"}
 
 def read_json(path: Path) -> Any:
     """
-    读取 JSON 文件。
+    读取 JSON 文件. 
     输入参数:
         - path: Path, JSON 文件路径
 
@@ -30,7 +30,7 @@ def read_json(path: Path) -> Any:
 
 def write_json(path: Path, data: Any) -> None:
     """
-    写入缩进 JSON 文件。
+    写入缩进 JSON 文件. 
     输入参数:
         - path: Path, 输出 JSON 文件路径
         - data: Any, 可 JSON 序列化对象
@@ -44,7 +44,7 @@ def write_json(path: Path, data: Any) -> None:
 
 def load_sites(sample_dir: Path) -> list[InferenceSite]:
     """
-    从 `voxel_candidates.json` 读取预测 site。
+    从 `voxel_candidates.json` 读取预测 site. 
     输入参数:
         - sample_dir: Path, 单个样本推理输出目录
 
@@ -67,7 +67,7 @@ def load_sites(sample_dir: Path) -> list[InferenceSite]:
 
 def load_cache_meta(sample_dir: Path) -> dict[str, Any]:
     """
-    读取 infer cache 中的 `meta_json`。
+    读取 infer cache 中的 `meta_json`. 
     输入参数:
         - sample_dir: Path, 单个样本推理输出目录, 其中必须包含 `summary.json`
 
@@ -81,7 +81,7 @@ def load_cache_meta(sample_dir: Path) -> dict[str, Any]:
 
 def load_instance_label(sample_dir: Path) -> np.ndarray:
     """
-    读取过滤后的 instance label。
+    读取过滤后的 instance label. 
     输入参数:
         - sample_dir: Path, 单个样本推理输出目录
 
@@ -95,7 +95,7 @@ def load_instance_label(sample_dir: Path) -> np.ndarray:
 
 def load_voxel_transform(sample_dir: Path) -> tuple[np.ndarray, np.ndarray]:
     """
-    读取体素到世界坐标的简化变换参数。
+    读取体素到世界坐标的简化变换参数. 
     输入参数:
         - sample_dir: Path, 单个样本推理输出目录
 
@@ -111,7 +111,7 @@ def load_voxel_transform(sample_dir: Path) -> tuple[np.ndarray, np.ndarray]:
 
 def load_resolution_table(path: Path) -> dict[str, dict[str, Any]]:
     """
-    读取 EMDB-PDB-resolution CSV。
+    读取 EMDB-PDB-resolution CSV. 
     输入参数:
         - path: Path, `/storage/penghongen/EMDB_PDB_resolution_3.5.csv`
 
@@ -130,7 +130,7 @@ def load_resolution_table(path: Path) -> dict[str, dict[str, Any]]:
 
 def mol2_internal_metals(path: Path) -> tuple[str, ...]:
     """
-    从 mol2 atom type 字段检测 ligand 内部金属元素。
+    从 mol2 atom type 字段检测 ligand 内部金属元素. 
     输入参数:
         - path: Path, mol2 文件路径
 
@@ -155,7 +155,7 @@ def mol2_internal_metals(path: Path) -> tuple[str, ...]:
 
 def rosetta_ligand_name(index: int) -> str:
     """
-    为 ligand 生成不碰撞 CCD 内置名的三字符 Rosetta residue 名称。
+    为 ligand 生成不碰撞 CCD 内置名的三字符 Rosetta residue 名称. 
 
     输入参数:
         - index: int, 从 1 开始的 ligand 序号
@@ -172,7 +172,7 @@ def rosetta_ligand_name(index: int) -> str:
 
 def read_ligand_candidates(mapping_csv: Path, pdb_id: str) -> list[LigandCandidate]:
     """
-    从 ligand mapping CSV 中读取当前样本可用于 docking 的候选 mol2。
+    从 ligand mapping CSV 中读取当前样本可用于 docking 的候选 mol2. 
     输入参数:
         - mapping_csv: Path, ligand mapping CSV
         - pdb_id: str, 当前样本 PDB ID, 大小写均可
@@ -228,7 +228,7 @@ def read_ligand_candidates(mapping_csv: Path, pdb_id: str) -> list[LigandCandida
 
 def cif_to_receptor_pdb(cif_path: Path, pdb_path: Path) -> int:
     """
-    将 atom_site CIF 转成 Rosetta 更稳妥可读的 receptor-only PDB。
+    将 atom_site CIF 转成 Rosetta 更稳妥可读的 receptor-only PDB. 
     输入参数:
         - cif_path: Path, 只读 CIF 来源
         - pdb_path: Path, 允许目录内输出 PDB
@@ -237,8 +237,8 @@ def cif_to_receptor_pdb(cif_path: Path, pdb_path: Path) -> int:
         - atom_count: int, 写出的 ATOM 数量
 
     注意:
-        - `UNK` polymer residue 无 Rosetta `RamaPrePro` 主链参数，必须从 receptor 输入排除。
-        - 若排除发生在链内部，在下一条保留记录前写入 `TER`，避免跨越缺失残基建立假主链。
+        - `UNK` polymer residue 无 Rosetta `RamaPrePro` 主链参数, 必须从 receptor 输入排除. 
+        - 若排除发生在链内部, 在下一条保留记录前写入 `TER`, 避免跨越缺失残基建立假主链. 
     """
     lines: list[str] = []
     serial = 1
@@ -281,7 +281,7 @@ def cif_to_receptor_pdb(cif_path: Path, pdb_path: Path) -> int:
 
 def read_scorefile(path: Path) -> dict[str, str]:
     """
-    读取 Rosetta scorefile 的最后一条 SCORE 记录。
+    读取 Rosetta scorefile 的最后一条 SCORE 记录. 
     输入参数:
         - path: Path, scorefile 路径
 
@@ -296,7 +296,7 @@ def read_scorefile(path: Path) -> dict[str, str]:
 
 def read_scorefile_rows(path: Path) -> list[dict[str, str]]:
     """
-    读取 Rosetta scorefile 的所有 decoy SCORE 记录。
+    读取 Rosetta scorefile 的所有 decoy SCORE 记录. 
 
     输入参数:
         - path: Path, scorefile 文件路径

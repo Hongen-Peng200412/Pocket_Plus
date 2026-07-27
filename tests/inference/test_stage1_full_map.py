@@ -1,4 +1,4 @@
-"""Stage1 80³/stride40 完整图融合与 hardmask 规则测试。"""
+"""Stage1 80³/stride40 完整图融合与 hardmask 规则测试. """
 
 from __future__ import annotations
 
@@ -19,10 +19,10 @@ from src.inference.runner import (
 
 
 class _NumpyVoxelModel:
-    """把 batch 中预先构造的 logits 原样作为 voxel-only 输出。"""
+    """把 batch 中预先构造的 logits 原样作为 voxel-only 输出. """
 
     def forward_voxel_probability(self, batch: dict[str, np.ndarray]) -> np.ndarray:
-        """返回 (B,1,80,80,80) 的测试 logits。"""
+        """返回 (B,1,80,80,80) 的测试 logits. """
         return batch["logits"]
 
 

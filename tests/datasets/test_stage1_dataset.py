@@ -14,6 +14,7 @@ from src.datasets.stage1_collate import Stage1BatchCollator
 from src.datasets.stage1_dataset import Stage1Dataset
 from src.datasets.ops.stage1_box_pool import build_stage1_box_pools, generate_context_starts
 from src.datasets.stage1_requests import (
+    ResolvedStage1Crop,
     Stage1TrainingRequestSet,
     build_request_source,
     centered_start_from_centroid_zyx,
@@ -56,8 +57,8 @@ def _write_upstream(root: Path, pdb_id: str = "1abc", shape: tuple[int, int, int
         [
             [10.5, 20.5, 30.5],       # core home z/y/x = 0/0/0
             [89.5, 99.5, 109.5],      # core home z/y/x = 79/79/79
-            [94.0, 50.0, 60.0],       # core 外 4 Å，属于 8 Å point buffer
-            [99.0, 50.0, 60.0],       # core 外 9 Å，不应加载
+            [94.0, 50.0, 60.0],       # core 外 4 Å, 属于 8 Å point buffer
+            [99.0, 50.0, 60.0],       # core 外 9 Å, 不应加载
         ],
         dtype=np.float32,
     )
@@ -72,20 +73,15 @@ def _write_upstream(root: Path, pdb_id: str = "1abc", shape: tuple[int, int, int
     np.savez(label_dir / "atom_labels.npz", binding_atom=np.asarray([True, False, True, False]))
 
 
-def _write_request(path: Path, require_targets: bool) -> None:
-    path.write_text(
-        json.dumps(
-            [
-                {
-                    "pdb_id": "1ABC",
-                    "box_start_zyx": [0, 0, 0],
-                    "require_targets": require_targets,
-                    "role": "centered",
-                    "occurrence_id": 0,
-                }
-            ]
+def _request(require_targets: bool) -> tuple[ResolvedStage1Crop, ...]:
+    return (
+        ResolvedStage1Crop(
+            pdb_id="1ABC",
+            box_start_zyx=(0, 0, 0),
+            require_targets=require_targets,
+            role="centered",
+            occurrence_id=0,
         ),
-        encoding="utf-8",
     )
 
 
@@ -98,7 +94,7 @@ def _density_config(channels: list[str]) -> dict[str, object]:
 
 
 def _write_pool_upstream(root: Path, pdb_id: str) -> None:
-    """写一份足以执行 BOX pool 一键入口的 schema-v3 轻量资产。"""
+    """写一份足以执行 BOX pool 一键入口的 schema-v3 轻量资产. """
 
     density_dir = root / "density" / pdb_id
     parse_dir = root / "parse" / pdb_id
@@ -134,7 +130,7 @@ def test_resolve_stage1_start_clamps_without_padding() -> None:
 
 
 def test_centroid_start_matches_sparse_mask_and_clamps_boundaries() -> None:
-    """验证 forest/centered 质心入口与 occurrence sparse-mask 入口完全同口径。"""
+    """验证 forest/centered 质心入口与 occurrence sparse-mask 入口完全同口径. """
 
     sparse = np.asarray([[0, 2, 4], [2, 4, 6], [4, 6, 8]], dtype=np.int32)
     centroid = sparse.astype(np.float64).mean(axis=0)
@@ -146,7 +142,7 @@ def test_centroid_start_matches_sparse_mask_and_clamps_boundaries() -> None:
 
 
 def test_centroid_start_rejects_non_finite_values() -> None:
-    """非有限 blob 质心不得静默生成错误 BOX。"""
+    """非有限 blob 质心不得静默生成错误 BOX. """
 
     with pytest.raises(ValueError, match="NaN/Inf"):
         centered_start_from_centroid_zyx((np.nan, 40.0, 40.0), (100, 100, 100))
@@ -158,11 +154,9 @@ def test_find_dataset_materializes_direct_core8_and_union_target(tmp_path: Path,
         "src.datasets.stage1_dataset.build_density_channels",
         lambda exp_raw, sim_raw, config, receptor_mask: np.zeros((56, *exp_raw.shape), dtype=np.float32),
     )
-    manifest = tmp_path / "requests.json"
-    _write_request(manifest, require_targets=True)
     dataset = Stage1Dataset(
         all_data_path=str(tmp_path),
-        split_file=str(manifest),
+        split_file=_request(require_targets=True),
         mode="val",
         stage1_model_name="Find_1",
         box_pool_root=None,
@@ -192,7 +186,7 @@ def test_find_dataset_materializes_direct_core8_and_union_target(tmp_path: Path,
 def test_ligand_distance_loader_rejects_mixed_finite_and_infinite_values(
     tmp_path: Path,
 ) -> None:
-    """有配体距离图必须全部有限；无配体距离图才允许全部为正无穷。"""
+    """有配体距离图必须全部有限; 无配体距离图才允许全部为正无穷. """
 
     _write_upstream(tmp_path)
     distance_path = tmp_path / "density" / "1abc" / "ligand_dist.npz"
@@ -207,11 +201,9 @@ def test_ligand_distance_loader_rejects_mixed_finite_and_infinite_values(
         origin_xyz=np.asarray([10.0, 20.0, 30.0], dtype=np.float32),
         distance_unit=np.asarray("angstrom"),
     )
-    request_path = tmp_path / "requests.json"
-    _write_request(request_path, require_targets=True)
     dataset = Stage1Dataset(
         all_data_path=str(tmp_path),
-        split_file=str(request_path),
+        split_file=_request(require_targets=True),
         mode="val",
         stage1_model_name="Find_1",
         box_pool_root=None,
@@ -231,15 +223,13 @@ def test_ligand_distance_loader_rejects_mixed_finite_and_infinite_values(
 def test_unet_dataset_returns_auxiliary_targets_without_sim_or_atom_table(
     tmp_path: Path,
 ) -> None:
-    """验证 unet_c1 不读取模拟密度或返回原子表，但仍提供三项新增体素监督。"""
+    """验证 unet_c1 不读取模拟密度或返回原子表, 但仍提供三项新增体素监督. """
 
     _write_upstream(tmp_path)
     (tmp_path / "density" / "1abc" / "sim.npz").unlink()
-    manifest = tmp_path / "requests.json"
-    _write_request(manifest, require_targets=True)
     dataset = Stage1Dataset(
         all_data_path=str(tmp_path),
-        split_file=str(manifest),
+        split_file=_request(require_targets=True),
         mode="val",
         stage1_model_name="unet_c1",
         box_pool_root=None,
@@ -265,10 +255,6 @@ def test_targets_toggle_does_not_change_model_inputs(tmp_path: Path, monkeypatch
         "src.datasets.stage1_dataset.build_density_channels",
         lambda exp_raw, sim_raw, config, receptor_mask: np.zeros((56, *exp_raw.shape), dtype=np.float32),
     )
-    with_targets = tmp_path / "with.json"
-    without_targets = tmp_path / "without.json"
-    _write_request(with_targets, require_targets=True)
-    _write_request(without_targets, require_targets=False)
     kwargs = dict(
         all_data_path=str(tmp_path),
         mode="centered",
@@ -277,8 +263,8 @@ def test_targets_toggle_does_not_change_model_inputs(tmp_path: Path, monkeypatch
         density_channel_config=_density_config(list(ALL_CHANNEL_NAMES)),
         enable_random_rotation=False,
     )
-    sample_true = Stage1Dataset(split_file=str(with_targets), **kwargs)[0]
-    sample_false = Stage1Dataset(split_file=str(without_targets), **kwargs)[0]
+    sample_true = Stage1Dataset(split_file=_request(require_targets=True), **kwargs)[0]
+    sample_false = Stage1Dataset(split_file=_request(require_targets=False), **kwargs)[0]
     for field_name in (
         "density_input",
         "hardmask",
@@ -298,11 +284,9 @@ def test_repeated_windows_reuse_bounded_full_grid_cache(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """同一 worker 连续物化同一 PDB 时，exp/sim 各只解压一次。"""
+    """同一 worker 连续物化同一 PDB 时, exp/sim 各只解压一次. """
 
     _write_upstream(tmp_path)
-    request_path = tmp_path / "requests.json"
-    _write_request(request_path, require_targets=False)
     read_count: Counter[str] = Counter()
     from src.datasets import stage1_dataset as dataset_module
 
@@ -322,7 +306,7 @@ def test_repeated_windows_reuse_bounded_full_grid_cache(
     )
     dataset = Stage1Dataset(
         all_data_path=str(tmp_path),
-        split_file=str(request_path),
+        split_file=_request(require_targets=False),
         mode="centered",
         stage1_model_name="Find_1",
         box_pool_root=None,
@@ -385,6 +369,7 @@ def test_training_pool_rebuilds_fixed_1_5_3_ratio(tmp_path: Path) -> None:
     context = np.stack([np.arange(10), np.arange(10), np.arange(10)], axis=1).astype(np.int32)
     np.savez(
         pool_dir / "1abc.npz",
+        pdb_id=np.asarray("1abc"),
         occurrence_id=occurrence,
         center_start_zyx=center,
         bias_start_zyx=bias,
@@ -442,13 +427,14 @@ def test_training_pool_context_underflow_does_not_abort(
     tmp_path: Path,
     context_count: int,
 ) -> None:
-    """context 尝试耗尽后保留真实池；1–2 个可复用，0 个则只省略 context。"""
+    """context 尝试耗尽后保留真实池; 1–2 个可复用, 0 个则只省略 context. """
 
     pool_dir = tmp_path / "train"
     pool_dir.mkdir()
     context = np.zeros((context_count, 3), dtype=np.int32)
     np.savez(
         pool_dir / "1abc.npz",
+        pdb_id=np.asarray("1abc"),
         occurrence_id=np.asarray([7], dtype=np.int32),
         center_start_zyx=np.asarray([[0, 0, 0]], dtype=np.int32),
         bias_start_zyx=np.zeros((1, 30, 3), dtype=np.int32),
@@ -478,7 +464,7 @@ def test_training_pool_context_underflow_does_not_abort(
 
 
 def test_context_generator_uses_core_atom_count_and_stable_legal_starts() -> None:
-    """验证 context 只按合法起点与 core receptor 重原子数筛选。"""
+    """验证 context 只按合法起点与 core receptor 重原子数筛选. """
 
     coords = np.full((4, 3), 40.0, dtype=np.float32)
     first = generate_context_starts(
@@ -510,7 +496,7 @@ def test_context_generator_uses_core_atom_count_and_stable_legal_starts() -> Non
 def test_synced_rotation_swaps_anisotropic_voxel_axes_and_keeps_alignment(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """90° 旋转必须同步置换轴尺度、体素监督和 Find 原子坐标。"""
+    """90° 旋转必须同步置换轴尺度、体素监督和 Find 原子坐标. """
 
     side = 4
     origin = np.asarray([10.0, 20.0, 30.0], dtype=np.float32)
@@ -561,7 +547,7 @@ def test_synced_rotation_swaps_anisotropic_voxel_axes_and_keeps_alignment(
 
 
 def test_box_pool_one_click_entry_publishes_train_validation_and_selection(tmp_path: Path) -> None:
-    """验证一键入口生成 pool、冻结 validation 1:5:3，并最后发布完成标记。"""
+    """验证一键入口生成 pool、冻结 validation 1:5:3, 并最后发布完成标记. """
 
     data_root = tmp_path / "data"
     _write_pool_upstream(data_root, "1abc")

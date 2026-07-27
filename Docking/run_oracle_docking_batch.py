@@ -42,7 +42,7 @@ TASKS = ("true_center_identity", "offset_center_identity", "true_center_hungaria
 
 def main() -> None:
     """
-    运行真实中心 / 偏移中心 oracle docking 批处理。
+    运行真实中心 / 偏移中心 oracle docking 批处理. 
 
     输入参数:
         - CLI 参数, 包括 run_id、样本列表、四类任务、offset 半径、seed 数和 nstruct
@@ -136,7 +136,7 @@ def main() -> None:
 
 
 def run_one(payload: dict[str, Any]) -> dict[str, Any]:
-    """运行单样本 oracle 实验并捕获样本级异常。"""
+    """运行单样本 oracle 实验并捕获样本级异常. """
     pdb_id = str(payload["pdb_id"]).lower()
     paths: ServerPaths = payload["paths"]
     run_id = str(payload["run_id"])
@@ -172,7 +172,7 @@ def run_oracle_sample(
     rosetta_jobs: int,
 ) -> dict[str, Any]:
     """
-    运行单样本四类 oracle/easy docking 实验。
+    运行单样本四类 oracle/easy docking 实验. 
 
     输入参数:
         - pdb_id: str, 小写 PDB ID
@@ -267,7 +267,7 @@ def prepare_variant(
     receptor_names: list[str],
 ) -> dict[str, Any]:
     """
-    准备一个 task/variant 的输入与 Rosetta job 矩阵。
+    准备一个 task/variant 的输入与 Rosetta job 矩阵. 
 
     输入参数:
         - variant: dict[str, Any], 包含 task、variant_id、sites、mode 等字段
@@ -310,7 +310,7 @@ def summarize_variant(
     dry_run: bool,
 ) -> dict[str, Any]:
     """
-    对已执行完成的 variant 结果做 assignment 与审计落盘。
+    对已执行完成的 variant 结果做 assignment 与审计落盘. 
 
     输入参数:
         - prepared: dict[str, Any], `prepare_variant` 返回的 variant 与 job 路径信息
@@ -349,7 +349,7 @@ def summarize_variant(
 
 def truth_ligand_sites(ligands: list[LigandCandidate]) -> list[dict[str, Any]]:
     """
-    为每个真实 ligand 构造一个真实中心 site。
+    为每个真实 ligand 构造一个真实中心 site. 
 
     输入参数:
         - ligands: list[LigandCandidate], 当前样本 dockable ligand 列表
@@ -374,7 +374,7 @@ def truth_ligand_sites(ligands: list[LigandCandidate]) -> list[dict[str, Any]]:
 
 def build_variants(task_names: list[str], truth_sites: list[dict[str, Any]], offset_radii: list[float], offset_seeds: int) -> list[dict[str, Any]]:
     """
-    根据任务名生成 task/variant 列表。
+    根据任务名生成 task/variant 列表. 
 
     输入参数:
         - task_names: list[str], 四类任务名
@@ -411,7 +411,7 @@ def build_variants(task_names: list[str], truth_sites: list[dict[str, Any]], off
 
 
 def offset_sites(truth_sites: list[dict[str, Any]], radius: float, seed: int) -> list[dict[str, Any]]:
-    """对同一样本内每个真实中心生成可复现的球内均匀偏移。"""
+    """对同一样本内每个真实中心生成可复现的球内均匀偏移. """
     rng = np.random.default_rng(seed)
     sites: list[dict[str, Any]] = []
     for item in truth_sites:
@@ -426,7 +426,7 @@ def offset_sites(truth_sites: list[dict[str, Any]], radius: float, seed: int) ->
 
 
 def replace_site_center(site: InferenceSite, center: tuple[float, float, float]) -> InferenceSite:
-    """返回同一 instance_id 但中心不同的 site。"""
+    """返回同一 instance_id 但中心不同的 site. """
     return InferenceSite(
         instance_id=site.instance_id,
         center_world_xyz=center,
@@ -437,7 +437,7 @@ def replace_site_center(site: InferenceSite, center: tuple[float, float, float])
 
 
 def assign_variant(results: list[DockingResult], options: MatchingOptions, use_virtual_nodes: bool) -> list[AssignmentResult]:
-    """对一个 variant 内每个 receptor scope 构造 assignment。"""
+    """对一个 variant 内每个 receptor scope 构造 assignment. """
     site_ids = sorted({result.job.site.site_id for result in results})
     ligand_labels = sorted({result.job.ligand.label for result in results})
     receptor_scopes = sorted({result.job.receptor.name for result in results})
@@ -474,7 +474,7 @@ def assign_variant(results: list[DockingResult], options: MatchingOptions, use_v
 
 
 def aggregate_dg(results: list[DockingResult], scope: str, site_id: str, ligand_label: str) -> float:
-    """聚合一个 scope 内同一 site-ligand pair 的 best dG。"""
+    """聚合一个 scope 内同一 site-ligand pair 的 best dG. """
     values = [
         value
         for result in results
@@ -486,7 +486,7 @@ def aggregate_dg(results: list[DockingResult], scope: str, site_id: str, ligand_
 
 
 def resolve_sample_ids(sample_list: str) -> list[str]:
-    """解析样本列表参数。"""
+    """解析样本列表参数. """
     path = Path(sample_list)
     if path.exists():
         return [line.strip().lower() for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
@@ -494,7 +494,7 @@ def resolve_sample_ids(sample_list: str) -> list[str]:
 
 
 def parallel_map(payloads: list[dict[str, Any]], jobs: int) -> list[dict[str, Any]]:
-    """使用 joblib 做样本级并行; joblib 不可用时顺序执行。"""
+    """使用 joblib 做样本级并行; joblib 不可用时顺序执行. """
     if jobs <= 1:
         return [run_one(payload) for payload in payloads]
     try:

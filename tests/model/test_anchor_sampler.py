@@ -7,7 +7,7 @@ from src.model.sparse_refine.anchor_sampler import SparseAnchorSampler, build_an
 
 def _make_batch(batch_size: int = 2) -> dict[str, torch.Tensor]:
     """
-    构造 anchor sampler 测试用 batch。
+    构造 anchor sampler 测试用 batch. 
 
     输入参数:
         - batch_size: int, BOX 数量
@@ -24,7 +24,7 @@ def _make_batch(batch_size: int = 2) -> dict[str, torch.Tensor]:
 
 def _make_candidate_outputs() -> dict[str, torch.Tensor]:
     """
-    构造已按物理 voxel 唯一化且带路由类别的 C 输出。
+    构造已按物理 voxel 唯一化且带路由类别的 C 输出. 
 
     输出:
         - candidate_outputs: dict[str, torch.Tensor], SparseCandidateSetBuilder 风格输出
@@ -47,7 +47,7 @@ def _make_candidate_outputs() -> dict[str, torch.Tensor]:
 
 def test_anchor_sampler_rejects_max_anchors_length_mismatch() -> None:
     """
-    验证 candidate_class_ids 与 max_anchors_per_class 长度不一致时 fail-fast。
+    验证 candidate_class_ids 与 max_anchors_per_class 长度不一致时 fail-fast. 
     """
     try:
         SparseAnchorSampler(
@@ -67,7 +67,7 @@ def test_anchor_sampler_rejects_max_anchors_length_mismatch() -> None:
 
 def test_anchor_sampler_inherits_unique_candidate_route_class() -> None:
     """
-    验证 sampler 直接消费唯一 C，并令 P 继承 builder 已确定的路由类别。
+    验证 sampler 直接消费唯一 C, 并令 P 继承 builder 已确定的路由类别. 
     """
     sampler = SparseAnchorSampler(
         candidate_class_ids=[1, 2],
@@ -89,7 +89,7 @@ def test_anchor_sampler_inherits_unique_candidate_route_class() -> None:
 
 def test_anchor_coordinates_use_xyz_center_corner_semantics() -> None:
     """
-    验证 P 坐标使用 x/y/z 顺序和 voxel center corner 语义。
+    验证 P 坐标使用 x/y/z 顺序和 voxel center corner 语义. 
     """
     coords = build_anchor_coordinates(
         anchor_voxel_zyx=torch.tensor([[2, 1, 0]], dtype=torch.long),
@@ -106,7 +106,7 @@ def test_anchor_coordinates_use_xyz_center_corner_semantics() -> None:
 
 def test_weighted_fps_respects_per_class_cap_and_first_highest_prob() -> None:
     """
-    验证 weighted_fps 遵守 per-class cap 且第一枚 anchor 是最高概率候选。
+    验证 weighted_fps 遵守 per-class cap 且第一枚 anchor 是最高概率候选. 
     """
     candidate_outputs = {
         "candidate_voxel_zyx": torch.tensor([[0, 0, 0], [0, 0, 3], [3, 3, 3]], dtype=torch.long),
@@ -133,7 +133,7 @@ def test_weighted_fps_respects_per_class_cap_and_first_highest_prob() -> None:
 
 def test_topk_nms_selects_local_maxima() -> None:
     """
-    验证 topk_nms 只保留局部最大候选。
+    验证 topk_nms 只保留局部最大候选. 
     """
     candidate_outputs = {
         "candidate_voxel_zyx": torch.tensor([[1, 1, 1], [1, 1, 2], [3, 3, 3]], dtype=torch.long),
@@ -158,7 +158,7 @@ def test_topk_nms_selects_local_maxima() -> None:
 
 def test_binary_anchor_sampler_config_shape() -> None:
     """
-    验证二分类 candidate_class_ids=[1] 时 counts_by_class 维度为 (B,1)。
+    验证二分类 candidate_class_ids=[1] 时 counts_by_class 维度为 (B,1). 
     """
     sampler = SparseAnchorSampler(
         candidate_class_ids=[1],

@@ -14,7 +14,7 @@ from docking_pipeline.runner import run_sample
 
 def main() -> None:
     """
-    运行多样本 docking 批处理。
+    运行多样本 docking 批处理. 
 
     输入参数:
         - CLI 参数, 包括 run_id、样本列表、nstruct、并发数和 instance 后处理参数
@@ -118,7 +118,7 @@ def main() -> None:
 
 def run_one(payload: dict[str, Any]) -> dict[str, Any]:
     """
-    执行单个样本并把异常写入样本 audit。
+    执行单个样本并把异常写入样本 audit. 
 
     输入参数:
         - payload: dict[str, Any], `run_sample` 所需参数
@@ -147,7 +147,7 @@ def run_one(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def _parallel_map(payloads: list[dict[str, Any]], jobs: int) -> list[dict[str, Any]]:
-    """使用 joblib 并行执行样本; joblib 不可用时退回顺序执行。"""
+    """使用 joblib 并行执行样本; joblib 不可用时退回顺序执行. """
     if jobs <= 1:
         return [run_one(payload) for payload in payloads]
     try:
@@ -159,7 +159,7 @@ def _parallel_map(payloads: list[dict[str, Any]], jobs: int) -> list[dict[str, A
 
 def _resolve_sample_ids(paths: ServerPaths, sample_list: str | None) -> list[str]:
     """
-    解析样本列表。
+    解析样本列表. 
 
     输入参数:
         - paths: ServerPaths, 服务器路径配置

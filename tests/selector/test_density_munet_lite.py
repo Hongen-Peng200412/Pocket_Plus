@@ -1,4 +1,4 @@
-"""DensityMUNetLite 的分辨率、通道与 bottleneck 边界测试。"""
+"""DensityMUNetLite 的分辨率、通道与 bottleneck 边界测试. """
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from src.selector.model.density_munet_lite import DensityMUNetLite
 
 
 def test_density_munet_lite_preserves_full_resolution_and_uses_one_transformer_layer() -> None:
-    """轻量测试 shape 仍应走四层编码和仅最低分辨率 Transformer。"""
+    """轻量测试 shape 仍应走四层编码和仅最低分辨率 Transformer. """
     model = DensityMUNetLite(
         input_shape_zyx=(16, 16, 16),
         channels=(4, 8, 8, 16),

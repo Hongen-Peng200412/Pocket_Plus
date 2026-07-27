@@ -8,7 +8,7 @@ from typing import Any
 @dataclass(frozen=True)
 class InferenceSite:
     """
-    网络推理得到的单个 ligand instance。
+    网络推理得到的单个 ligand instance. 
     输入参数:
         - instance_id: int, `voxel_candidates.json` 中的 instance 编号
         - center_world_xyz: tuple[float, float, float], 世界坐标系下的预测中心
@@ -28,14 +28,14 @@ class InferenceSite:
 
     @property
     def site_id(self) -> str:
-        """返回稳定 site 标签, 例如 `site001`。"""
+        """返回稳定 site 标签, 例如 `site001`. """
         return f"site{self.instance_id:03d}"
 
 
 @dataclass(frozen=True)
 class LigandCandidate:
     """
-    单个候选 mol2 记录。
+    单个候选 mol2 记录. 
     输入参数:
         - pdb_id: str, 样本 PDB ID, 小写
         - ccd_id: str, RCSB CCD ligand 名称
@@ -61,7 +61,7 @@ class LigandCandidate:
 @dataclass(frozen=True)
 class ReceptorSource:
     """
-    receptor 输入来源。
+    receptor 输入来源. 
     输入参数:
         - name: str, `true_receptor` 或 `cryoatom_receptor`
         - cif_path: Path, 只读 CIF 来源路径
@@ -79,7 +79,7 @@ class ReceptorSource:
 @dataclass(frozen=True)
 class DockingJob:
     """
-    一个 Rosetta docking job 的完整输入规格。
+    一个 Rosetta docking job 的完整输入规格. 
     输入参数:
         - pdb_id: str, 样本 PDB ID
         - site: InferenceSite, 当前预测位点
@@ -109,7 +109,7 @@ class DockingJob:
 @dataclass
 class DockingResult:
     """
-    Rosetta job 的解析结果。
+    Rosetta job 的解析结果. 
     输入参数:
         - job: DockingJob, 对应输入规格
         - success: bool, 是否满足流程成功定义中的进程成功
@@ -136,7 +136,7 @@ class DockingResult:
     decoy_summary: dict[str, float] = field(default_factory=dict)
 
     def numeric_score(self, key: str) -> float | None:
-        """从 `score_values` 中读取一个浮点字段, 字段不存在时返回 None。"""
+        """从 `score_values` 中读取一个浮点字段, 字段不存在时返回 None. """
         value = self.score_values.get(key)
         return None if value is None else float(value)
 
@@ -144,7 +144,7 @@ class DockingResult:
 @dataclass(frozen=True)
 class PairScore:
     """
-    一个 site-ligand pair 的匹配成本组成。
+    一个 site-ligand pair 的匹配成本组成. 
     输入参数:
         - site_id: str, 预测位点标签
         - ligand_label: str, ligand 候选标签
@@ -166,7 +166,7 @@ class PairScore:
 @dataclass(frozen=True)
 class AssignmentResult:
     """
-    site-ligand 匹配结果。
+    site-ligand 匹配结果. 
     输入参数:
         - receptor_scope: str, 匹配对应的 receptor 分数范围
         - total_cost: float, assignment 总成本

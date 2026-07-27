@@ -14,7 +14,7 @@ from .records import DockingJob, DockingResult, InferenceSite, LigandCandidate, 
 
 def write_galiganddock_xml(path: Path, resolution: float, options: RosettaOptions) -> None:
     """
-    写入当前已验证的低成本 GALigandDock XML。
+    写入当前已验证的低成本 GALigandDock XML. 
     输入参数:
         - path: Path, XML 输出路径
         - resolution: float, 当前样本 map 分辨率
@@ -52,7 +52,7 @@ def write_galiganddock_xml(path: Path, resolution: float, options: RosettaOption
 
 def run_molfile_to_params(paths: ServerPaths, ligand: LigandCandidate, mol2_copy: Path, params_dir: Path) -> Path:
     """
-    为一个 mol2 生成 Rosetta params。
+    为一个 mol2 生成 Rosetta params. 
     输入参数:
         - paths: ServerPaths, 服务器路径配置
         - ligand: LigandCandidate, 当前候选 ligand
@@ -78,7 +78,7 @@ def run_molfile_to_params(paths: ServerPaths, ligand: LigandCandidate, mol2_copy
 
 def translate_ligand_to_site(ligand_pdb: Path, output_pdb: Path, site: InferenceSite) -> None:
     """
-    将 ligand conformer 平移到预测 site 中心。
+    将 ligand conformer 平移到预测 site 中心. 
     输入参数:
         - ligand_pdb: Path, `molfile_to_params.py` 生成的 ligand PDB
         - output_pdb: Path, 平移后的 ligand PDB
@@ -103,7 +103,7 @@ def translate_ligand_to_site(ligand_pdb: Path, output_pdb: Path, site: Inference
 
 def make_complex_pdb(receptor_pdb: Path, ligand_pdb: Path, output_pdb: Path) -> None:
     """
-    拼接 receptor PDB 和已经平移的 ligand PDB。
+    拼接 receptor PDB 和已经平移的 ligand PDB. 
     输入参数:
         - receptor_pdb: Path, receptor-only PDB
         - ligand_pdb: Path, 平移后的 ligand PDB
@@ -128,7 +128,7 @@ def build_docking_job(
     work_dir: Path,
 ) -> DockingJob:
     """
-    构造一个 docking job 的路径规格。
+    构造一个 docking job 的路径规格. 
     输入参数:
         - pdb_id: str, 当前样本 PDB ID
         - site: InferenceSite, 当前预测位点
@@ -155,7 +155,7 @@ def build_docking_job(
 
 def rosetta_command(paths: ServerPaths, job: DockingJob, map_path: Path, resolution: float, options: RosettaOptions) -> list[str]:
     """
-    构造 Rosetta 命令。
+    构造 Rosetta 命令. 
     输入参数:
         - paths: ServerPaths, 服务器路径配置
         - job: DockingJob, 当前 job 输入规格
@@ -198,7 +198,7 @@ def rosetta_command(paths: ServerPaths, job: DockingJob, map_path: Path, resolut
 
 def run_rosetta_job(paths: ServerPaths, job: DockingJob, map_path: Path, resolution: float, options: RosettaOptions) -> DockingResult:
     """
-    执行一个 Rosetta job 并解析 scorefile。
+    执行一个 Rosetta job 并解析 scorefile. 
     输入参数:
         - paths: ServerPaths, 服务器路径配置
         - job: DockingJob, 当前 job 输入规格
@@ -247,7 +247,7 @@ def run_rosetta_jobs(
     rosetta_jobs: int,
 ) -> list[DockingResult]:
     """
-    在一个样本内并行执行相互独立的 Rosetta docking jobs。
+    在一个样本内并行执行相互独立的 Rosetta docking jobs. 
 
     输入参数:
         - paths: ServerPaths, 服务器路径配置
@@ -269,7 +269,7 @@ def run_rosetta_jobs(
 
 def _pdb_coords(lines: list[str]) -> np.ndarray:
     """
-    从 PDB 行中提取坐标。
+    从 PDB 行中提取坐标. 
     输入参数:
         - lines: list[str], PDB 文本行
 
@@ -286,7 +286,7 @@ def _pdb_coords(lines: list[str]) -> np.ndarray:
 
 def _best_score_row(rows: list[dict[str, str]]) -> dict[str, str]:
     """
-    从所有 decoy 中选择默认用于 matching 的 best row。
+    从所有 decoy 中选择默认用于 matching 的 best row. 
 
     输入参数:
         - rows: list[dict[str, str]], scorefile 中所有 decoy 字段
@@ -306,7 +306,7 @@ def _best_score_row(rows: list[dict[str, str]]) -> dict[str, str]:
 
 def _decoy_summary(rows: list[dict[str, str]]) -> dict[str, float]:
     """
-    汇总所有 decoy 的数值字段。
+    汇总所有 decoy 的数值字段. 
 
     输入参数:
         - rows: list[dict[str, str]], scorefile 中所有 decoy 字段
@@ -330,7 +330,7 @@ def _decoy_summary(rows: list[dict[str, str]]) -> dict[str, float]:
 
 
 def _safe_float(value: str | None) -> float | None:
-    """将 scorefile 字段转成 float, 非数值字段返回 None。"""
+    """将 scorefile 字段转成 float, 非数值字段返回 None. """
     if value is None:
         return None
     try:

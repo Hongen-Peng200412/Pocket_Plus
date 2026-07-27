@@ -1,28 +1,28 @@
 """
-Anchor-based P pseudo atom 的 mixed layout 工具。
+Anchor-based P pseudo atom 的 mixed layout 工具. 
 
 对齐契约（修改时必须全量同步）:
-    - 本段、CLAUDE/plans/implement/tri_ligand_sparse_refine/00-master.md、Stage1 调用点和 tests/model/test_pseudo_atoms.py 必须同步更新。
-    - B 表示 batch 内 BOX 数; N_real=sum(real_counts); N_pseudo=sum(pseudo_counts); N_all=N_real+N_pseudo。
-    - mixed layout 固定为每个 BOX 内 `[real_i..., pseudo_i...]`, 不允许把 pseudo 打散到 real 序列中间。
+    - 本段、CLAUDE/plans/implement/tri_ligand_sparse_refine/00-master.md、Stage1 调用点和 tests/model/test_pseudo_atoms.py 必须同步更新. 
+    - B 表示 batch 内 BOX 数; N_real=sum(real_counts); N_pseudo=sum(pseudo_counts); N_all=N_real+N_pseudo. 
+    - mixed layout 固定为每个 BOX 内 `[real_i..., pseudo_i...]`, 不允许把 pseudo 打散到 real 序列中间. 
 
 pseudo_dict 字段契约:
-    - pseudo_counts: torch.Tensor, (B,), int64/long, 每个 BOX 的 P anchor 数, sum 等于 N_pseudo。
-    - pseudo_batch_index: torch.Tensor, (N_pseudo,), int64/long, 每个 P anchor 所属 BOX 索引, 必须按 BOX 分组且与 pseudo_counts 一致。
-    - pseudo_coord_centered_world: torch.Tensor, (N_pseudo, 3), floating, P anchor 以 BOX 中心为原点的世界坐标, 轴顺序 (x, y, z)。
-    - pseudo_coord_local_voxel: torch.Tensor, (N_pseudo, 3), floating, P anchor 的 corner 语义连续局部体素坐标, 轴顺序 (x, y, z)。
-    - pseudo_coord_world: torch.Tensor, (N_pseudo, 3), floating, P anchor 的绝对世界坐标, 轴顺序 (x, y, z)。
-    - pseudo_feat: torch.Tensor, (N_pseudo, F_atom), floating, P anchor 初始点特征, F_atom 必须等于 real_batch["atom_feat"].shape[1]。
-    - pseudo_is_in_core_box: torch.Tensor, (N_pseudo,), bool, 可选字段, P anchor 是否在 core box 内; 缺省时本模块按全 True 处理。
-    - pseudo_anchor_class: torch.Tensor, (N_pseudo,), int64/long, 可选字段, P anchor 的候选类别索引, 类别顺序由候选 C 模块定义。
-    - pseudo_anchor_voxel_zyx: torch.Tensor, (N_pseudo, 3), int64/long, 可选字段, P anchor 来源体素坐标, 轴顺序 (z, y, x)。
-    - pseudo_source_candidate_index: torch.Tensor, (N_pseudo,), int64/long, 可选字段, P anchor 对应的候选 C 行索引。
+    - pseudo_counts: torch.Tensor, (B,), int64/long, 每个 BOX 的 P anchor 数, sum 等于 N_pseudo. 
+    - pseudo_batch_index: torch.Tensor, (N_pseudo,), int64/long, 每个 P anchor 所属 BOX 索引, 必须按 BOX 分组且与 pseudo_counts 一致. 
+    - pseudo_coord_centered_world: torch.Tensor, (N_pseudo, 3), floating, P anchor 以 BOX 中心为原点的世界坐标, 轴顺序 (x, y, z). 
+    - pseudo_coord_local_voxel: torch.Tensor, (N_pseudo, 3), floating, P anchor 的 corner 语义连续局部体素坐标, 轴顺序 (x, y, z). 
+    - pseudo_coord_world: torch.Tensor, (N_pseudo, 3), floating, P anchor 的绝对世界坐标, 轴顺序 (x, y, z). 
+    - pseudo_feat: torch.Tensor, (N_pseudo, F_atom), floating, P anchor 初始点特征, F_atom 必须等于 real_batch["atom_feat"].shape[1]. 
+    - pseudo_is_in_core_box: torch.Tensor, (N_pseudo,), bool, 可选字段, P anchor 是否在 core box 内; 缺省时本模块按全 True 处理. 
+    - pseudo_anchor_class: torch.Tensor, (N_pseudo,), int64/long, 可选字段, P anchor 的候选类别索引, 类别顺序由候选 C 模块定义. 
+    - pseudo_anchor_voxel_zyx: torch.Tensor, (N_pseudo, 3), int64/long, 可选字段, P anchor 来源体素坐标, 轴顺序 (z, y, x). 
+    - pseudo_source_candidate_index: torch.Tensor, (N_pseudo,), int64/long, 可选字段, P anchor 对应的候选 C 行索引. 
 
 inject_pseudo_atoms 输出契约:
-    - mixed_batch["real_mask"]: torch.Tensor, (N_all,), bool, True 表示 real atom。
-    - mixed_batch["pseudo_mask"]: torch.Tensor, (N_all,), bool, True 表示 P anchor。
-    - mixed_batch["atom_label"]: torch.Tensor, (N_all,), long, P anchor 槽位固定为 0, 仅作占位。
-    - mixed_batch["atom_global_indices"]: torch.Tensor, (N_all,), long, P anchor 槽位固定为 -1, 表示无真实原子全局索引。
+    - mixed_batch["real_mask"]: torch.Tensor, (N_all,), bool, True 表示 real atom. 
+    - mixed_batch["pseudo_mask"]: torch.Tensor, (N_all,), bool, True 表示 P anchor. 
+    - mixed_batch["atom_label"]: torch.Tensor, (N_all,), long, P anchor 槽位固定为 0, 仅作占位. 
+    - mixed_batch["atom_global_indices"]: torch.Tensor, (N_all,), long, P anchor 槽位固定为 -1, 表示无真实原子全局索引. 
 """
 from __future__ import annotations
 from dataclasses import dataclass
@@ -34,7 +34,7 @@ import torch
 @dataclass(frozen=True)
 class PseudoAtomLayout:
     """
-    描述 real atom 与 P anchor 在 mixed batch 中的逐 BOX 布局。
+    描述 real atom 与 P anchor 在 mixed batch 中的逐 BOX 布局. 
 
     输入参数:
         - real_counts: torch.Tensor, (B,), long, 每个 BOX 的真实原子数
@@ -58,12 +58,12 @@ class PseudoAtomLayout:
 
 def compute_atom_counts(batch: dict[str, Any]) -> torch.Tensor:
     """
-    从 real-only batch 中读取或计算每个 BOX 的真实原子数。
+    从 real-only batch 中读取或计算每个 BOX 的真实原子数. 
 
     输入参数:
         - batch: dict[str, Any], collate 后的 real-only batch, 必须包含
-            - atom_batch_index: torch.Tensor, (sumN,), long,  指明展平的点云序列中，每个点属于当前 batch 内哪个样本 (0 ~ B-1)
-            - box_shape_zyx: torch.Tensor, (B,3), long, 每个BOX的体素形状，顺序为(Z,Y,X)对应(depth,height,width)
+            - atom_batch_index: torch.Tensor, (sumN,), long,  指明展平的点云序列中, 每个点属于当前 batch 内哪个样本 (0 ~ B-1)
+            - box_shape_zyx: torch.Tensor, (B,3), long, 每个BOX的体素形状, 顺序为(Z,Y,X)对应(depth,height,width)
 
     输出:
         - atom_counts: torch.Tensor, (B,), long, 每个 BOX 的真实原子数
@@ -83,7 +83,7 @@ def compute_atom_counts(batch: dict[str, Any]) -> torch.Tensor:
 
 def build_layout(real_batch: dict[str, Any], pseudo_dict: dict[str, Any]) -> PseudoAtomLayout:
     """
-    根据 real-only batch 与 anchor-based pseudo_dict 构造 mixed layout。
+    根据 real-only batch 与 anchor-based pseudo_dict 构造 mixed layout. 
 
     输入参数:
         - real_batch: dict[str, Any], real-only batch, 提供真实原子计数
@@ -102,7 +102,7 @@ def build_layout(real_batch: dict[str, Any], pseudo_dict: dict[str, Any]) -> Pse
 
 def build_real_mask(layout: PseudoAtomLayout, *, device: torch.device | None = None) -> torch.Tensor:
     """
-    按 `[real_i, pseudo_i]` mixed 顺序构造真实原子掩码。
+    按 `[real_i, pseudo_i]` mixed 顺序构造真实原子掩码. 
 
     输入参数:
         - layout: PseudoAtomLayout, (B,), real/pseudo 逐 BOX 计数
@@ -124,7 +124,7 @@ def build_real_mask(layout: PseudoAtomLayout, *, device: torch.device | None = N
 
 def build_pseudo_mask(layout: PseudoAtomLayout, *, device: torch.device | None = None) -> torch.Tensor:
     """
-    按 `[real_i, pseudo_i]` mixed 顺序构造 P anchor 掩码。
+    按 `[real_i, pseudo_i]` mixed 顺序构造 P anchor 掩码. 
 
     输入参数:
         - layout: PseudoAtomLayout, (B,), real/pseudo 逐 BOX 计数
@@ -146,7 +146,7 @@ def interleave_real_and_pseudo_tensor(
     pseudo_tensor: torch.Tensor | None = None,
 ) -> torch.Tensor | None:
     """
-    将 real-only 张量与 pseudo-only 张量按 `[real_i, pseudo_i]` 拼成 mixed 张量。
+    将 real-only 张量与 pseudo-only 张量按 `[real_i, pseudo_i]` 拼成 mixed 张量. 
 
     输入参数:
         - real_tensor: torch.Tensor | None, (sumN_real, ...), real-only 张量; 如果为 None 则直接返回 None
@@ -202,7 +202,7 @@ def _interleave_required_field(
     pseudo_field: str,
 ) -> torch.Tensor:
     """
-    交错拼接 real batch 与 pseudo dict 的必需字段。
+    交错拼接 real batch 与 pseudo dict 的必需字段. 
 
     输入参数:
         - real_batch: dict[str, Any], real-only batch
@@ -221,7 +221,7 @@ def extract_real_tensor_from_mixed(
     layout: PseudoAtomLayout,
 ) -> torch.Tensor | None:
     """
-    从 mixed 张量中提取真实原子子张量。
+    从 mixed 张量中提取真实原子子张量. 
 
     输入参数:
         - mixed_tensor: torch.Tensor | None, (sumN_real + sumP, ...), mixed 布局张量
@@ -243,7 +243,7 @@ def extract_pseudo_tensor_from_mixed(
     layout: PseudoAtomLayout,
 ) -> torch.Tensor | None:
     """
-    从 mixed 张量中提取 P anchor 子张量。
+    从 mixed 张量中提取 P anchor 子张量. 
 
     输入参数:
         - mixed_tensor: torch.Tensor | None, (sumN_real + sumP, ...), mixed 布局张量
@@ -270,7 +270,7 @@ def inject_pseudo_atoms(
     pseudo_dict: dict[str, Any],
 ) -> tuple[dict[str, Any], PseudoAtomLayout]:
     """
-    将 anchor sampler 准备好的 P anchors 注入 real-only batch, 供最后一轮 point backbone 消费。
+    将 anchor sampler 准备好的 P anchors 注入 real-only batch, 供最后一轮 point backbone 消费. 
 
     输入参数:
         - real_batch: dict[str, Any], real-only batch, 来自 embed head 裁剪后的 canonical 视图
@@ -344,7 +344,7 @@ def remove_pseudo_atoms(
     layout: PseudoAtomLayout,
 ) -> dict[str, Any]:
     """
-    从 mixed batch 中移除 P anchors, 恢复 wrapper-facing real-only batch 字段。
+    从 mixed batch 中移除 P anchors, 恢复 wrapper-facing real-only batch 字段. 
 
     输入参数:
         - mixed_batch: dict[str, Any], inject_pseudo_atoms 输出的 mixed batch
@@ -395,7 +395,7 @@ def filter_point_state_with_mask(    # 下面函数的工具函数
     counts: torch.Tensor,
 ) -> dict[str, Any]:
     """
-    用点级 keep_mask 裁剪 point_state 并重建 offset。
+    用点级 keep_mask 裁剪 point_state 并重建 offset. 
 
     输入参数:
         - point_state: dict[str, Any], point backbone 输出的点状态(具体可见 src\model\stage1_point_backbone.py, 就是 coords, batch, offset, grid_size, grid_coord)
@@ -423,7 +423,7 @@ def extract_real_point_output(    # 特化函数
     layout: PseudoAtomLayout,
 ) -> tuple[dict[str, Any], torch.Tensor, dict[str, Any], dict[str, Any]]:
     """
-    从最后一轮 mixed point backbone 输出中提取 real-only 视图, 供 recycle 与 wrapper 继续消费。
+    从最后一轮 mixed point backbone 输出中提取 real-only 视图, 供 recycle 与 wrapper 继续消费. 
 
     输入参数:
         - mixed_batch: dict[str, Any], inject_pseudo_atoms 输出的 mixed batch
@@ -462,7 +462,7 @@ def extract_real_point_output(    # 特化函数
     if isinstance(feature_dict, dict):
         trimmed_feature_dict: dict[str, Any] = {}
         for feature_name, feature_value in feature_dict.items():
-            # 只承诺 point_feat/point_state/point_recycle_out 是 real-only，要在契约里写清楚 pooled point_feature_dict 不保证 real-only。
+            # 只承诺 point_feat/point_state/point_recycle_out 是 real-only, 要在契约里写清楚 pooled point_feature_dict 不保证 real-only. 
             if torch.is_tensor(feature_value) and feature_value.ndim >= 1 and feature_value.shape[0] == real_mask.shape[0]:
                 trimmed_feature_dict[feature_name] = feature_value[real_mask]
             else:

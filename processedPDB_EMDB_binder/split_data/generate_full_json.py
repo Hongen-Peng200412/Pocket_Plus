@@ -1,13 +1,13 @@
 """
 划分逻辑:
-1. 我们要构造三种数据集, 对应于三个划分文件夹(Split_output_FOLDER)。 每个文件夹含有 "包含.json文件的子文件夹"————它们目前名称将会是：metal_ion, small_molecule, peptide, nucleic(来自 Pocket\processedPDB_EMDB_binder\bind.py 和 Pocket\processedPDB_EMDB_binder\split_and_select_box.py 的保存逻辑) 每个子文件夹对应 "关于这个数据集、针对这种配体的划分".
+1. 我们要构造三种数据集, 对应于三个划分文件夹(Split_output_FOLDER). 每个文件夹含有 "包含.json文件的子文件夹"————它们目前名称将会是: metal_ion, small_molecule, peptide, nucleic(来自 Pocket\processedPDB_EMDB_binder\bind.py 和 Pocket\processedPDB_EMDB_binder\split_and_select_box.py 的保存逻辑) 每个子文件夹对应 "关于这个数据集、针对这种配体的划分".
 2. 目前, 文件夹 split_0 对应的数据集是: 只包含所有以"_C"为结尾的样本, 对应所有结合位点的"中心摄影图"; 
          文件夹 split_3 对应的数据集是: 包含: 所有以"_C"为结尾的样本 + 每个结合位点额外随机选取的3个BOX; 
          文件夹 split_all 对应的数据集是: 所有样本.
 3. .json格式形如["9e01_3_0_0_0_C", ...], 它是去后缀的文件名. 某个条目在.json列表内当且仅当这个文件同时存在于EMDB_BOX_FOLDER, PDB_Feaure_BOX_FOLDER, PBD_Label_BOX_FOLDER中.
 
 Note:
-(1). 实际操作中，就是依据 Instance_Json = ".../all.json" 来遍历/过滤的，也就是说 Instance_Json = ".../all.json" 相当于"最全的emdb_pdb"映射, 不在里面的样本都忽略.
+(1). 实际操作中, 就是依据 Instance_Json = ".../all.json" 来遍历/过滤的, 也就是说 Instance_Json = ".../all.json" 相当于"最全的emdb_pdb"映射, 不在里面的样本都忽略.
 (2). 本脚本产生的.json与 Pocket\Make_Data\split_data\generate_full_json.py 完全对齐.
 具体而言, Json_Root_Folder 这个文件夹里面的.json文件完全由 Pocket\Make_Data\split_data\generate_full_json.py 产生.
 本脚本将读取 Json_Root_Folder 里面所有的.json文件, 然后在 Split_output_FOLDER 里面每个子文件夹里生成完全相同的.json. 某个BOX被划分到了 Split_output_FOLDER 里面的X.json 当且仅当 这个BOX所在的样本在 Json_Root_Folder 里面的X.json中.
@@ -24,7 +24,7 @@ from pathlib import Path
 
 random.seed(42)
 
-# str, Json根目录, 其中包含从Make_Data生成的各式X.json，如train.json, val.json, test.json等, 这些json规定了PDB_ID的归属，本脚本将完全遵照其分配逻辑
+# str, Json根目录, 其中包含从Make_Data生成的各式X.json, 如train.json, val.json, test.json等, 这些json规定了PDB_ID的归属, 本脚本将完全遵照其分配逻辑
 Json_Root_Folder = "/home/penghongen/My_Project/Data/split/3.5_cc_qscore_v2_raw4"
 # str, 全部原样本的基础信息json(通常是 Json_Root_Folder 目录下的 all.json)
 Instance_Json = os.path.join(Json_Root_Folder, "all.json")
@@ -36,7 +36,7 @@ EMDB_SIM_BOX_FOLDER = "/storage/penghongen/Pocket_classic/v2_raw4_10A/emdb_sim_B
 PBD_Label_BOX_FOLDER = "/storage/penghongen/Pocket_classic/v2_raw4_10A/pdb_label_BOX"
 LIGAND_DIST_BOX_FOLDER = "/storage/penghongen/Pocket_classic/v2_raw4_10A/ligand_dist_BOX"
 
-# list[int], 三种 split_mode 参数集合 （0为主中心，3为中心外加三非中心BOX, -1为全部)
+# list[int], 三种 split_mode 参数集合 （0为主中心, 3为中心外加三非中心BOX, -1为全部)
 Split_Modes = [0, 1, 2, 3, 4, -1]
 # list[str], 指定上方的 split_modes 所对应的生成目标子文件夹名
 Split_Mode_Names = ['split_0', 'split_1', 'split_2', 'split_3', 'split_4', 'split_all']
@@ -183,9 +183,9 @@ def select_split_stems(all_stems: list, split_mode: int) -> list:
             # str, 当前 stem 的结合位点标识
             site = get_binding_site(stem)
             if stem.endswith('_C'):
-                # setdefault(key, default) 它是字典（dict）的一个内置方法，逻辑如下：
-                # 如果键（key）已经在字典里了： 它会返回该键对应的值（Value）。
-                # 如果键（key）不在字典里： 它会把这个键插入字典，并将它的值设为 default，然后返回这个新创建的 default 值。
+                # setdefault(key, default) 它是字典（dict）的一个内置方法, 逻辑如下: 
+                # 如果键（key）已经在字典里了: 它会返回该键对应的值（Value）. 
+                # 如果键（key）不在字典里: 它会把这个键插入字典, 并将它的值设为 default, 然后返回这个新创建的 default 值. 
                 site_to_center.setdefault(site, []).append(stem)
             else:
                 site_to_nonCenter.setdefault(site, []).append(stem)
@@ -219,11 +219,11 @@ def main():
 
     # ========== Step 0: 按类别分别取四个BOX文件夹的公共 stem ==========
     print("\n[Step 0] 按类别收集四个BOX文件夹的各自合法 stem（分类别取四方交集）...")
-    # dict[str, set[str]], 形状：比如 {"metal_ion": {"9e01_3_0...", ...}, "random_BOX": {...}, ...}
+    # dict[str, set[str]], 形状: 比如 {"metal_ion": {"9e01_3_0...", ...}, "random_BOX": {...}, ...}
     valid_per_class = get_valid_stems_per_class(
         EMDB_EXP_BOX_FOLDER, EMDB_SIM_BOX_FOLDER, PBD_Label_BOX_FOLDER, LIGAND_DIST_BOX_FOLDER
     )
-    # list[str], 包含的所有类别名，例如 ['metal_ion', 'nucleic', 'peptide', 'random_BOX', 'small_molecule']
+    # list[str], 包含的所有类别名, 例如 ['metal_ion', 'nucleic', 'peptide', 'random_BOX', 'small_molecule']
     all_class_names = sorted(valid_per_class.keys())
     # int, 全部类别合法 stem 总数
     total_valid = sum(len(v) for v in valid_per_class.values())
@@ -269,7 +269,7 @@ def main():
         print(f"{'='*60}")
         ds_output_dir = Path(Split_output_FOLDER[ds_idx])
         ds_output_dir.mkdir(parents=True, exist_ok=True)
-        # dict[str, int], 追踪每个生成的划分文件内写入了多少个stem数目，例如 {'train.json':15152}
+        # dict[str, int], 追踪每个生成的划分文件内写入了多少个stem数目, 例如 {'train.json':15152}
         json_to_stem_count = {jname: 0 for jname in json_to_pdb_ids.keys()}
 
         for cls in all_class_names:

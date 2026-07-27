@@ -11,7 +11,7 @@ from docking_pipeline.runner import run_sample_smoke
 
 def main() -> None:
     """
-    运行单样本低成本 docking smoke pipeline。
+    运行单样本低成本 docking smoke pipeline. 
     输入参数:
         - CLI `--pdb-id`: str, 待处理样本 PDB ID
         - CLI `--summary-json`: Path, 可选, 输出摘要 JSON 路径
@@ -38,7 +38,7 @@ def main() -> None:
 
 
 def _to_jsonable(value):
-    """把 dataclass 和 Path 等对象转换成 JSON 友好结构。"""
+    """把 dataclass 和 Path 等对象转换成 JSON 友好结构. """
     if hasattr(value, "__dataclass_fields__"):
         return _to_jsonable(asdict(value))
     if isinstance(value, dict):

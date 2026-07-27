@@ -15,7 +15,7 @@ from .worker import process_one_pdb
 
 def parse_args() -> argparse.Namespace:
     """
-    解析命令行参数。
+    解析命令行参数. 
 
     输出:
         - args: argparse.Namespace, run_enrichment 主入口参数
@@ -38,7 +38,7 @@ def parse_args() -> argparse.Namespace:
 
 def filter_samples(samples: list[SampleRef], pdb_ids: list[str] | None, limit: int | None, array_index: int | None, array_count: int | None) -> list[SampleRef]:
     """
-    根据 debug PDB、limit 和 array 参数筛选样本。
+    根据 debug PDB、limit 和 array 参数筛选样本. 
 
     输入参数:
         - samples: list[SampleRef], raw.json/parsed_root 求交集后的样本
@@ -64,7 +64,7 @@ def filter_samples(samples: list[SampleRef], pdb_ids: list[str] | None, limit: i
 
 def raw_json_stats(raw_mapping) -> tuple[int, int]:
     """
-    统计 raw.json 条目数和唯一 PDB 数。
+    统计 raw.json 条目数和唯一 PDB 数. 
 
     输入参数:
         - raw_mapping: list[dict[str, str]] | None, load_raw_mapping 返回值
@@ -85,7 +85,7 @@ def raw_json_stats(raw_mapping) -> tuple[int, int]:
 
 def print_summary(summary: dict) -> None:
     """
-    打印 sbatch 日志友好的统计摘要。
+    打印 sbatch 日志友好的统计摘要. 
 
     输入参数:
         - summary: dict, build_summary 返回的统计字典
@@ -101,7 +101,7 @@ def print_summary(summary: dict) -> None:
 
 def main() -> None:
     """
-    RCSB ligand enrichment 统一入口。
+    RCSB ligand enrichment 统一入口. 
 
     输出:
         - None; 副作用为下载 RCSB 文件、写出 mapping/summary, 并在 stdout 打印统计摘要

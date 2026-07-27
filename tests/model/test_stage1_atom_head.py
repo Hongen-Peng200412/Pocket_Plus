@@ -13,7 +13,7 @@ from src.model.stage1_atom_head import GeometricCrossAttention, Stage1AtomHead
 
 def _make_point_state(num_points: int) -> dict[str, torch.Tensor | float]:
     """
-    构造单 BOX point_state。
+    构造单 BOX point_state. 
 
     输入参数:
         - num_points: int, 点数 N_all
@@ -31,7 +31,7 @@ def _make_point_state(num_points: int) -> dict[str, torch.Tensor | float]:
 
 def _patch_radius_and_scatter(monkeypatch: pytest.MonkeyPatch, edge_index: torch.Tensor) -> None:
     """
-    为几何 cross-attn 注入确定性的 radius/scatter 实现。
+    为几何 cross-attn 注入确定性的 radius/scatter 实现. 
 
     输入参数:
         - monkeypatch: pytest.MonkeyPatch, pytest monkeypatch fixture
@@ -80,7 +80,7 @@ def _make_head(
     prior_prob_point_ligand: float | None,
 ) -> Stage1AtomHead:
     """
-    构造当前 Stage1AtomHead 测试实例。
+    构造当前 Stage1AtomHead 测试实例. 
 
     输入参数:
         - point_channels: int, point backbone 输出通道数
@@ -112,7 +112,7 @@ def _make_head(
 
 def test_real_only_outputs_current_contract() -> None:
     """
-    验证 real-only 路径只产 real 特征/logits，P 字段为 None。
+    验证 real-only 路径只产 real 特征/logits, P 字段为 None. 
     """
     head = _make_head(6, 8, 3, 1, None, None, None)
     point_feat = torch.randn(5, 6)
@@ -141,7 +141,7 @@ def test_real_only_outputs_current_contract() -> None:
 
 def test_mixed_zero_initialized_cross_attention_keeps_before_after_identity(monkeypatch: pytest.MonkeyPatch) -> None:
     """
-    验证 mixed 路径中 cross-attn 零初始化时 before/after 逐元素恒等。
+    验证 mixed 路径中 cross-attn 零初始化时 before/after 逐元素恒等. 
     """
     _patch_radius_and_scatter(monkeypatch, torch.tensor([[0, 0], [0, 1]], dtype=torch.long))
     head = _make_head(6, 8, 2, 1, None, None, 0.1)
@@ -166,7 +166,7 @@ def test_mixed_zero_initialized_cross_attention_keeps_before_after_identity(monk
 
 def test_prior_bias_initialization() -> None:
     """
-    验证 real 多分类先验与 P 单通道先验初始化到对应末层 bias。
+    验证 real 多分类先验与 P 单通道先验初始化到对应末层 bias. 
     """
     head = _make_head(6, 8, 3, 1, None, [0.8, 0.1, 0.1], 0.2)
 
@@ -178,7 +178,7 @@ def test_prior_bias_initialization() -> None:
 
 def test_all_pseudo_path_returns_empty_real_outputs(monkeypatch: pytest.MonkeyPatch) -> None:
     """
-    验证全 P mixed 输入时 real 输出为空，P 输出仍按当前契约存在。
+    验证全 P mixed 输入时 real 输出为空, P 输出仍按当前契约存在. 
     """
     _patch_radius_and_scatter(monkeypatch, torch.empty((2, 0), dtype=torch.long))
     head = _make_head(6, 8, 2, 1, None, None, None)
@@ -200,7 +200,7 @@ def test_all_pseudo_path_returns_empty_real_outputs(monkeypatch: pytest.MonkeyPa
 
 def test_geometric_cross_attention_uses_radius_source_query_order(monkeypatch: pytest.MonkeyPatch) -> None:
     """
-    验证 GeometricCrossAttention 调用 radius 时 x=source、y=query，并接受 source_bind_prob。
+    验证 GeometricCrossAttention 调用 radius 时 x=source、y=query, 并接受 source_bind_prob. 
     """
     _patch_radius_and_scatter(monkeypatch, torch.tensor([[0, 1], [1, 0]], dtype=torch.long))
     module = GeometricCrossAttention(

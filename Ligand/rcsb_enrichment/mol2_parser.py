@@ -26,7 +26,7 @@ ELEMENTS = {
 
 def infer_element(atom_name: str, atom_type: str) -> str:
     """
-    从 mol2 atom name 和 atom type 中推断元素符号。
+    从 mol2 atom name 和 atom type 中推断元素符号. 
 
     输入参数:
         - atom_name: str, mol2 ATOM 行中的 atom name
@@ -51,7 +51,7 @@ def infer_element(atom_name: str, atom_type: str) -> str:
 
 def parse_mol2(mol2_path: Path) -> Mol2Info:
     """
-    解析 TRIPOS mol2 文件的 ATOM 和 BOND section。
+    解析 TRIPOS mol2 文件的 ATOM 和 BOND section. 
 
     输入参数:
         - mol2_path: Path, RCSB native ligand mol2 文件路径

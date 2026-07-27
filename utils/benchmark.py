@@ -39,7 +39,7 @@ def _compute_hit_mask(
     chunk_size: int = 2048,
 ) -> np.ndarray:
     """
-    计算 src_points 中每个点是否被 tgt_points 命中（存在任意 tgt_points 距离 <= dist_threshold）。
+    计算 src_points 中每个点是否被 tgt_points 命中（存在任意 tgt_points 距离 <= dist_threshold）. 
 
     输入参数:
         - src_points: np.ndarray, (N_src, 3), 源点云 (世界坐标, 单位 Å)
@@ -77,7 +77,7 @@ def _count_hits(
     chunk_size: int = 2048,
 ) -> int:
     """
-    统计 src_points 中被命中的点数（存在任意 tgt_points 距离 <= dist_threshold）。
+    统计 src_points 中被命中的点数（存在任意 tgt_points 距离 <= dist_threshold）. 
 
     输入参数:
         - src_points: np.ndarray, (N_src, 3), 源点云 (世界坐标, 单位 Å)
@@ -96,14 +96,14 @@ def _count_hits(
 
 
 
-# NOTE: 注意，这是需要调用的最终函数. 跑两次, dist_threshold 依次取 0.1, 3.0
+# NOTE: 注意, 这是需要调用的最终函数. 跑两次, dist_threshold 依次取 0.1, 3.0
 def semantic_evaluate(
     pred_atom_coords: np.ndarray,
     pdb_id: str, 
     dist_threshold: float,
 ) -> dict:
     """
-    基于点云进行语义分割评估（预测正类原子坐标 vs GT 正类原子坐标 → 距离命中）。
+    基于点云进行语义分割评估（预测正类原子坐标 vs GT 正类原子坐标 → 距离命中）. 
 
     输入参数:
         - pred_atom_coords:  np.ndarray, float32, (N_pred, 3), 预测为正类的原子坐标. 由 postprocess 模块产出. 世界坐标, 顺序为xyz, 单位 Å

@@ -98,7 +98,7 @@ def bind_LigandMinDist_to_EMDB(
     num_pocket_classes: int,
 ):
     """
-    为每类 ligand 分别计算体素中心到最近同类 ligand 原子的欧氏距离。
+    为每类 ligand 分别计算体素中心到最近同类 ligand 原子的欧氏距离. 
 
     输入参数:
         - sample_folder_path: str, 含 labels.npz 的样本目录
@@ -192,7 +192,7 @@ def bind_AtomsFeature_to_EMDB(
     将PDB文件中的原子特征(atoms.npz里面的'features')映射到对应的EMDB文件, 产生特征张量.这个函数强烈依赖于 Pocket_Plus\Make_Data\PDB_processor\run_preprocess.py 的返回结果.
     
     Args:
-        - sample_folder_path: 由 Pocket_Plus\Make_Data\PDB_processor\run_preprocess.py 产生的对应样本文件夹路径(里面有四个.npz)。注意将会读取 sample_folder_path/atoms.npz这个文件
+        - sample_folder_path: 由 Pocket_Plus\Make_Data\PDB_processor\run_preprocess.py 产生的对应样本文件夹路径(里面有四个.npz). 注意将会读取 sample_folder_path/atoms.npz这个文件
         - pdb_path: PDB文件路径. 训练时读取atoms.npz, 推断时输入pdb, 通过 _Plus\Make_Data\PDB_processor\run_preprocess.py 里面的 def get_features_when_infer 读取与atoms.npz等价的特征.
         - pre_parsed_atom_info: dict | None, 可选. 若提供, 直接使用其中的 'features' 和 'coords', 跳过 get_features_when_infer 调用, 避免重复解析 CIF.
 
@@ -232,7 +232,7 @@ def bind_AtomsFeature_to_EMDB(
     # ------------------------------------------------------------------
     # 将世界坐标转为体素索引
     # atom_pos_array: (N_atom, 3), 列顺序 (x, y, z); origin / voxel_size: (3,), 同为 (x, y, z) 顺序
-    # feature_np 空间轴顺序是 (Z, Y, X)，因此索引需要反转
+    # feature_np 空间轴顺序是 (Z, Y, X), 因此索引需要反转
     # ------------------------------------------------------------------
     voxel_ijk = np.floor(((atom_pos_array - origin) / voxel_size)).astype(int)  # np.ndarray, (N_atom, 3), int, 体素索引 (x, y, z)
     x_idx = np.clip(voxel_ijk[:, 0], 0, feature_np.shape[3] - 1)  # np.ndarray, (N_atom,), int, X 轴索引
@@ -467,7 +467,7 @@ def save(
 
         # list[int], 数据中实际出现的所有非零类别ID
         all_classes = sorted(total_voxels_per_class.keys())
-        # set[int], 集合, 合并所有可能的非零类别ID，为输出打印做准备
+        # set[int], 集合, 合并所有可能的非零类别ID, 为输出打印做准备
         all_classes_set = set(all_classes).union(set(total_voxels_per_class.keys()))
         
         print("=" * 60)

@@ -16,7 +16,7 @@ from src.wrappers.voxel_point_stage1_metrics import ValidationMetricManager
 
 class _ThinBackbone(nn.Module):
     """
-    测试用 Stage1 backbone stub。
+    测试用 Stage1 backbone stub. 
 
     输入参数:
         - candidate_class_ids: tuple[int, ...], (K,), sparse refine 候选前景类别 ID
@@ -43,7 +43,7 @@ class _ThinBackbone(nn.Module):
 
     def get_sparse_candidate_class_ids(self) -> tuple[int, ...]:
         """
-        返回 sparse candidate builder 配置的候选类别 ID。
+        返回 sparse candidate builder 配置的候选类别 ID. 
 
         输出:
             - class_ids: tuple[int, ...], (K,), 候选前景类别 ID
@@ -56,7 +56,7 @@ class _ThinBackbone(nn.Module):
         p_sampling_by_class: torch.Tensor | None,
     ) -> None:
         """
-        记录 wrapper 同步的阈值缓存。
+        记录 wrapper 同步的阈值缓存. 
 
         输入参数:
             - p_best_by_class: torch.Tensor | None, (K,), best-F1 阈值缓存
@@ -74,7 +74,7 @@ class _ThinBackbone(nn.Module):
         allow_warmup_fixed_topk: bool,
     ) -> None:
         """
-        记录 wrapper 同步的 candidate runtime。
+        记录 wrapper 同步的 candidate runtime. 
 
         输入参数:
             - global_step: int, 当前 optimizer step
@@ -88,7 +88,7 @@ class _ThinBackbone(nn.Module):
 
     def forward(self, batch: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
         """
-        透传测试预构造输出。
+        透传测试预构造输出. 
 
         输入参数:
             - batch: dict[str, torch.Tensor], 包含 outputs 的测试 batch
@@ -99,14 +99,14 @@ class _ThinBackbone(nn.Module):
         return batch["outputs"]
 
     def forward_voxel_probability(self, batch: dict[str, torch.Tensor]) -> torch.Tensor:
-        """返回测试预置的 voxel-only logits。"""
+        """返回测试预置的 voxel-only logits. """
 
         return batch["voxel_logits"]
 
 
 def _loss(num_classes: int) -> AdaptiveClassificationCompositeLoss:
     """
-    构造测试用 hard-label 复合损失。
+    构造测试用 hard-label 复合损失. 
 
     输入参数:
         - num_classes: int, 分类类别数
@@ -131,7 +131,7 @@ def _loss(num_classes: int) -> AdaptiveClassificationCompositeLoss:
 
 def _wrapper() -> VoxelPointStage1Wrapper:
     """
-    构造启用 diagnostics 的 thin coordinator wrapper。
+    构造启用 diagnostics 的 thin coordinator wrapper. 
 
     输出:
         - wrapper: VoxelPointStage1Wrapper, 测试用 wrapper 实例
@@ -156,7 +156,7 @@ def _wrapper() -> VoxelPointStage1Wrapper:
 
 def test_wrapper_instantiates_metric_and_diagnostics_managers() -> None:
     """
-    验证 wrapper 构造期只接入 helper manager, 不在本体注册旧 TorchMetrics 私有结构。
+    验证 wrapper 构造期只接入 helper manager, 不在本体注册旧 TorchMetrics 私有结构. 
     """
     wrapper = _wrapper()
 
@@ -169,7 +169,7 @@ def test_wrapper_instantiates_metric_and_diagnostics_managers() -> None:
 
 def test_wrapper_does_not_restore_old_metric_private_api() -> None:
     """
-    验证 thin coordinator 不保留旧 wrapper 的大块 metric 私有 API。
+    验证 thin coordinator 不保留旧 wrapper 的大块 metric 私有 API. 
     """
     forbidden_names = {
         "_update_voxel_ligand_best_f1_stats",
@@ -185,7 +185,7 @@ def test_wrapper_does_not_restore_old_metric_private_api() -> None:
 
 
 def test_zero_weight_non_sparse_nan_does_not_poison_total_loss(monkeypatch) -> None:
-    """CPC2 关闭的辅助项即使诊断值为 NaN，也不得经 0*NaN 污染总损失。"""
+    """CPC2 关闭的辅助项即使诊断值为 NaN, 也不得经 0*NaN 污染总损失. """
 
     nan = torch.tensor(float("nan"))
     monkeypatch.setattr(
@@ -210,7 +210,7 @@ def test_zero_weight_non_sparse_nan_does_not_poison_total_loss(monkeypatch) -> N
 
 def test_validation_step_keeps_readable_time_order() -> None:
     """
-    验证 validation_step 保持 coordinator 时间顺序, 而不是内联旧 metric 计算细节。
+    验证 validation_step 保持 coordinator 时间顺序, 而不是内联旧 metric 计算细节. 
     """
     source = inspect.getsource(VoxelPointStage1Wrapper.validation_step)
 
@@ -235,7 +235,7 @@ def test_validation_step_keeps_readable_time_order() -> None:
 
 def test_threshold_checkpoint_cache_remains_wrapper_runtime_state() -> None:
     """
-    验证 candidate threshold cache 仍由 wrapper 保存和恢复, 不被 validation metric state 污染。
+    验证 candidate threshold cache 仍由 wrapper 保存和恢复, 不被 validation metric state 污染. 
     """
     wrapper = _wrapper()
     wrapper._cached_voxel_ligand_p_best_by_class = torch.tensor([0.25])
@@ -255,7 +255,7 @@ def test_threshold_checkpoint_cache_remains_wrapper_runtime_state() -> None:
 
 
 def test_adaligand_direct_union_target_has_priority_over_legacy_distance_map() -> None:
-    """验证 schema-v3 union target 直接进入 loss，不被 hardmask 或旧距离图替换。"""
+    """验证 schema-v3 union target 直接进入 loss, 不被 hardmask 或旧距离图替换. """
 
     wrapper = _wrapper()
     direct = torch.tensor(
@@ -276,7 +276,7 @@ def test_adaligand_direct_union_target_has_priority_over_legacy_distance_map() -
 
 
 def test_wrapper_voxel_only_entry_is_a_thin_logit_delegation() -> None:
-    """验证 wrapper 不重复模型、checkpoint、sigmoid 或阈值逻辑。"""
+    """验证 wrapper 不重复模型、checkpoint、sigmoid 或阈值逻辑. """
 
     wrapper = _wrapper()
     logits = torch.randn(1, 1, 2, 2, 2)

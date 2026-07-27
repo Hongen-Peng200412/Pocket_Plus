@@ -10,7 +10,7 @@ from src.train import _load_model_only_checkpoint
 
 
 class _LifecycleModel(nn.Module):
-    """记录 strict 权重恢复后 Lightning lifecycle 是否执行。"""
+    """记录 strict 权重恢复后 Lightning lifecycle 是否执行. """
 
     def __init__(self) -> None:
         super().__init__()
@@ -22,7 +22,7 @@ class _LifecycleModel(nn.Module):
 
 
 def test_model_only_checkpoint_is_strict_and_restores_wrapper_lifecycle(tmp_path: Path) -> None:
-    """CPC1→CPC2 只恢复模型与 wrapper runtime，不恢复优化器或 step。"""
+    """CPC1→CPC2 只恢复模型与 wrapper runtime, 不恢复优化器或 step. """
 
     checkpoint_path = tmp_path / "BEST.ckpt"
     torch.save(
@@ -44,7 +44,7 @@ def test_model_only_checkpoint_is_strict_and_restores_wrapper_lifecycle(tmp_path
 
 
 def test_model_only_checkpoint_rejects_missing_or_unexpected_keys(tmp_path: Path) -> None:
-    """CPC2 不得以 non-strict 方式吞掉模型结构漂移。"""
+    """CPC2 不得以 non-strict 方式吞掉模型结构漂移. """
 
     checkpoint_path = tmp_path / "bad.ckpt"
     torch.save({"state_dict": {"unexpected": torch.ones(1)}, "runtime_value": 7}, checkpoint_path)

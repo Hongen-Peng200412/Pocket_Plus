@@ -18,7 +18,7 @@ from src.model.pseudo_atoms import (
 
 def _make_real_batch() -> dict[str, torch.Tensor]:
     """
-    构造两个 BOX 的 real-only batch。
+    构造两个 BOX 的 real-only batch. 
 
     输出:
         - batch: dict[str, torch.Tensor], real_counts=[2, 1], atom_feat 形状为 (3, 2)
@@ -41,7 +41,7 @@ def _make_real_batch() -> dict[str, torch.Tensor]:
 
 def _make_pseudo_dict() -> dict[str, torch.Tensor]:
     """
-    构造两个 BOX 的 P anchor 字典。
+    构造两个 BOX 的 P anchor 字典. 
 
     输出:
         - pseudo_dict: dict[str, torch.Tensor], pseudo_counts=[1, 2], pseudo_feat 形状为 (3, 2)
@@ -58,7 +58,7 @@ def _make_pseudo_dict() -> dict[str, torch.Tensor]:
 
 def test_build_layout_counts_match() -> None:
     """
-    验证 layout 的 real/pseudo/mixed 逐 BOX 计数。
+    验证 layout 的 real/pseudo/mixed 逐 BOX 计数. 
     """
     layout = build_layout(_make_real_batch(), _make_pseudo_dict())
     assert layout.real_counts.tolist() == [2, 1]
@@ -69,7 +69,7 @@ def test_build_layout_counts_match() -> None:
 
 def test_inject_pseudo_atoms_interleaves_fields() -> None:
     """
-    验证 inject_pseudo_atoms 按 `[real_i, pseudo_i]` mixed 顺序交错字段。
+    验证 inject_pseudo_atoms 按 `[real_i, pseudo_i]` mixed 顺序交错字段. 
     """
     mixed_batch, _layout = inject_pseudo_atoms(_make_real_batch(), _make_pseudo_dict())
     assert mixed_batch["atom_feat"].tolist() == [
@@ -89,7 +89,7 @@ def test_inject_pseudo_atoms_interleaves_fields() -> None:
 
 def test_build_real_and_pseudo_mask() -> None:
     """
-    验证 real/pseudo mask 与 mixed 顺序一致。
+    验证 real/pseudo mask 与 mixed 顺序一致. 
     """
     layout = build_layout(_make_real_batch(), _make_pseudo_dict())
     assert build_real_mask(layout).tolist() == [True, True, False, True, False, False]
@@ -98,7 +98,7 @@ def test_build_real_and_pseudo_mask() -> None:
 
 def test_remove_pseudo_atoms_restores_real_batch() -> None:
     """
-    验证 inject 后 remove 能恢复 real-only atom 字段与计数。
+    验证 inject 后 remove 能恢复 real-only atom 字段与计数. 
     """
     real_batch = _make_real_batch()
     mixed_batch, layout = inject_pseudo_atoms(real_batch, _make_pseudo_dict())
@@ -122,7 +122,7 @@ def test_remove_pseudo_atoms_restores_real_batch() -> None:
 
 def test_extract_real_and_pseudo_tensor_from_mixed() -> None:
     """
-    验证 mixed 张量可以按 layout 裁成 real-only 与 pseudo-only。
+    验证 mixed 张量可以按 layout 裁成 real-only 与 pseudo-only. 
     """
     layout = build_layout(_make_real_batch(), _make_pseudo_dict())
     mixed_tensor = torch.tensor([10, 11, 90, 12, 80, 70])
@@ -132,7 +132,7 @@ def test_extract_real_and_pseudo_tensor_from_mixed() -> None:
 
 def test_interleave_rejects_wrong_lengths() -> None:
     """
-    验证 interleave_real_and_pseudo_tensor 对错误 real/pseudo 长度 fail-fast。
+    验证 interleave_real_and_pseudo_tensor 对错误 real/pseudo 长度 fail-fast. 
     """
     layout = build_layout(_make_real_batch(), _make_pseudo_dict())
     with pytest.raises(RuntimeError):
@@ -143,7 +143,7 @@ def test_interleave_rejects_wrong_lengths() -> None:
 
 def test_no_legacy_generator_symbols() -> None:
     """
-    验证新 pseudo_atoms 模块不再暴露旧随机生成器符号。
+    验证新 pseudo_atoms 模块不再暴露旧随机生成器符号. 
     """
     assert not hasattr(pseudo_atoms, "PseudoAtomGenerator")
     assert not hasattr(pseudo_atoms, "generate")

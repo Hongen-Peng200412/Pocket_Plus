@@ -14,7 +14,7 @@ def reconstruct_protein_backbone(
     missing_atoms: list[str]
 ) -> dict[str, np.ndarray]:
     """
-    重建蛋白质残基的缺失主链原子坐标。
+    重建蛋白质残基的缺失主链原子坐标. 
 
     输入参数:
         - residues: list[dict], 可变长度, 所有残基的字典列表
@@ -115,7 +115,7 @@ def reconstruct_nucleotide_backbone(
     missing_atoms: list[str]
 ) -> dict[str, np.ndarray]:
     """
-    重建核酸残基的缺失主链原子坐标。
+    重建核酸残基的缺失主链原子坐标. 
 
     输入参数:
         - residues: list[dict], 可变长度, 所有残基的字典列表
@@ -193,7 +193,7 @@ def reconstruct_nucleotide_backbone(
 
 def _get_prev_ca(residues: list[dict], res_idx: int) -> Optional[np.ndarray]:
     """
-    获取前一残基的 CA 坐标。
+    获取前一残基的 CA 坐标. 
 
     输入参数:
         - residues: list[dict], 可变长度, 所有残基的字典列表
@@ -212,7 +212,7 @@ def _get_prev_ca(residues: list[dict], res_idx: int) -> Optional[np.ndarray]:
 
 def _get_next_ca(residues: list[dict], res_idx: int) -> Optional[np.ndarray]:
     """
-    获取后一残基的 CA 坐标。
+    获取后一残基的 CA 坐标. 
 
     输入参数:
         - residues: list[dict], 可变长度, 所有残基的字典列表
@@ -231,7 +231,7 @@ def _get_next_ca(residues: list[dict], res_idx: int) -> Optional[np.ndarray]:
 
 def _get_prev_c(residues: list[dict], res_idx: int) -> Optional[np.ndarray]:
     """
-    获取前一残基的 C 坐标。
+    获取前一残基的 C 坐标. 
 
     输入参数:
         - residues: list[dict], 可变长度, 所有残基的字典列表
@@ -250,7 +250,7 @@ def _get_prev_c(residues: list[dict], res_idx: int) -> Optional[np.ndarray]:
 
 def _get_next_n(residues: list[dict], res_idx: int) -> Optional[np.ndarray]:
     """
-    获取后一残基的 N 坐标。
+    获取后一残基的 N 坐标. 
 
     输入参数:
         - residues: list[dict], 可变长度, 所有残基的字典列表
@@ -269,7 +269,7 @@ def _get_next_n(residues: list[dict], res_idx: int) -> Optional[np.ndarray]:
 
 def _get_prev_c4(residues: list[dict], res_idx: int) -> Optional[np.ndarray]:
     """
-    获取前一核苷酸的 C4' 坐标。
+    获取前一核苷酸的 C4' 坐标. 
 
     输入参数:
         - residues: list[dict], 可变长度, 所有残基的字典列表
@@ -288,7 +288,7 @@ def _get_prev_c4(residues: list[dict], res_idx: int) -> Optional[np.ndarray]:
 
 def _get_next_c4(residues: list[dict], res_idx: int) -> Optional[np.ndarray]:
     """
-    获取后一核苷酸的 C4' 坐标。
+    获取后一核苷酸的 C4' 坐标. 
 
     输入参数:
         - residues: list[dict], 可变长度, 所有残基的字典列表

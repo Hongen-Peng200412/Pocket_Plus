@@ -13,8 +13,8 @@
 Compute atom-level feature vectors (49 dim).
 
 内存优化 / Memory Optimization:
-- 使用 KD-Tree 进行稀疏距离计算，避免 O(N²) 内存消耗
-- 对于大型结构 (>10000 原子)，不返回完整距离矩阵
+- 使用 KD-Tree 进行稀疏距离计算, 避免 O(N²) 内存消耗
+- 对于大型结构 (>10000 原子), 不返回完整距离矩阵
 ================================================================================
 """
 
@@ -54,7 +54,7 @@ def compute_local_density_sparse(
     
     逻辑 / Logic:
         1. 计算原子间距离矩阵
-        2. 对每个原子，统计各距离区间内的邻居数量
+        2. 对每个原子, 统计各距离区间内的邻居数量
         3. 归一化得到密度特征
     
     输入参数 / Input:
@@ -103,7 +103,7 @@ def compute_local_density_sparse(
                 density[:, i] = (prev_counts - counts_lower).astype(np.float32)
                 prev_counts = counts_lower
             else:
-                # lower = 0 的情况，减去 1 (自身)
+                # lower = 0 的情况, 减去 1 (自身)
                 density[:, i] = (prev_counts - 1).astype(np.float32)
     
     # 归一化 (使用对数变换平滑)

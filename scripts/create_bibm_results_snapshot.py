@@ -40,7 +40,7 @@ DATASET_SPECS = {
 
 def read_json(path: Path) -> Any:
     """
-    读取 UTF-8 JSON 文件。
+    读取 UTF-8 JSON 文件. 
 
     输入参数:
         - path: Path, JSON 文件路径
@@ -54,7 +54,7 @@ def read_json(path: Path) -> Any:
 
 def sample_name_from_pair(pair: dict[str, Any]) -> str:
     """
-    从 Pocket Plus 样本条目中恢复样本名。
+    从 Pocket Plus 样本条目中恢复样本名. 
 
     输入参数:
         - pair: dict[str, Any], 单个 raw pair 条目
@@ -71,7 +71,7 @@ def sample_name_from_pair(pair: dict[str, Any]) -> str:
 
 def emdb_id_from_pair(pair: dict[str, Any]) -> str | None:
     """
-    从样本 map 路径中提取 EMDB ID。
+    从样本 map 路径中提取 EMDB ID. 
 
     输入参数:
         - pair: dict[str, Any], 单个 raw pair 条目
@@ -87,7 +87,7 @@ def emdb_id_from_pair(pair: dict[str, Any]) -> str | None:
 
 def load_sample_meta(sample_json: Path) -> dict[str, dict[str, str | None]]:
     """
-    读取样本清单并构造样本 ID 元信息。
+    读取样本清单并构造样本 ID 元信息. 
 
     输入参数:
         - sample_json: Path, protein_110.json 或 nucleic_40.json
@@ -108,7 +108,7 @@ def load_sample_meta(sample_json: Path) -> dict[str, dict[str, str | None]]:
 
 def load_per_sample_rows(path: Path) -> list[dict[str, Any]]:
     """
-    读取 DL 或 Phenix 的逐样本评估结果。
+    读取 DL 或 Phenix 的逐样本评估结果. 
 
     输入参数:
         - path: Path, 固定测试输出根目录
@@ -137,7 +137,7 @@ def load_per_sample_rows(path: Path) -> list[dict[str, Any]]:
 
 def build_dl_entries(eval_root: Path, dataset_key: str) -> list[dict[str, Any]]:
     """
-    构造当前数据集的 DL 模型条目。
+    构造当前数据集的 DL 模型条目. 
 
     输入参数:
         - eval_root: Path, /home/.../EVAL_OUT
@@ -169,7 +169,7 @@ def build_dl_entries(eval_root: Path, dataset_key: str) -> list[dict[str, Any]]:
 
 def build_phenix_entries(eval_root: Path, dataset_key: str) -> list[dict[str, Any]]:
     """
-    构造当前数据集的 Phenix 条目。
+    构造当前数据集的 Phenix 条目. 
 
     输入参数:
         - eval_root: Path, /home/.../EVAL_OUT
@@ -200,7 +200,7 @@ def build_phenix_entries(eval_root: Path, dataset_key: str) -> list[dict[str, An
 
 def load_emap_rows(eval_root: Path, dataset_name: str) -> tuple[str, list[dict[str, Any]]]:
     """
-    读取 Emap2lig 的逐样本评估结果。
+    读取 Emap2lig 的逐样本评估结果. 
 
     输入参数:
         - eval_root: Path, /home/.../EVAL_OUT
@@ -222,7 +222,7 @@ def load_emap_rows(eval_root: Path, dataset_name: str) -> tuple[str, list[dict[s
 
 def build_snapshot(eval_root: Path, pocket_plus_root: Path) -> dict[str, Any]:
     """
-    从服务器评估产物构造规范化结果快照。
+    从服务器评估产物构造规范化结果快照. 
 
     输入参数:
         - eval_root: Path, EVAL_OUT 根目录
@@ -257,7 +257,7 @@ def build_snapshot(eval_root: Path, pocket_plus_root: Path) -> dict[str, Any]:
 
 def parse_args() -> argparse.Namespace:
     """
-    解析命令行参数。
+    解析命令行参数. 
 
     输出:
         - args: argparse.Namespace, 命令行参数集合
@@ -271,7 +271,7 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     """
-    命令行入口。
+    命令行入口. 
 
     输出:
         - None

@@ -1,9 +1,9 @@
-"""建立唯一训练运行目录，并保存复现 checkpoint 所需的配置、源码和日志。
+"""建立唯一训练运行目录, 并保存复现 checkpoint 所需的配置、源码和日志. 
 
-主要入口 :class:`ExperimentManager` 由训练入口创建。主进程生成
-``{feedback_root}/logs/{experiment_group}/{tag}____{run_stamp}``，保存完整 Hydra
-配置、整个 ``src/`` 的只读快照及逐文件 SHA-256 清单，并把 Slurm 与 Python 日志
-归入同一目录。运行时间过短时，收口逻辑可按配置删除本次新建目录。
+主要入口 :class:`ExperimentManager` 由训练入口创建. 主进程生成
+``{feedback_root}/logs/{experiment_group}/{tag}____{run_stamp}``, 保存完整 Hydra
+配置、整个 ``src/`` 的只读快照及逐文件 SHA-256 清单, 并把 Slurm 与 Python 日志
+归入同一目录. 运行时间过短时, 收口逻辑可按配置删除本次新建目录. 
 """
 
 import glob
@@ -20,11 +20,11 @@ from omegaconf import DictConfig, OmegaConf
 
 
 class ExperimentManager:
-    """管理一次训练运行的唯一目录和复现材料。
+    """管理一次训练运行的唯一目录和复现材料. 
 
-    ``POCKET_RUN_STAMP`` 优先决定跨进程共享的运行标识；没有该环境变量时，
-    依次回退到 Slurm 作业身份和本地时间。只有 rank 0 创建目录、保存配置和源码、
-    迁移日志，其他训练进程只持有同一个路径计算结果。
+    ``POCKET_RUN_STAMP`` 优先决定跨进程共享的运行标识; 没有该环境变量时, 
+    依次回退到 Slurm 作业身份和本地时间. 只有 rank 0 创建目录、保存配置和源码、
+    迁移日志, 其他训练进程只持有同一个路径计算结果. 
     """
 
     def __init__(
@@ -35,7 +35,7 @@ class ExperimentManager:
         experiment_group: str,
     ):
         """
-        初始化实验管理器。
+        初始化实验管理器. 
 
         输入参数:
             - config: DictConfig, 无固定形状, Hydra 解析后的完整配置对象
@@ -64,7 +64,7 @@ class ExperimentManager:
 
     @staticmethod
     def _resolve_process_rank() -> int:
-        """优先使用 Lightning 子进程全局 rank，最后才使用 Slurm task rank。"""
+        """优先使用 Lightning 子进程全局 rank, 最后才使用 Slurm task rank. """
 
         for variable_name in ("RANK", "LOCAL_RANK", "SLURM_PROCID"):
             value = os.environ.get(variable_name, "").strip()
@@ -96,7 +96,7 @@ class ExperimentManager:
 
     def _resolve_run_dir(self) -> Path:
         """
-        生成本次运行的目录路径。
+        生成本次运行的目录路径. 
         路径格式: {feedback_root}/logs/{experiment_group}/{tag}____{timestamp}
         """
         tag = self._sanitize_path_component(self.config.get("tag", "NoTag"))
@@ -116,10 +116,10 @@ class ExperimentManager:
 
     def _archive_model_source(self):
         """
-        将完整 `src/` 复制到运行目录，并写入逐文件 SHA-256 清单。
+        将完整 `src/` 复制到运行目录, 并写入逐文件 SHA-256 清单. 
 
-        Dataset、wrapper、损失、模型与训练入口共同决定 checkpoint 的可执行语义，
-        因此快照不能只保存 `src/model/`。运行目录一经创建便不允许覆盖既有快照。
+        Dataset、wrapper、损失、模型与训练入口共同决定 checkpoint 的可执行语义, 
+        因此快照不能只保存 `src/model/`. 运行目录一经创建便不允许覆盖既有快照. 
         """
 
         pocket_root = Path(__file__).resolve().parents[2]  # src/utils/ → src → Pocket_Plus
@@ -155,7 +155,7 @@ class ExperimentManager:
 
     def _migrate_slurm_logs_to_run_dir(self):
         """
-        (SLURM 专用) 将原本保存在临时目录的 SLURM 标准输出和错误日志迁移到正式的实验目录下。
+        (SLURM 专用) 将原本保存在临时目录的 SLURM 标准输出和错误日志迁移到正式的实验目录下. 
         """
         if not self.config.get("migrate_slurm_logs", False):
             return
@@ -180,8 +180,8 @@ class ExperimentManager:
 
     def _relocate_hydra_logging(self):
         """
-        重定向 Hydra 和 Python 标准日志到实验目录下。
-        Hydra 默认会在当前工作目录生成 .hydra 文件夹和日志，本方法将其移动到我们自定义的 run_dir。
+        重定向 Hydra 和 Python 标准日志到实验目录下. 
+        Hydra 默认会在当前工作目录生成 .hydra 文件夹和日志, 本方法将其移动到我们自定义的 run_dir. 
         """
         cwd = Path.cwd()
         hydra_dir = cwd / ".hydra"
@@ -218,7 +218,7 @@ class ExperimentManager:
                     handler.close()
                     logger.removeHandler(handler)
 
-                    # 如果旧日志文件存在且目标路径尚无文件，则执行搬迁
+                    # 如果旧日志文件存在且目标路径尚无文件, 则执行搬迁
                     if current_log_path.exists() and not target_log_file.exists():
                         shutil.move(str(current_log_path), str(target_log_file))
 
@@ -234,18 +234,18 @@ class ExperimentManager:
 
     def check_and_cleanup(self, error: Optional[Exception] = None):
         """
-        在实验结束时（或出错时）调用。
-        如果运行时间过短且未设置保留短时运行，则自动删除相关目录。
-        这有助于清理调试产生的垃圾文件夹。
+        在实验结束时（或出错时）调用. 
+        如果运行时间过短且未设置保留短时运行, 则自动删除相关目录. 
+        这有助于清理调试产生的垃圾文件夹. 
 
         Args:
-            error: 如果是因为抛出异常而退出，传入异常对象。
+            error: 如果是因为抛出异常而退出, 传入异常对象. 
         """
         if not self.is_rank_zero:
             return
 
         duration = time.time() - self.start_time
-        # 获取配置中的最小保留时长（秒），默认 1 小时
+        # 获取配置中的最小保留时长（秒）, 默认 1 小时
         min_duration = int(self.config.get("min_duration", 3600))
         # 是否强制保留短时运行（用于调试环境）
         keep_short_runs = bool(self.config.get("keep_short_runs", False))

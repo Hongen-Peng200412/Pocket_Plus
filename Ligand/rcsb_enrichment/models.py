@@ -10,7 +10,7 @@ import numpy as np
 @dataclass
 class SampleRef:
     """
-    一个待处理 PDB 样本的引用。
+    一个待处理 PDB 样本的引用. 
 
     输入字段:
         - emdb_id: str, raw.json 中映射到该 PDB 的 EMDB ID; 若未使用 raw.json 过滤则为空字符串
@@ -28,7 +28,7 @@ class SampleRef:
 @dataclass
 class MakeDataLigand:
     """
-    Make_Data 中一个 ligand candidate 的结构化记录。
+    Make_Data 中一个 ligand candidate 的结构化记录. 
 
     输入字段:
         - pdb_id: str, 小写 PDB ID
@@ -56,7 +56,7 @@ class MakeDataLigand:
 @dataclass
 class NonpolySchemeRow:
     """
-    RCSB full CIF 中 _pdbx_nonpoly_scheme 的一行。
+    RCSB full CIF 中 _pdbx_nonpoly_scheme 的一行. 
 
     输入字段:
         - asym_id: str, RCSB label asym ID, 用于 ModelServer ligand endpoint
@@ -84,7 +84,7 @@ class NonpolySchemeRow:
 @dataclass
 class RCSBInstanceMatch:
     """
-    Make_Data ligand 对齐到 RCSB ligand instance 后的结果。
+    Make_Data ligand 对齐到 RCSB ligand instance 后的结果. 
 
     输入字段:
         - matched: bool, 是否唯一匹配成功
@@ -100,7 +100,7 @@ class RCSBInstanceMatch:
 @dataclass
 class RCSBAtomSiteLigand:
     """
-    从 RCSB full CIF 的 _atom_site 中取出的 ligand instance 重原子。
+    从 RCSB full CIF 的 _atom_site 中取出的 ligand instance 重原子. 
 
     输入字段:
         - coords: np.ndarray, (N_heavy, 3), RCSB CIF 中该 ligand instance 的重原子坐标
@@ -116,7 +116,7 @@ class RCSBAtomSiteLigand:
 @dataclass
 class ChemCompDescriptors:
     """
-    RCSB chemical component descriptor 的核心字段。
+    RCSB chemical component descriptor 的核心字段. 
 
     输入字段:
         - smiles: str, RCSB 常规 SMILES
@@ -138,7 +138,7 @@ class ChemCompDescriptors:
 @dataclass
 class Mol2Info:
     """
-    TRIPOS mol2 文件的轻量解析结果。
+    TRIPOS mol2 文件的轻量解析结果. 
 
     输入字段:
         - atom_count: int, mol2 总原子数
@@ -164,7 +164,7 @@ class Mol2Info:
 @dataclass
 class ValidationMetrics:
     """
-    一个 ligand pair 的多角度校验指标。
+    一个 ligand pair 的多角度校验指标. 
 
     输入字段:
         - make_data_heavy_atoms: int, Make_Data candidate 重原子数
@@ -192,7 +192,7 @@ class ValidationMetrics:
 @dataclass
 class ToolReadiness:
     """
-    三个 docking/identification 工具的输入格式合规性初筛。
+    三个 docking/identification 工具的输入格式合规性初筛. 
 
     输入字段:
         - dockem_input_status: str, DockEM 输入格式状态
@@ -210,10 +210,10 @@ class ToolReadiness:
 @dataclass
 class MappingRow:
     """
-    ligand_mapping.csv/jsonl 的一行。
+    ligand_mapping.csv/jsonl 的一行. 
 
     输出:
-        - row: dict[str, Any], 字段与 Ligand/notes_of_dataset.md 中 ligand_mapping 字段表一致。
+        - row: dict[str, Any], 字段与 Ligand/notes_of_dataset.md 中 ligand_mapping 字段表一致. 
     """
 
     emdb_id: str = ""
@@ -269,7 +269,7 @@ class MappingRow:
 
     def to_dict(self) -> dict[str, Any]:
         """
-        将 MappingRow 转为可写出 CSV/JSONL 的字典。
+        将 MappingRow 转为可写出 CSV/JSONL 的字典. 
 
         输出:
             - result: dict[str, Any], 键为 mapping 字段名, 值为标量或嵌套字典
@@ -281,7 +281,7 @@ class MappingRow:
 @dataclass
 class PDBProcessResult:
     """
-    单个 PDB worker 的处理结果。
+    单个 PDB worker 的处理结果. 
 
     输入字段:
         - sample: SampleRef, 当前 PDB 样本引用

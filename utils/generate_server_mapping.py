@@ -18,7 +18,7 @@ from typing import List, Optional
 
 def get_emdb_num(emdb_id: str) -> str:
     """
-    从 EMDB 标识符中提取数字部分。
+    从 EMDB 标识符中提取数字部分. 
 
     输入参数:
         - emdb_id: str, 标量, 原始 EMDB 编号字符串, 如 'EMD-63092'
@@ -32,7 +32,7 @@ def get_emdb_num(emdb_id: str) -> str:
 
 def get_files_with_suffix(directory: str, suffix: str) -> List[str]:
     """
-    获取指定目录下具有特定后缀的所有文件名。
+    获取指定目录下具有特定后缀的所有文件名. 
 
     输入参数:
         - directory: str, 标量, 需要扫描的目录路径
@@ -50,7 +50,7 @@ def get_files_with_suffix(directory: str, suffix: str) -> List[str]:
 
 def find_file(files_list: List[str], pdb_id: str, emdb_num: str) -> Optional[str]:
     """
-    根据 PDB ID 或 EMDB 编号在一组文件命中寻找匹配项。
+    根据 PDB ID 或 EMDB 编号在一组文件命中寻找匹配项. 
 
     输入参数:
         - files_list: list[str], 可变长度, 可选的文件名列表
@@ -78,7 +78,7 @@ def generate_mapping(csv_path: str,
                      simu_all_dir: str,
                      out_json_path: str) -> None:
     """
-    读取 CSV 文件, 在对应的文件夹中匹配相关的文件, 最终生成 JSON 映射文件。
+    读取 CSV 文件, 在对应的文件夹中匹配相关的文件, 最终生成 JSON 映射文件. 
 
     输入参数:
         - csv_path: str, 标量, 包含文件映射信息的 CSV 路径
@@ -149,7 +149,7 @@ def generate_mapping(csv_path: str,
         if map_f: map_hit += 1
         if sim_atom_f: sim_atom_hit += 1
 
-        # bool, 标量, 只有当结构、密度图、受体模拟密度图全都在时，才认为是完整的
+        # bool, 标量, 只有当结构、密度图、受体模拟密度图全都在时, 才认为是完整的
         if cif_f and map_f and sim_atom_f:
             valid_samples.append({
                 "pdb_id": pdb,
@@ -169,7 +169,7 @@ def generate_mapping(csv_path: str,
 
 if __name__ == "__main__":
     generate_mapping(
-        csv_path="/storage/penghongen/EMDB_PDB_resolution_3.5.csv",  # 请务必确保此文件包含 emdb_id 和 fitted_pdbs 列，而不是只含有 real_file 列
+        csv_path="/storage/penghongen/EMDB_PDB_resolution_3.5.csv",  # 请务必确保此文件包含 emdb_id 和 fitted_pdbs 列, 而不是只含有 real_file 列
         cif_dir="/storage/chenzhaoyang/cryo_em/CIF_3.5_cc_qscore",
         emdb_dir="/storage/chenzhaoyang/cryo_em/EMDB_3.5",
         simu_atom_dir="/storage/chenzhaoyang/cryo_em/EMDB_simu_atom",

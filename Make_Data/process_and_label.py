@@ -5,7 +5,7 @@
 ================================================================================
 
 支持两种工作模式 / Two working modes:
-  Mode A (--mode full): 从零开始，解析 PDB/CIF → 提取特征 → 打标签
+  Mode A (--mode full): 从零开始, 解析 PDB/CIF → 提取特征 → 打标签
     输入: PDB/CIF 文件目录
     输出: candidates.npz + atoms.npz + residues.npz + graph.npz + labels.npz
 
@@ -67,7 +67,7 @@ DEFAULT_PARSE_GRAPH = False
 
 def _normalize_filter_preset_name(value: str) -> str:
     """
-    规范化命令行传入的预设名（去首尾空格并转小写）。
+    规范化命令行传入的预设名（去首尾空格并转小写）. 
     """
     return value.strip().lower()
 
@@ -93,7 +93,7 @@ def label_single_sample(
     require_ligand: bool = True,
 ) -> Tuple[str, bool, Optional[str]]:
     """
-    Mode B: 对已有的 .npz 文件目录打标签（不重新解析）。
+    Mode B: 对已有的 .npz 文件目录打标签（不重新解析）. 
 
     输入参数 / Input:
         - sample_dir: str, 样本目录路径（包含 candidates.npz 和 atoms.npz）
@@ -139,7 +139,7 @@ def label_single_sample(
 
 
         # ===== 2. 加载原子坐标（用于计算距离）/ Load atom coords =====
-        # 需要从 atoms.npz 加载原子坐标，构造轻量 ParsedStructure
+        # 需要从 atoms.npz 加载原子坐标, 构造轻量 ParsedStructure
         atoms_path = str(Path(sample_dir) / "atoms.npz")
         if not os.path.exists(atoms_path):
             return sample_id, False, "atoms.npz not found"
@@ -243,7 +243,7 @@ def process_and_label_single_file(
     allow_incomplete_backbone: bool = False,
 ) -> Tuple[str, bool, Optional[str]]:
     """
-    Mode A: 从零开始处理单个结构文件（解析 + 特征提取 + 打标签）。
+    Mode A: 从零开始处理单个结构文件（解析 + 特征提取 + 打标签）. 
     Mode A: Full pipeline for a single structure file (parse + features + labels).
 
     输入参数 / Input:
@@ -464,7 +464,7 @@ def get_sample_dir_list(
     error_dir: Optional[str] = None,
 ) -> List[str]:
     """
-    获取已处理目录下所有样本子目录（包含 candidates.npz）。
+    获取已处理目录下所有样本子目录（包含 candidates.npz）. 
 
     输入参数 / Input:
         - processed_dir: str, 已处理数据根目录(含有一系列 以pdb_id命名的子文件夹, 内部有关于这个样本的一系列.npz)
@@ -857,7 +857,7 @@ def get_features_when_infer(
     allow_incomplete_backbone: bool = False,
 ) -> Optional[Tuple[dict, dict, dict]]:
     """
-    推断时提取单个结构文件的三类特征，不保存任何文件、不计算标签。
+    推断时提取单个结构文件的三类特征, 不保存任何文件、不计算标签. 
 
     输入参数 / Input:
         - input_path: str, 输入的 PDB/CIF 文件路径
@@ -868,7 +868,7 @@ def get_features_when_infer(
         - allow_incomplete_backbone: bool, 是否允许主链原子缺失并尝试补全, 建议值 False
 
     输出 / Output:
-        成功时返回 (atoms_dict, residues_dict, graph_dict)，失败返回 None。
+        成功时返回 (atoms_dict, residues_dict, graph_dict), 失败返回 None. 
 
         - atoms_dict 的键 / keys of atoms_dict:
             - coords          - np.ndarray, (N_atoms, 3),       float32, 原子坐标
@@ -903,7 +903,7 @@ def get_features_when_infer(
     # 导入图边构建函数 (仅在此函数中需要)
     # ------------------------------------------------------------------
     from PDB_processor.geometry.graph_builder import build_graph_edges_sparse
-    # str, 样本 ID，从文件名提取 / sample ID derived from filename
+    # str, 样本 ID, 从文件名提取 / sample ID derived from filename
     sample_id = Path(input_path).stem
 
     try:
@@ -912,12 +912,12 @@ def get_features_when_infer(
             input_path,
             error_dir,
             sample_id,
-            require_ligand=False,  #    推断时 require_ligand=False，不要求配体存在
+            require_ligand=False,  #    推断时 require_ligand=False, 不要求配体存在
             select_first_model=select_first_model,
             allow_incomplete_backbone=allow_incomplete_backbone,
         )
         if parsed_data is None:
-            # 解析失败，错误信息已由 parse_structure 内部写入 error_dir
+            # 解析失败, 错误信息已由 parse_structure 内部写入 error_dir
             print(f"[get_features_when_infer] Parse failed for {sample_id}")
             return None
 

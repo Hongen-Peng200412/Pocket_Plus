@@ -1,4 +1,4 @@
-"""Selector tau_G 实际概率扫描、first maximum 与曲线发布测试。"""
+"""Selector tau_G 实际概率扫描、first maximum 与曲线发布测试. """
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from src.selector.calibration import calibrate_tau_g
 
 
 def _save_npz(path: Path, **arrays: np.ndarray) -> None:
-    """保存 calibration 测试所需的数值归档。"""
+    """保存 calibration 测试所需的数值归档. """
     path.parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(path, **arrays)
 
@@ -24,7 +24,7 @@ def _build_two_clg_case(
     overlap_occurrence_index: np.ndarray,
     intersection_voxel_count: np.ndarray,
 ) -> tuple[Path, Path, Path]:
-    """构造两个单节点 CLG，p_G 分别为 0.2/0.8 的完整校正输入。"""
+    """构造两个单节点 CLG, p_G 分别为 0.2/0.8 的完整校正输入. """
     stage1_root = root / "stage1_outputs"
     run_dir = root / "selector_run"
     pdb_id = "demo"
@@ -86,7 +86,7 @@ def _build_two_clg_case(
 
 
 def test_tau_g_uses_actual_probabilities_and_publishes_full_curve(tmp_path: Path) -> None:
-    """低概率坏预测应被门控，最优 tau_G 为实际高概率值 0.8。"""
+    """低概率坏预测应被门控, 最优 tau_G 为实际高概率值 0.8. """
     stage1_root, run_dir, frozen_path = _build_two_clg_case(
         tmp_path,
         occurrence_voxel_count=np.asarray([3], dtype=np.int32),
@@ -108,7 +108,7 @@ def test_tau_g_uses_actual_probabilities_and_publishes_full_curve(tmp_path: Path
 
 
 def test_tau_g_tie_uses_first_threshold_in_ascending_scan(tmp_path: Path) -> None:
-    """全部 M_instance 同为零时，first maximum 固定选择升序首个实际 p_G。"""
+    """全部 M_instance 同为零时, first maximum 固定选择升序首个实际 p_G. """
     stage1_root, run_dir, frozen_path = _build_two_clg_case(
         tmp_path,
         occurrence_voxel_count=np.empty((0,), dtype=np.int32),
@@ -128,7 +128,7 @@ def test_tau_g_tie_uses_first_threshold_in_ascending_scan(tmp_path: Path) -> Non
 
 
 def test_tau_g_merges_same_forest_node_across_clgs_with_max_gate(tmp_path: Path) -> None:
-    """同一 source 跨 CLG 被选中时只计一次，并以最大的 p_G 决定出现阈值。"""
+    """同一 source 跨 CLG 被选中时只计一次, 并以最大的 p_G 决定出现阈值. """
     stage1_root, run_dir, frozen_path = _build_two_clg_case(
         tmp_path,
         occurrence_voxel_count=np.asarray([3], dtype=np.int32),
@@ -165,7 +165,7 @@ def test_tau_g_merges_same_forest_node_across_clgs_with_max_gate(tmp_path: Path)
 
 
 def test_zero_clg_pdb_remains_in_calibration_metrics(tmp_path: Path) -> None:
-    """合法零 CLG PDB 仍贡献 GT false negatives 与逐 PDB macro。"""
+    """合法零 CLG PDB 仍贡献 GT false negatives 与逐 PDB macro. """
     stage1_root, run_dir, frozen_path = _build_two_clg_case(
         tmp_path,
         occurrence_voxel_count=np.asarray([3], dtype=np.int32),
@@ -222,7 +222,7 @@ def test_zero_clg_pdb_remains_in_calibration_metrics(tmp_path: Path) -> None:
 
 
 def test_all_zero_clg_calibration_fails_with_clear_diagnostic(tmp_path: Path) -> None:
-    """有完整 PDB 但没有任何 CLG 概率时，应给出明确不可校正错误。"""
+    """有完整 PDB 但没有任何 CLG 概率时, 应给出明确不可校正错误. """
 
     stage1_root, run_dir, frozen_path = _build_two_clg_case(
         tmp_path,

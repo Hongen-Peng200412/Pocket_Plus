@@ -13,7 +13,7 @@ from src.wrappers.voxel_point_stage1_losses import compute_sparse_refine_loss_te
 
 class _BackboneForSparseLoss(nn.Module):
     """
-    测试用 sparse refine loss backbone stub。
+    测试用 sparse refine loss backbone stub. 
     """
 
     def __init__(self, candidate_class_ids: tuple[int, ...]) -> None:
@@ -22,7 +22,7 @@ class _BackboneForSparseLoss(nn.Module):
 
     def get_sparse_candidate_class_ids(self) -> tuple[int, ...]:
         """
-        返回 candidate builder 类别 ID。
+        返回 candidate builder 类别 ID. 
 
         输出:
             - class_ids: tuple[int, ...], candidate 前景类别 ID
@@ -31,24 +31,24 @@ class _BackboneForSparseLoss(nn.Module):
 
     def set_sparse_candidate_thresholds(self, p_best_by_class, p_sampling_by_class) -> None:
         """
-        接收 wrapper 同步的 threshold cache。
+        接收 wrapper 同步的 threshold cache. 
         """
 
     def set_sparse_candidate_runtime(self, global_step: int, candidate_warmup_steps: int, allow_warmup_fixed_topk: bool) -> None:
         """
-        接收 wrapper 同步的 runtime 状态。
+        接收 wrapper 同步的 runtime 状态. 
         """
 
     def forward(self, batch: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
         """
-        返回测试 batch 中预构造的输出。
+        返回测试 batch 中预构造的输出. 
         """
         return batch["outputs"]
 
 
 def _loss(num_classes: int) -> AdaptiveClassificationCompositeLoss:
     """
-    构造测试用 AdaptiveClassificationCompositeLoss。
+    构造测试用 AdaptiveClassificationCompositeLoss. 
 
     输入参数:
         - num_classes: int, 分类类别数
@@ -73,7 +73,7 @@ def _loss(num_classes: int) -> AdaptiveClassificationCompositeLoss:
 
 def _wrapper(num_classes: int, candidate_class_ids: tuple[int, ...]) -> VoxelPointStage1Wrapper:
     """
-    构造启用 sparse refine loss 的 wrapper。
+    构造启用 sparse refine loss 的 wrapper. 
     """
     return VoxelPointStage1Wrapper(
         backbone=_BackboneForSparseLoss(candidate_class_ids=candidate_class_ids),
@@ -87,7 +87,7 @@ def _wrapper(num_classes: int, candidate_class_ids: tuple[int, ...]) -> VoxelPoi
 
 def test_target_from_ligand_dist_map_binary_accepts_4d_dist() -> None:
     """
-    验证二分类 target helper 接受 (B,D,H,W) 距离图。
+    验证二分类 target helper 接受 (B,D,H,W) 距离图. 
     """
     loss = _loss(2)
     dist = torch.tensor([[[[0.5, 2.0]]]])
@@ -99,7 +99,7 @@ def test_target_from_ligand_dist_map_binary_accepts_4d_dist() -> None:
 
 def test_target_from_ligand_dist_map_binary_accepts_single_channel_5d_dist() -> None:
     """
-    验证二分类 target helper 接受 (B,1,D,H,W) 距离图。
+    验证二分类 target helper 接受 (B,1,D,H,W) 距离图. 
     """
     loss = _loss(2)
     dist = torch.tensor([[[[[0.5, 2.0]]]]])
@@ -111,7 +111,7 @@ def test_target_from_ligand_dist_map_binary_accepts_single_channel_5d_dist() -> 
 
 def test_target_from_ligand_dist_map_binary_rejects_multiclass_dist() -> None:
     """
-    验证二分类 target helper 拒绝多通道距离图。
+    验证二分类 target helper 拒绝多通道距离图. 
     """
     loss = _loss(2)
     dist = torch.zeros(1, 3, 1, 1, 1)
@@ -122,7 +122,7 @@ def test_target_from_ligand_dist_map_binary_rejects_multiclass_dist() -> None:
 
 def test_target_from_ligand_dist_map_multiclass_uses_nearest_foreground() -> None:
     """
-    验证多分类 target helper 使用最近且过阈值的前景类别。
+    验证多分类 target helper 使用最近且过阈值的前景类别. 
     """
     loss = _loss(3)
     dist = torch.full((1, 3, 1, 1, 3), 5.0)
@@ -137,7 +137,7 @@ def test_target_from_ligand_dist_map_multiclass_uses_nearest_foreground() -> Non
 
 def test_sparse_refine_loss_uses_all_box_voxels_not_message_mask() -> None:
     """
-    验证 sparse refine loss 使用全 BOX 体素监督，不被 message mask 裁掉。
+    验证 sparse refine loss 使用全 BOX 体素监督, 不被 message mask 裁掉. 
     """
     wrapper = _wrapper(num_classes=2, candidate_class_ids=(1,))
     outputs = {
@@ -168,7 +168,7 @@ def test_sparse_refine_loss_uses_all_box_voxels_not_message_mask() -> None:
 
 def test_sparse_refine_loss_accepts_binary_C_logits() -> None:
     """
-    验证 sparse refine loss 接受二分类 (sumC,1) logits。
+    验证 sparse refine loss 接受二分类 (sumC,1) logits. 
     """
     wrapper = _wrapper(num_classes=2, candidate_class_ids=(1,))
     outputs = {
@@ -197,7 +197,7 @@ def test_sparse_refine_loss_accepts_binary_C_logits() -> None:
 
 def test_sparse_refine_loss_accepts_empty_multiclass_C_logits() -> None:
     """
-    验证 sparse refine loss 接受空三分类 C logits。
+    验证 sparse refine loss 接受空三分类 C logits. 
     """
     wrapper = _wrapper(num_classes=3, candidate_class_ids=(1, 2))
     outputs = {
@@ -227,7 +227,7 @@ def test_sparse_refine_loss_accepts_empty_multiclass_C_logits() -> None:
 
 def test_sparse_refine_loss_accepts_multiclass_C_logits() -> None:
     """
-    验证 sparse refine loss 接受三分类 (sumC,3) logits。
+    验证 sparse refine loss 接受三分类 (sumC,3) logits. 
     """
     wrapper = _wrapper(num_classes=3, candidate_class_ids=(1, 2))
     outputs = {
@@ -259,7 +259,7 @@ def test_sparse_refine_loss_accepts_multiclass_C_logits() -> None:
 
 def test_ligand_sparse_refine_loss_schedule_linear_warmup() -> None:
     """
-    验证 sparse refine loss 独立 linear warmup 权重。
+    验证 sparse refine loss 独立 linear warmup 权重. 
     """
     wrapper = VoxelPointStage1Wrapper(
         backbone=_BackboneForSparseLoss(candidate_class_ids=(1,)),
@@ -287,7 +287,7 @@ def test_ligand_sparse_refine_loss_schedule_linear_warmup() -> None:
 
 def test_ligand_sparse_refine_loss_schedule_uses_warmup_ratio() -> None:
     """
-    验证 sparse refine loss warmup_steps 为 null 时按 trainer 总 step 数和 warmup_ratio 解析。
+    验证 sparse refine loss warmup_steps 为 null 时按 trainer 总 step 数和 warmup_ratio 解析. 
     """
     wrapper = VoxelPointStage1Wrapper(
         backbone=_BackboneForSparseLoss(candidate_class_ids=(1,)),

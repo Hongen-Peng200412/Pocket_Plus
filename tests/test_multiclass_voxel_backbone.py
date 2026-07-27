@@ -57,7 +57,7 @@ def test_multiclass_voxel_backbone_rejects_single_channel_prior_prob() -> None:
 
 def test_named_sigmoid_priors_init_aux_and_ligand_independently() -> None:
     """
-    单通道 sigmoid 路径: prior_prob_voxel_receptor 与 prior_prob_voxel_ligand 各自独立初始化 aux/ligand 头末层 bias。
+    单通道 sigmoid 路径: prior_prob_voxel_receptor 与 prior_prob_voxel_ligand 各自独立初始化 aux/ligand 头末层 bias. 
     """
     backbone = _make_small_voxel_backbone(
         voxel_aux_logit_dim=1,
@@ -77,7 +77,7 @@ def test_named_sigmoid_priors_init_aux_and_ligand_independently() -> None:
 def test_named_sigmoid_priors_none_skips_bias_init() -> None:
     """
     主开关关(stage1_model 传 None)时, aux/ligand 命名先验为 None 且无 legacy prior_prob, 则跳过先验 bias 初始化,
-    末层 bias 保持 Conv3d 构造默认(均匀初始化, 非 logit(prior))。
+    末层 bias 保持 Conv3d 构造默认(均匀初始化, 非 logit(prior)). 
     """
     backbone = _make_small_voxel_backbone(
         voxel_aux_logit_dim=1,
@@ -96,7 +96,7 @@ def test_named_sigmoid_priors_none_skips_bias_init() -> None:
 
 def test_multiclass_prior_probs_take_precedence_over_named_sigmoid() -> None:
     """
-    多通道 prior_probs 与命名 sigmoid 先验同时给定时, 多通道路径优先, 命名 sigmoid 被忽略(不冲突、不报错)。
+    多通道 prior_probs 与命名 sigmoid 先验同时给定时, 多通道路径优先, 命名 sigmoid 被忽略(不冲突、不报错). 
     """
     backbone = _make_small_voxel_backbone(
         voxel_aux_logit_dim=3,

@@ -18,7 +18,7 @@ from src.model.stage1_model import VolumePointStage1Model
 
 class _VoxelBackboneStub(nn.Module):
     """
-    测试用 voxel backbone stub。
+    测试用 voxel backbone stub. 
 
     输入参数:
         - channels: int, voxel feature 通道数
@@ -40,7 +40,7 @@ class _VoxelBackboneStub(nn.Module):
         return_feature_keys: tuple[str, ...],
     ) -> dict[str, Any]:
         """
-        返回最小 voxel 输出字典。
+        返回最小 voxel 输出字典. 
 
         输入参数:
             - voxel_grid: torch.Tensor, (B,C,D,H,W), voxel 输入
@@ -64,7 +64,7 @@ class _VoxelBackboneStub(nn.Module):
 
 class _PointBackboneStub(nn.Module):
     """
-    测试用 point backbone stub。
+    测试用 point backbone stub. 
     """
 
     def __init__(self) -> None:
@@ -84,7 +84,7 @@ class _PointBackboneStub(nn.Module):
         pseudo_mask: torch.Tensor | None = None,
     ) -> dict[str, Any]:
         """
-        构造与 Stage1PointBackbone zeros 后端一致的输出。
+        构造与 Stage1PointBackbone zeros 后端一致的输出. 
 
         输入参数:
             - atom_feat: torch.Tensor, (N,F_atom), 输入点特征
@@ -116,7 +116,7 @@ class _PointBackboneStub(nn.Module):
 
 
 class _VoxelFeatureBackboneStub(_VoxelBackboneStub):
-    """返回 centered 契约五路 V 特征的轻量 voxel stub。"""
+    """返回 centered 契约五路 V 特征的轻量 voxel stub. """
 
     def __init__(self) -> None:
         super().__init__(channels=2, ligand_logit_dim=3)
@@ -153,7 +153,7 @@ class _VoxelFeatureBackboneStub(_VoxelBackboneStub):
 
 
 class _InputSensitiveVoxelBackboneStub(_VoxelFeatureBackboneStub):
-    """让 logits 同时依赖 voxel 输入与 recycle 的等价性测试 stub。"""
+    """让 logits 同时依赖 voxel 输入与 recycle 的等价性测试 stub. """
 
     def forward(
         self,
@@ -175,7 +175,7 @@ class _InputSensitiveVoxelBackboneStub(_VoxelFeatureBackboneStub):
 
 
 class _EmbedHeadStub(nn.Module):
-    """保持行对齐并显式提供 A L1 的 point-side embed stub。"""
+    """保持行对齐并显式提供 A L1 的 point-side embed stub. """
 
     has_point_output = True
     has_voxel_output = False
@@ -205,7 +205,7 @@ def _candidate_builder(
     max_count: list[int],
 ) -> SparseCandidateSetBuilder:
     """
-    构造 adaptive_threshold candidate builder。
+    构造 adaptive_threshold candidate builder. 
 
     输入参数:
         - class_ids: list[int], 候选类别 ID
@@ -220,7 +220,7 @@ def _candidate_builder(
 
 def _base_model_kwargs() -> dict[str, Any]:
     """
-    返回 VolumePointStage1Model 的当前显式基础参数。
+    返回 VolumePointStage1Model 的当前显式基础参数. 
 
     输出:
         - kwargs: dict[str, Any], 可直接展开给 VolumePointStage1Model
@@ -258,7 +258,7 @@ def _base_model_kwargs() -> dict[str, Any]:
 
 def _make_model(**overrides: Any) -> VolumePointStage1Model:
     """
-    构造最小 VolumePointStage1Model 测试实例。
+    构造最小 VolumePointStage1Model 测试实例. 
 
     输入参数:
         - overrides: Any, 覆盖 _base_model_kwargs 的参数
@@ -273,7 +273,7 @@ def _make_model(**overrides: Any) -> VolumePointStage1Model:
 
 def _make_batch() -> dict[str, torch.Tensor]:
     """
-    构造单 BOX real-only batch。
+    构造单 BOX real-only batch. 
 
     输出:
         - batch: dict[str, torch.Tensor], N=3 的 Stage1 输入 batch
@@ -298,7 +298,7 @@ def _make_batch() -> dict[str, torch.Tensor]:
 
 def test_stage1_model_holds_single_atom_head_member() -> None:
     """
-    验证主模型只持有 self.atom_head，不再暴露旧 atom head 成员。
+    验证主模型只持有 self.atom_head, 不再暴露旧 atom head 成员. 
     """
     model = _make_model(enable_atom_head=True)
 
@@ -310,7 +310,7 @@ def test_stage1_model_holds_single_atom_head_member() -> None:
 
 def test_stage1_model_rejects_non_null_legacy_pseudo_atom_cfg() -> None:
     """
-    验证 legacy pseudo_atom_cfg 非空时 fail-fast。
+    验证 legacy pseudo_atom_cfg 非空时 fail-fast. 
     """
     with pytest.raises(ValueError, match="pseudo_atom_cfg"):
         _make_model(pseudo_atom_cfg={"base_count": 1})
@@ -318,7 +318,7 @@ def test_stage1_model_rejects_non_null_legacy_pseudo_atom_cfg() -> None:
 
 def test_prepare_pseudo_batch_called_only_on_final_recycle() -> None:
     """
-    验证 _prepare_pseudo_batch 只在最后一次 recycle 调用。
+    验证 _prepare_pseudo_batch 只在最后一次 recycle 调用. 
     """
     model = _make_model(enable_atom_head=False, max_recycles=3)
     call_indices: list[int] = []
@@ -347,7 +347,7 @@ def test_prepare_pseudo_batch_called_only_on_final_recycle() -> None:
 
 def test_final_mixed_point_output_is_trimmed_only_for_real_outputs() -> None:
     """
-    验证 final mixed point 输出只在 point_outputs/recycle 输出处裁剪 real-only 视图。
+    验证 final mixed point 输出只在 point_outputs/recycle 输出处裁剪 real-only 视图. 
     """
     model = _make_model(enable_atom_head=False, max_recycles=2)
 
@@ -381,7 +381,7 @@ def test_final_mixed_point_output_is_trimmed_only_for_real_outputs() -> None:
 
 def test_prepare_pseudo_batch_outputs_candidates_without_pseudo_layout() -> None:
     """
-    验证 candidate builder 只输出 C 字段，不注入 P anchor。
+    验证 candidate builder 只输出 C 字段, 不注入 P anchor. 
     """
     model = _make_model(enable_atom_head=False)
     model.candidate_set_builder = _candidate_builder([1, 2], [1, 1], [10, 10])
@@ -398,7 +398,7 @@ def test_prepare_pseudo_batch_outputs_candidates_without_pseudo_layout() -> None
 
 def test_stage1_forward_routes_unique_candidates_before_anchor_sampling() -> None:
     """
-    端到端验证 Stage1 在进入 sampler 前仅保留唯一 C，P 继承其路由类别。
+    端到端验证 Stage1 在进入 sampler 前仅保留唯一 C, P 继承其路由类别. 
     """
     model = _make_model(enable_atom_head=False)
     model.candidate_set_builder = _candidate_builder([1, 2], [8, 8], [8, 8])
@@ -417,7 +417,7 @@ def test_stage1_forward_routes_unique_candidates_before_anchor_sampling() -> Non
 
 def test_anchor_class_conditioning_breaks_same_voxel_class_symmetry() -> None:
     """
-    验证 P 来源类别 embedding 会打破同 voxel 多类别 P 的初始特征对称性。
+    验证 P 来源类别 embedding 会打破同 voxel 多类别 P 的初始特征对称性. 
     """
     model = _make_model(
         enable_atom_head=False,
@@ -438,7 +438,7 @@ def test_anchor_class_conditioning_breaks_same_voxel_class_symmetry() -> None:
 
 def test_prepare_pseudo_batch_injects_anchor_pseudo_atoms() -> None:
     """
-    验证 candidate builder + anchor sampler + density cube 启用后注入 mixed P anchors。
+    验证 candidate builder + anchor sampler + density cube 启用后注入 mixed P anchors. 
     """
     model = _make_model(enable_atom_head=True)
     model.candidate_set_builder = _candidate_builder([1, 2], [1, 1], [10, 10])
@@ -460,7 +460,7 @@ def test_prepare_pseudo_batch_injects_anchor_pseudo_atoms() -> None:
 
 def test_stage1_final_sparse_refine_outputs_candidate_logits() -> None:
     """
-    验证 final atom head 后执行 P -> C 聚合并输出 refined candidate logits。
+    验证 final atom head 后执行 P -> C 聚合并输出 refined candidate logits. 
     """
     model = _make_model(enable_atom_head=True)
     model.candidate_set_builder = _candidate_builder([1, 2], [2, 2], [2, 2])
@@ -505,7 +505,7 @@ def test_stage1_final_sparse_refine_outputs_candidate_logits() -> None:
 
 def test_stage1_model_anchor_sampler_requires_candidate_builder() -> None:
     """
-    验证启用 anchor sampler 但关闭 candidate builder 时构造 fail-fast。
+    验证启用 anchor sampler 但关闭 candidate builder 时构造 fail-fast. 
     """
     with pytest.raises(ValueError, match="candidate_set_builder"):
         _make_model(
@@ -517,7 +517,7 @@ def test_stage1_model_anchor_sampler_requires_candidate_builder() -> None:
 
 def test_stage1_model_anchor_sampler_requires_density_cube() -> None:
     """
-    验证启用 anchor sampler 但关闭 density cube 时构造 fail-fast。
+    验证启用 anchor sampler 但关闭 density cube 时构造 fail-fast. 
     """
     with pytest.raises(ValueError, match="density_cube_encoder"):
         _make_model(
@@ -529,7 +529,7 @@ def test_stage1_model_anchor_sampler_requires_density_cube() -> None:
 
 def test_stage1_model_density_out_dim_checked_at_init() -> None:
     """
-    验证 density cube out_dim 与 point_backbone.atom_feature_dim 不一致时构造 fail-fast。
+    验证 density cube out_dim 与 point_backbone.atom_feature_dim 不一致时构造 fail-fast. 
     """
     with pytest.raises(ValueError, match="out_dim"):
         _make_model(
@@ -542,7 +542,7 @@ def test_stage1_model_density_out_dim_checked_at_init() -> None:
 
 def test_stage1_model_candidate_builder_fails_without_ligand_logits() -> None:
     """
-    验证 builder 启用但 voxel_logits_ligand 缺失时 fail-fast。
+    验证 builder 启用但 voxel_logits_ligand 缺失时 fail-fast. 
     """
     model = _make_model(enable_atom_head=False)
     model.candidate_set_builder = _candidate_builder([1], [1], [10])
@@ -553,7 +553,7 @@ def test_stage1_model_candidate_builder_fails_without_ligand_logits() -> None:
 
 def test_atom_supervision_outputs_are_real_only_aligned() -> None:
     """
-    构造 fake mixed final outputs，验证 atom supervised 字段裁成 real-only。
+    构造 fake mixed final outputs, 验证 atom supervised 字段裁成 real-only. 
     """
     model = _make_model(enable_atom_head=True)
     real_batch = _make_batch()
@@ -585,7 +585,7 @@ def test_atom_supervision_outputs_are_real_only_aligned() -> None:
 
 
 def test_full_forward_publishes_centered_v_a_p_features_from_true_sources() -> None:
-    """验证完整 Find forward 的 V/A/P 直键来自既有真实层出口且逐实体对齐。"""
+    """验证完整 Find forward 的 V/A/P 直键来自既有真实层出口且逐实体对齐. """
 
     model = _make_model(
         voxel_backbone=_VoxelFeatureBackboneStub(),
@@ -630,7 +630,7 @@ def test_full_forward_publishes_centered_v_a_p_features_from_true_sources() -> N
 
 
 def test_unet_full_forward_publishes_only_five_v_features() -> None:
-    """验证纯 voxel producer 导出五路 V，同时不伪造任何 A/P 字段。"""
+    """验证纯 voxel producer 导出五路 V, 同时不伪造任何 A/P 字段. """
 
     model = _make_model(
         voxel_backbone=_VoxelFeatureBackboneStub(),
@@ -654,7 +654,7 @@ def test_unet_full_forward_publishes_only_five_v_features() -> None:
 
 
 def test_find0_voxel_only_matches_eval_forward_and_skips_point_path() -> None:
-    """验证 Find_0 最短入口逐元素等价、固定三次 recycle 且不运行 point backbone。"""
+    """验证 Find_0 最短入口逐元素等价、固定三次 recycle 且不运行 point backbone. """
 
     model = _make_model(
         voxel_backbone=_InputSensitiveVoxelBackboneStub(),
@@ -691,7 +691,7 @@ def test_find0_voxel_only_matches_eval_forward_and_skips_point_path() -> None:
 
 
 def test_find1_voxel_only_matches_three_recycle_eval_forward_and_skips_point_path() -> None:
-    """验证 Find_1 完整模型等价、三次 recycle 及短入口 point 分支零调用。"""
+    """验证 Find_1 完整模型等价、三次 recycle 及短入口 point 分支零调用. """
 
     torch.manual_seed(29)
     embed_head = Stage1EmbedHead(
@@ -791,8 +791,8 @@ def test_find1_voxel_only_matches_three_recycle_eval_forward_and_skips_point_pat
     model._run_voxel_backbone = counted_voxel  # type: ignore[method-assign]
     with torch.no_grad():
         full_logits = model(batch)["voxel_logits_ligand"]
-    # 完整训练 forward 每次 recycle 都重跑 embed/point 路；最短入口才把
-    # producer-specific voxel 构造提到 recycle 外并彻底跳过 point blocks。
+    # 完整训练 forward 每次 recycle 都重跑 embed/point 路; 最短入口才把
+    # producer-specific voxel 构造提到 recycle 外并彻底跳过 point blocks. 
     assert embed_point_calls == 3
     assert point_backbone_calls == 3
     assert voxel_calls == 3
@@ -812,7 +812,7 @@ def test_find1_voxel_only_matches_three_recycle_eval_forward_and_skips_point_pat
 
 
 def test_unet_voxel_only_matches_eval_forward_and_backpropagates() -> None:
-    """验证 unet_c1 最短入口与完整纯 voxel forward 的最终 logits 完全一致。"""
+    """验证 unet_c1 最短入口与完整纯 voxel forward 的最终 logits 完全一致. """
 
     model = _make_model(
         voxel_backbone=_InputSensitiveVoxelBackboneStub(),

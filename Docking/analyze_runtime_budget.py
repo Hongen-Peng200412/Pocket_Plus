@@ -10,7 +10,7 @@ from typing import Any
 
 def main() -> None:
     """
-    汇总已完成样本的逐 Rosetta job 实测时间，并估算当前 oracle 数据集成本。
+    汇总已完成样本的逐 Rosetta job 实测时间, 并估算当前 oracle 数据集成本. 
 
     输入参数:
         - CLI 参数, 包含 pipeline run 根目录、easy20 CSV、输出目录与当前 `nstruct`
@@ -50,7 +50,7 @@ def main() -> None:
 
 def read_sample_inputs(path: Path) -> list[dict[str, Any]]:
     """
-    读取 prescan 样本表，并提取实验成本估算所需字段。
+    读取 prescan 样本表, 并提取实验成本估算所需字段. 
 
     输入参数:
         - path: Path, 含 `sample_id`、`num_dockable_ligands` 与 `nk` 的 CSV
@@ -76,7 +76,7 @@ def read_sample_inputs(path: Path) -> list[dict[str, Any]]:
 
 def read_completed_samples(run_root: Path) -> set[str]:
     """
-    读取已有样本级 summary，确定哪些样本已完整结束。
+    读取已有样本级 summary, 确定哪些样本已完整结束. 
 
     输入参数:
         - run_root: Path, 当前 pipeline run 根目录
@@ -94,7 +94,7 @@ def read_available_job_rows(
     nstruct: int,
 ) -> list[dict[str, Any]]:
     """
-    读取全部已落盘的 Rosetta `results.json`，形成逐 job 实测耗时表。
+    读取全部已落盘的 Rosetta `results.json`, 形成逐 job 实测耗时表. 
 
     输入参数:
         - run_root: Path, 当前 pipeline run 根目录
@@ -138,7 +138,7 @@ def build_unit_cost(
     nstruct: int,
 ) -> dict[str, Any]:
     """
-    构造供后续 AI 直接使用的单位成本统计。
+    构造供后续 AI 直接使用的单位成本统计. 
 
     输入参数:
         - successful_rows: list[dict[str, Any]], 已完整样本中的成功 Rosetta jobs
@@ -175,7 +175,7 @@ def build_sample_rows(
     unit_cost: dict[str, Any],
 ) -> list[dict[str, Any]]:
     """
-    按样本聚合实测成本与下一轮可用的时间预算。
+    按样本聚合实测成本与下一轮可用的时间预算. 
 
     输入参数:
         - sample_inputs: list[dict[str, Any]], easy20 样本定义
@@ -219,7 +219,7 @@ def build_sample_rows(
 
 def nearest_rank(values: list[float], quantile: float) -> float:
     """
-    以向上取整的 nearest-rank 口径计算保守分位数。
+    以向上取整的 nearest-rank 口径计算保守分位数. 
 
     输入参数:
         - values: list[float], 已排序的耗时序列
@@ -236,7 +236,7 @@ def nearest_rank(values: list[float], quantile: float) -> float:
 
 def write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
     """
-    将结构化行写为 UTF-8 CSV。
+    将结构化行写为 UTF-8 CSV. 
 
     输入参数:
         - path: Path, 输出文件路径
@@ -256,7 +256,7 @@ def write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
 
 def render_report(run_id: str, unit_cost: dict[str, Any], sample_rows: list[dict[str, Any]]) -> str:
     """
-    渲染面向用户与后续 AI 的时间预算速查报告。
+    渲染面向用户与后续 AI 的时间预算速查报告. 
 
     输入参数:
         - run_id: str, pipeline run ID

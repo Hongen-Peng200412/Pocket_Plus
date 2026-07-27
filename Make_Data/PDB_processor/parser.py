@@ -3,7 +3,7 @@
 统一预处理系统 - PDB/mmCIF 解析器 / Unified Preprocessing System - Parser
 ================================================================================
 
-使用 Biopython 解析 PDB 和 mmCIF 文件，提取原子、残基、骨架和候选配体信息。
+使用 Biopython 解析 PDB 和 mmCIF 文件, 提取原子、残基、骨架和候选配体信息. 
 Parse PDB and mmCIF files using Biopython, extract atom, residue, backbone,
 and candidate ligand info.
 
@@ -50,7 +50,7 @@ class ParsedStructure:
     解析后的结构数据
     Parsed structure data
     
-    包含原子级、残基级、骨架级、候选配体级数据。
+    包含原子级、残基级、骨架级、候选配体级数据. 
     Contains atom-level, residue-level, backbone-level, and candidate ligand data.
 
     候选配体说明:
@@ -115,7 +115,7 @@ class ParsedStructure:
 
 
     # ========================= 候选配体数据 / Candidate Ligand data =========================
-    # list[LigandCandidate], 全量候选配体列表；低层排除策略由 parse_structure 参数控制
+    # list[LigandCandidate], 全量候选配体列表; 低层排除策略由 parse_structure 参数控制
     # 每个候选包含: 坐标、大小(n_heavy_atoms, molecular_weight)、分类标志、共价标志、聚合物链长
     # 注: n_contact_receptor_atoms / n_contact_receptor_residues 由 Part 2 就地填充, 不在此处计算
     ligand_candidates: List[LigandCandidate] = field(default_factory=list)
@@ -125,9 +125,9 @@ class ParsedStructure:
     num_candidates: int = 0
 
     # # ========================= [已弃用] 旧配体数据 / [DEPRECATED] Old ligand data =========================
-    # # dict[int, dict], 旧格式配体字典，由 Part 2 筛选后填充
+    # # dict[int, dict], 旧格式配体字典, 由 Part 2 筛选后填充
     # # 格式: {global_id: {'coords': np.ndarray, 'resname': str, 'chain_id': str, 'res_id': int}}
-    # # 注意: 此字段不再由 parse_structure() 填充，而由 labels/ligand_filter.py 筛选后生成
+    # # 注意: 此字段不再由 parse_structure() 填充, 而由 labels/ligand_filter.py 筛选后生成
     # ligand_dict: Dict = field(default_factory=dict)
     # # int, 筛选后的配体数量
     # num_ligands: int = 0
@@ -203,11 +203,11 @@ def parse_structure(
             - False: 严格模式, 主链缺失时跳过整个样本 (向后兼容)
             - True: 宽松模式, 尝试补全缺失原子, 并在 backbone_complete_mask 中标记为 False
         - use_exclusion_resnames: bool, 是否启用按 resname 的低层 HETATM 排除列表
-        - exclusion_resnames: set[str] | None, 需要排除的 HETATM resname；None 时使用候选解析默认列表
+        - exclusion_resnames: set[str] | None, 需要排除的 HETATM resname; None 时使用候选解析默认列表
         - exclude_covalent_modified_residues: bool, 是否排除与主链共价连接的修饰残基
 
     输出 / Output:
-        - ParsedStructure 或 None, 解析结果；失败返回 None
+        - ParsedStructure 或 None, 解析结果; 失败返回 None
     """
     # 推断 sample_id
     if sample_id is None:
@@ -260,7 +260,7 @@ def parse_structure(
     # =========================================================================
     # 检测候选配体 / Detect candidate ligands (Part 1: 全量解析)
     # =========================================================================
-    # 使用 ligand_candidates.py 的全量候选配体系统；低层排除策略由 AdaLigand-Label preset 透传。
+    # 使用 ligand_candidates.py 的全量候选配体系统; 低层排除策略由 AdaLigand-Label preset 透传. 
     # 此处计算的属性: coords, center, n_heavy_atoms, molecular_weight, is_metal_ion,
     #                is_peptide_like, is_nucleotide_like, is_covalent, polymer_length
     # 注: n_contact_receptor_atoms / n_contact_receptor_residues 由 Part 2 就地计算
@@ -301,8 +301,8 @@ def parse_structure(
             res_seq = residue.id[1]   # 残基序列号
             i_code = residue.id[2]    # 插入码
             resname = residue.resname.strip().upper()  # 残基名称
-            # 默认跳过 HETATM（配体单独处理），
-            # 但 Modified_Residues 中的残基若与主链共价连接，则并入受体主链。
+            # 默认跳过 HETATM（配体单独处理）, 
+            # 但 Modified_Residues 中的残基若与主链共价连接, 则并入受体主链. 
             is_modified_receptor = (
                 het_flag.startswith('H_')
                 and resname in Modified_Residues
@@ -589,7 +589,7 @@ def parse_structure(
             backbone_n_coords.append(res['n_coord'])
             backbone_ca_coords.append(res['ca_coord'])
             backbone_c_coords.append(res['c_coord'])
-            # 非核苷酸骨架，填 NaN 以保持 array 形状一致 (N_res, 3)
+            # 非核苷酸骨架, 填 NaN 以保持 array 形状一致 (N_res, 3)
             backbone_c4p_coords.append([np.nan, np.nan, np.nan])
             backbone_c1p_coords.append([np.nan, np.nan, np.nan])
             backbone_n_base_coords.append([np.nan, np.nan, np.nan])
@@ -597,7 +597,7 @@ def parse_structure(
             backbone_c4p_coords.append(res['c4p_coord'])
             backbone_c1p_coords.append(res['c1p_coord'])
             backbone_n_base_coords.append(res['n_base_coord'])
-            # 非蛋白骨架，填 NaN 以保持 array 形状一致 (N_res, 3)
+            # 非蛋白骨架, 填 NaN 以保持 array 形状一致 (N_res, 3)
             backbone_n_coords.append([np.nan, np.nan, np.nan])
             backbone_ca_coords.append([np.nan, np.nan, np.nan])
             backbone_c_coords.append([np.nan, np.nan, np.nan])

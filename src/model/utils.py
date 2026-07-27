@@ -1,6 +1,6 @@
 # src/model/utils.py
-# 通用、与具体 head 无关的小构建器。
-# 边界: 这里只放可被多处复用的"零初始化恒等融合 / 调制 / 采样权重"构建, 不放业务逻辑。
+# 通用、与具体 head 无关的小构建器. 
+# 边界: 这里只放可被多处复用的"零初始化恒等融合 / 调制 / 采样权重"构建, 不放业务逻辑. 
 from __future__ import annotations
 
 import math
@@ -20,7 +20,7 @@ def build_zero_init_residual_mlp(
     proj_drop: float = 0.0,
 ) -> nn.Sequential:
     """
-    构造末层零初始化的两层 MLP, 用于"开局恒等"的残差 / 调制融合。
+    构造末层零初始化的两层 MLP, 用于"开局恒等"的残差 / 调制融合. 
 
     输入参数:
         - in_dim: int, 输入通道数
@@ -46,9 +46,9 @@ def build_zero_init_residual_mlp(
 
 class MiniResidueCombine(nn.Module):
     """
-    mini_residue 融合: 主特征加 cond 经零初始化 MLP 的残差(开局恒等返回主特征)。
+    mini_residue 融合: 主特征加 cond 经零初始化 MLP 的残差(开局恒等返回主特征). 
 
-    前向: main + mlp(cond), mlp 末层零初始化 => 开局残差为 0。
+    前向: main + mlp(cond), mlp 末层零初始化 => 开局残差为 0. 
 
     输入参数:
         - main_dim: int, 主特征通道数(也是输出通道数)
@@ -84,9 +84,9 @@ class MiniResidueCombine(nn.Module):
 
 class ConcatMLPCombine(nn.Module):
     """
-    concat_mlp 融合: 主特征加 [main, cond] 拼接经零初始化 MLP 的残差(开局恒等返回主特征)。
+    concat_mlp 融合: 主特征加 [main, cond] 拼接经零初始化 MLP 的残差(开局恒等返回主特征). 
 
-    前向: main + mlp(cat([main, cond])), mlp 末层零初始化 => 开局残差为 0。
+    前向: main + mlp(cat([main, cond])), mlp 末层零初始化 => 开局残差为 0. 
 
     输入参数:
         - main_dim: int, 主特征通道数(也是输出通道数)
@@ -124,10 +124,10 @@ class ConcatMLPCombine(nn.Module):
 
 class FiLMCombine(nn.Module):
     """
-    film 融合: 用 cond 经单层零初始化 Linear 生成 gamma/beta 调制主特征。
+    film 融合: 用 cond 经单层零初始化 Linear 生成 gamma/beta 调制主特征. 
 
-    前向: main * (1 + gamma) + beta, 其中 [gamma, beta] = Linear(cond)。
-    Linear 零初始化 => 开局 gamma=beta=0 => 输出恒等于 main。
+    前向: main * (1 + gamma) + beta, 其中 [gamma, beta] = Linear(cond). 
+    Linear 零初始化 => 开局 gamma=beta=0 => 输出恒等于 main. 
 
     输入参数:
         - main_dim: int, 主特征通道数(gamma/beta 各 main_dim)
@@ -161,10 +161,10 @@ class FiLMCombine(nn.Module):
 
 class FiLMPlusCombine(nn.Module):
     """
-    film_plus 融合: 用 cond 经零初始化两层 MLP 生成 gamma/beta 调制主特征。
+    film_plus 融合: 用 cond 经零初始化两层 MLP 生成 gamma/beta 调制主特征. 
 
-    前向: main * (1 + gamma) + beta, 其中 [gamma, beta] = mlp(cond)。
-    mlp 末层零初始化 => 开局 gamma=beta=0 => 输出恒等于 main。
+    前向: main * (1 + gamma) + beta, 其中 [gamma, beta] = mlp(cond). 
+    mlp 末层零初始化 => 开局 gamma=beta=0 => 输出恒等于 main. 
 
     输入参数:
         - main_dim: int, 主特征通道数(gamma/beta 各 main_dim)
@@ -208,7 +208,7 @@ class FiLMPlusCombine(nn.Module):
 
 class FeatureCombine(nn.Module):
     """
-    主特征 <- 条件特征 的统一融合派发器(四种 mode 共享同一组小类, 均开局恒等返回主特征)。
+    主特征 <- 条件特征 的统一融合派发器(四种 mode 共享同一组小类, 均开局恒等返回主特征). 
 
     被 voxel->point 融合与 real 原子 embed<->density 融合复用:
         - voxel->point: main=点特征, cond=采样后体素特征
@@ -265,11 +265,11 @@ class FeatureCombine(nn.Module):
 # ------------------------------------------------ 用于: point backbone 中 fusion hook 的(3^3 BOX)特征抽取 ------------------------------------------------
 class CubeWeightingParams(nn.Module):
     """
-    weighted_cube 采样器的 per-hook 可学习权重参数容器。
+    weighted_cube 采样器的 per-hook 可学习权重参数容器. 
 
     把 3^3 邻域每个体素的"类别正偏置 + 距离温度项"组成 softmax 前的 logit:
         logit_i = exp(log_cat_bias(i)) - dist_i^2 / exp(log_d)
-    其中 a/b/c 是 home/含原子/其他 三类正偏置, 内部以 log 参数保存。
+    其中 a/b/c 是 home/含原子/其他 三类正偏置, 内部以 log 参数保存. 
 
     输入参数:
         - a_init: float, home 体素类别正偏置初值, 必须 > 0
@@ -282,7 +282,7 @@ class CubeWeightingParams(nn.Module):
         super().__init__()
         if min(float(a_init), float(b_init), float(c_init), float(d_init)) <= 0.0:
             raise ValueError("a/b/c/d_init 必须 > 0。")
-        # nn.Parameter, (), home/含原子/其他 三类正偏置的 log 参数。
+        # nn.Parameter, (), home/含原子/其他 三类正偏置的 log 参数. 
         self.a_log = nn.Parameter(torch.tensor(math.log(float(a_init))))
         self.b_log = nn.Parameter(torch.tensor(math.log(float(b_init))))
         self.c_log = nn.Parameter(torch.tensor(math.log(float(c_init))))
@@ -316,9 +316,9 @@ def gather_voxel_cube(
     zero_fill: bool,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """
-    以 center_zyx 为中心抽取每个点的 cube_size^3 体素邻域(无 padding, 用 clamp + 越界掩码)。
-    与 zero-pad 抽取数值等价: 越界邻居 zero_fill=True 时置 0; 越界与否由 valid_mask 标记。
-    仅需中心单体素(cube_size=1)时用更轻的 gather_voxel_feature_at_zyx, 避免 offsets/clamp/permute 开销。
+    以 center_zyx 为中心抽取每个点的 cube_size^3 体素邻域(无 padding, 用 clamp + 越界掩码). 
+    与 zero-pad 抽取数值等价: 越界邻居 zero_fill=True 时置 0; 越界与否由 valid_mask 标记. 
+    仅需中心单体素(cube_size=1)时用更轻的 gather_voxel_feature_at_zyx, 避免 offsets/clamp/permute 开销. 
 
     输入参数:
         - grid: torch.Tensor, (B, C, D, H, W), 体素特征 / 密度图
@@ -375,7 +375,7 @@ def gather_voxel_feature_at_zyx(
     point_batch_index: torch.Tensor,
 ) -> torch.Tensor:
     """
-    按离散 voxel center 坐标直接读取体素特征(cube_size=1 的精简特例; 多体素邻域见 gather_voxel_cube)。
+    按离散 voxel center 坐标直接读取体素特征(cube_size=1 的精简特例; 多体素邻域见 gather_voxel_cube). 
 
     输入参数:
         - voxel_feat: torch.Tensor, (B, C, D, H, W), 体素特征图

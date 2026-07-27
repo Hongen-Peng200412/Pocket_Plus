@@ -56,7 +56,7 @@ def log_scalar_payload(
     sync_dist: bool,
 ) -> None:
     """
-    将标量 payload 写入 Lightning 日志: 把一个 epoch 里所有 step 的值做聚合，现在在 epoch 结束时记录(epoch级别，所以不会有 step-level 曲线)。
+    将标量 payload 写入 Lightning 日志: 把一个 epoch 里所有 step 的值做聚合, 现在在 epoch 结束时记录(epoch级别, 所以不会有 step-level 曲线). 
 
     输入参数:
         - module: pl.LightningModule, 当前 wrapper 模块
@@ -87,7 +87,7 @@ def log_wandb_curves(
     every_n: int,
 ) -> None:
     """
-    在 global zero 上记录 W&B 曲线。
+    在 global zero 上记录 W&B 曲线. 
 
     输入参数:
         - module: pl.LightningModule, 当前 wrapper 模块
@@ -134,7 +134,7 @@ def write_validation_artifacts(
     payload: Any,
 ) -> None:
     """
-    写出 validation diagnostics 本地 artifact。
+    写出 validation diagnostics 本地 artifact. 
 
     输入参数:
         - run_dir: Path, 当前训练 run 根目录

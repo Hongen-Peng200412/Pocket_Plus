@@ -6,13 +6,13 @@ from torch import nn
 
 class AnchorToCandidateKnnSearch(nn.Module):
     """
-    在同 BOX/路由类别约束下，为候选 C 搜索 P anchor 的 KNN 消息边。
+    在同 BOX/路由类别约束下, 为候选 C 搜索 P anchor 的 KNN 消息边. 
 
     输入参数:
-        - mode: str, 邻居构造模式，首版只支持 `knn_message`
-        - num_neighbors: int, 每个 C 最多连接的 P 数量，建议值 3
-        - same_class_only: bool, 必须为 True，仅连接相同路由类别
-        - chunk_size: int, 单次距离计算最多处理的 C 数量，建议值 8192
+        - mode: str, 邻居构造模式, 首版只支持 `knn_message`
+        - num_neighbors: int, 每个 C 最多连接的 P 数量, 建议值 3
+        - same_class_only: bool, 必须为 True, 仅连接相同路由类别
+        - chunk_size: int, 单次距离计算最多处理的 C 数量, 建议值 8192
 
     前向输入:
         - candidate_coord_centered_world: torch.Tensor, (sumC, 3), C 的 centered-world xyz 坐标
@@ -24,7 +24,7 @@ class AnchorToCandidateKnnSearch(nn.Module):
 
     前向输出:
         - output: dict[str, torch.Tensor], KNN 边字段. 这里的 num_K=num_neighbors 而不是有效类别数(K)
-            - "candidate_neighbor_index": torch.Tensor, (sumC, num_K), P 行号，无效位置由 mask 屏蔽
+            - "candidate_neighbor_index": torch.Tensor, (sumC, num_K), P 行号, 无效位置由 mask 屏蔽
             - "candidate_neighbor_squared_distance": torch.Tensor, (sumC, num_K), C 到 P 的平方距离
             - "candidate_neighbor_relative_coords": torch.Tensor, (sumC, num_K, 3), C-P centered-world 相对坐标
             - "candidate_neighbor_valid_mask": torch.Tensor, (sumC, num_K), 有效邻居掩码
@@ -61,7 +61,7 @@ class AnchorToCandidateKnnSearch(nn.Module):
         anchor_class: torch.Tensor,
     ) -> dict[str, torch.Tensor]:
         """
-        搜索 P -> C 的有效邻居边。
+        搜索 P -> C 的有效邻居边. 
 
         输入参数:
             - candidate_coord_centered_world: torch.Tensor, (sumC, 3), C 的 centered-world xyz 坐标
@@ -73,7 +73,7 @@ class AnchorToCandidateKnnSearch(nn.Module):
 
         输出:
             - output: dict[str, torch.Tensor], KNN 边字段. 这里的 num_K=num_neighbors 而不是有效类别数
-                - "candidate_neighbor_index": torch.Tensor, (sumC, num_K), P 行号，无效位置由 mask 屏蔽
+                - "candidate_neighbor_index": torch.Tensor, (sumC, num_K), P 行号, 无效位置由 mask 屏蔽
                 - "candidate_neighbor_squared_distance": torch.Tensor, (sumC, num_K), C 到 P 的平方距离
                 - "candidate_neighbor_relative_coords": torch.Tensor, (sumC, num_K, 3), C-P centered-world 相对坐标
                 - "candidate_neighbor_valid_mask": torch.Tensor, (sumC, num_K), 有效邻居掩码

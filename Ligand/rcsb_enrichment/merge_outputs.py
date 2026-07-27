@@ -11,7 +11,7 @@ from .models import MappingRow
 
 def parse_args() -> argparse.Namespace:
     """
-    解析 parts 合并命令行参数。
+    解析 parts 合并命令行参数. 
 
     输出:
         - args: argparse.Namespace, merge_outputs 参数
@@ -25,7 +25,7 @@ def parse_args() -> argparse.Namespace:
 
 def load_part_jsonl(output_root: Path, array_count: int) -> list[MappingRow]:
     """
-    读取所有 array part JSONL 并转为 MappingRow。
+    读取所有 array part JSONL 并转为 MappingRow. 
 
     输入参数:
         - output_root: Path, 输出根目录
@@ -54,7 +54,7 @@ def load_part_jsonl(output_root: Path, array_count: int) -> list[MappingRow]:
 
 def load_part_summaries(output_root: Path, array_count: int) -> list[dict]:
     """
-    读取 array part summary。
+    读取 array part summary. 
 
     输入参数:
         - output_root: Path, 输出根目录
@@ -74,7 +74,7 @@ def load_part_summaries(output_root: Path, array_count: int) -> list[dict]:
 
 def main() -> None:
     """
-    合并 array parts 输出。
+    合并 array parts 输出. 
 
     输出:
         - None; 副作用为写出总 mapping、failed cases 和 validation_summary.json

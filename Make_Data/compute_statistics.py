@@ -3,12 +3,12 @@
 ================================================================================
 数据统计脚本 / Data Statistics Script
 ================================================================================
-本脚本用于处理解析完成的 PDB 提取特征结果，并计算出：
+本脚本用于处理解析完成的 PDB 提取特征结果, 并计算出: 
 1. 过滤前的各类候选配体数目分布
 2. 过滤后的各类口袋（实例维度）的分别数量、口袋大小（原子数）
 3. 各类口袋占整体受体的比例
 
-仅需由一个进程最终调用一次。
+仅需由一个进程最终调用一次. 
 ================================================================================
 """
 
@@ -21,7 +21,7 @@ import sys
 
 def process_single_sample(sample_dir: str):
     """
-    处理单个样本目录，提取它在过滤前、过滤后的配体和口袋特征供统计汇总。
+    处理单个样本目录, 提取它在过滤前、过滤后的配体和口袋特征供统计汇总. 
 
     输入参数:
         - sample_dir: str, 标量, 单个样本(如特定 PDB ID)经过解析后的输出子目录路径
@@ -74,7 +74,7 @@ def process_single_sample(sample_dir: str):
     # ---------------- 2. 解析 labels.npz (过滤后) ----------------
     # pocket_atom_sizes: {class_name: [size1, size2, ...]} - 记录每个独立 instance 的原子数
     pocket_atom_sizes = {}
-    # pocket_proportion: {class_name: float_count} - 记录每个 class 原子的数量，便于后续算比例
+    # pocket_proportion: {class_name: float_count} - 记录每个 class 原子的数量, 便于后续算比例
     class_name_atom_counts = {}
     total_receptor_atoms = 0
     
@@ -86,7 +86,7 @@ def process_single_sample(sample_dir: str):
             binding_mask = data['binding_mask']
             total_receptor_atoms = len(instance_ids)
             
-            # 提取类别映射 (0:background,1:druggable，等)
+            # 提取类别映射 (0:background,1:druggable, 等)
             class_map = {}
             if 'pocket_class_name_map' in data:
                 raw_map = str(data['pocket_class_name_map'])  # "0:background,1:druggable,..."
@@ -127,7 +127,7 @@ def process_single_sample(sample_dir: str):
 
 
 def print_stats(name, array):
-    """形式化输出统计信息。计算各个十分位，均值及方差"""
+    """形式化输出统计信息. 计算各个十分位, 均值及方差"""
     if len(array) == 0:
         print(f"  [{name}]: 无数据 (0)")
         return
@@ -198,7 +198,7 @@ def main():
     # 4. 各类占总原子数比例
     global_class_proportion = {} # { 'druggable': [0.0, 0.1, ...], ... }
 
-    # 首先搜集所有的类别，预分配空数组，保证0值填充（如果样本中没有该类，需置0）
+    # 首先搜集所有的类别, 预分配空数组, 保证0值填充（如果样本中没有该类, 需置0）
     all_is_keys = set()
     all_class_names = set()
     
@@ -215,7 +215,7 @@ def main():
             global_pocket_nums[k] = []
             global_class_proportion[k] = []
             
-    # ------ 二次遍历，填充值 ------
+    # ------ 二次遍历, 填充值 ------
     for (pre_cnt, pre_other, pre_tot, p_sizes, c_counts, tot_atoms) in results:
         global_pre_filter_total.append(pre_tot)
         global_pre_filter_other.append(pre_other)
@@ -225,11 +225,11 @@ def main():
         for k in all_class_names:
             if k == "background":
                 continue
-            # 单样本内各类口袋数量（有该类型的存在才计数，不存在则0）
+            # 单样本内各类口袋数量（有该类型的存在才计数, 不存在则0）
             nums = len(p_sizes.get(k, []))
             global_pocket_nums[k].append(nums)
             
-            # 各个独立口袋的原子容量，跨样本合并（实例维度，只有存在才合并进去）
+            # 各个独立口袋的原子容量, 跨样本合并（实例维度, 只有存在才合并进去）
             for sz in p_sizes.get(k, []):
                 global_pocket_atom_sizes[k].append(sz)
                 

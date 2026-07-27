@@ -4,11 +4,11 @@
 配体筛选与口袋分类 / Ligand Filtering & Pocket Classification
 ================================================================================
 
-Part 2 核心模块：
+Part 2 核心模块: 
   1. 每条 PocketClassRule 决定了一组规则:
      - 候选配体按规则列表顺序依次检查
-     - 第一条满足条件的规则生效，该候选被分配对应的 class_id
-     - 不匹配任何规则的候选直接排除（背景，不产生口袋）
+     - 第一条满足条件的规则生效, 该候选被分配对应的 class_id
+     - 不匹配任何规则的候选直接排除（背景, 不产生口袋）
   2. LigandFilterConfig 是规则列表的容器（壳子）
   3. filter_and_classify() 一步完成筛选+分类
 
@@ -32,12 +32,12 @@ from PDB_processor.ligand_candidates import LigandCandidate
 @dataclass
 class PocketClassRule:
     """
-    口袋类别规则。
+    口袋类别规则. 
 
-    一个候选配体必须满足本规则的所有条件，才被归入 class_id 类别。
-    规则按照 LigandFilterConfig.rules 列表的顺序检查，第一条匹配的规则生效。不匹配任何规则的候选直接排除（不产生口袋）。
+    一个候选配体必须满足本规则的所有条件, 才被归入 class_id 类别. 
+    规则按照 LigandFilterConfig.rules 列表的顺序检查, 第一条匹配的规则生效. 不匹配任何规则的候选直接排除（不产生口袋）. 
 
-    NOTE：不同规则可以共享同一个 class_id（同一种口袋类别可由多条规则产生）, 或者说不同规则可以共享同一个 class_id（即通往同一类别的不同路径），但同一 class_id 对应的 class_name 必须一致（class_id 是类别的唯一标识）, 先出现的规则具有优先权，但这只影响哪条规则被记录，不影响最终类别。
+    NOTE: 不同规则可以共享同一个 class_id（同一种口袋类别可由多条规则产生）, 或者说不同规则可以共享同一个 class_id（即通往同一类别的不同路径）, 但同一 class_id 对应的 class_name 必须一致（class_id 是类别的唯一标识）, 先出现的规则具有优先权, 但这只影响哪条规则被记录, 不影响最终类别. 
 
     ============================== 字段说明 ==============================
 
@@ -49,9 +49,9 @@ class PocketClassRule:
             2. 接触属性: 也作为 compute_contact_attributes() 的接触判定阈值(process_and_label.py 取所有规则的 max 作为统一阈值)
 
     布尔标志三值开关 / Boolean Flag Three-way Switches:
-        每个开关均为 Optional[bool]，语义如下：
-          True  → 候选必须具有该属性，否则拒绝
-          False → 候选必须不具有该属性，否则拒绝
+        每个开关均为 Optional[bool], 语义如下: 
+          True  → 候选必须具有该属性, 否则拒绝
+          False → 候选必须不具有该属性, 否则拒绝
           None  → 不约束（默认）
 
         - require_metal_ion:       Optional[bool], 单独出现的金属离子约束
@@ -60,15 +60,15 @@ class PocketClassRule:
         - require_covalent:        Optional[bool], 共价连接约束
 
     聚合物长度限制 / Polymer Length Limits:
-        仅对对应属性为 True 的候选生效（None=不限）。
+        仅对对应属性为 True 的候选生效（None=不限）. 
         - min_peptide_length: Optional[int], 最小氨基酸聚合链长
         - max_peptide_length: Optional[int], 最大氨基酸聚合链长
         - min_nucleic_length: Optional[int], 最小核苷酸聚合链长
         - max_nucleic_length: Optional[int], 最大核苷酸聚合链长
 
     接触与大小约束 / Contact & Size Constraints:
-        基于 LigandCandidate 的预计算属性进行约束（None=不约束）。
-        - n_contact_receptor_atoms 、n_contact_receptor_residues: 由 compute_contact_attributes() 在筛选前就地填充。
+        基于 LigandCandidate 的预计算属性进行约束（None=不约束）. 
+        - n_contact_receptor_atoms 、n_contact_receptor_residues: 由 compute_contact_attributes() 在筛选前就地填充. 
         - min_contact_atoms:    Optional[int], 最小接触受体重原子数
         - min_contact_residues: Optional[int], 最小接触受体残基数 (每个 binding residue 要求 ≥2 次接触)
         - min_mw:               Optional[float], 最小重原子分子量 (Da)
@@ -124,7 +124,7 @@ class PocketClassRule:
 
     def accepts(self, candidate: LigandCandidate) -> Optional[str]:
         """
-        检查候选配体是否满足本规则的全部条件。
+        检查候选配体是否满足本规则的全部条件. 
 
         输入参数 / Input:
             - candidate: LigandCandidate, 候选配体
@@ -178,19 +178,19 @@ class PocketClassRule:
             return (f"rule[{self.class_name}] reject: MW={candidate.molecular_weight:.1f}"
                     f" > max_mw={self.max_mw}")
 
-        # 全部通过，接受
+        # 全部通过, 接受
         return None
 
 
 @dataclass
 class LigandFilterConfig:
     """
-    配体筛选配置————只是 PocketClassRule 列表的容器（壳子）。
+    配体筛选配置————只是 PocketClassRule 列表的容器（壳子）. 
 
-    候选配体按 rules 列表顺序依次检查：
+    候选配体按 rules 列表顺序依次检查: 
       - 候选生成阶段可先按 exclusion_resnames 与共价修饰残基开关排除低层 HETATM 成分
-      - 第一条 accepts() 返回 None 的规则生效，候选被分配该规则的 class_id
-      - 不匹配任何规则的候选直接排除（不产生口袋，背景）
+      - 第一条 accepts() 返回 None 的规则生效, 候选被分配该规则的 class_id
+      - 不匹配任何规则的候选直接排除（不产生口袋, 背景）
 
     字段说明 / Fields:
         - use_exclusion_resnames: bool, 是否启用按 resname 的低层 HETATM 排除列表
@@ -208,15 +208,15 @@ class LigandFilterConfig:
     rules: List[PocketClassRule] = field(default_factory=list)
 
 
-# 预设配置统一维护在 labels/filter_config.py, 本模块只保留筛选规则定义与核心筛选逻辑，避免配置散落在多个文件。
+# 预设配置统一维护在 labels/filter_config.py, 本模块只保留筛选规则定义与核心筛选逻辑, 避免配置散落在多个文件. 
 
 def filter_and_classify(
     candidates: List[LigandCandidate],
     config: LigandFilterConfig,
 ) -> Tuple[List[LigandCandidate], Dict[int, Tuple[int, str, float]], List[Tuple[int, str]]]:
     """
-    一步完成筛选 + 分类：对每个候选配体按规则列表顺序检查，
-    第一条匹配的规则决定其口袋类别；不匹配任何规则的候选直接排除。
+    一步完成筛选 + 分类: 对每个候选配体按规则列表顺序检查, 
+    第一条匹配的规则决定其口袋类别; 不匹配任何规则的候选直接排除. 
 
     输入参数 / Input:
         - candidates: list[LigandCandidate], Part 1 产出的全量候选列表
@@ -258,7 +258,7 @@ def filter_and_classify(
 
 def get_pocket_class_name_map(config: LigandFilterConfig) -> Dict[int, str]:
     """
-    从规则列表中提取口袋类别 ID → 名称的映射, 总是包含 0='background'。
+    从规则列表中提取口袋类别 ID → 名称的映射, 总是包含 0='background'. 
 
     输入参数 / Input:
         - config: LigandFilterConfig, 筛选配置
@@ -270,7 +270,7 @@ def get_pocket_class_name_map(config: LigandFilterConfig) -> Dict[int, str]:
     name_map = {0: 'background'}
     for rule in config.rules:
         if rule.class_id in name_map:
-            # 同一 class_id 的多条规则是“通往同一类别的不同路径”，class_name 必须一致 ; 若不一致，说明用户配置有误（同一类别 ID 被赋予了两个不同名称）
+            # 同一 class_id 的多条规则是“通往同一类别的不同路径”, class_name 必须一致 ; 若不一致, 说明用户配置有误（同一类别 ID 被赋予了两个不同名称）
             existing = name_map[rule.class_id]
             if existing != rule.class_name:
                 raise ValueError(
@@ -278,7 +278,7 @@ def get_pocket_class_name_map(config: LigandFilterConfig) -> Dict[int, str]:
                     f"对应了两个不同的 class_name: '{existing}' 和 '{rule.class_name}'。"
                     f"同一 class_id 的所有规则必须使用相同的 class_name。"
                 )
-            # class_name 相同，无需重复写入
+            # class_name 相同, 无需重复写入
         else:
             name_map[rule.class_id] = rule.class_name
     return name_map

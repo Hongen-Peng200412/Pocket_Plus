@@ -1,5 +1,5 @@
 """
-Typed point 配置与 real/pseudo 分参辅助函数。
+Typed point 配置与 real/pseudo 分参辅助函数. 
 """
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from torch import nn
 @dataclass(frozen=True)
 class TypedPointConfig:
     """
-    typed point 全局配置。
+    typed point 全局配置. 
 
     输入参数:
         - enabled: bool, 是否启用 typed point 分参的总闸; False 时所有 use_separate_* 均为 False
@@ -85,7 +85,7 @@ class TypedPointConfig:
 
 def normalize_typed_point_cfg(cfg: Mapping[str, Any] | TypedPointConfig | None) -> TypedPointConfig:
     """
-    将 Hydra/OmegaConf 字典或 dataclass 解析为 TypedPointConfig。
+    将 Hydra/OmegaConf 字典或 dataclass 解析为 TypedPointConfig. 
 
     输入参数:
         - cfg: Mapping[str, Any] | TypedPointConfig | None, typed point 配置; None 表示使用默认开启配置
@@ -119,7 +119,7 @@ def validate_pseudo_mask(
     name: str,
 ) -> torch.Tensor | None:
     """
-    校验 real/pseudo 点类型掩码, 不报错则原样返回 pseudo_mask 。
+    校验 real/pseudo 点类型掩码, 不报错则原样返回 pseudo_mask . 
 
     输入参数:
         - pseudo_mask: torch.Tensor | None, (N_all,), bool, True 表示 P anchor; None 表示未携带 type 标注
@@ -147,7 +147,7 @@ def split_mask_state(
     name: str,
 ) -> tuple[torch.Tensor | None, bool, bool]:
     """
-    校验 pseudo_mask 并返回 real/pseudo 子集存在状态。
+    校验 pseudo_mask 并返回 real/pseudo 子集存在状态. 
 
     输入参数:
         - pseudo_mask: torch.Tensor | None, (N_all,), bool, True 表示 P anchor
@@ -175,7 +175,7 @@ def merge_type_aware_tensor_outputs(
     pseudo_mask: torch.Tensor,
 ) -> torch.Tensor:
     """
-    将真实原子张量和伪原子张量用 mixed 顺序拼起来，并保留分支计算产生的精度。
+    将真实原子张量和伪原子张量用 mixed 顺序拼起来, 并保留分支计算产生的精度. 
 
     输入参数:
         - real_y: torch.Tensor, (N_real, ...), real 分支输出特征
@@ -183,7 +183,7 @@ def merge_type_aware_tensor_outputs(
         - pseudo_mask: torch.Tensor, (N_real + N_pseudo,), bool, True 表示 P anchor
 
     输出:
-        - y: torch.Tensor, (N_real + N_pseudo, ...), 按原 mixed 顺序排列的输出特征；
+        - y: torch.Tensor, (N_real + N_pseudo, ...), 按原 mixed 顺序排列的输出特征; 
           dtype 为两条分支输出 dtype 的提升结果
     """
     # torch.dtype, AMP 下由两类分支输出提升得到的恢复精度
@@ -206,7 +206,7 @@ def apply_type_aware_tensor_module(
     pseudo_module: nn.Module,
 ) -> torch.Tensor:
     """
-    按 pseudo_mask 对输入张量 x 调用 real/pseudo tensor module 并恢复原顺序。
+    按 pseudo_mask 对输入张量 x 调用 real/pseudo tensor module 并恢复原顺序. 
 
     输入参数:
         - x: torch.Tensor, (N_all, C_in), mixed 或 real-only 输入特征
@@ -246,7 +246,7 @@ def make_typed_linear_norm_act(
     act_layer: type[nn.Module] | None,
 ) -> nn.Sequential:
     """
-    构造 typed path 专用的 Linear-LayerNorm-Act tensor module。
+    构造 typed path 专用的 Linear-LayerNorm-Act tensor module. 
 
     输入参数:
         - in_channels: int, 输入通道数

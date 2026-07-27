@@ -11,7 +11,7 @@ from src.datasets.ops.stage1_split import freeze_stage1_splits
 
 
 def _write_exp_shape(data_root: Path, pdb_id: str, shape_zyx: tuple[int, int, int]) -> None:
-    """写入 split freezer 所需的最小 E1 冻结几何元数据。"""
+    """写入 split freezer 所需的最小 E1 冻结几何元数据. """
 
     density_directory = data_root / "density" / pdb_id
     density_directory.mkdir(parents=True)
@@ -22,7 +22,7 @@ def _write_exp_shape(data_root: Path, pdb_id: str, shape_zyx: tuple[int, int, in
 
 
 def _read_split_rows(path: Path) -> list[dict[str, object]]:
-    """读取 freezer 发布的 JSON 行表。"""
+    """读取 freezer 发布的 JSON 行表. """
 
     value = json.loads(path.read_text(encoding="utf-8"))
     assert isinstance(value, list)
@@ -32,7 +32,7 @@ def _read_split_rows(path: Path) -> list[dict[str, object]]:
 def test_split_freezer_preserves_pdb_groups_counts_small_map_rule_and_determinism(
     tmp_path: Path,
 ) -> None:
-    """同时验证分组、精确计数、80³ 候选约束及稳定 seed。"""
+    """同时验证分组、精确计数、80³ 候选约束及稳定 seed. """
 
     data_root = tmp_path / "data"
     keep_list = tmp_path / "keep_list.jsonl"
@@ -102,7 +102,7 @@ def test_split_freezer_preserves_pdb_groups_counts_small_map_rule_and_determinis
 
 
 def test_split_freezer_rejects_insufficient_large_map_groups(tmp_path: Path) -> None:
-    """validation/calibration 候选不足时不得用短轴 PDB 补数。"""
+    """validation/calibration 候选不足时不得用短轴 PDB 补数. """
 
     data_root = tmp_path / "data"
     keep_list = tmp_path / "keep_list.jsonl"

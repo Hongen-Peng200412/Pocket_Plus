@@ -1,4 +1,4 @@
-"""CLG split/merge 原子事件、cap 与统一 D(g) 测试。"""
+"""CLG split/merge 原子事件、cap 与统一 D(g) 测试. """
 
 from __future__ import annotations
 

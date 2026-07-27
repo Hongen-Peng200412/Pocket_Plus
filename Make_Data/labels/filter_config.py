@@ -357,7 +357,7 @@ _PRESET_SUFFIX = "_PRESET"
 
 def _symbol_to_preset_name(symbol: str) -> str:
     """
-    将模块常量名转换为 CLI 可用名。
+    将模块常量名转换为 CLI 可用名. 
 
     例如:
         - "THREE_CLASS_PRESET" -> "three_class"
@@ -367,7 +367,7 @@ def _symbol_to_preset_name(symbol: str) -> str:
 
 def get_filter_presets() -> Dict[str, LigandFilterConfig]:
     """
-    自动发现本模块中所有可用预设。
+    自动发现本模块中所有可用预设. 
 
     # 识别规则:
         - 变量名匹配 `*_PRESET`
@@ -397,24 +397,24 @@ def get_filter_presets() -> Dict[str, LigandFilterConfig]:
 
 def list_filter_preset_names() -> List[str]:
     """
-    返回当前全部可用预设名（升序）。
+    返回当前全部可用预设名（升序）. 
     """
     return sorted(get_filter_presets().keys())
 
 
 def get_filter_preset(name: str) -> Optional[LigandFilterConfig]:
     """
-    按预设名读取配置；不存在时返回 None。
+    按预设名读取配置; 不存在时返回 None. 
     """
     return get_filter_presets().get(name)
 
 
 def get_default_filter_preset_name() -> str:
     """
-    获取默认预设名。
+    获取默认预设名. 
 
     # 规则:
-        1. 若存在 `binary`，优先使用 `binary`
+        1. 若存在 `binary`, 优先使用 `binary`
         2. 否则使用字典序第一个
     """
     preset_names = list_filter_preset_names()

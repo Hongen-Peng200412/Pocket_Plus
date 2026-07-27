@@ -7,7 +7,7 @@ from src.model.sparse_refine.interpolation import AnchorToCandidateKnnSearch
 
 def test_knn_message_uses_same_box_and_route_class() -> None:
     """
-    验证邻居搜索只连接同 BOX 且同路由类别的 P，并自然 padding 不足的邻居。
+    验证邻居搜索只连接同 BOX 且同路由类别的 P, 并自然 padding 不足的邻居. 
     """
     search = AnchorToCandidateKnnSearch("knn_message", num_neighbors=3, same_class_only=True, chunk_size=1)
     output = search(
@@ -26,7 +26,7 @@ def test_knn_message_uses_same_box_and_route_class() -> None:
 
 def test_knn_message_chunked_results_match_full_chunk() -> None:
     """
-    验证分块查询不改变 KNN 邻居结果。
+    验证分块查询不改变 KNN 邻居结果. 
     """
     kwargs = {
         "candidate_coord_centered_world": torch.tensor([[0.0, 0.0, 0.0], [1.5, 0.0, 0.0], [4.0, 0.0, 0.0]]),

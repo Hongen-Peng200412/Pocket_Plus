@@ -4,10 +4,10 @@
 Unified Preprocessing System - Candidate Ligand Parsing & Attribute Computation
 ================================================================================
 
-Part 1 核心模块：
+Part 1 核心模块: 
   1. 从 PDB/mmCIF 结构中提取 **几乎所有** HETATM 残基作为候选配体
      （默认按 preset 排除水、常见低层 HETATM 成分和与主链共价连接的 Modified_Residues）
-  2. 为每个候选计算一组可扩展的属性，支持下游多种筛选规则
+  2. 为每个候选计算一组可扩展的属性, 支持下游多种筛选规则
 
 Part 1 core module:
   1. Extract nearly all HETATM residues as candidate ligands
@@ -165,7 +165,7 @@ def is_connected_to(residue, chain, threshold: float = COVALENT_BOND_THRESHOLD) 
 @dataclass
 class LigandCandidate:
     """
-    单个候选配体的完整属性记录, 每个 HETATM 残基实例（非水分子）对应一个 LigandCandidate。
+    单个候选配体的完整属性记录, 每个 HETATM 残基实例（非水分子）对应一个 LigandCandidate. 
 
     ============================== 当前字段 ==============================
 
@@ -200,7 +200,7 @@ class LigandCandidate:
 
 
     ============================== 保留接口 ==============================
-    以下属性在当前版本不计算 (值为 None)，后续版本可能会填充:
+    以下属性在当前版本不计算 (值为 None), 后续版本可能会填充:
         - has_only_organic_elements: Optional[bool], 是否仅含有机元素
         - in_af3_ligand_exclusion:  Optional[bool], AF3 排除列表命中
         - in_af3_ion_list:          Optional[bool], AF3 离子列表命中
@@ -260,7 +260,7 @@ class LigandCandidate:
 
 def _get_heavy_atom_coords(residue) -> np.ndarray:
     """
-    提取一个残基中所有重原子的坐标（跳过氢原子）。
+    提取一个残基中所有重原子的坐标（跳过氢原子）. 
 
     输入参数 / Input:
         - residue: Bio.PDB.Residue, Biopython 残基对象
@@ -291,7 +291,7 @@ def _get_heavy_atom_coords(residue) -> np.ndarray:
 
 def _get_atom_element(atom) -> Optional[str]:
     """
-    获取原子的元素符号（大写）。
+    获取原子的元素符号（大写）. 
 
     输入参数 / Input:
         - atom: Bio.PDB.Atom, Biopython 原子对象
@@ -306,10 +306,10 @@ def _get_atom_element(atom) -> Optional[str]:
 
 def _are_covalently_bonded_pair(res1, res2, threshold: float = COVALENT_BOND_THRESHOLD) -> bool:
     """
-    判断两个相邻残基之间是否存在共价键。
+    判断两个相邻残基之间是否存在共价键. 
     Check if two adjacent residues are covalently bonded.
 
-    检查肽键 (C-N ≤ threshold) 和核酸键 (O3'-P ≤ threshold)。
+    检查肽键 (C-N ≤ threshold) 和核酸键 (O3'-P ≤ threshold). 
 
     输入参数 / Input:
         - res1: Bio.PDB.Residue, 前一个残基
@@ -367,7 +367,7 @@ def _are_covalently_bonded_pair(res1, res2, threshold: float = COVALENT_BOND_THR
 # 1. 大小
 def _compute_molecular_weight(residue) -> float:
     """
-    计算一个残基中所有重原子的质量之和。
+    计算一个残基中所有重原子的质量之和. 
 
     输入参数:
         - residue: Bio.PDB.Residue, Biopython 残基对象
@@ -396,7 +396,7 @@ def _compute_molecular_weight(residue) -> float:
 # 2. 类别(核酸和蛋白配体易识别, 当场处理而不加函数)
 def _is_single_atom_metal(residue) -> bool:
     """
-    判断一个 HETATM 残基是否为单原子金属离子。
+    判断一个 HETATM 残基是否为单原子金属离子. 
 
     逻辑 / Logic:
         1. 残基中仅含 1 个非氢原子
@@ -438,7 +438,7 @@ def compute_contact_attributes(
     threshold: float,
 ) -> None:
     """
-    就地填充每个候选配体的 n_contact_receptor_atoms 和 n_contact_receptor_residues。
+    就地填充每个候选配体的 n_contact_receptor_atoms 和 n_contact_receptor_residues. 
 
     逻辑:
         - 用 cKDTree 对受体原子坐标建树
@@ -497,10 +497,10 @@ def compute_contact_attributes(
 # 4. 聚合物链长
 def _compute_polymer_segments(model) -> Dict[Tuple, int]:
     """
-    计算结构中所有 HETATM 聚合物链段的长度。
+    计算结构中所有 HETATM 聚合物链段的长度. 
 
     逻辑 / Logic:
-        对每条链中的残基列表，识别连续的 HETATM 残基链段：
+        对每条链中的残基列表, 识别连续的 HETATM 残基链段: 
         - 两个相邻 HETATM 残基如果序号连续且共价连接（C-N 或 O3'-P 距离 < 阈值）, 则属于同一链段
         - 每个链段内的残基数即为 polymer_length
 
@@ -528,7 +528,7 @@ def _compute_polymer_segments(model) -> Dict[Tuple, int]:
         for i, residue in enumerate(res_list):
             het_flag = residue.id[0]
             if not het_flag.startswith('H_'):
-                # 遇到非 HETATM 残基，结束当前链段
+                # 遇到非 HETATM 残基, 结束当前链段
                 if current_segment:
                     segments.append(current_segment)
                     current_segment = []
@@ -546,10 +546,10 @@ def _compute_polymer_segments(model) -> Dict[Tuple, int]:
                 prev_het = prev_res.id[0]
 
                 if prev_het.startswith('H_') and _are_covalently_bonded_pair(prev_res, residue):
-                    # 与前一个 HETATM 共价连接，加入当前链段
+                    # 与前一个 HETATM 共价连接, 加入当前链段
                     current_segment.append(res_key)
                 else:
-                    # 不连接，保存旧链段，开始新链段
+                    # 不连接, 保存旧链段, 开始新链段
                     segments.append(current_segment)
                     current_segment = [res_key]
 
@@ -590,15 +590,15 @@ def find_all_hetatm_candidates(
     exclude_covalent_modified_residues: bool = True,
 ) -> Tuple[List[LigandCandidate], int]:
     """
-    从结构模型中提取所有 HETATM 候选配体，并计算其属性。
+    从结构模型中提取所有 HETATM 候选配体, 并计算其属性. 
     Extract all HETATM candidate ligands from a structure model and compute attributes.
 
     处理流程 / Pipeline:
-        1. 遍历所有链和残基，收集有效 HETATM 候选
-           - use_exclusion_resnames=True 时，按 exclusion_resnames 排除水、溶剂/缓冲/占位符等
-           - exclude_covalent_modified_residues=True 时，排除与主链共价连接的 Modified_Residues（修饰受体残基）
+        1. 遍历所有链和残基, 收集有效 HETATM 候选
+           - use_exclusion_resnames=True 时, 按 exclusion_resnames 排除水、溶剂/缓冲/占位符等
+           - exclude_covalent_modified_residues=True 时, 排除与主链共价连接的 Modified_Residues（修饰受体残基）
         2. 预计算聚合物链段长度
-        3. 对每个候选残基：
+        3. 对每个候选残基: 
            a. 提取坐标
            b. 判断金属离子 (单原子 + 金属元素)
            c. 判断标准氨基酸/核苷酸类型
@@ -608,7 +608,7 @@ def find_all_hetatm_candidates(
     输入参数 / Input:
         - model: Bio.PDB.Model, Biopython 结构模型 (通常取第一个 model)
         - use_exclusion_resnames: bool, 是否启用按 resname 的低层 HETATM 排除列表
-        - exclusion_resnames: set[str] | None, 需要排除的 HETATM resname；None 时使用 HETATM_EXCLUSION_LIST
+        - exclusion_resnames: set[str] | None, 需要排除的 HETATM resname; None 时使用 HETATM_EXCLUSION_LIST
         - exclude_covalent_modified_residues: bool, 是否排除与主链共价连接的修饰残基
 
     输出 / Output:
@@ -623,14 +623,14 @@ def find_all_hetatm_candidates(
 
 
     # =========================================================================
-    # 第二步: 遍历所有残基，收集候选
+    # 第二步: 遍历所有残基, 收集候选
     # list[LigandCandidate], 候选配体列表
     candidates = []
     # int, 全局候选 ID 计数器
     global_id = 0
     # int, 水分子计数
     water_count = 0
-    # set[str], 当前启用的按 resname 排除列表；None 时保持旧版默认行为
+    # set[str], 当前启用的按 resname 排除列表; None 时保持旧版默认行为
     active_exclusion_resnames = HETATM_EXCLUSION_LIST if exclusion_resnames is None else set(exclusion_resnames)
 
     for chain in model:
@@ -642,14 +642,14 @@ def find_all_hetatm_candidates(
             # 只处理 HETATM 残基
             if not het_flag.startswith('H_'):
                 continue
-            # str, 残基名 (大写，去空格)
+            # str, 残基名 (大写, 去空格)
             resname = residue.resname.strip().upper()
             # 按 preset 暴露的低层排除列表跳过水、溶剂、缓冲液、占位符等
             if use_exclusion_resnames and resname in active_exclusion_resnames:
                 if resname in WATER_RESIDUES:
                     water_count += 1
                 continue
-            # 修饰残基若与主链共价连接，则视作受体修饰位点，不作为候选配体
+            # 修饰残基若与主链共价连接, 则视作受体修饰位点, 不作为候选配体
             if exclude_covalent_modified_residues and resname in Modified_Residues and is_connected_to(residue, chain):
                 continue
 
@@ -659,7 +659,7 @@ def find_all_hetatm_candidates(
             # int, 重原子数
             n_heavy = coords.shape[0]
             if n_heavy == 0:
-                # 无重原子（全是氢或空残基），跳过
+                # 无重原子（全是氢或空残基）, 跳过
                 continue
             # np.ndarray, (3,), float32, 重心
             center = np.mean(coords, axis=0)
@@ -719,7 +719,7 @@ def save_candidates_npz(
     output_path: str
 ) -> None:
     """
-    将候选配体属性保存到 .npz 文件。
+    将候选配体属性保存到 .npz 文件. 
     Save candidate ligand attributes to .npz file.
 
     输入参数 / Input:
@@ -776,7 +776,7 @@ def save_candidates_npz(
 
 def load_candidates_npz(path: str) -> Tuple[List[LigandCandidate], int]:
     """
-    从 .npz 文件加载候选配体属性。
+    从 .npz 文件加载候选配体属性. 
 
     输入参数 / Input:
         - path: str, .npz 文件路径

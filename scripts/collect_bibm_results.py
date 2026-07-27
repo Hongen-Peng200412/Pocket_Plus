@@ -49,7 +49,7 @@ SUPPLEMENT_METRICS = (
 
 def read_json(path: Path) -> Any:
     """
-    读取 UTF-8 JSON 文件。
+    读取 UTF-8 JSON 文件. 
 
     输入参数:
         - path: Path, JSON 文件路径
@@ -63,7 +63,7 @@ def read_json(path: Path) -> Any:
 
 def write_json(path: Path, data: Any) -> None:
     """
-    写出 UTF-8 JSON 文件。
+    写出 UTF-8 JSON 文件. 
 
     输入参数:
         - path: Path, 输出路径
@@ -79,7 +79,7 @@ def write_json(path: Path, data: Any) -> None:
 
 def safe_div(numerator: float, denominator: float) -> float | None:
     """
-    计算除法，分母为 0 时返回 None。
+    计算除法, 分母为 0 时返回 None. 
 
     输入参数:
         - numerator: float, 分子
@@ -95,7 +95,7 @@ def safe_div(numerator: float, denominator: float) -> float | None:
 
 def mean(values: list[float]) -> float | None:
     """
-    计算非空数值列表均值。
+    计算非空数值列表均值. 
 
     输入参数:
         - values: list[float], 待平均的数值
@@ -110,7 +110,7 @@ def mean(values: list[float]) -> float | None:
 
 def normalize_sample_name(value: Any) -> str:
     """
-    规范化样本名。
+    规范化样本名. 
 
     输入参数:
         - value: Any, 原始样本名
@@ -123,7 +123,7 @@ def normalize_sample_name(value: Any) -> str:
 
 def metrics_from_row(row: dict[str, Any]) -> dict[str, Any] | None:
     """
-    从逐样本行中取出指标字典。
+    从逐样本行中取出指标字典. 
 
     输入参数:
         - row: dict[str, Any], 逐样本结果; DL/Phenix 通常把指标放在 metrics 字段
@@ -141,7 +141,7 @@ def metrics_from_row(row: dict[str, Any]) -> dict[str, Any] | None:
 
 def aggregate_rows(rows: list[dict[str, Any]], expected_samples: set[str]) -> dict[str, Any]:
     """
-    按 Pocket Plus 数据集级语义重聚合逐样本指标。
+    按 Pocket Plus 数据集级语义重聚合逐样本指标. 
 
     输入参数:
         - rows: list[dict[str, Any]], 当前模型逐样本结果; 每项需要 sample_name 和 metrics
@@ -218,7 +218,7 @@ def aggregate_rows(rows: list[dict[str, Any]], expected_samples: set[str]) -> di
 
 def f1_from_pr(precision: float | None, recall: float | None) -> float | None:
     """
-    由 precision 和 recall 计算 F1。
+    由 precision 和 recall 计算 F1. 
 
     输入参数:
         - precision: float | None, 精确率
@@ -234,7 +234,7 @@ def f1_from_pr(precision: float | None, recall: float | None) -> float | None:
 
 def aggregate_entry(entry: dict[str, Any], expected_samples: set[str]) -> dict[str, Any]:
     """
-    聚合单个模型条目并保留展示元信息。
+    聚合单个模型条目并保留展示元信息. 
 
     输入参数:
         - entry: dict[str, Any], 快照中的模型条目
@@ -257,7 +257,7 @@ def aggregate_entry(entry: dict[str, Any], expected_samples: set[str]) -> dict[s
 
 def build_dataset_tables(dataset: dict[str, Any]) -> dict[str, Any]:
     """
-    为一个数据集构造全量表和 Emap2lig 成功子集表。
+    为一个数据集构造全量表和 Emap2lig 成功子集表. 
 
     输入参数:
         - dataset: dict[str, Any], 快照中的单数据集结构
@@ -325,7 +325,7 @@ def build_dataset_tables(dataset: dict[str, Any]) -> dict[str, Any]:
 
 def format_value(value: Any, key: str) -> str:
     """
-    把指标值格式化为 Markdown 单元格文本。
+    把指标值格式化为 Markdown 单元格文本. 
 
     输入参数:
         - value: Any, 原始指标值
@@ -345,7 +345,7 @@ def format_value(value: Any, key: str) -> str:
 
 def markdown_cell(value: Any) -> str:
     """
-    清理 Markdown 表格单元格文本。
+    清理 Markdown 表格单元格文本. 
 
     输入参数:
         - value: Any, 原始值
@@ -360,7 +360,7 @@ def markdown_cell(value: Any) -> str:
 
 def render_table(headers: list[str], rows: list[list[Any]]) -> str:
     """
-    渲染 GitHub 风格 Markdown 表格。
+    渲染 GitHub 风格 Markdown 表格. 
 
     输入参数:
         - headers: list[str], 表头
@@ -380,7 +380,7 @@ def render_table(headers: list[str], rows: list[list[Any]]) -> str:
 
 def render_metric_table(entries: list[dict[str, Any]], metrics: tuple[tuple[str, str], ...]) -> str:
     """
-    渲染模型指标表。
+    渲染模型指标表. 
 
     输入参数:
         - entries: list[dict[str, Any]], 已聚合模型条目
@@ -399,7 +399,7 @@ def render_metric_table(entries: list[dict[str, Any]], metrics: tuple[tuple[str,
 
 def render_failure_table(dataset: dict[str, Any]) -> str:
     """
-    渲染 Emap2lig 失败样本清单。
+    渲染 Emap2lig 失败样本清单. 
 
     输入参数:
         - dataset: dict[str, Any], 快照中的单数据集结构
@@ -428,7 +428,7 @@ def render_failure_table(dataset: dict[str, Any]) -> str:
 
 def render_entry_notes(snapshot: dict[str, Any]) -> str:
     """
-    渲染每个条目的来源说明。
+    渲染每个条目的来源说明. 
 
     输入参数:
         - snapshot: dict[str, Any], 结果快照
@@ -467,7 +467,7 @@ def render_entry_notes(snapshot: dict[str, Any]) -> str:
 
 def render_markdown(snapshot: dict[str, Any], tables: dict[str, Any]) -> str:
     """
-    渲染最终结果 Markdown。
+    渲染最终结果 Markdown. 
 
     输入参数:
         - snapshot: dict[str, Any], 结果快照
@@ -540,7 +540,7 @@ def render_markdown(snapshot: dict[str, Any], tables: dict[str, Any]) -> str:
 
 def build_tables(snapshot: dict[str, Any]) -> dict[str, Any]:
     """
-    从快照构造全部聚合表。
+    从快照构造全部聚合表. 
 
     输入参数:
         - snapshot: dict[str, Any], 远端逐样本结果快照
@@ -556,7 +556,7 @@ def build_tables(snapshot: dict[str, Any]) -> dict[str, Any]:
 
 def parse_args() -> argparse.Namespace:
     """
-    解析命令行参数。
+    解析命令行参数. 
 
     输出:
         - args: argparse.Namespace, 命令行参数集合
@@ -570,7 +570,7 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     """
-    命令行入口。
+    命令行入口. 
 
     输出:
         - None

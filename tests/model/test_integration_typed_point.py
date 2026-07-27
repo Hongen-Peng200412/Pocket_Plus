@@ -1,5 +1,5 @@
 """
-01/02 计划实现集成验证测试。
+01/02 计划实现集成验证测试. 
 
 覆盖以下维度:
     - TypedPointConfig 在整条链路上的传播一致性 (Stage1Model -> PointBackbone -> PTV3 -> Block)
@@ -37,7 +37,7 @@ from src.model.typed_point import (
 
 def _make_point(n_real: int, n_pseudo: int, channels: int, grid_size: float = 1.0) -> tuple[Point, torch.Tensor]:
     """
-    构造带 pseudo_mask 的 mixed Point 对象。
+    构造带 pseudo_mask 的 mixed Point 对象. 
 
     输入参数:
         - n_real: int, 真实原子数
@@ -74,7 +74,7 @@ def _make_point(n_real: int, n_pseudo: int, channels: int, grid_size: float = 1.
 
 def test_typed_point_config_propagation_to_ptv3() -> None:
     """
-    验证 TypedPointConfig 的 effective flags 正确传播到 PTV3 的 Block/Embedding/Pooling/Unpooling。
+    验证 TypedPointConfig 的 effective flags 正确传播到 PTV3 的 Block/Embedding/Pooling/Unpooling. 
     """
     cfg = normalize_typed_point_cfg({"enabled": True, "separate_qkv": True, "separate_cpe": True})
     ptv3 = PointTransformerV3(
@@ -121,7 +121,7 @@ def test_typed_point_config_propagation_to_ptv3() -> None:
 
 def test_pseudo_mask_preserved_through_pool_unpool() -> None:
     """
-    验证 pseudo_mask 在 SerializedPooling + SerializedUnpooling 后仍能恢复到 parent 分辨率。
+    验证 pseudo_mask 在 SerializedPooling + SerializedUnpooling 后仍能恢复到 parent 分辨率. 
     """
     n_real, n_pseudo, c = 20, 10, 16
     point, pseudo_mask = _make_point(n_real, n_pseudo, c)
@@ -151,7 +151,7 @@ def test_pseudo_mask_preserved_through_pool_unpool() -> None:
 
 def test_typed_cpe_isolates_real_and_pseudo_subgraphs() -> None:
     """
-    验证 separate_cpe=True 时, real 和 pseudo 各自只在同类子图上建 radius graph。
+    验证 separate_cpe=True 时, real 和 pseudo 各自只在同类子图上建 radius graph. 
     """
     c = 16
     cpe_real = PointConvCPE(channels=c, receptive_field=3.0, max_neighbors=8, cache_key=None)
@@ -172,7 +172,7 @@ def test_typed_cpe_isolates_real_and_pseudo_subgraphs() -> None:
 
 def test_typed_embedding_isolates_subgraphs() -> None:
     """
-    验证 separate_embedding=True 时, Embedding 对 real 和 pseudo 子图分别做 pointconv。
+    验证 separate_embedding=True 时, Embedding 对 real 和 pseudo 子图分别做 pointconv. 
     """
     in_c, embed_c = 8, 16
     embedding = Embedding(
@@ -195,7 +195,7 @@ def test_typed_embedding_isolates_subgraphs() -> None:
 
 def test_typed_ffn_uses_separate_paths() -> None:
     """
-    验证 separate_ffn=True 时, Block FFN 分别走 real/pseudo 分支。
+    验证 separate_ffn=True 时, Block FFN 分别走 real/pseudo 分支. 
     """
     c = 16
     block = Block(
@@ -231,7 +231,7 @@ def test_typed_ffn_uses_separate_paths() -> None:
 def test_typed_pooling_cluster_key_separates_real_and_pseudo() -> None:
     """
     验证 typed SerializedPooling 使用 cluster_key = spatial_code * 2 + type_bit,
-    确保同一 spatial cell 内的 real 和 pseudo 点被分到不同簇。
+    确保同一 spatial cell 内的 real 和 pseudo 点被分到不同簇. 
     """
     c = 16
     pooling = SerializedPooling(in_channels=c, out_channels=c, stride=2, norm_layer=nn.LayerNorm, act_layer=nn.GELU)
@@ -267,7 +267,7 @@ def test_typed_pooling_cluster_key_separates_real_and_pseudo() -> None:
 
 def test_typed_qkv_attention_runs_separate_projections() -> None:
     """
-    验证 separate_qkv=True 时, SerializedAttention 走 real/pseudo 分离的 QKV 投影。
+    验证 separate_qkv=True 时, SerializedAttention 走 real/pseudo 分离的 QKV 投影. 
     """
     c = 16
     attn = SerializedAttention(
@@ -296,7 +296,7 @@ def test_typed_qkv_attention_runs_separate_projections() -> None:
 
 def test_validate_pseudo_mask_rejects_wrong_dtype() -> None:
     """
-    验证 validate_pseudo_mask 对非 bool dtype 立即报错。
+    验证 validate_pseudo_mask 对非 bool dtype 立即报错. 
     """
     with pytest.raises(RuntimeError, match="bool"):
         validate_pseudo_mask(torch.zeros(5, dtype=torch.float32), 5, name="test")
@@ -304,7 +304,7 @@ def test_validate_pseudo_mask_rejects_wrong_dtype() -> None:
 
 def test_validate_pseudo_mask_rejects_wrong_shape() -> None:
     """
-    验证 validate_pseudo_mask 对形状不匹配立即报错。
+    验证 validate_pseudo_mask 对形状不匹配立即报错. 
     """
     with pytest.raises(RuntimeError, match="长度"):
         validate_pseudo_mask(torch.zeros(3, dtype=torch.bool), 5, name="test")
@@ -314,7 +314,7 @@ def test_validate_pseudo_mask_rejects_wrong_shape() -> None:
 
 def test_split_mask_state_none_input() -> None:
     """
-    验证 split_mask_state 对 None pseudo_mask 的处理。
+    验证 split_mask_state 对 None pseudo_mask 的处理. 
     """
     validated, has_real, has_pseudo = split_mask_state(None, 5, name="test")
     assert validated is None
@@ -324,7 +324,7 @@ def test_split_mask_state_none_input() -> None:
 
 def test_split_mask_state_all_real() -> None:
     """
-    验证 split_mask_state 对全 real 的处理。
+    验证 split_mask_state 对全 real 的处理. 
     """
     mask = torch.zeros(5, dtype=torch.bool)
     validated, has_real, has_pseudo = split_mask_state(mask, 5, name="test")
@@ -335,7 +335,7 @@ def test_split_mask_state_all_real() -> None:
 
 def test_split_mask_state_all_pseudo() -> None:
     """
-    验证 split_mask_state 对全 pseudo 的处理。
+    验证 split_mask_state 对全 pseudo 的处理. 
     """
     mask = torch.ones(5, dtype=torch.bool)
     validated, has_real, has_pseudo = split_mask_state(mask, 5, name="test")
@@ -348,7 +348,7 @@ def test_split_mask_state_all_pseudo() -> None:
 
 def test_block_forward_full_typed_path() -> None:
     """
-    验证同时开启 separate_qkv / separate_attn_proj / separate_ffn / separate_cpe 的 Block forward。
+    验证同时开启 separate_qkv / separate_attn_proj / separate_ffn / separate_cpe 的 Block forward. 
     """
     c = 16
     block = Block(
@@ -383,7 +383,7 @@ def test_block_forward_full_typed_path() -> None:
 
 def test_apply_type_aware_tensor_module_empty_input() -> None:
     """
-    验证空输入时 apply_type_aware_tensor_module 不报错。
+    验证空输入时 apply_type_aware_tensor_module 不报错. 
     """
     x = torch.randn(0, 4)
     y = apply_type_aware_tensor_module(x, None, nn.Linear(4, 8), nn.Linear(4, 8))
@@ -392,7 +392,7 @@ def test_apply_type_aware_tensor_module_empty_input() -> None:
 
 def test_apply_type_aware_tensor_module_none_mask_routes_to_real() -> None:
     """
-    验证 pseudo_mask=None 时全部走 real 分支。
+    验证 pseudo_mask=None 时全部走 real 分支. 
     """
     x = torch.randn(5, 4)
     real = nn.Linear(4, 8)

@@ -6,16 +6,16 @@ FaultTolerantDataset — 通用数据加载容错包装器
 
 在 DDP 多卡训练中, 如果某个 rank 的 dataset.__getitem__ 抛出异常或因读取损坏
 文件而长时间挂起, 其他 rank 会在 sync_dist=True 的标量 ALLREDUCE 处无限等待,
-最终触发 NCCL watchdog 超时 (默认 30 分钟) 导致整个作业被杀掉。
+最终触发 NCCL watchdog 超时 (默认 30 分钟) 导致整个作业被杀掉. 
 
 本模块提供的 FaultTolerantDataset 在 __getitem__ 层面捕获异常并替换坏样本:
-    - 每次 sampler 请求仍返回"一个有效样本", 不会在 DDP 下出现 batch 步数失配。
-    - 不修改底层 dataset 的实现, 也不在 collate 阶段做过滤。
+    - 每次 sampler 请求仍返回"一个有效样本", 不会在 DDP 下出现 batch 步数失配. 
+    - 不修改底层 dataset 的实现, 也不在 collate 阶段做过滤. 
 
 性能影响:
     - 在所有样本均正常的情况下, 唯一额外开销是一次 try/except 和一个 set 查找,
-      对训练吞吐几乎为零影响。
-    - 仅在坏样本命中时才触发线性探测和日志打印。
+      对训练吞吐几乎为零影响. 
+    - 仅在坏样本命中时才触发线性探测和日志打印. 
 """
 
 import os
@@ -35,7 +35,7 @@ from torch.utils.data import Dataset
 # ============================================================
 class SampleLoadTimeoutError(RuntimeError):
     """
-    单样本读取超时时抛出的异常。
+    单样本读取超时时抛出的异常. 
 
     输入参数:
         - index: int, 标量, 超时的样本索引
@@ -50,15 +50,15 @@ class SampleLoadTimeoutError(RuntimeError):
 @contextmanager
 def _dataset_timeout_ctx(timeout_sec: Optional[int], index: int):
     """
-    为一次 dataset[index] 调用提供超时保护。
+    为一次 dataset[index] 调用提供超时保护. 
 
     输入参数:
         - timeout_sec: int|None, 标量, 超时秒数; None 或 ≤0 表示不启用超时
         - index: int, 标量, 当前请求的样本索引 (仅用于错误消息)
 
     行为:
-        - Linux/Posix: 使用 signal.SIGALRM 实现硬超时, 仅在主线程可用。
-        - Windows / 子 worker 进程: 自动降级为 no-op。
+        - Linux/Posix: 使用 signal.SIGALRM 实现硬超时, 仅在主线程可用. 
+        - Windows / 子 worker 进程: 自动降级为 no-op. 
     """
     if timeout_sec is None or timeout_sec <= 0:
         yield
@@ -91,7 +91,7 @@ def _dataset_timeout_ctx(timeout_sec: Optional[int], index: int):
 
 def _is_main_thread() -> bool:
     """
-    判断当前是否为主线程。
+    判断当前是否为主线程. 
     """
     import threading
     return threading.current_thread() is threading.main_thread()
@@ -102,7 +102,7 @@ def _is_main_thread() -> bool:
 # ============================================================
 def _describe_dataset_index(dataset: Dataset, index: int) -> str:
     """
-    为坏样本生成一段可读的日志描述。
+    为坏样本生成一段可读的日志描述. 
 
     输入参数:
         - dataset: Dataset, 被包装的原始数据集
@@ -134,7 +134,7 @@ def _describe_dataset_index(dataset: Dataset, index: int) -> str:
 # ============================================================
 class FaultTolerantDataset(Dataset):
     """
-    通用数据加载容错包装器: 在 __getitem__ 层面捕获异常, 自动替换坏样本。
+    通用数据加载容错包装器: 在 __getitem__ 层面捕获异常, 自动替换坏样本. 
 
     输入参数:
         - base_dataset: Dataset, 被包装的原始数据集
@@ -145,9 +145,9 @@ class FaultTolerantDataset(Dataset):
 
     行为:
         - 收到 sampler 请求的原始 index 后, 先尝试原 index;
-          失败则按 (index+1)%len, (index+2)%len, ... 线性探测替代。
-        - 每次尝试均在 _dataset_timeout_ctx 内执行 base_dataset[candidate]。
-        - 成功返回有效样本; 连续失败超过 max_resample_attempts 则硬失败。
+          失败则按 (index+1)%len, (index+2)%len, ... 线性探测替代. 
+        - 每次尝试均在 _dataset_timeout_ctx 内执行 base_dataset[candidate]. 
+        - 成功返回有效样本; 连续失败超过 max_resample_attempts 则硬失败. 
     """
 
     def __init__(
@@ -176,13 +176,13 @@ class FaultTolerantDataset(Dataset):
     @property
     def collate_fn(self):
         """
-        透传 base_dataset 的 collate_fn (若存在), 供 DataLoader 使用。
+        透传 base_dataset 的 collate_fn (若存在), 供 DataLoader 使用. 
         """
         return getattr(self.base_dataset, "collate_fn", None)
 
     def __getattr__(self, name: str) -> Any:
         """
-        透传未在本类中定义的属性访问到 base_dataset, 例如 total_sample 等。
+        透传未在本类中定义的属性访问到 base_dataset, 例如 total_sample 等. 
         """
         if name in ("base_dataset", "stage", "max_resample_attempts",
                      "sample_timeout_sec", "log_first_n",
@@ -192,7 +192,7 @@ class FaultTolerantDataset(Dataset):
 
     def __getitem__(self, index: int) -> Any:
         """
-        容错版 __getitem__: 先尝试原始 index, 失败后线性探测替代样本。
+        容错版 __getitem__: 先尝试原始 index, 失败后线性探测替代样本. 
 
         输入参数:
             - index: int, 标量, sampler 请求的原始样本索引
@@ -216,7 +216,7 @@ class FaultTolerantDataset(Dataset):
 
     def _probe_replacement(self, original_index: int, total_len: int, start_offset: int) -> Any:
         """
-        线性探测替代样本。
+        线性探测替代样本. 
 
         输入参数:
             - original_index: int, 标量, 失败的原始样本索引
@@ -253,7 +253,7 @@ class FaultTolerantDataset(Dataset):
 
     def _record_bad_index(self, index: int, exc: Exception) -> None:
         """
-        记录坏索引并打印结构化错误日志。
+        记录坏索引并打印结构化错误日志. 
         """
         self.known_bad_indices.add(index)
 
@@ -286,7 +286,7 @@ class FaultTolerantDataset(Dataset):
 
     def _log_replacement(self, original_index: int, replacement_index: int, attempt: int) -> None:
         """
-        打印替代样本的补偿日志。
+        打印替代样本的补偿日志. 
         """
         if self.logged_count >= self.log_first_n:
             return
@@ -312,7 +312,7 @@ def maybe_wrap_dataset(
     ft_cfg,
 ) -> Dataset:
     """
-    根据配置决定是否用 FaultTolerantDataset 包装原始数据集。
+    根据配置决定是否用 FaultTolerantDataset 包装原始数据集. 
 
     输入参数:
         - dataset: Dataset, 原始数据集实例

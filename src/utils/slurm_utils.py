@@ -123,7 +123,7 @@ def _set_gloo_ifname(chosen: str, source: str):
 
 
 def fix_gloo_socket_ifname():
-    """自动修正 GLOO_SOCKET_IFNAME，优先复用与 MASTER_ADDR 一致的通信网卡。"""
+    """自动修正 GLOO_SOCKET_IFNAME, 优先复用与 MASTER_ADDR 一致的通信网卡. """
     gloo_ifname = os.environ.get("GLOO_SOCKET_IFNAME", "")
     nccl_ifname = os.environ.get("NCCL_SOCKET_IFNAME", "")
     slurm_net_ifname = os.environ.get("SLURM_NET_DIST_IFNAME", "")

@@ -88,7 +88,7 @@ def fetch_k_samples(data: list, k: int) -> list:
 
 def load_test_pdb_ids_from_csv(csv_path: str, upper_lower_of_pdb: str) -> set[str]:
     """
-    从单个 CSV 文件中读取第一列作为测试集 PDB ID。
+    从单个 CSV 文件中读取第一列作为测试集 PDB ID. 
 
     输入参数:
         - csv_path: str, 标量, CSV 文件路径
@@ -117,7 +117,7 @@ def load_test_pdb_ids_from_csv(csv_path: str, upper_lower_of_pdb: str) -> set[st
 
 def ratio_to_suffix(ratio: float) -> str:
     """
-    将比例值转换为文件名后缀的纯数字字符串。
+    将比例值转换为文件名后缀的纯数字字符串. 
 
     输入参数:
         - ratio: float, 标量, 比例值, 取值范围 (0, 1)
@@ -132,21 +132,21 @@ def dict_to_list_of_single_dicts(data_dict: dict[str, str]) -> list[dict[str, st
     将包含多个键值对的字典Dict[str, str]转换为包含多个单键值对字典的列表List[Dict[str, str]]
     - data_dict: dict[str, str], 形状为 {k1:v1, k2:v2, ...}, 原始存储 EMDB-PDB 对应关系的字典[{k1:v1}, {k2:v2}, ...]
     输出:
-    - list[dict[str, str]]: list, 形状为 (N,), 长度为 N 的列表，每个元素是形如 {key: value} 的小字典
+    - list[dict[str, str]]: list, 形状为 (N,), 长度为 N 的列表, 每个元素是形如 {key: value} 的小字典
     """
     return [{k: v} for k, v in data_dict.items()]
 
 
 def load_pdb_filter_set(csv_path: str, upper_lower_of_pdb: str) -> set[str]:
     """
-    读取 PDB 过滤列表。
+    读取 PDB 过滤列表. 
     
     输入参数:
         - csv_path: str, 标量, PDB_FILTER_CSV 的路径
         - upper_lower_of_pdb: str, 标量, 决定转换为大写('upper')还是小写('lower')
         
     输出:
-        - pdb_set: set[str], 格式化后的 PDB ID 集合，若文件不存在则返回 None
+        - pdb_set: set[str], 格式化后的 PDB ID 集合, 若文件不存在则返回 None
     """
     if not csv_path or not os.path.exists(csv_path):
         print(f"  [警告] 找不到 PDB 过滤文件: {csv_path}")

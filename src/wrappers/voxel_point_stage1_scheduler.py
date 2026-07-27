@@ -11,7 +11,7 @@ from hydra.utils import instantiate
 
 def resolve_warmup_steps(*, module: pl.LightningModule, sched_cfg: Mapping[str, Any]) -> int:
     """
-    从 scheduler 配置解析 warmup step 数。
+    从 scheduler 配置解析 warmup step 数. 
 
     输入参数:
         - module: pl.LightningModule, 当前 wrapper; 提供 trainer.estimated_stepping_batches
@@ -48,7 +48,7 @@ def build_warmup_only_scheduler(
     warmup_steps: int,
 ) -> torch.optim.lr_scheduler.LRScheduler:
     """
-    构建仅包含 step 级线性 warmup 的 scheduler。
+    构建仅包含 step 级线性 warmup 的 scheduler. 
 
     输入参数:
         - optimizer: torch.optim.Optimizer, 被调度的优化器
@@ -81,7 +81,7 @@ def configure_stage1_optimizers(
     monitor_metric: str,
 ) -> tuple[Any, int]:
     """
-    构造 Stage1 wrapper 的 optimizer 与 scheduler 配置。
+    构造 Stage1 wrapper 的 optimizer 与 scheduler 配置. 
 
     输入参数:
         - module: pl.LightningModule, 当前 wrapper; 提供 parameters 与 trainer 上下文

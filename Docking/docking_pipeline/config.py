@@ -7,7 +7,7 @@ from pathlib import Path
 @dataclass(frozen=True)
 class ServerPaths:
     """
-    服务器路径约定。
+    服务器路径约定. 
     输入参数:
         - allowed_root: Path, 本任务唯一允许写入的服务器目录
         - inference_root: Path, 推理结果目录
@@ -35,7 +35,7 @@ class ServerPaths:
 
     @staticmethod
     def default() -> "ServerPaths":
-        """返回当前服务器上已经验证过的路径配置。"""
+        """返回当前服务器上已经验证过的路径配置. """
         allowed = Path("/home/penghongen") / "\u5206\u5b50\u5bf9\u63a5\u5c1d\u8bd5"
         rosetta_main = Path("/home/penghongen/software/rosetta/source_build/rosetta.source.release-430/main")
         return ServerPaths(
@@ -57,7 +57,7 @@ class ServerPaths:
 @dataclass(frozen=True)
 class RosettaOptions:
     """
-    Rosetta smoke test 参数。
+    Rosetta smoke test 参数. 
     输入参数:
         - nstruct: int, 每个 job 输出构象数; 当前 smoke test 使用 1
         - scorefxn: str, Rosetta scorefunction 名称
@@ -85,7 +85,7 @@ class RosettaOptions:
 
     @staticmethod
     def smoke() -> "RosettaOptions":
-        """返回当前已跑通的低成本 Rosetta 参数。"""
+        """返回当前已跑通的低成本 Rosetta 参数. """
         return RosettaOptions(
             nstruct=1,
             scorefxn="beta_genpot",
@@ -102,7 +102,7 @@ class RosettaOptions:
 @dataclass(frozen=True)
 class MatchingOptions:
     """
-    匹配成本参数。
+    匹配成本参数. 
     输入参数:
         - docking_weight: float, Rosetta docking 分数归一化后的权重
         - shape_weight: float, 网络形状分数归一化后的权重
@@ -120,7 +120,7 @@ class MatchingOptions:
 
     @staticmethod
     def current() -> "MatchingOptions":
-        """返回当前实验使用的成本权重。"""
+        """返回当前实验使用的成本权重. """
         return MatchingOptions(
             docking_weight=0.7,
             shape_weight=0.3,

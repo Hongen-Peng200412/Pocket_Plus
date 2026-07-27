@@ -34,7 +34,7 @@ from .shape_scoring import instance_voxel_xyz, mol2_heavy_atom_xyz, radial_shape
 
 def run_sample_smoke(pdb_id: str, paths: ServerPaths, rosetta_options: RosettaOptions, matching_options: MatchingOptions) -> dict[str, object]:
     """
-    运行一个样本的低成本 docking smoke pipeline。
+    运行一个样本的低成本 docking smoke pipeline. 
     输入参数:
         - pdb_id: str, 当前样本 PDB ID
         - paths: ServerPaths, 服务器路径配置
@@ -74,7 +74,7 @@ def run_sample(
     rosetta_jobs: int = 1,
 ) -> dict[str, object]:
     """
-    运行一个样本的可审计 docking pipeline。
+    运行一个样本的可审计 docking pipeline. 
 
     输入参数:
         - pdb_id: str, 当前样本 PDB ID
@@ -178,7 +178,7 @@ def run_sample(
 
 def _prepare_receptors(pdb_id: str, paths: ServerPaths, meta: dict[str, object], work_dir: Path) -> list[ReceptorSource]:
     """
-    准备 true/cryoatom 两套 receptor PDB。
+    准备 true/cryoatom 两套 receptor PDB. 
     输入参数:
         - pdb_id: str, 当前样本 PDB ID
         - paths: ServerPaths, 服务器路径配置
@@ -202,7 +202,7 @@ def _prepare_receptors(pdb_id: str, paths: ServerPaths, meta: dict[str, object],
 
 def _shape_scores(label: np.ndarray, origin: np.ndarray, voxel_size: np.ndarray, sites, ligands) -> dict[tuple[str, str], float]:
     """
-    计算当前第一版网络径向 shape score。
+    计算当前第一版网络径向 shape score. 
     输入参数:
         - label: np.ndarray, (D, H, W), int, 后处理后的 instance 标签图
         - origin: np.ndarray, (3,), 体素世界坐标原点
@@ -230,7 +230,7 @@ def _assign(
     use_virtual_nodes: bool,
 ) -> list[AssignmentResult]:
     """
-    对每个 receptor scope 构造 matching。
+    对每个 receptor scope 构造 matching. 
     输入参数:
         - results: list[DockingResult], Rosetta 结果列表
         - shape_scores: dict[tuple[str, str], float], 网络 shape 成本
@@ -274,7 +274,7 @@ def _assign(
 
 
 def _aggregate_dg(results: list[DockingResult], scope: str, site_id: str, ligand_label: str) -> float:
-    """按 receptor scope 聚合一个 site-ligand pair 的 dG。"""
+    """按 receptor scope 聚合一个 site-ligand pair 的 dG. """
     values: list[float] = []
     for result in results:
         if result.job.site.site_id != site_id or result.job.ligand.label != ligand_label:
@@ -304,7 +304,7 @@ def _sample_summary(
     status: str,
 ) -> dict[str, object]:
     """
-    构造样本级审计摘要。
+    构造样本级审计摘要. 
 
     输入参数:
         - pdb_id: str, 当前样本 PDB ID
@@ -348,7 +348,7 @@ def _sample_summary(
 
 
 def _to_jsonable(value):
-    """把 dataclass、Path、tuple 等对象转换成 JSON 友好结构。"""
+    """把 dataclass、Path、tuple 等对象转换成 JSON 友好结构. """
     if is_dataclass(value):
         return _to_jsonable(asdict(value))
     if isinstance(value, dict):
@@ -362,7 +362,7 @@ def _to_jsonable(value):
 
 def _select_sites(sites: tuple, max_sites_per_sample: int | None) -> tuple:
     """
-    按置信度选择进入 docking 的 site。
+    按置信度选择进入 docking 的 site. 
 
     输入参数:
         - sites: tuple[InferenceSite, ...], 后处理后的候选 site

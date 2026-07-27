@@ -86,7 +86,7 @@ def dict_to_list_of_single_dicts(data_dict: dict[str, str]) -> list[dict[str, st
     将包含多个键值对的字典Dict[str, str]转换为包含多个单键值对字典的列表List[Dict[str, str]]
     - data_dict: dict[str, str], 形状为 {k1:v1, k2:v2, ...}, 原始存储 EMDB-PDB 对应关系的字典[{k1:v1}, {k2:v2}, ...]
     输出:
-    - list[dict[str, str]]: list, 形状为 (N,), 长度为 N 的列表，每个元素是形如 {key: value} 的小字典
+    - list[dict[str, str]]: list, 形状为 (N,), 长度为 N 的列表, 每个元素是形如 {key: value} 的小字典
     """
     return [{k: v} for k, v in data_dict.items()]
 

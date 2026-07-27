@@ -10,7 +10,7 @@ from src.wrappers.voxel_point_stage1_metrics import MetricBranchSpec, Validation
 
 def test_binary_metric_key_omits_task_class_suffix() -> None:
     """
-    验证二分类指标 key 不追加 task class suffix。
+    验证二分类指标 key 不追加 task class suffix. 
     """
     key = build_metric_key(
         panel="val_score",
@@ -25,7 +25,7 @@ def test_binary_metric_key_omits_task_class_suffix() -> None:
 
 def test_multiclass_metric_key_appends_task_class_suffix() -> None:
     """
-    验证多分类指标 key 在 leaf 上追加 task class suffix。
+    验证多分类指标 key 在 leaf 上追加 task class suffix. 
     """
     key = build_metric_key(
         panel="val_refined",
@@ -40,7 +40,7 @@ def test_multiclass_metric_key_appends_task_class_suffix() -> None:
 
 def test_metric_key_rejects_non_global_scope() -> None:
     """
-    验证 metric key builder 只接受 global 作用域。
+    验证 metric key builder 只接受 global 作用域. 
     """
     with pytest.raises(ValueError, match="scope"):
         build_metric_key(
@@ -54,7 +54,7 @@ def test_metric_key_rejects_non_global_scope() -> None:
 
 def test_validation_metric_manager_is_module_and_omits_binary_macro() -> None:
     """
-    验证常规 validation metric manager 是 nn.Module, 且二分类不输出 macro。
+    验证常规 validation metric manager 是 nn.Module, 且二分类不输出 macro. 
     """
     manager = ValidationMetricManager(
         branches=[
@@ -83,7 +83,7 @@ def test_validation_metric_manager_is_module_and_omits_binary_macro() -> None:
 
 def test_validation_metric_manager_outputs_multiclass_suffix_and_macro() -> None:
     """
-    验证多分类常规 validation metric 输出前景类 suffix 与 macro。
+    验证多分类常规 validation metric 输出前景类 suffix 与 macro. 
     """
     manager = ValidationMetricManager(
         branches=[
@@ -111,7 +111,7 @@ def test_validation_metric_manager_outputs_multiclass_suffix_and_macro() -> None
 def test_cpu_metric_uses_gloo_group_inside_nccl_training(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """NCCL 多进程训练中的 CPU PRAUC 状态改用 Gloo 通信组。"""
+    """NCCL 多进程训练中的 CPU PRAUC 状态改用 Gloo 通信组. """
 
     manager = ValidationMetricManager(
         branches=[
@@ -155,7 +155,7 @@ def test_cpu_metric_uses_gloo_group_inside_nccl_training(
 
 
 def test_globally_reduced_metric_payload_is_logged_without_lightning_resync() -> None:
-    """已经完成跨卡聚合的指标不再由 Lightning 重复同步。"""
+    """已经完成跨卡聚合的指标不再由 Lightning 重复同步. """
 
     class _LoggingModule:
         def __init__(self) -> None:
@@ -178,7 +178,7 @@ def test_globally_reduced_metric_payload_is_logged_without_lightning_resync() ->
 
 
 def test_validation_macro_skips_classes_without_positive_targets() -> None:
-    """结构类别宏平均只纳入整个验证集中实际出现的前景类别。"""
+    """结构类别宏平均只纳入整个验证集中实际出现的前景类别. """
 
     manager = ValidationMetricManager(
         branches=[
@@ -230,7 +230,7 @@ def test_validation_macro_skips_classes_without_positive_targets() -> None:
 
 def test_wrapper_receptor_metric_name_replaces_voxel_aux_name() -> None:
     """
-    验证新 wrapper 对外使用 receptor PR-AUC 名称, 不再注册 voxel_aux PR-AUC 名称。
+    验证新 wrapper 对外使用 receptor PR-AUC 名称, 不再注册 voxel_aux PR-AUC 名称. 
     """
     from types import SimpleNamespace
 

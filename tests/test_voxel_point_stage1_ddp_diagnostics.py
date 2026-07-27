@@ -16,7 +16,7 @@ from src.wrappers.voxel_point_stage1_diagnostics import (
 
 def _config() -> CpcDiagnosticsConfig:
     """
-    构造 CPU DDP diagnostics 测试配置。
+    构造 CPU DDP diagnostics 测试配置. 
     """
     return CpcDiagnosticsConfig(
         enabled=True,
@@ -30,7 +30,7 @@ def _config() -> CpcDiagnosticsConfig:
 
 def _ddp_worker(rank: int, world_size: int, port: int, queue: Queue) -> None:
     """
-    在 CPU/Gloo rank 中执行 diagnostics all-reduce 逻辑。
+    在 CPU/Gloo rank 中执行 diagnostics all-reduce 逻辑. 
     """
     os.environ["MASTER_ADDR"] = "127.0.0.1"
     os.environ["MASTER_PORT"] = str(port)
@@ -72,7 +72,7 @@ def _ddp_worker(rank: int, world_size: int, port: int, queue: Queue) -> None:
 @pytest.mark.skipif(not dist.is_available(), reason="torch.distributed is not available")
 def test_cpc_diagnostics_cpu_gloo_all_reduce_is_symmetric() -> None:
     """
-    验证本地 CPU/Gloo 多进程下 diagnostics 所有 rank 对称聚合。
+    验证本地 CPU/Gloo 多进程下 diagnostics 所有 rank 对称聚合. 
     """
     ctx = mp.get_context("spawn")
     queue: Queue = ctx.Queue()

@@ -13,7 +13,7 @@ from src.train import BestCheckpointAlias, PeriodicCheckpointSaver, WarmupPlatea
 class _FakeTrainer:
     def __init__(self, optimizer: torch.optim.Optimizer, *, global_step: int, epoch: int = 0) -> None:
         """
-        提供 WarmupPlateauController 单测所需的最小 Trainer 接口。
+        提供 WarmupPlateauController 单测所需的最小 Trainer 接口. 
 
         输入参数:
             - optimizer: torch.optim.Optimizer, 被调度的优化器
@@ -30,7 +30,7 @@ class _FakeTrainer:
 
 def _build_optimizer(lr: float) -> torch.optim.Optimizer:
     """
-    构建单参数 SGD 优化器用于调度器单测。
+    构建单参数 SGD 优化器用于调度器单测. 
 
     输入参数:
         - lr: float, 初始学习率
@@ -45,7 +45,7 @@ def _build_optimizer(lr: float) -> torch.optim.Optimizer:
 
 def _build_controller(*, warmup_steps: int, patience: int, threshold: float) -> WarmupPlateauController:
     """
-    构建 max 指标方向的 warmup_plateau controller。
+    构建 max 指标方向的 warmup_plateau controller. 
 
     输入参数:
         - warmup_steps: int, warmup 覆盖的 optimizer step 数
@@ -78,7 +78,7 @@ def _build_controller(*, warmup_steps: int, patience: int, threshold: float) -> 
 
 def _step_validation(controller: WarmupPlateauController, trainer: _FakeTrainer, metric_value: float) -> None:
     """
-    模拟一次 wrapper 已经聚合完 payload 后的 validation end。
+    模拟一次 wrapper 已经聚合完 payload 后的 validation end. 
 
     输入参数:
         - controller: WarmupPlateauController, 待测试 callback

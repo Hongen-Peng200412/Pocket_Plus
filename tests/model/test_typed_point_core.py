@@ -10,12 +10,12 @@ from src.model.typed_point import apply_type_aware_tensor_module, normalize_type
 
 class _FailModule(nn.Module):
     """
-    一调用就失败的测试模块。
+    一调用就失败的测试模块. 
     """
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
-        抛出测试异常。
+        抛出测试异常. 
 
         输入参数:
             - x: torch.Tensor, 任意形状, 测试输入
@@ -29,7 +29,7 @@ class _FailModule(nn.Module):
 
 class _AddConstant(nn.Module):
     """
-    为输入张量加上固定常数的测试模块。
+    为输入张量加上固定常数的测试模块. 
 
     输入参数:
         - value: float, 加到输入张量上的常数
@@ -51,7 +51,7 @@ class _AddConstant(nn.Module):
 
 class _FloatAddConstant(_AddConstant):
     """
-    模拟 AMP 下返回 float32 输出的 typed tensor 分支。
+    模拟 AMP 下返回 float32 输出的 typed tensor 分支. 
     """
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -60,7 +60,7 @@ class _FloatAddConstant(_AddConstant):
 
 class _FloatSubsetModule(nn.Module):
     """
-    模拟 AMP 下返回 float32 输出的 typed point 子图分支。
+    模拟 AMP 下返回 float32 输出的 typed point 子图分支. 
 
     输入参数:
         - value: float, 加到子图特征上的常数
@@ -77,7 +77,7 @@ class _FloatSubsetModule(nn.Module):
         type_name: str | None = None,
     ) -> torch.Tensor:
         """
-        返回选中点的 float32 特征。
+        返回选中点的 float32 特征. 
 
         输入参数:
             - point: Point, mixed 点对象
@@ -97,7 +97,7 @@ def _make_serialized_point(
     pseudo_mask: torch.Tensor | None,
 ) -> Point:
     """
-    构造已序列化的单 BOX Point。
+    构造已序列化的单 BOX Point. 
 
     输入参数:
         - feat: torch.Tensor, (N_all, C), 点特征
@@ -125,7 +125,7 @@ def _make_serialized_point(
 
 def test_typed_point_config_defaults_enabled() -> None:
     """
-    默认 typed point 配置应启用所有 effective 分参开关。
+    默认 typed point 配置应启用所有 effective 分参开关. 
     """
     cfg = normalize_typed_point_cfg(None)
 
@@ -144,7 +144,7 @@ def test_typed_point_config_defaults_enabled() -> None:
 
 def test_typed_point_config_enabled_false_gates_all_flags() -> None:
     """
-    enabled=false 时所有 use_separate_* 都应关闭。
+    enabled=false 时所有 use_separate_* 都应关闭. 
     """
     cfg = normalize_typed_point_cfg({"enabled": False})
 
@@ -170,7 +170,7 @@ def test_typed_point_config_enabled_false_gates_all_flags() -> None:
 )
 def test_typed_point_config_rejects_bad_configs(bad_cfg: dict[str, object]) -> None:
     """
-    typed point 配置遇到未知字段或非 bool 值时应 fail-fast。
+    typed point 配置遇到未知字段或非 bool 值时应 fail-fast. 
     """
     with pytest.raises(ValueError):
         normalize_typed_point_cfg(bad_cfg)
@@ -178,7 +178,7 @@ def test_typed_point_config_rejects_bad_configs(bad_cfg: dict[str, object]) -> N
 
 def test_apply_type_aware_tensor_module_scatters_to_original_order() -> None:
     """
-    type-aware tensor helper 应保持 mixed 输入顺序。
+    type-aware tensor helper 应保持 mixed 输入顺序. 
     """
     # torch.Tensor, (4, 1), mixed 输入特征
     x = torch.arange(4, dtype=torch.float32).view(4, 1)
@@ -197,7 +197,7 @@ def test_apply_type_aware_tensor_module_scatters_to_original_order() -> None:
 
 def test_apply_type_aware_tensor_module_uses_branch_output_dtype() -> None:
     """
-    mixed 恢复张量应采用 typed 分支输出精度，而不是 bfloat16 输入精度。
+    mixed 恢复张量应采用 typed 分支输出精度, 而不是 bfloat16 输入精度. 
     """
     # torch.Tensor, (4, 1), 模拟 bf16 AMP 下的 mixed 输入特征
     x = torch.arange(4, dtype=torch.bfloat16).view(4, 1)
@@ -217,7 +217,7 @@ def test_apply_type_aware_tensor_module_uses_branch_output_dtype() -> None:
 
 def test_apply_type_aware_tensor_module_skips_empty_branch() -> None:
     """
-    all-real / all-pseudo 时不应调用空分支 module。
+    all-real / all-pseudo 时不应调用空分支 module. 
     """
     # torch.Tensor, (3, 2), 测试输入特征
     x = torch.randn(3, 2)
@@ -233,7 +233,7 @@ def test_apply_type_aware_tensor_module_skips_empty_branch() -> None:
 
 def test_block_shared_cpe_keeps_input_residual() -> None:
     """
-    shared CPE 路径应保留原始输入残差, 不应把 CPE delta 加两次。
+    shared CPE 路径应保留原始输入残差, 不应把 CPE delta 加两次. 
     """
     # torch.Tensor, (4, 8), 输入点特征
     feat = torch.randn(4, 8)
@@ -265,7 +265,7 @@ def test_block_shared_cpe_keeps_input_residual() -> None:
 
 def test_embedding_typed_all_real_and_all_pseudo_paths() -> None:
     """
-    typed embedding 应支持 all-real 与 all-pseudo 两种显式 mask。
+    typed embedding 应支持 all-real 与 all-pseudo 两种显式 mask. 
     """
     pytest.importorskip("torch_cluster")
     # torch.Tensor, (4, 3), 同 BOX 点坐标
@@ -294,7 +294,7 @@ def test_embedding_typed_all_real_and_all_pseudo_paths() -> None:
 
 def test_embedding_typed_mixed_uses_subset_output_dtype() -> None:
     """
-    typed embedding mixed 恢复应兼容 bf16 输入与 float32 子图输出。
+    typed embedding mixed 恢复应兼容 bf16 输入与 float32 子图输出. 
     """
     # torch.Tensor, (4, 3), bf16 mixed 输入特征
     feat = torch.arange(12, dtype=torch.bfloat16).view(4, 3)
@@ -316,7 +316,7 @@ def test_embedding_typed_mixed_uses_subset_output_dtype() -> None:
 
 def test_block_typed_cpe_mixed_uses_subset_output_dtype() -> None:
     """
-    typed CPE mixed 恢复应兼容 bf16 输入与 float32 子图输出。
+    typed CPE mixed 恢复应兼容 bf16 输入与 float32 子图输出. 
     """
     # torch.Tensor, (4, 8), bf16 mixed 输入特征
     feat = torch.arange(32, dtype=torch.bfloat16).view(4, 8)
@@ -347,7 +347,7 @@ def test_block_typed_cpe_mixed_uses_subset_output_dtype() -> None:
 
 def test_serialized_pooling_splits_same_cell_by_type_and_keeps_spatial_code() -> None:
     """
-    typed pooling 应按 type 拆分同一空间 cell, 且 serialized_code 保持纯空间编码。
+    typed pooling 应按 type 拆分同一空间 cell, 且 serialized_code 保持纯空间编码. 
     """
     # torch.Tensor, (2, 4), 输入点特征
     feat = torch.randn(2, 4)
@@ -378,7 +378,7 @@ def test_serialized_pooling_splits_same_cell_by_type_and_keeps_spatial_code() ->
 
 def test_serialized_unpooling_preserves_parent_pseudo_mask() -> None:
     """
-    typed unpooling 输出应保留 parent 分辨率的 pseudo_mask。
+    typed unpooling 输出应保留 parent 分辨率的 pseudo_mask. 
     """
     # torch.Tensor, (4, 4), 输入点特征
     feat = torch.randn(4, 4)
@@ -425,7 +425,7 @@ def test_serialized_unpooling_preserves_parent_pseudo_mask() -> None:
 
 def test_point_transformer_preserves_pseudo_mask_through_encoder_decoder() -> None:
     """
-    PointTransformerV3 mixed 前向应在 encoder/decoder 后保留原分辨率 pseudo_mask。
+    PointTransformerV3 mixed 前向应在 encoder/decoder 后保留原分辨率 pseudo_mask. 
     """
     pytest.importorskip("torch_cluster")
     torch.manual_seed(17)
@@ -487,7 +487,7 @@ def test_point_transformer_preserves_pseudo_mask_through_encoder_decoder() -> No
 
 def test_point_transformer_typed_flags_reach_core_modules() -> None:
     """
-    PointTransformerV3 typed flags 应传递到 embedding、pooling、unpooling 与 Block。
+    PointTransformerV3 typed flags 应传递到 embedding、pooling、unpooling 与 Block. 
     """
     model = PointTransformerV3(
         in_channels=4,

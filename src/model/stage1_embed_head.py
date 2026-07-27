@@ -1,26 +1,26 @@
 # -*- coding: utf-8 -*-
-"""把真实受体原子编码为点特征和可选的稠密体素特征。
+"""把真实受体原子编码为点特征和可选的稠密体素特征. 
 
-主要入口 :class:`Stage1EmbedHead` 只接收真实受体原子，不接收虚拟 P 锚点。
-共享点编码器可以在各层后收窄核心 BOX 外的缓冲半径；随后按配置产生两类结果：
+主要入口 :class:`Stage1EmbedHead` 只接收真实受体原子, 不接收虚拟 P 锚点. 
+共享点编码器可以在各层后收窄核心 BOX 外的缓冲半径; 随后按配置产生两类结果: 
 
-- ``embed_point_feat``：``(N_keep, C_point)``，送入 Stage1 点模型；
-- ``voxel_pdb_embed_grid``：``(B, C_voxel, D, H, W)``，与密度通道拼接或相加。
+- ``embed_point_feat``: ``(N_keep, C_point)``, 送入 Stage1 点模型; 
+- ``voxel_pdb_embed_grid``: ``(B, C_voxel, D, H, W)``, 与密度通道拼接或相加. 
 
 关键输入契约:
-    - ``atom_feat``: (N_real, F_atom)，真实受体原子特征。
-    - ``atom_coord_centered_world``: (N_real, 3)，相对 BOX 中心的世界 XYZ 坐标，单位 Å。
-    - ``atom_coord_local_voxel``: (N_real, 3)，BOX 内连续体素 XYZ 坐标，原点是 BOX 角点。
-    - ``atom_batch_index``: int64, (N_real,)，每个原子所属 BOX 的批次编号。
-    - ``atom_offsets``: int64, (B,)，每个 BOX 在真实原子拼接数组中的结束位置。
-    - ``box_shape_zyx``: int64, (B, 3)，每个 BOX 的离散体素尺寸，轴序 ZYX。
-    - ``voxel_size_world``: (B, 3)，世界 XYZ 每体素尺寸，单位 Å/voxel。
-    - ``atom_is_in_core_box``: bool, (N_real,)，真实原子是否位于核心 BOX。
+    - atom_feat: (N_real, F_atom), 真实受体原子特征. 
+    - atom_coord_centered_world: (N_real, 3), 相对 BOX 中心的世界 XYZ 坐标, 单位 Å. 
+    - atom_coord_local_voxel: (N_real, 3), BOX 内连续体素 XYZ 坐标, 原点是 BOX 角点. 
+    - atom_batch_index: int64, (N_real,), 每个原子所属 BOX 的批次编号. 
+    - atom_offsets: int64, (B,), 每个 BOX 在真实原子拼接数组中的结束位置. 
+    - box_shape_zyx: int64, (B, 3), 每个 BOX 的离散体素尺寸, 轴序 ZYX. 
+    - voxel_size_world: (B, 3), 世界 XYZ 每体素尺寸, 单位 Å/voxel. 
+    - atom_is_in_core_box: bool, (N_real,), 真实原子是否位于核心 BOX. 
 
-``global_keep_mask`` 为 bool ``(N_real,)``，把裁剪后的原子重新对应到输入原子数组。
-Find_0 和 Find_1 使用共同的点编码路径；Find_1 另用
-``forward_voxel_only`` 生成高斯散射体素特征，Find_2 将 56 通道高斯体素特征作为
-密度调整量，``unet_c1`` 不实例化本模块。
+``global_keep_mask`` 为 bool ``(N_real,)``, 把裁剪后的原子重新对应到输入原子数组. 
+Find_0 和 Find_1 使用共同的点编码路径; Find_1 另用
+``forward_voxel_only`` 生成高斯散射体素特征, Find_2 将 56 通道高斯体素特征作为
+密度调整量, ``unet_c1`` 不实例化本模块. 
 """
 from __future__ import annotations
 
@@ -58,19 +58,19 @@ def trim_buffer_atoms(
     allowed_buffer_radius_world: float,
 ) -> dict[str, torch.Tensor]:
     """
-    裁剪 buffer 原子: 保留 core box 内原子 + buffer 中距 core box 边界 ≤ allowed_buffer_radius_world 的原子。
+    裁剪 buffer 原子: 保留 core box 内原子 + buffer 中距 core box 边界 ≤ allowed_buffer_radius_world 的原子. 
 
-    当 allowed_buffer_radius_world 为 inf 或足够大时, 等价于不裁剪。
+    当 allowed_buffer_radius_world 为 inf 或足够大时, 等价于不裁剪. 
 
     输入参数:
         - point_feat: torch.Tensor, (N, C), 当前 per-atom 特征
-        - point_coord: torch.Tensor, (N, 3), 以 BOX 中心为原点的连续世界坐标 XYZ，单位 Å
+        - point_coord: torch.Tensor, (N, 3), 以 BOX 中心为原点的连续世界坐标 XYZ, 单位 Å
         - point_batch: torch.Tensor, (N,), batch 索引
         - point_offset: torch.Tensor, (B,), PTV3 风格结束偏移
         - atom_is_in_core_box: torch.Tensor, (N,), bool, 是否在 core box 内
-        - atom_coord_local_voxel: torch.Tensor, (N, 3), BOX-local 连续 voxel 坐标 XYZ，corner 语义
+        - atom_coord_local_voxel: torch.Tensor, (N, 3), BOX-local 连续 voxel 坐标 XYZ, corner 语义
         - box_shape_zyx: torch.Tensor, (B, 3), BOX 离散 voxel 网格尺寸 ZYX
-        - voxel_size_world: torch.Tensor, (B, 3), 世界坐标 XYZ 各轴的 voxel 间距，单位 Å/voxel
+        - voxel_size_world: torch.Tensor, (B, 3), 世界坐标 XYZ 各轴的 voxel 间距, 单位 Å/voxel
         - allowed_buffer_radius_world: float, 允许的 buffer 半径(世界坐标, Å)
 
     输出:
@@ -95,8 +95,8 @@ def trim_buffer_atoms(
             "keep_mask": atom_is_in_core_box,
         }
 
-    # 半径 0 的科学语义是严格 core-only；不能把恰落在上边界、但 core_mask=False
-    # 的原子因几何距离等于 0 而重新纳入。
+    # 半径 0 的科学语义是严格 core-only; 不能把恰落在上边界、但 core_mask=False
+    # 的原子因几何距离等于 0 而重新纳入. 
     if float(allowed_buffer_radius_world) <= 0.0:
         keep_mask = atom_is_in_core_box.bool()
         kept_feat = point_feat[keep_mask]
@@ -205,11 +205,11 @@ def scatter_to_voxel_grid(
     add_occupancy_channels: bool = False,
 ) -> torch.Tensor:
     """
-    将 per-atom 特征 硬scatter 到体素网格上。
+    将 per-atom 特征 硬scatter 到体素网格上. 
 
     输入参数:
         - point_feat: torch.Tensor, (N, C), per-atom 特征
-        - atom_coord_local_voxel: torch.Tensor, (N, 3), BOX-local 连续 voxel 坐标 XYZ，corner 语义
+        - atom_coord_local_voxel: torch.Tensor, (N, 3), BOX-local 连续 voxel 坐标 XYZ, corner 语义
         - point_batch: torch.Tensor, (N,), batch 索引
         - box_shape_zyx: torch.Tensor, (B, 3), BOX 离散 voxel 网格尺寸 ZYX
         - batch_size: int, batch 大小
@@ -233,7 +233,7 @@ def scatter_to_voxel_grid(
     # torch.Tensor[int64], (N,3), 将 BOX-local 连续 voxel XYZ corner 坐标 floor 为离散 voxel-index XYZ
     voxel_idx_xyz = atom_coord_local_voxel.floor().long()
     
-    # torch.Tensor, (N,), bool, 如果超出索引，直接丢掉
+    # torch.Tensor, (N,), bool, 如果超出索引, 直接丢掉
     valid_mask = (
         (voxel_idx_xyz[:, 0] >= 0) & (voxel_idx_xyz[:, 0] < w_val) &
         (voxel_idx_xyz[:, 1] >= 0) & (voxel_idx_xyz[:, 1] < h_val) &
@@ -270,7 +270,7 @@ def scatter_to_voxel_grid(
         # 避免除零
         voxel_sum = voxel_sum / voxel_count.clamp(min=1.0)
 
-    # 可选：添加 occupancy 通道
+    # 可选: 添加 occupancy 通道
     if add_occupancy_channels:
         # 1. log(1 + N(v))
         log_count = torch.log1p(voxel_count)  # (total_voxels, 1)
@@ -297,11 +297,11 @@ def soft_scatter_to_voxel_grid(
     add_occupancy_channels: bool = False,
 ) -> torch.Tensor:
     """
-    使用三线性插值将 per-atom 特征 soft scatter 到 8 个邻域体素。
+    使用三线性插值将 per-atom 特征 soft scatter 到 8 个邻域体素. 
 
     输入参数:
         - point_feat: torch.Tensor, (N, C), per-atom 特征
-        - atom_coord_local_voxel: torch.Tensor, (N, 3), BOX-local 连续 voxel 坐标 XYZ，corner 语义
+        - atom_coord_local_voxel: torch.Tensor, (N, 3), BOX-local 连续 voxel 坐标 XYZ, corner 语义
         - point_batch: torch.Tensor, (N,), batch 索引
         - box_shape_zyx: torch.Tensor, (B, 3), BOX 离散 voxel 网格尺寸 ZYX
         - batch_size: int, batch 大小
@@ -323,11 +323,11 @@ def soft_scatter_to_voxel_grid(
 
     # 1. 计算 8 邻域体素索引
     voxel_idx_floor = atom_coord_local_voxel.floor()  # (N,3), BOX-local 离散 voxel-index XYZ 的浮点表示
-    delta = atom_coord_local_voxel - voxel_idx_floor  # (N,3), 原子相对 home voxel corner 的连续 voxel XYZ 偏移，范围 [0,1)
+    delta = atom_coord_local_voxel - voxel_idx_floor  # (N,3), 原子相对 home voxel corner 的连续 voxel XYZ 偏移, 范围 [0,1)
 
     # 8 个邻域的偏移（立方体的 8 个角点）
-    # 注意：PyTorch grid_sample 始终使用 8 邻域三线性插值
-    # align_corners=True 只影响坐标归一化方式，不影响邻域数量
+    # 注意: PyTorch grid_sample 始终使用 8 邻域三线性插值
+    # align_corners=True 只影响坐标归一化方式, 不影响邻域数量
     offsets = torch.tensor([
         [0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1],
         [1, 1, 0], [1, 0, 1], [0, 1, 1], [1, 1, 1]
@@ -394,9 +394,9 @@ def soft_scatter_to_voxel_grid(
     if reduce == "mean":
         voxel_sum = voxel_sum / voxel_weight_sum.clamp(min=1e-8)
     elif reduce == "sum":
-        pass  # 保持原始加权和，不归一化
+        pass  # 保持原始加权和, 不归一化
 
-    # 4. 可选：添加 occupancy 通道
+    # 4. 可选: 添加 occupancy 通道
     if add_occupancy_channels:
         log_weight_sum = torch.log1p(voxel_weight_sum)
         max_weight = voxel_weight_sum.max()
@@ -419,15 +419,15 @@ def gauss_scatter_to_voxel_grid(
     add_centroid_channels: bool,
 ) -> torch.Tensor:
     """
-    用 3×3×3=27 邻域各向同性高斯距离加权, 把 per-atom 特征 scatter 到体素网格。
+    用 3×3×3=27 邻域各向同性高斯距离加权, 把 per-atom 特征 scatter 到体素网格. 
 
     相比三线性(8 角点、逐轴可分离权重, 几何各向异性), 本函数对每个原子 floor 体素周围 27 个体素,
     按"原子到体素中心"的欧氏距离施加各向同性高斯权重, 并逐原子归一化(每个原子总贡献=1, 保持质量守恒),
-    从而消除三线性的轴对齐几何偏置。输入是 BOX-local 连续 voxel XYZ corner 坐标，离散 voxel 索引 i 对应中心 i+0.5。
+    从而消除三线性的轴对齐几何偏置. 输入是 BOX-local 连续 voxel XYZ corner 坐标, 离散 voxel 索引 i 对应中心 i+0.5. 
 
     输入参数:
         - point_feat: torch.Tensor, (N, C), per-atom 特征
-        - atom_coord_local_voxel: torch.Tensor, (N, 3), BOX-local 连续 voxel 坐标 XYZ，corner 语义
+        - atom_coord_local_voxel: torch.Tensor, (N, 3), BOX-local 连续 voxel 坐标 XYZ, corner 语义
         - point_batch: torch.Tensor, (N,), 每个原子所属 BOX 的 batch 索引
         - box_shape_zyx: torch.Tensor, (B, 3), BOX 离散 voxel 网格尺寸 ZYX
         - batch_size: int, batch 内 BOX 数
@@ -539,10 +539,10 @@ def compute_voxel_centroids(
     batch_size: int,
 ) -> torch.Tensor:
     """
-    计算每个体素内原子的质心坐标。
+    计算每个体素内原子的质心坐标. 
 
     输入参数:
-        - atom_coord_local_voxel: torch.Tensor, (N, 3), BOX-local 连续 voxel 坐标 XYZ，corner 语义
+        - atom_coord_local_voxel: torch.Tensor, (N, 3), BOX-local 连续 voxel 坐标 XYZ, corner 语义
         - point_batch: torch.Tensor, (N,), batch 索引
         - box_shape_zyx: torch.Tensor, (B, 3), BOX 离散 voxel 网格尺寸 ZYX
         - batch_size: int, batch 大小
@@ -603,15 +603,15 @@ def compute_voxel_centroids(
 # ============================================================
 class Stage1EmbedHead(nn.Module):
     """
-    将 real atom 点特征编码为体素网格嵌入和可选点特征，并维护裁剪后的原子视图。
+    将 real atom 点特征编码为体素网格嵌入和可选点特征, 并维护裁剪后的原子视图. 
 
     输入参数:
         - 初始化参数: 见 `__init__` 的完整参数契约
 
     前向输入:
         - atom_feat: torch.Tensor, (sumN,F_atom), real atom 原始特征
-        - atom_coord_centered_world: torch.Tensor, (sumN,3), centered 连续世界坐标 XYZ，单位 Å
-        - atom_coord_local_voxel: torch.Tensor, (sumN,3), BOX-local 连续 voxel 坐标 XYZ，corner 语义
+        - atom_coord_centered_world: torch.Tensor, (sumN,3), centered 连续世界坐标 XYZ, 单位 Å
+        - atom_coord_local_voxel: torch.Tensor, (sumN,3), BOX-local 连续 voxel 坐标 XYZ, corner 语义
 
     前向输出:
         - outputs: dict[str,torch.Tensor|None], 体素嵌入、可选点特征及裁剪后 real atom 字段; 完整字段见 `forward`
@@ -664,8 +664,8 @@ class Stage1EmbedHead(nn.Module):
         voxel_embed_as_tune: bool = False,     # bool, 是否把 voxel embed 作为 56D density tune 项
     ) -> None:
         """
-        Stage1 embed head 前置模块, 将原子级点云编码为体素网格嵌入特征和(可选的)点特征。
-        作为过滤器: 输出裁剪后的原子字段 + 全局 keep_mask, 下游模块使用裁剪后的数据。
+        Stage1 embed head 前置模块, 将原子级点云编码为体素网格嵌入特征和(可选的)点特征. 
+        作为过滤器: 输出裁剪后的原子字段 + 全局 keep_mask, 下游模块使用裁剪后的数据. 
 
         输入参数:
             - atom_feature_dim: int, 原子原始特征维度, 建议值 49
@@ -804,7 +804,7 @@ class Stage1EmbedHead(nn.Module):
                 self.embed_voxel_add_proj = None
                 self.register_buffer("embed_voxel_gate", torch.tensor(1.0))
         else:
-            # 不启用残差: 所有投影层为 None，gate 为 buffer(1.0)
+            # 不启用残差: 所有投影层为 None, gate 为 buffer(1.0)
             self.embed_point_add_proj = None
             self.register_buffer("embed_point_gate", torch.tensor(1.0))
             self.embed_voxel_add_proj = None
@@ -866,7 +866,7 @@ class Stage1EmbedHead(nn.Module):
                 )
             # 体素输出投影层
             if self.use_centroid_encoding:
-                # 使用 centroid encoding 时，输入维度为 embed_hidden_dim + 6
+                # 使用 centroid encoding 时, 输入维度为 embed_hidden_dim + 6
                 self.voxel_out_proj_with_offset = nn.Sequential(
                     nn.LayerNorm(self.embed_hidden_dim + 6),
                     nn.Linear(self.embed_hidden_dim + 6, self.embed_voxel_out_channels),
@@ -912,11 +912,11 @@ class Stage1EmbedHead(nn.Module):
         offset: torch.Tensor,
     ) -> Any:
         """
-        构建 Point 对象并执行序列化(用于每次裁剪后重建)。
+        构建 Point 对象并执行序列化(用于每次裁剪后重建). 
 
         输入参数:
             - feat: torch.Tensor, (N,C), 当前 real atom 点特征
-            - coord: torch.Tensor, (N,3), 以 BOX 中心为原点的连续世界坐标 XYZ，单位 Å
+            - coord: torch.Tensor, (N,3), 以 BOX 中心为原点的连续世界坐标 XYZ, 单位 Å
             - batch: torch.Tensor, (N,), 每个 atom 所属 BOX 的 batch 索引
             - offset: torch.Tensor, (B,), 每个 BOX 在展平 atom 序列中的结束偏移
 
@@ -949,28 +949,28 @@ class Stage1EmbedHead(nn.Module):
         global_keep_mask: torch.Tensor,
     ) -> tuple[Any | None, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """
-        执行一系列 Block 并在每个 block 后按配置裁剪 buffer 原子。
+        执行一系列 Block 并在每个 block 后按配置裁剪 buffer 原子. 
 
         输入参数:
             - point: Point, 当前点对象
             - blocks: nn.ModuleList, 要执行的 Block 列表
             - buffer_radii: tuple[float, ...], 与 blocks 等长的 buffer 半径列表
-            - cur_coord: torch.Tensor, (N_current,3), 当前保留 atom 的 centered 连续世界坐标 XYZ，单位 Å
+            - cur_coord: torch.Tensor, (N_current,3), 当前保留 atom 的 centered 连续世界坐标 XYZ, 单位 Å
             - cur_batch: torch.Tensor, (N_current,), 当前保留 atom 的 BOX batch 索引
             - cur_offset: torch.Tensor, (B,), 当前各 BOX 在展平 atom 序列中的结束偏移
             - cur_core: torch.Tensor, (N_current,), bool, 当前保留 atom 是否位于 core BOX
-            - cur_local_voxel: torch.Tensor, (N_current,3), 当前保留 atom 的 BOX-local 连续 voxel 坐标 XYZ，corner 语义
+            - cur_local_voxel: torch.Tensor, (N_current,3), 当前保留 atom 的 BOX-local 连续 voxel 坐标 XYZ, corner 语义
             - box_shape_zyx: torch.Tensor, (B,3), BOX 离散 voxel 网格尺寸 ZYX
-            - voxel_size_world: torch.Tensor, (B,3), 世界坐标 XYZ 各轴的 voxel 间距，单位 Å/voxel
+            - voxel_size_world: torch.Tensor, (B,3), 世界坐标 XYZ 各轴的 voxel 间距, 单位 Å/voxel
             - global_keep_mask: torch.Tensor, (sumN_original,), bool, 当前阶段前的全局掩码
 
         输出:
             - point: Point | None, 执行 blocks 后的点对象; 已无 atom 时为 None
-            - cur_coord: torch.Tensor, (N_keep,3), 保留 atom 的 centered 连续世界坐标 XYZ，单位 Å
+            - cur_coord: torch.Tensor, (N_keep,3), 保留 atom 的 centered 连续世界坐标 XYZ, 单位 Å
             - cur_batch: torch.Tensor, (N_keep,), 保留 atom 的 BOX batch 索引
             - cur_offset: torch.Tensor, (B,), 裁剪后各 BOX 的结束偏移
             - cur_core: torch.Tensor, (N_keep,), bool, 保留 atom 的 core BOX 标记
-            - cur_local_voxel: torch.Tensor, (N_keep,3), 保留 atom 的 BOX-local 连续 voxel 坐标 XYZ，corner 语义
+            - cur_local_voxel: torch.Tensor, (N_keep,3), 保留 atom 的 BOX-local 连续 voxel 坐标 XYZ, corner 语义
             - global_keep_mask: torch.Tensor, (sumN_original,), bool, 原始 atom 行到当前保留行的掩码
         """
         for block_idx, block in enumerate(blocks):
@@ -1022,11 +1022,11 @@ class Stage1EmbedHead(nn.Module):
         atom_is_in_core_box: torch.Tensor,
     ) -> torch.Tensor:
         """
-        只执行 Find_1/Find_2 所需的非块式 voxel MLP/centroid/scatter。
+        只执行 Find_1/Find_2 所需的非块式 voxel MLP/centroid/scatter. 
 
         输入参数:
             - atom_feat: torch.Tensor, (N,49), float, Dataset 直接加载的 core+8 Å real atom 特征
-            - atom_coord_local_voxel: torch.Tensor, (N,3), BOX-local 连续 voxel 坐标 XYZ，corner 语义
+            - atom_coord_local_voxel: torch.Tensor, (N,3), BOX-local 连续 voxel 坐标 XYZ, corner 语义
             - atom_batch_index: torch.Tensor, (N,), long, 每个 real atom 所属 BOX 的 batch 索引
             - box_shape_zyx: torch.Tensor, (B,3), long, BOX 离散 voxel 网格尺寸 ZYX; 当前 Stage1 固定为 `(80,80,80)`
             - atom_is_in_core_box: torch.Tensor, (N,), bool, voxel scatter 的唯一 atom 筛选
@@ -1039,18 +1039,18 @@ class Stage1EmbedHead(nn.Module):
             raise RuntimeError("forward_voxel_only 需要 embed_voxel_out_channels > 0。")
         if self.num_trunk_blocks != 0 or self.num_voxel_blocks != 0:
             raise RuntimeError("forward_voxel_only 仅支持无 trunk/voxel Transformer 的 Find_1/Find_2 配置。")
-        # int, 当前固定网格 batch 的 BOX 数 B。
+        # int, 当前固定网格 batch 的 BOX 数 B. 
         batch_size = int(box_shape_zyx.shape[0])
-        # torch.Tensor[bool], (N_A,), 只允许 core 原子向 Find voxel grid 贡献特征。
+        # torch.Tensor[bool], (N_A,), 只允许 core 原子向 Find voxel grid 贡献特征. 
         core_keep = atom_is_in_core_box.bool()
-        # core_feat/core_local/core_batch 的第 0 轴均为 N_core，且保持原 atom 表顺序。
+        # core_feat/core_local/core_batch 的第 0 轴均为 N_core, 且保持原 atom 表顺序. 
         core_feat = atom_feat[core_keep]
         core_local = atom_coord_local_voxel[core_keep]
         core_batch = atom_batch_index.long()[core_keep]
-        # 与完整 forward 保持相同的矩阵形状和算子顺序：先投影 core+8 Å 全表，
-        # 再截取 core。若先截取后投影，BLAS 会因矩阵行数不同选择另一 kernel，
-        # 在服务器上可产生约 1e-7 的舍入差，破坏逐元素等价契约。
-        # torch.Tensor, (N_core,C_hidden), 先对 N_A 全表投影、再按 core_keep 截取。
+        # 与完整 forward 保持相同的矩阵形状和算子顺序: 先投影 core+8 Å 全表, 
+        # 再截取 core. 若先截取后投影, BLAS 会因矩阵行数不同选择另一 kernel, 
+        # 在服务器上可产生约 1e-7 的舍入差, 破坏逐元素等价契约. 
+        # torch.Tensor, (N_core,C_hidden), 先对 N_A 全表投影、再按 core_keep 截取. 
         hidden = self.input_proj(atom_feat)[core_keep]
 
         if hidden.shape[0] == 0:
@@ -1079,7 +1079,7 @@ class Stage1EmbedHead(nn.Module):
             )
             # torch.Tensor, (N_core,3), 按 home voxel 回收到每个 atom 行的 BOX-local 连续 voxel XYZ 质心
             atom_voxel_centroids = voxel_centroids[linear_idx]
-            # 两个 torch.Tensor, (N_core,3), BOX-local 连续 voxel XYZ 偏移，分别表示 atom-质心与质心-voxel-center
+            # 两个 torch.Tensor, (N_core,3), BOX-local 连续 voxel XYZ 偏移, 分别表示 atom-质心与质心-voxel-center
             atom_offset_from_centroid = core_local - atom_voxel_centroids
             centroid_offset_from_center = atom_voxel_centroids - (voxel_idx_xyz.float() + 0.5)
             voxel_value = self.voxel_out_proj_with_offset(
@@ -1111,10 +1111,10 @@ class Stage1EmbedHead(nn.Module):
         batch_size: int,
     ) -> torch.Tensor:
         """
-        按配置把逐原子体素特征写入 BOX 网格。
+        按配置把逐原子体素特征写入 BOX 网格. 
 
-        `use_gaussian_splatting=True` 时优先使用旧 Find_1 的 Gaussian 写入方式；
-        否则再按 `use_soft_splatting` 选择三线性或单体素写入。
+        `use_gaussian_splatting=True` 时优先使用旧 Find_1 的 Gaussian 写入方式; 
+        否则再按 `use_soft_splatting` 选择三线性或单体素写入. 
         """
         if self.use_gaussian_splatting:
             return gauss_scatter_to_voxel_grid(
@@ -1154,33 +1154,33 @@ class Stage1EmbedHead(nn.Module):
         atom_is_in_core_box: torch.Tensor,
     ) -> dict[str, torch.Tensor | None]:
         """
-        对 real atom 做共享编码并分叉输出体素嵌入、可选点特征和裁剪后字段。
+        对 real atom 做共享编码并分叉输出体素嵌入、可选点特征和裁剪后字段. 
 
         输入参数:
             - atom_feat: torch.Tensor, (sumN, F_atom), batch 内全部原子的原始特征(49)
-            - atom_coord_centered_world: torch.Tensor, (sumN, 3), 以 BOX 中心为原点的连续世界坐标 XYZ，单位 Å
+            - atom_coord_centered_world: torch.Tensor, (sumN, 3), 以 BOX 中心为原点的连续世界坐标 XYZ, 单位 Å
             - atom_batch_index: torch.Tensor, (sumN,), 每个原子所属 batch 索引
             - atom_offsets: torch.Tensor, (B,), PTV3 风格结束偏移
-            - atom_coord_local_voxel: torch.Tensor, (sumN, 3), BOX-local 连续 voxel 坐标 XYZ，corner 语义
+            - atom_coord_local_voxel: torch.Tensor, (sumN, 3), BOX-local 连续 voxel 坐标 XYZ, corner 语义
             - box_shape_zyx: torch.Tensor, (B, 3), BOX 离散 voxel 网格尺寸 ZYX
-            - voxel_size_world: torch.Tensor, (B, 3), 世界坐标 XYZ 各轴的 voxel 间距，单位 Å/voxel
+            - voxel_size_world: torch.Tensor, (B, 3), 世界坐标 XYZ 各轴的 voxel 间距, 单位 Å/voxel
             - atom_is_in_core_box: torch.Tensor, (sumN,), bool, 是否在 core box 内
 
         输出:
-            - outputs: dict[str,torch.Tensor|None], 分支输出和裁剪后 atom 视图，包含:
-                - `voxel_pdb_embed_grid`: torch.Tensor | None, (B,C_embed,D,H,W), BOX-local 离散 ZYX voxel 网格上的嵌入; 未启用 voxel 输出时为 None
-                - `voxel_embed_per_atom`: torch.Tensor | None, (N_voxel,C_embed), voxel scatter 前的 atom value 特征
-                - `voxel_batch_index`: torch.Tensor | None, (N_voxel,), voxel 路径各 atom 的 BOX batch 索引
-                - `voxel_coord_local_voxel`: torch.Tensor | None, (N_voxel,3), voxel 路径各 atom 的 BOX-local 连续 voxel 坐标 XYZ，corner 语义
-                - `embed_point_feat`: torch.Tensor | None, (N_point,C_point), point 路径输出特征
-                - `atom_feat`: torch.Tensor, (N_point,F_out), point 路径裁剪后的 atom 特征
-                - `atom_coord_centered_world`: torch.Tensor, (N_point,3), point 路径裁剪后的 centered 连续世界坐标 XYZ，单位 Å
-                - `atom_batch_index`: torch.Tensor, (N_point,), point 路径各 atom 的 BOX batch 索引
-                - `atom_offsets`: torch.Tensor, (B,), point 路径裁剪后各 BOX 的结束偏移
-                - `atom_coord_local_voxel`: torch.Tensor, (N_point,3), point 路径裁剪后的 BOX-local 连续 voxel 坐标 XYZ，corner 语义
-                - `atom_is_in_core_box`: torch.Tensor, (N_point,), bool, point 路径各 atom 的 core BOX 标记
-                - `global_keep_mask`: torch.Tensor, (sumN,), bool, 原始 atom 行到 point 路径保留行的掩码
-                - `embed_point_add_proj`: nn.Module | None, 将原始 atom 特征投影到 point 输出维度的残差层
+            - outputs: dict[str,torch.Tensor|None], 分支输出和裁剪后 atom 视图, 包含:
+                - voxel_pdb_embed_grid: torch.Tensor | None, (B,C_embed,D,H,W), BOX-local 离散 ZYX voxel 网格上的嵌入; 未启用 voxel 输出时为 None
+                - voxel_embed_per_atom: torch.Tensor | None, (N_voxel,C_embed), voxel scatter 前的 atom value 特征
+                - voxel_batch_index: torch.Tensor | None, (N_voxel,), voxel 路径各 atom 的 BOX batch 索引
+                - voxel_coord_local_voxel: torch.Tensor | None, (N_voxel,3), voxel 路径各 atom 的 BOX-local 连续 voxel 坐标 XYZ, corner 语义
+                - embed_point_feat: torch.Tensor | None, (N_point,C_point), point 路径输出特征
+                - atom_feat: torch.Tensor, (N_point,F_out), point 路径裁剪后的 atom 特征
+                - atom_coord_centered_world: torch.Tensor, (N_point,3), point 路径裁剪后的 centered 连续世界坐标 XYZ, 单位 Å
+                - atom_batch_index: torch.Tensor, (N_point,), point 路径各 atom 的 BOX batch 索引
+                - atom_offsets: torch.Tensor, (B,), point 路径裁剪后各 BOX 的结束偏移
+                - atom_coord_local_voxel: torch.Tensor, (N_point,3), point 路径裁剪后的 BOX-local 连续 voxel 坐标 XYZ, corner 语义
+                - atom_is_in_core_box: torch.Tensor, (N_point,), bool, point 路径各 atom 的 core BOX 标记
+                - global_keep_mask: torch.Tensor, (sumN,), bool, 原始 atom 行到 point 路径保留行的掩码
+                - embed_point_add_proj: nn.Module | None, 将原始 atom 特征投影到 point 输出维度的残差层
         """
         batch_size = int(atom_offsets.shape[0])
         total_n = int(atom_feat.shape[0])
@@ -1290,8 +1290,8 @@ class Stage1EmbedHead(nn.Module):
                     global_keep_mask=v_global_keep,
                 )
 
-            # AdaLigand 的无 voxel-block 路径固定只把 core 原子送入 voxel scatter。
-            # point 分支仍从 trunk 快照独立运行 [8,4,0]，因此这里不能改动 point view。
+            # AdaLigand 的无 voxel-block 路径固定只把 core 原子送入 voxel scatter. 
+            # point 分支仍从 trunk 快照独立运行 [8,4,0], 因此这里不能改动 point view. 
             if voxel_point is not None and self.num_voxel_blocks == 0:
                 core_keep = v_core.bool()
                 active_positions = v_global_keep.nonzero(as_tuple=True)[0]

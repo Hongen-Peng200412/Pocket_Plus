@@ -8,7 +8,7 @@ from src.model.utils import gather_voxel_cube
 
 class DensityCubeEncoder(nn.Module):
     """
-    抽取 P anchor 周围 density cube 并编码为 pseudo atom 初始特征。
+    抽取 P anchor 周围 density cube 并编码为 pseudo atom 初始特征. 
 
     输入参数:
         - in_channels: int | None, density voxel_grid 输入通道数; None 表示由训练入口 lazy 初始化
@@ -89,7 +89,7 @@ class DensityCubeEncoder(nn.Module):
 
     def _make_activation(self) -> nn.Module:
         """
-        构造配置指定的激活函数。
+        构造配置指定的激活函数. 
 
         输出:
             - activation: nn.Module, 逐元素激活模块
@@ -102,7 +102,7 @@ class DensityCubeEncoder(nn.Module):
 
     def _make_conv_block(self, in_channels: int | None, out_channels: int, stride: int) -> list[nn.Module]:
         """
-        构造 Conv3d + 可选 GroupNorm + activation block。
+        构造 Conv3d + 可选 GroupNorm + activation block. 
 
         输入参数:
             - in_channels: int | None, 输入通道数; None 时使用 LazyConv3d
@@ -123,7 +123,7 @@ class DensityCubeEncoder(nn.Module):
 
     def _make_encoder_layers(self, in_channels: int | None) -> list[nn.Module]:
         """
-        构造 density cube encoder 主干层列表。
+        构造 density cube encoder 主干层列表. 
 
         输入参数:
             - in_channels: int | None, 首层输入通道数; None 时首层使用 LazyConv3d
@@ -144,7 +144,7 @@ class DensityCubeEncoder(nn.Module):
 
     def set_input_channels(self, in_channels: int) -> None:
         """
-        设置 density voxel_grid 输入通道数并构造卷积主干。
+        设置 density voxel_grid 输入通道数并构造卷积主干. 
 
         输入参数:
             - in_channels: int, batch["voxel_grid"] 原始通道数, 不含 embed/online scatter 追加通道
@@ -168,7 +168,7 @@ class DensityCubeEncoder(nn.Module):
         cube_size: int | None = None,
     ) -> torch.Tensor:
         """
-        抽取 P anchor 周围 density cube 并编码为 pseudo_feat。
+        抽取 P anchor 周围 density cube 并编码为 pseudo_feat. 
 
         输入参数:
             - voxel_grid: torch.Tensor, (B, C, D, H, W), density 输入体

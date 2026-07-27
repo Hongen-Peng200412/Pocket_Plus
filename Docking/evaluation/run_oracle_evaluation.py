@@ -24,7 +24,7 @@ TOP_PERCENT_VALUES = (0.10, 0.25)
 
 def main() -> None:
     """
-    评估 oracle easy20 的真实 matching 与 pose 质量。
+    评估 oracle easy20 的真实 matching 与 pose 质量. 
 
     输入参数:
         - `--eval-run-id`: str, 当前严格评价输出目录名称
@@ -107,14 +107,14 @@ def main() -> None:
 
 def load_oracle_samples(paths: ServerPaths, oracle_run_id: str) -> list[dict[str, Any]]:
     """
-    读取 oracle run 下每个样本的最终 summary。
+    读取 oracle run 下每个样本的最终 summary. 
 
     输入参数:
         - paths: ServerPaths, 服务器路径配置
         - oracle_run_id: str, oracle pipeline run ID
 
     输出:
-        - samples: list[dict[str, Any]], 每项为一个样本 summary，包含 `variants` 列表
+        - samples: list[dict[str, Any]], 每项为一个样本 summary, 包含 `variants` 列表
     """
     samples_dir = paths.allowed_root / "pipeline_runs" / oracle_run_id / "samples"
     return [
@@ -125,7 +125,7 @@ def load_oracle_samples(paths: ServerPaths, oracle_run_id: str) -> list[dict[str
 
 def variant_context(sample_id: str, variant: dict[str, Any]) -> dict[str, Any]:
     """
-    构造当前 oracle variant 的固定 truth site 元数据。
+    构造当前 oracle variant 的固定 truth site 元数据. 
 
     输入参数:
         - sample_id: str, 当前样本 ID
@@ -157,13 +157,13 @@ def variant_context(sample_id: str, variant: dict[str, Any]) -> dict[str, Any]:
 
 
 def site_id(site: dict[str, Any]) -> str:
-    """将 JSON site 记录转换为 runner 使用的稳定 `siteNNN` 标签。"""
+    """将 JSON site 记录转换为 runner 使用的稳定 `siteNNN` 标签. """
     return f"site{int(site['instance_id']):03d}"
 
 
 def index_variant_results(variant: dict[str, Any]) -> dict[tuple[str, str, str], dict[str, Any]]:
     """
-    按 `(site_id, ligand_label, receptor_scope)` 索引 variant 的 Rosetta 结果。
+    按 `(site_id, ligand_label, receptor_scope)` 索引 variant 的 Rosetta 结果. 
 
     输入参数:
         - variant: dict[str, Any], oracle variant summary
@@ -189,7 +189,7 @@ def build_truth_pair_pose_rows(
     truth_lookup: dict[tuple[str, str], dict[str, Any]],
 ) -> list[dict[str, Any]]:
     """
-    计算每个 site 对应真实 ligand pair 的 pose RMSD，不考虑 assignment 是否选中该 pair。
+    计算每个 site 对应真实 ligand pair 的 pose RMSD, 不考虑 assignment 是否选中该 pair. 
 
     输入参数:
         - context: dict[str, Any], 当前 variant 的 truth site 元数据
@@ -215,7 +215,7 @@ def build_identity_selection_rows(
     results: dict[tuple[str, str, str], dict[str, Any]],
     truth_lookup: dict[tuple[str, str], dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    """构造 identity 任务的严格选择结果；身份由实验定义直接给定。"""
+    """构造 identity 任务的严格选择结果; 身份由实验定义直接给定. """
     return build_truth_pair_pose_rows(context, results, truth_lookup)
 
 
@@ -226,9 +226,9 @@ def build_hungarian_selection_rows(
     truth_lookup: dict[tuple[str, str], dict[str, Any]],
 ) -> list[dict[str, Any]]:
     """
-    构造 Hungarian 任务选中结果的严格 pose 明细。
+    构造 Hungarian 任务选中结果的严格 pose 明细. 
 
-    错误 ligand 或虚拟节点不具有“正确 pose”含义，直接记为严格失败。
+    错误 ligand 或虚拟节点不具有“正确 pose”含义, 直接记为严格失败. 
     """
     rows: list[dict[str, Any]] = []
     for assignment in assignments:
@@ -273,7 +273,7 @@ def common_selection_row(
     selected_ligand: str,
     selection_source: str,
 ) -> dict[str, Any]:
-    """生成逐 site 评价表中的公共定位字段。"""
+    """生成逐 site 评价表中的公共定位字段. """
     return {
         "sample_id": context["sample_id"],
         "task": context["task"],
@@ -295,7 +295,7 @@ def add_pose_metrics(
     truth: dict[str, Any] | None,
 ) -> dict[str, Any]:
     """
-    将一个正确身份 pair 的 Rosetta pose 转为 RMSD 指标。
+    将一个正确身份 pair 的 Rosetta pose 转为 RMSD 指标. 
 
     输入参数:
         - row: dict[str, Any], 当前输出行的定位字段
@@ -353,7 +353,7 @@ def rebuild_pair_scores(
     results: dict[tuple[str, str, str], dict[str, Any]],
 ) -> dict[str, dict[tuple[str, str], Any]]:
     """
-    按 oracle runner 的当前成本定义重建全部真实 pair 分数。
+    按 oracle runner 的当前成本定义重建全部真实 pair 分数. 
 
     输入参数:
         - context: dict[str, Any], 当前 variant 元数据
@@ -393,9 +393,9 @@ def build_assignment_rows(
     pair_scores: dict[str, dict[tuple[str, str], Any]],
 ) -> list[dict[str, Any]]:
     """
-    统计 Hungarian assignment 是否为真实 site-ligand occurrence 匹配。
+    统计 Hungarian assignment 是否为真实 site-ligand occurrence 匹配. 
 
-    输出中同时记录真实 assignment cost 与当前被选 assignment cost 的比值。
+    输出中同时记录真实 assignment cost 与当前被选 assignment cost 的比值. 
     """
     rows: list[dict[str, Any]] = []
     for assignment in assignments:
@@ -437,7 +437,7 @@ def build_rank_rows(
     assignments: list[dict[str, Any]],
     pair_scores: dict[str, dict[tuple[str, str], Any]],
 ) -> list[dict[str, Any]]:
-    """按每个真实 site 的候选 ligand 成本排序，记录真实 pair 的 top-k/top-k% 位置。"""
+    """按每个真实 site 的候选 ligand 成本排序, 记录真实 pair 的 top-k/top-k% 位置. """
     rows: list[dict[str, Any]] = []
     for assignment in assignments:
         receptor_scope = str(assignment["receptor_scope"])
@@ -475,7 +475,7 @@ def build_rank_rows(
 
 
 def variant_flow_row(sample_id: str, variant: dict[str, Any]) -> dict[str, Any]:
-    """将一个 oracle variant 压平成流程统计行。"""
+    """将一个 oracle variant 压平成流程统计行. """
     return {
         "sample_id": sample_id,
         "task": variant.get("task", ""),
@@ -490,7 +490,7 @@ def variant_flow_row(sample_id: str, variant: dict[str, Any]) -> dict[str, Any]:
 
 
 def summarize_flow(rows: list[dict[str, Any]]) -> dict[str, Any]:
-    """汇总全部 variant 的 Rosetta 流程跑通情况。"""
+    """汇总全部 variant 的 Rosetta 流程跑通情况. """
     num_jobs = sum(int(row["num_jobs"]) for row in rows)
     num_success = sum(int(row["num_success"]) for row in rows)
     return {
@@ -503,9 +503,9 @@ def summarize_flow(rows: list[dict[str, Any]]) -> dict[str, Any]:
 
 def summarize_pose_rows(rows: list[dict[str, Any]], strict_denominator: bool) -> dict[str, Any]:
     """
-    汇总 pose RMSD。
+    汇总 pose RMSD. 
 
-    `strict_denominator=True` 时，错误 assignment、未跑通 pose 与带 warning pose 均保留在阈值成功率分母中。
+    `strict_denominator=True` 时, 错误 assignment、未跑通 pose 与带 warning pose 均保留在阈值成功率分母中. 
     """
     reliable = [row for row in rows if row.get("rmsd_warning", "") == "" and row.get("rmsd") not in {"", None}]
     denominator = rows if strict_denominator else reliable
@@ -522,7 +522,7 @@ def summarize_pose_rows(rows: list[dict[str, Any]], strict_denominator: bool) ->
 
 
 def summarize_assignments(rows: list[dict[str, Any]]) -> dict[str, Any]:
-    """汇总 Hungarian variant 的 occurrence 级 assignment accuracy。"""
+    """汇总 Hungarian variant 的 occurrence 级 assignment accuracy. """
     num_pairs = sum(int(row["num_truth_sites"]) for row in rows)
     num_correct = sum(int(row["num_correct_pairs"]) for row in rows)
     return {
@@ -535,7 +535,7 @@ def summarize_assignments(rows: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def summarize_ranks(rows: list[dict[str, Any]]) -> dict[str, Any]:
-    """汇总真实 pair 在每个 site 候选列表中的 top-k/top-k% 命中率。"""
+    """汇总真实 pair 在每个 site 候选列表中的 top-k/top-k% 命中率. """
     summary: dict[str, Any] = {"num_truth_pair_ranks": len(rows)}
     for top_k in TOP_K_VALUES:
         summary[f"top_{top_k}_rate"] = mean_bool(rows, f"top_{top_k}")
@@ -549,7 +549,7 @@ def grouped_summary(
     assignment_rows: list[dict[str, Any]],
     rank_rows: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    """按 `(task, receptor_scope)` 给出用户可直接比较的严格评价汇总。"""
+    """按 `(task, receptor_scope)` 给出用户可直接比较的严格评价汇总. """
     strict_groups = group_by_keys(strict_rows, ("task", "receptor_scope"))
     assignment_groups = group_by_keys(assignment_rows, ("task", "receptor_scope"))
     rank_groups = group_by_keys(rank_rows, ("task", "receptor_scope"))
@@ -573,7 +573,7 @@ def grouped_summary(
 
 
 def group_by_keys(rows: list[dict[str, Any]], keys: tuple[str, ...]) -> dict[tuple[str, ...], list[dict[str, Any]]]:
-    """按多个字段分组。"""
+    """按多个字段分组. """
     grouped: dict[tuple[str, ...], list[dict[str, Any]]] = defaultdict(list)
     for row in rows:
         grouped[tuple(str(row.get(key, "")) for key in keys)].append(row)
@@ -581,7 +581,7 @@ def group_by_keys(rows: list[dict[str, Any]], keys: tuple[str, ...]) -> dict[tup
 
 
 def count_values(rows: list[dict[str, Any]], key: str) -> dict[str, int]:
-    """统计一个字段的值分布。"""
+    """统计一个字段的值分布. """
     counts: dict[str, int] = {}
     for row in rows:
         value = str(row.get(key, ""))
@@ -590,12 +590,12 @@ def count_values(rows: list[dict[str, Any]], key: str) -> dict[str, int]:
 
 
 def mean_bool(rows: list[dict[str, Any]], key: str) -> float | None:
-    """计算 bool 指标均值；没有行时返回 None。"""
+    """计算 bool 指标均值; 没有行时返回 None. """
     return sum(bool(row.get(key)) for row in rows) / len(rows) if rows else None
 
 
 def safe_float(value: Any, default: float) -> float:
-    """将 score 字段转换为 float；缺失或无法解析时返回显式惩罚值。"""
+    """将 score 字段转换为 float; 缺失或无法解析时返回显式惩罚值. """
     try:
         return float(value)
     except (TypeError, ValueError):

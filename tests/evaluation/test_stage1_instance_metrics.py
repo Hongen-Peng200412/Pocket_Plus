@@ -1,4 +1,4 @@
-"""旧定义 coverage、固定 Hungarian 与 top-K 指标测试。"""
+"""旧定义 coverage、固定 Hungarian 与 top-K 指标测试. """
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from src.evaluation.instance_metrics import (
 
 
 def test_hungarian_pairing_is_fixed_before_thresholding() -> None:
-    # 连续最优配对选择两个 0.5 交叉边；在 tau=0.55 时不会改做含一个 0.6 边的最大基数匹配。
+    # 连续最优配对选择两个 0.5 交叉边; 在 tau=0.55 时不会改做含一个 0.6 边的最大基数匹配. 
     counts = evaluate_instance_overlap_counts(
         intersections=np.asarray([[60, 50], [50, 0]], dtype=np.int64),
         pred_sizes=np.asarray([100, 100], dtype=np.int64),

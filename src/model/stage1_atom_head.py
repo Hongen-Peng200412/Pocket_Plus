@@ -1,33 +1,33 @@
 """
-Stage1 最终分类头: 统一几何 cross-attn + real/pseudo 两个轻量分类尾部。
+Stage1 最终分类头: 统一几何 cross-attn + real/pseudo 两个轻量分类尾部. 
 
 对齐契约（修改时必须全量同步）:
 
-    - 本段、CLAUDE/plans/最后重构代码_v3.md 的 §2、src/model/stage1_model.py::_run_atom_head 和受影响的 tests/model 单测必须同步更新。
-    - N_all 表示本头输入点数; N_real 表示真实原子数; N_pseudo 表示 P anchor 数; C_point=point_channels。
-    - pseudo_mask is None 表示 real-only 路径, 此时 N_all=N_real, pseudo_* 输出全为 None。
+    - 本段、CLAUDE/plans/最后重构代码_v3.md 的 §2、src/model/stage1_model.py::_run_atom_head 和受影响的 tests/model 单测必须同步更新. 
+    - N_all 表示本头输入点数; N_real 表示真实原子数; N_pseudo 表示 P anchor 数; C_point=point_channels. 
+    - pseudo_mask is None 表示 real-only 路径, 此时 N_all=N_real, pseudo_* 输出全为 None. 
 
 前向输入:
 
-    - point_feat: torch.Tensor, (N_all, C_point), floating, 最后一轮 point backbone 输出特征, mixed 路径下按 pseudo_atoms.py 的 mixed layout 排列; real / P 槽位由 pseudo_mask 区分。
-    - point_state: dict[str, Any], 与 point_feat 同布局的点状态; 本头仅消费 point_state["batch"] (torch.Tensor, (N_all,), int64, 每个点所属 BOX 索引), 用于 cross-attn 的 radius 分组建图。
-    - atom_coord_centered_world: torch.Tensor, (N_all, 3), floating, centered-world 坐标, 轴顺序 (x, y, z); 用于 cross-attn 的 radius 建图与 relative coord。
-    - pseudo_mask: torch.Tensor | None, (N_all,), bool, True 表示 P anchor, False 表示 real atom; None 表示 real-only 路径; 非 None 时第一维必须与 point_feat 一致。
+    - point_feat: torch.Tensor, (N_all, C_point), floating, 最后一轮 point backbone 输出特征, mixed 路径下按 pseudo_atoms.py 的 mixed layout 排列; real / P 槽位由 pseudo_mask 区分. 
+    - point_state: dict[str, Any], 与 point_feat 同布局的点状态; 本头仅消费 point_state["batch"] (torch.Tensor, (N_all,), int64, 每个点所属 BOX 索引), 用于 cross-attn 的 radius 分组建图. 
+    - atom_coord_centered_world: torch.Tensor, (N_all, 3), floating, centered-world 坐标, 轴顺序 (x, y, z); 用于 cross-attn 的 radius 建图与 relative coord. 
+    - pseudo_mask: torch.Tensor | None, (N_all,), bool, True 表示 P anchor, False 表示 real atom; None 表示 real-only 路径; 非 None 时第一维必须与 point_feat 一致. 
 
 前向输出（dict, 键名固定, 6 项）:
 
-    - "real_feat_before_interaction": torch.Tensor, (N_real, C_point), cross-attn 前的 real 特征。
-    - "real_feat_after_interaction": torch.Tensor, (N_real, C_point), 经 pseudo_to_real 增量后的 real 特征; cross-attn 零初始化/冻结时与 before 逐元素相等。
-    - "pseudo_feat_before_interaction": torch.Tensor | None, (N_pseudo, C_point), cross-attn 前的 P 特征; real-only 路径为 None。
-    - "pseudo_feat_after_interaction": torch.Tensor | None, (N_pseudo, C_point), 经 real_to_pseudo 增量后的 P 特征; cross-attn 零初始化/冻结时与 before 逐元素相等; real-only 路径为 None。
-    - "atom_logits": torch.Tensor, (N_real, atom_logit_dim), real atom 监督 logits。
-    - "pseudo_logits": torch.Tensor | None, (N_pseudo, pseudo_ligand_logit_dim), P anchor ligand 区域归属 logits; real-only 路径为 None。
+    - "real_feat_before_interaction": torch.Tensor, (N_real, C_point), cross-attn 前的 real 特征. 
+    - "real_feat_after_interaction": torch.Tensor, (N_real, C_point), 经 pseudo_to_real 增量后的 real 特征; cross-attn 零初始化/冻结时与 before 逐元素相等. 
+    - "pseudo_feat_before_interaction": torch.Tensor | None, (N_pseudo, C_point), cross-attn 前的 P 特征; real-only 路径为 None. 
+    - "pseudo_feat_after_interaction": torch.Tensor | None, (N_pseudo, C_point), 经 real_to_pseudo 增量后的 P 特征; cross-attn 零初始化/冻结时与 before 逐元素相等; real-only 路径为 None. 
+    - "atom_logits": torch.Tensor, (N_real, atom_logit_dim), real atom 监督 logits. 
+    - "pseudo_logits": torch.Tensor | None, (N_pseudo, pseudo_ligand_logit_dim), P anchor ligand 区域归属 logits; real-only 路径为 None. 
 
 零初始化契约:
-    两个 cross-attn 的 output_proj 权重和 bias 均零初始化, 且 after 一律以纯残差 feat_after = feat_before + crossattn(...) 加回, 中间不插 LayerNorm 等破坏逐元素恒等的算子。因此 cross-attn 处于零初始化或被冻结态时, *_after_interaction == *_before_interaction 逐元素精确成立。
+    两个 cross-attn 的 output_proj 权重和 bias 均零初始化, 且 after 一律以纯残差 feat_after = feat_before + crossattn(...) 加回, 中间不插 LayerNorm 等破坏逐元素恒等的算子. 因此 cross-attn 处于零初始化或被冻结态时, *_after_interaction == *_before_interaction 逐元素精确成立. 
 
 执行顺序保证无循环依赖:
-    pseudo_to_real 的增量只读 pseudo_before, real_to_pseudo 的增量只读 real_before 与 real_bind_prob(由 atom_logits 的第 0 通道 sigmoid 后 detach)。两条增量各自只依赖对方的 before 特征,不依赖对方的 after 特征, 故无环。
+    pseudo_to_real 的增量只读 pseudo_before, real_to_pseudo 的增量只读 real_before 与 real_bind_prob(由 atom_logits 的第 0 通道 sigmoid 后 detach). 两条增量各自只依赖对方的 before 特征,不依赖对方的 after 特征, 故无环. 
 """
 from __future__ import annotations
 
@@ -56,11 +56,11 @@ except Exception as exc:  # pragma: no cover - 依赖当前本地环境
 
 class GeometricCrossAttention(nn.Module):
     """
-    统一的几何 cross-attn: query 点在 radius 邻域内聚合 source 点特征, 输出零初始化增量。
+    统一的几何 cross-attn: query 点在 radius 邻域内聚合 source 点特征, 输出零初始化增量. 
 
     两个方向复用本类:
-        - real_to_pseudo: query=P, source=real, 吃 detached real bind prob。
-        - pseudo_to_real: query=real, source=P, 不吃 bind prob。
+        - real_to_pseudo: query=P, source=real, 吃 detached real bind prob. 
+        - pseudo_to_real: query=real, source=P, 不吃 bind prob. 
 
     输入参数:
         - query_channels: int, query 点特征通道数, 也是本模块的输出通道数
@@ -82,7 +82,7 @@ class GeometricCrossAttention(nn.Module):
         - source_bind_prob: torch.Tensor | None, (N_source, 1), use_source_bind_prob=True 时必填, class Stage1AtomHead已经外部detach
 
     前向输出:
-        - delta: torch.Tensor, (N_query, query_channels), query 侧增量(不含残差); 空 query / 空 source / 空边时返回全零张量。
+        - delta: torch.Tensor, (N_query, query_channels), query 侧增量(不含残差); 空 query / 空 source / 空边时返回全零张量. 
     """
 
     def __init__(
@@ -213,12 +213,12 @@ class GeometricCrossAttention(nn.Module):
 
 class Stage1AtomHead(nn.Module):
     """
-    Stage1 最终分类头: real/pseudo 双向几何 cross-attn(纯残差, 零初始化) + 两个轻量分类尾部。
+    Stage1 最终分类头: real/pseudo 双向几何 cross-attn(纯残差, 零初始化) + 两个轻量分类尾部. 
 
     分类尾部固定结构 LayerNorm -> Linear -> act -> Linear -> logits:
-        - real_atom_head: real 特征 -> atom_logits。
-        - pseudo_atom_head: P 特征 -> pseudo_logits。
-    末层支持 prior bias 初始化(prior_prob / prior_probs / prior_prob_point_ligand)。
+        - real_atom_head: real 特征 -> atom_logits. 
+        - pseudo_atom_head: P 特征 -> pseudo_logits. 
+    末层支持 prior bias 初始化(prior_prob / prior_probs / prior_prob_point_ligand). 
 
     输入参数:
         - point_channels: int, point backbone 输出通道数, 也是 real/P 特征与 cross-attn 的通道数
@@ -234,7 +234,7 @@ class Stage1AtomHead(nn.Module):
         - prior_probs: Sequence[float] | None, real_atom_head 末层多通道 softmax 类别先验
         - prior_prob_point_ligand: float | None, pseudo_atom_head 末层单通道 sigmoid 正类先验; None 表示跳过 bias 先验初始化
 
-    前向输入与输出: 见模块顶部 Docstring。
+    前向输入与输出: 见模块顶部 Docstring. 
     """
 
     def __init__(
@@ -321,7 +321,7 @@ class Stage1AtomHead(nn.Module):
         prior_probs: Sequence[float],
     ) -> None:
         """
-        用 softmax 类别先验初始化 Linear 输出 bias。
+        用 softmax 类别先验初始化 Linear 输出 bias. 
 
         输入参数:
             - layer: nn.Module, 分类尾部最后一层, 必须是带 bias 的 nn.Linear

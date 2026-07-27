@@ -14,7 +14,7 @@ from .io_utils import make_output_dirs
 @dataclass
 class DownloadResult:
     """
-    单个下载动作的结果。
+    单个下载动作的结果. 
 
     输入字段:
         - path: Path, 目标文件路径
@@ -32,7 +32,7 @@ class DownloadResult:
 @dataclass
 class RCSBClient:
     """
-    RCSB 下载客户端。
+    RCSB 下载客户端. 
 
     输入参数:
         - output_root: Path, 输出根目录
@@ -52,7 +52,7 @@ class RCSBClient:
 
     def _download_text(self, url: str, path: Path) -> DownloadResult:
         """
-        下载文本文件并用临时文件原子替换目标文件。
+        下载文本文件并用临时文件原子替换目标文件. 
 
         输入参数:
             - url: str, 下载 URL
@@ -88,7 +88,7 @@ class RCSBClient:
 
     def download_full_cif(self, pdb_id_upper: str) -> DownloadResult:
         """
-        下载或复用 RCSB full CIF。
+        下载或复用 RCSB full CIF. 
 
         输入参数:
             - pdb_id_upper: str, 大写 PDB ID, 如 '5GMK'
@@ -103,7 +103,7 @@ class RCSBClient:
 
     def download_chemcomp(self, ccd_id: str) -> DownloadResult:
         """
-        下载或复用 RCSB chemcomp JSON。
+        下载或复用 RCSB chemcomp JSON. 
 
         输入参数:
             - ccd_id: str, CCD ID
@@ -118,7 +118,7 @@ class RCSBClient:
 
     def download_native_mol2(self, pdb_id: str, label_asym_id: str, pdb_seq_num: str, ccd_id: str, candidate_id: int) -> DownloadResult:
         """
-        下载或复用 RCSB native ligand mol2。
+        下载或复用 RCSB native ligand mol2. 
 
         输入参数:
             - pdb_id: str, 小写 PDB ID

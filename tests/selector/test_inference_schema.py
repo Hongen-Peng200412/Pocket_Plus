@@ -1,4 +1,4 @@
-"""Selector selection.npz 的门控、精确 MAP 与字段契约测试。"""
+"""Selector selection.npz 的门控、精确 MAP 与字段契约测试. """
 
 from __future__ import annotations
 
@@ -14,13 +14,13 @@ from src.selector.inference import load_selected_nodes_for_pdb, produce_selectio
 
 
 def _save_npz(path: Path, **arrays: np.ndarray) -> None:
-    """保存一个测试 NPZ；测试数据无需模拟正式原子发布。"""
+    """保存一个测试 NPZ; 测试数据无需模拟正式原子发布. """
     path.parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(path, **arrays)
 
 
 def test_selection_schema_uses_gate_and_clg_local_candidate_indices(tmp_path: Path) -> None:
-    """门控通过时取非空精确 MAP，失败时写空段且不混用 forest node ID。"""
+    """门控通过时取非空精确 MAP, 失败时写空段且不混用 forest node ID. """
     scores_path = tmp_path / "scores.npz"
     forest_path = tmp_path / "forest.npz"
     clg_path = tmp_path / "clg.npz"
@@ -35,7 +35,7 @@ def test_selection_schema_uses_gate_and_clg_local_candidate_indices(tmp_path: Pa
         selection_logit=np.asarray([0.1, 2.0, 1.5, 5.0], dtype=np.float32),
     )
     def node(tree_id: int, node_id: int, values: list[int]) -> ComponentNode:
-        """构造用于 schema/恢复测试的最小合法组件节点。"""
+        """构造用于 schema/恢复测试的最小合法组件节点. """
         return ComponentNode(
             tree_id=tree_id,
             node_id=node_id,
@@ -89,7 +89,7 @@ def test_selection_schema_uses_gate_and_clg_local_candidate_indices(tmp_path: Pa
         np.testing.assert_array_equal(selection["CLG_id"], [5, 6])
         np.testing.assert_array_equal(selection["CLG_gate_pass"], [True, False])
         np.testing.assert_array_equal(selection["selected_candidate_offsets"], [0, 2, 2])
-        # 11 与 12 是 sibling，可同时进入反链；保存的是本 CLG 局部下标 1/2。
+        # 11 与 12 是 sibling, 可同时进入反链; 保存的是本 CLG 局部下标 1/2. 
         np.testing.assert_array_equal(selection["selected_candidate_index"], [1, 2])
         assert selection["selected_candidate_index"].dtype == np.int16
 
@@ -100,7 +100,7 @@ def test_selection_schema_uses_gate_and_clg_local_candidate_indices(tmp_path: Pa
 def test_selected_node_loader_merges_same_node_across_clgs_in_first_order(
     tmp_path: Path,
 ) -> None:
-    """同一 forest node 可属于多个 CLG；下游只接收首次出现的一份。"""
+    """同一 forest node 可属于多个 CLG; 下游只接收首次出现的一份. """
 
     node = ComponentNode(
         tree_id=0,
@@ -147,7 +147,7 @@ def test_produce_scores_publishes_empty_archive_for_zero_clg_pdb(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    """冻结 inventory 中的零 CLG PDB 也必须得到可消费的空 scores.npz。"""
+    """冻结 inventory 中的零 CLG PDB 也必须得到可消费的空 scores.npz. """
 
     stage1_root = tmp_path / "stage1"
     clg_path = stage1_root / "unet_c1" / "calibration" / "empty" / "components" / "clg.npz"
@@ -172,7 +172,7 @@ def test_produce_scores_publishes_empty_archive_for_zero_clg_pdb(
     )
 
     class _EmptyDataset:
-        """绕过模型输入，只验证零 CLG PDB 的发布边界。"""
+        """绕过模型输入, 只验证零 CLG PDB 的发布边界. """
 
         def __init__(self, **_kwargs) -> None:
             pass

@@ -12,7 +12,7 @@ from src.wrappers.voxel_point_stage1_logging import build_metric_key
 @dataclass(frozen=True)
 class CpcDiagnosticsConfig:
     """
-    CPC validation diagnostics 配置。
+    CPC validation diagnostics 配置. 
 
     输入参数:
         - enabled: bool, 是否启用 diagnostics
@@ -37,12 +37,12 @@ class CpcDiagnosticsConfig:
 @dataclass(frozen=True)
 class CurvePayload:
     """
-    曲线或表格 payload。
+    曲线或表格 payload. 
 
     输入参数:
         - columns: tuple[str, ...], (M,), 表格列名(一个元素代表一个表格, 如"threshold")
         - rows: tuple[tuple[object, ...], ...], (N,M), 表格行数据
-    如：
+    如: 
         CurvePayload(
             columns=("threshold", "precision", "recall", "f1"),
             rows=(
@@ -58,7 +58,7 @@ class CurvePayload:
 @dataclass(frozen=True)
 class DiagnosticsWarning:
     """
-    diagnostics 统计 warning。
+    diagnostics 统计 warning. 
 
     输入参数:
         - code: str, 稳定 warning 代码
@@ -77,7 +77,7 @@ class DiagnosticsWarning:
 @dataclass(frozen=True)
 class CpcDiagnosticsPayload:
     """
-    CPC diagnostics epoch 输出。
+    CPC diagnostics epoch 输出. 
 
     输入参数:
         - scalars: dict[str, torch.Tensor], 标量日志 payload
@@ -101,7 +101,7 @@ class CpcDiagnosticsPayload:
 # ----------------------------------------------------- 最终总类 -----------------------------------------------------
 class CpcValidationDiagnostics(nn.Module):
     """
-    维护 Stage1 CPC validation 固定形状统计 buffer。
+    维护 Stage1 CPC validation 固定形状统计 buffer. 
 
     输入参数:
         - config: class CpcDiagnosticsConfig, diagnostics 行为配置
@@ -154,7 +154,7 @@ class CpcValidationDiagnostics(nn.Module):
         num_bins: int,
     ) -> None:
         """
-        集中注册 CPC diagnostics 的固定形状统计 buffer。
+        集中注册 CPC diagnostics 的固定形状统计 buffer. 
 
         输入参数:
             - num_candidate_classes: int, K, candidate 前景类别数
@@ -205,7 +205,7 @@ class CpcValidationDiagnostics(nn.Module):
 
     def reset(self) -> None:
         """
-        清空所有 diagnostics buffer。
+        清空所有 diagnostics buffer. 
 
         输出:
             - None, 原地将统计 buffer 置零
@@ -231,7 +231,7 @@ class CpcValidationDiagnostics(nn.Module):
         allow_cache_update: bool,
     ) -> None:
         """
-        更新 dense 全空间 best-F1 histogram。
+        更新 dense 全空间 best-F1 histogram. 
 
         输入参数:
             - logits: torch.Tensor, (B,C,D,H,W), dense ligand logits
@@ -276,7 +276,7 @@ class CpcValidationDiagnostics(nn.Module):
         class_pos: int,
     ) -> None:
         """
-        按 candidate class 累积 score histogram。
+        按 candidate class 累积 score histogram. 
 
         输入参数:
             - score: torch.Tensor, (B,D,H,W), 当前类别概率
@@ -316,7 +316,7 @@ class CpcValidationDiagnostics(nn.Module):
         use_fixed_warmup: bool,
     ) -> None:
         """
-        更新真实 sampling 边界在 dense 空间中的覆盖统计。
+        更新真实 sampling 边界在 dense 空间中的覆盖统计. 
 
         输入参数:
             - logits: torch.Tensor, (B,C,D,H,W), dense ligand logits
@@ -399,7 +399,7 @@ class CpcValidationDiagnostics(nn.Module):
         candidate_outputs: Mapping[str, torch.Tensor],
     ) -> None:
         """
-        更新实际 C 覆盖统计。
+        更新实际 C 覆盖统计. 
 
         输入参数:
             - target: torch.Tensor, (B,D,H,W), dense hard-label target
@@ -477,7 +477,7 @@ class CpcValidationDiagnostics(nn.Module):
         dense_num_gt: torch.Tensor,
     ) -> None:
         """
-        更新 C 内 unrefined dense logit 判别统计。
+        更新 C 内 unrefined dense logit 判别统计. 
 
         输入参数:
             - candidate_outputs: Mapping[str, torch.Tensor], 包含 candidate_logits: (sumC, C_logits), 每个候选体素的 ligand logits
@@ -511,7 +511,7 @@ class CpcValidationDiagnostics(nn.Module):
         dense_num_gt: torch.Tensor,
     ) -> None:
         """
-        更新 C 内 refined logit 判别统计。
+        更新 C 内 refined logit 判别统计. 
 
         输入参数:
             - refined_logits_C: torch.Tensor, (sumC,C_logits), refined C 级 logits
@@ -549,7 +549,7 @@ class CpcValidationDiagnostics(nn.Module):
         dense_gt: torch.Tensor,
     ) -> None:
         """
-        累积 C 级 score histogram————注意这里的 score 实际都是 prob。
+        累积 C 级 score histogram————注意这里的 score 实际都是 prob. 
 
         输入参数:
             - logits_C: torch.Tensor, (sumC, C_logits), C 级 logits
@@ -906,7 +906,7 @@ class CpcValidationDiagnostics(nn.Module):
     # 总计算
     def compute_payload(self, *, sync_fn: Callable[[torch.Tensor], torch.Tensor]) -> CpcDiagnosticsPayload:
         """
-        同步并计算当前 epoch diagnostics payload。
+        同步并计算当前 epoch diagnostics payload. 
 
         输入参数:
             - sync_fn: Callable[[torch.Tensor], torch.Tensor], DDP all-reduce sum 函数; 所有 rank 必须对称调用
@@ -1027,7 +1027,7 @@ class CpcValidationDiagnostics(nn.Module):
     # ---------------------------------------------------- 工具函数 --------------------------------------------------
     def _histogram_payload(self, hist: torch.Tensor) -> CurvePayload:
         """
-        将按 candidate class 分桶的 histogram 转成 CSV 友好的表格 payload。
+        将按 candidate class 分桶的 histogram 转成 CSV 友好的表格 payload. 
 
         输入参数:
             - hist: torch.Tensor, (K,T), 每个 candidate class 在每个概率 bin 中的计数

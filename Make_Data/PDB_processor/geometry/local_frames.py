@@ -30,7 +30,7 @@ def compute_local_frame(
     坐标系定义 / Frame definition:
         - 原点: p2 (中心原子)
         - X 轴: p2 -> p3 方向 (归一化)
-        - Y 轴: 垂直于 X 轴，在 p1-p2-p3 平面内
+        - Y 轴: 垂直于 X 轴, 在 p1-p2-p3 平面内
         - Z 轴: X × Y (右手系)
     
     输入参数 / Input:

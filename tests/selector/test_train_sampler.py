@@ -1,4 +1,4 @@
-"""Selector 按 PDB 分组 batch sampler 的确定性与 I/O 局部性测试。"""
+"""Selector 按 PDB 分组 batch sampler 的确定性与 I/O 局部性测试. """
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from src.selector.train import PdbGroupedBatchSampler
 
 
 def test_pdb_grouped_batch_sampler_never_crosses_pdb_and_is_reproducible() -> None:
-    """同一 batch 只含一个 PDB，且固定 seed/epoch 可逐元素复现。"""
+    """同一 batch 只含一个 PDB, 且固定 seed/epoch 可逐元素复现. """
 
     records = [
         SimpleNamespace(split="train", pdb_id=pdb_id)

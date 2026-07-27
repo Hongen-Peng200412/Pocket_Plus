@@ -4,28 +4,28 @@
 2. 加入别的序列化方法, 比如按照氨基酸顺序排列
 
 对齐契约（修改时必须全量同步）:
-    - 本段、CLAUDE/plans/implement/tri_ligand_sparse_refine/00-master.md、src/model/stage1_point_backbone.py 和 tests/model/test_ptv3_no_sparseconv.py 必须同步更新。
-    - PTV3 点分支不再依赖旧稀疏卷积库; 禁止重新引入旧稀疏卷积导入、张量类型、模块类型或旧稀疏卷积特征字段。
-    - Embedding.embedding_impl 只支持 "pointconv"; Block.cpe_impl 只支持 "pointconv" 或 "none"。
-    - enc_cpe_kernel_size/dec_cpe_kernel_size 是 legacy 配置字段; pointconv CPE 不消费这些 kernel size。
+    - 本段、CLAUDE/plans/implement/tri_ligand_sparse_refine/00-master.md、src/model/stage1_point_backbone.py 和 tests/model/test_ptv3_no_sparseconv.py 必须同步更新. 
+    - PTV3 点分支不再依赖旧稀疏卷积库; 禁止重新引入旧稀疏卷积导入、张量类型、模块类型或旧稀疏卷积特征字段. 
+    - Embedding.embedding_impl 只支持 "pointconv"; Block.cpe_impl 只支持 "pointconv" 或 "none". 
+    - enc_cpe_kernel_size/dec_cpe_kernel_size 是 legacy 配置字段; pointconv CPE 不消费这些 kernel size. 
 
 Point 字段契约:
-    - feat: torch.Tensor, (N, C), floating, 当前点特征。
-    - coord: torch.Tensor, (N, 3), floating, 点坐标, 轴顺序 (x, y, z)。
-    - batch: torch.Tensor, (N,), int64/long, 每个点所属 BOX/样本索引。
-    - offset: torch.Tensor, (B,), int64/long, 每个 BOX/样本在展平点序列中的结束偏移。
-    - grid_size: float, 点云离散化 grid size。
-    - grid_coord: torch.Tensor, (N, 3), int32/int64, 可选字段, 由 coord/grid_size 得到的离散坐标。
-    - serialized_code: torch.Tensor, (K, N), int64/long, K 个序列化顺序对应的编码。
-    - serialized_order: torch.Tensor, (K, N), int64/long, 每个序列化顺序下的排序后索引。
-    - serialized_inverse: torch.Tensor, (K, N), int64/long, 每个序列化顺序下的逆索引。
-    - pseudo_mask: torch.Tensor, (N_all,), bool, 可选字段, True 表示 P anchor; 所有重建 Point 的路径必须在对应分辨率维护该字段。
+    - feat: torch.Tensor, (N, C), floating, 当前点特征. 
+    - coord: torch.Tensor, (N, 3), floating, 点坐标, 轴顺序 (x, y, z). 
+    - batch: torch.Tensor, (N,), int64/long, 每个点所属 BOX/样本索引. 
+    - offset: torch.Tensor, (B,), int64/long, 每个 BOX/样本在展平点序列中的结束偏移. 
+    - grid_size: float, 点云离散化 grid size. 
+    - grid_coord: torch.Tensor, (N, 3), int32/int64, 可选字段, 由 coord/grid_size 得到的离散坐标. 
+    - serialized_code: torch.Tensor, (K, N), int64/long, K 个序列化顺序对应的编码. 
+    - serialized_order: torch.Tensor, (K, N), int64/long, 每个序列化顺序下的排序后索引. 
+    - serialized_inverse: torch.Tensor, (K, N), int64/long, 每个序列化顺序下的逆索引. 
+    - pseudo_mask: torch.Tensor, (N_all,), bool, 可选字段, True 表示 P anchor; 所有重建 Point 的路径必须在对应分辨率维护该字段. 
 
 Typed point 契约:
-    - attention 仍执行一次 mixed attention; QKV 与输出 projection 可按 pseudo_mask 使用 real/pseudo 两套参数。
-    - typed PointConvEmbedding 与 PointConvCPE 只使用同类子图; real 不看 pseudo 邻居, pseudo 不看 real 邻居。
-    - typed SerializedPooling 使用含 type bit 的 cluster_key 分组, 但 serialized_code 必须保持纯空间编码。
-    - typed pooling / unpooling projection path 使用普通 LayerNorm, 不改变 shared old path 的 BN/PDNorm 体系。
+    - attention 仍执行一次 mixed attention; QKV 与输出 projection 可按 pseudo_mask 使用 real/pseudo 两套参数. 
+    - typed PointConvEmbedding 与 PointConvCPE 只使用同类子图; real 不看 pseudo 邻居, pseudo 不看 real 邻居. 
+    - typed SerializedPooling 使用含 type bit 的 cluster_key 分组, 但 serialized_code 必须保持纯空间编码. 
+    - typed pooling / unpooling projection path 使用普通 LayerNorm, 不改变 shared old path 的 BN/PDNorm 体系. 
 """
 import sys  # sys, 系统相关功能
 from typing import List  # typing, 类型提示
@@ -72,7 +72,7 @@ def _radius_graph_eager(coord, receptive_field, batch, max_neighbors):
 @torch.inference_mode()
 def offset2bincount(offset):
     """
-    将offset转换为bincount(每个batch的点数统计)。
+    将offset转换为bincount(每个batch的点数统计). 
     
     输入参数:
         - offset: torch.Tensor, (batch_size,), offset数组,表示每个batch的结束索引
@@ -124,7 +124,7 @@ class Point(Dict):
     """
         Point Structure of Pointcept
         
-        点云数据结构,继承自Dict,用于存储批处理的点云数据及其属性。
+        点云数据结构,继承自Dict,用于存储批处理的点云数据及其属性. 
         
         必需属性:
             - "coord": torch.Tensor, (N, 3), 点云的原始坐标
@@ -139,15 +139,15 @@ class Point(Dict):
         序列化相关属性:
             - "serialized_depth": int, 序列化深度, 2**depth*grid_size描述点云的最大范围
             - "serialized_code": torch.Tensor, (k, N), 序列化编码列表; k 表示序列化顺序（Serialization Orders）的数量
-            - "serialized_order": torch.Tensor, (k, N), 由编码确定的序列化顺序列表：代表一个映射, order[i][j]代表第i种序列化顺序下, 第j个点经过排序后所处的位置
-            - "serialized_inverse": torch.Tensor, (k, N), 由编码确定的逆映射列表：代表一个映射, inverse[i][j]代表第i种序列化顺序下, 第j个点在排序前所处的位置
+            - "serialized_order": torch.Tensor, (k, N), 由编码确定的序列化顺序列表: 代表一个映射, order[i][j]代表第i种序列化顺序下, 第j个点经过排序后所处的位置
+            - "serialized_inverse": torch.Tensor, (k, N), 由编码确定的逆映射列表: 代表一个映射, inverse[i][j]代表第i种序列化顺序下, 第j个点在排序前所处的位置
         
     """
     def __init__(self, *args, **kwargs):
         """
         Point Structure of Pointcept
         
-        点云数据结构,继承自Dict,用于存储批处理的点云数据及其属性。
+        点云数据结构,继承自Dict,用于存储批处理的点云数据及其属性. 
         
         必需属性:
             - "coord": torch.Tensor, (N, 3), 点云的原始坐标
@@ -162,8 +162,8 @@ class Point(Dict):
         序列化相关属性:
             - "serialized_depth": int, 序列化深度, 2**depth*grid_size描述点云的最大范围
             - "serialized_code": torch.Tensor, (k, N), 序列化编码列表; k 表示序列化顺序（Serialization Orders）的数量
-            - "serialized_order": torch.Tensor, (k, N), 由编码确定的序列化顺序列表：代表一个映射, order[i][j]代表第i种序列化顺序下, 第j个点经过排序后所处的位置
-            - "serialized_inverse": torch.Tensor, (k, N), 由编码确定的逆映射列表：代表一个映射, inverse[i][j]代表第i种序列化顺序下, 第j个点在排序前所处的位置
+            - "serialized_order": torch.Tensor, (k, N), 由编码确定的序列化顺序列表: 代表一个映射, order[i][j]代表第i种序列化顺序下, 第j个点经过排序后所处的位置
+            - "serialized_inverse": torch.Tensor, (k, N), 由编码确定的逆映射列表: 代表一个映射, inverse[i][j]代表第i种序列化顺序下, 第j个点在排序前所处的位置
         
         """
         super().__init__(*args, **kwargs)
@@ -176,7 +176,7 @@ class Point(Dict):
 
     def serialization(self, order="z", depth=None, shuffle_orders=False):
         """
-        点云序列化,将3D点云转换为1D序列(构造 serialized_code， serialized_order， serialized_inverse)
+        点云序列化,将3D点云转换为1D序列(构造 serialized_code, serialized_order, serialized_inverse)
         
         输入参数:
             - order: str 或 list[str], 序列化顺序,默认"z",可选"z","z-trans","hilbert","hilbert-trans"
@@ -200,7 +200,7 @@ class Point(Dict):
         self["serialized_depth"] = depth
         # 序列化编码的最大位长度为63(int64)
         assert depth * 3 + len(self.offset).bit_length() <= 63
-        # 其中将深度限制为16(48位)用于点位置编码。
+        # 其中将深度限制为16(48位)用于点位置编码. 
         assert depth <= 16
         # list[torch.Tensor], 对每个指定的顺序进行编码
         code = [
@@ -237,7 +237,7 @@ class Point(Dict):
 
     def sparsify(self, _pad=96):
         """
-        保留旧调用点所需的网格坐标准备逻辑, 不再构造点分支稀疏卷积张量。
+        保留旧调用点所需的网格坐标准备逻辑, 不再构造点分支稀疏卷积张量. 
 
         输入参数:
             - _pad: int, legacy 参数, 当前 pointconv 路径不消费
@@ -256,7 +256,7 @@ class Point(Dict):
 
 class PointModule(nn.Module):
     """
-    点云模块基类,所有子类都会在PointSequential中接受Point对象作为输入。
+    点云模块基类,所有子类都会在PointSequential中接受Point对象作为输入. 
     
     功能:
         作为占位符,所有继承自该类的模块都会在PointSequential中处理Point对象
@@ -268,7 +268,7 @@ class PointModule(nn.Module):
 
 class PointSequential(PointModule):
     """
-    序列容器,模块将按照传入构造函数的顺序添加, 也可以传入有序字典来添加模块。
+    序列容器,模块将按照传入构造函数的顺序添加, 也可以传入有序字典来添加模块. 
     
     功能:
         类似于nn.Sequential,但专门用于处理Point对象, 支持PointModule、SpConv模块和普通PyTorch模块
@@ -276,7 +276,7 @@ class PointSequential(PointModule):
 
     def __init__(self, *args, **kwargs):
         """
-        初始化PointSequential。
+        初始化PointSequential. 
         
         输入参数:
             - *args: 位置参数,可以是模块列表或OrderedDict
@@ -304,7 +304,7 @@ class PointSequential(PointModule):
 
     def __getitem__(self, idx):
         """
-        根据索引获取模块。
+        根据索引获取模块. 
         
         输入参数:
             - idx: int, 模块索引,支持负索引
@@ -325,7 +325,7 @@ class PointSequential(PointModule):
 
     def __len__(self):
         """
-        返回模块数量。
+        返回模块数量. 
         
         输出:
             - int, 模块数量
@@ -334,7 +334,7 @@ class PointSequential(PointModule):
 
     def add(self, module, name=None):
         """
-        添加模块到容器。
+        添加模块到容器. 
         
         输入参数:
             - module: nn.Module, 要添加的模块
@@ -351,7 +351,7 @@ class PointSequential(PointModule):
 
     def forward(self, input):
         """
-        前向传播, 依次执行 PointModule 或普通 PyTorch 模块。
+        前向传播, 依次执行 PointModule 或普通 PyTorch 模块. 
 
         输入参数:
             - input: Point 或 torch.Tensor, 输入数据
@@ -373,7 +373,7 @@ class PointSequential(PointModule):
 
 class PDNorm(PointModule):
     """
-    Point-wise Decoupled Normalization, 点级解耦归一化层。
+    Point-wise Decoupled Normalization, 点级解耦归一化层. 
     
     功能:
         支持多条件解耦归一化和自适应归一化
@@ -388,7 +388,7 @@ class PDNorm(PointModule):
         adaptive=False,
     ):
         """
-        初始化PDNorm。
+        初始化PDNorm. 
         
         输入参数:
             - num_features: int, 特征维度
@@ -396,7 +396,7 @@ class PDNorm(PointModule):
             - context_channels: int, 上下文通道数,默认256
             - conditions: tuple[str], 条件列表,默认("ScanNet", "S3DIS", "Structured3D")
             - decouple: bool, 是否解耦归一化(每个condition都有独立的归一化层), 默认True
-            - adaptive: bool, 是否自适应归一化, 默认False。 NOTE: 如果使用, 那么forward的输入point必须包含context属性point.context, 用来传入 self.modulation 
+            - adaptive: bool, 是否自适应归一化, 默认False. NOTE: 如果使用, 那么forward的输入point必须包含context属性point.context, 用来传入 self.modulation 
         """
         super().__init__()
         # tuple[str], 条件列表
@@ -421,7 +421,7 @@ class PDNorm(PointModule):
 
     def forward(self, point):
         """
-        前向传播,执行归一化。
+        前向传播,执行归一化. 
         
         输入参数:
             - point: Point, 点云数据
@@ -457,7 +457,7 @@ class PDNorm(PointModule):
         if self.adaptive:
             assert "context" in point.keys()
             # torch.Tensor, (N, C), shift和scale
-            shift, scale = self.modulation(point.context).chunk(2, dim=1)  # .chunk: 将张量沿指定维度分割成多个块，返回一个张量元组
+            shift, scale = self.modulation(point.context).chunk(2, dim=1)  # .chunk: 将张量沿指定维度分割成多个块, 返回一个张量元组
             # torch.Tensor, (N, C), 应用自适应归一化: feat * (1 + scale) + shift
             point.feat = point.feat * (1.0 + scale) + shift
         return point
@@ -469,7 +469,7 @@ class RPE(torch.nn.Module):
     """
     def __init__(self, patch_size, num_heads):
         """
-        初始化RPE。
+        初始化RPE. 
         
         输入参数:
             - patch_size: int, patch大小
@@ -491,7 +491,7 @@ class RPE(torch.nn.Module):
 
     def forward(self, coord):
         """
-        前向传播,计算相对位置编码。
+        前向传播,计算相对位置编码. 
         
         输入参数:
             - coord: torch.Tensor, (N, K, K, 3), 每个 patch 内所有点对的相对位置坐标; N为这个batch中patch的数量, K为每个patch的点数/大小, 3为坐标维度(x, y, z)
@@ -528,7 +528,7 @@ class MLP(nn.Module):
         drop=0.0,
     ):
         """
-        初始化MLP。
+        初始化MLP. 
         
         输入参数:
             - in_channels: int, 输入通道数
@@ -577,7 +577,7 @@ _ACT_LAYER_MAP = {
 
 def resolve_act_layer(act_layer_name: str):
     """
-    将激活函数名称字符串解析为对应的 nn.Module 类。
+    将激活函数名称字符串解析为对应的 nn.Module 类. 
 
     输入参数:
         - act_layer_name: str, 激活函数名称, 支持 "gelu", "silu", "relu", "leakyrelu"
@@ -593,8 +593,8 @@ def resolve_act_layer(act_layer_name: str):
 
 class GatedTransition(nn.Module):
     """
-    门控通道混合模块（SwiGLU 风格 FFN），不含内部残差: y = w3( act(w1(x)) * w2(x) ) → Dropout
-    残差和归一化由外层 Block.forward 负责。
+    门控通道混合模块（SwiGLU 风格 FFN）, 不含内部残差: y = w3( act(w1(x)) * w2(x) ) → Dropout
+    残差和归一化由外层 Block.forward 负责. 
 
     输入参数:
         - in_channels: int, 输入输出通道数
@@ -759,11 +759,11 @@ class SerializedAttention(PointModule):
         """
         # int, 表示每个 patch 的大小 (点数)
         K = self.patch_size
-        # str, 用于在 point 对象中缓存相对位置的键名，包含当前的序列索引
+        # str, 用于在 point 对象中缓存相对位置的键名, 包含当前的序列索引
         rel_pos_key = f"rel_pos_{self.order_index}"
-        # 如果当前序列索引对应的相对位置尚未计算并缓存，则进行计算
+        # 如果当前序列索引对应的相对位置尚未计算并缓存, 则进行计算
         if rel_pos_key not in point.keys():
-            # torch.Tensor, (N_pad, 3), 对应序列化顺序下的网格坐标；grid_coord 原本是 (N, 3)
+            # torch.Tensor, (N_pad, 3), 对应序列化顺序下的网格坐标; grid_coord 原本是 (N, 3)
             grid_coord = point.grid_coord[order]
             # torch.Tensor, (N_patch, K, 3), 将扁平的序列重塑为 patch 结构
             grid_coord = grid_coord.reshape(-1, K, 3)
@@ -783,8 +783,8 @@ class SerializedAttention(PointModule):
             - point: Point (自定义类)
         
         输出:
-            - pad: torch.Tensor, (N_pad,), 对于填充后的点云来说, 目前(填充后)点云的第i个元素, 是填充前点云的第pad[i]个元素; 取值为0~N-1。原始点[pad]——>填充后的点
-            - unpad: torch.Tensor, (N,), 对于填充后的点云来说, 代表所有"原本就是真实点"在填充后点云中的索引; 取值为 0~N_pad-1。填充后的点[unpad]——>原始点
+            - pad: torch.Tensor, (N_pad,), 对于填充后的点云来说, 目前(填充后)点云的第i个元素, 是填充前点云的第pad[i]个元素; 取值为0~N-1. 原始点[pad]——>填充后的点
+            - unpad: torch.Tensor, (N,), 对于填充后的点云来说, 代表所有"原本就是真实点"在填充后点云中的索引; 取值为 0~N_pad-1. 填充后的点[unpad]——>原始点
             - cu_seqlens_key: torch.Tensor, (num_patches + 1,), 累积序列长度, 表示 Flash Attention 中每个 patch 的边界索引
         """
         # str, 存储填充索引的键名; 包含 patch_size 以避免不同 stage 之间缓存冲突
@@ -818,7 +818,7 @@ class SerializedAttention(PointModule):
             bincount_pad = ~mask_pad * bincount + mask_pad * bincount_pad
             # torch.Tensor, (batch_size + 1,), 填充offset(前面补1个0)
             _offset = nn.functional.pad(offset, (1, 0))
-            # torch.Tensor, (batch_size + 1,), 填充对齐后的累积偏移量，首位补0
+            # torch.Tensor, (batch_size + 1,), 填充对齐后的累积偏移量, 首位补0
             _offset_pad = nn.functional.pad(torch.cumsum(bincount_pad, dim=0), (1, 0))
 
             # torch.Tensor, (N_pad,)
@@ -863,7 +863,7 @@ class SerializedAttention(PointModule):
 
     def forward(self, point):
         """
-        前向传播, 执行基于序列化(Serialized)的自注意力计算。
+        前向传播, 执行基于序列化(Serialized)的自注意力计算. 
         
         输入参数:
             - point: Point (自定义类), 包含点云特征 feat (N, C) 及各种几何顺序/偏移信息
@@ -945,7 +945,7 @@ class SerializedAttention(PointModule):
             attn = self.attn_drop(attn).to(qkv.dtype)
             
             # (N_patch, H, K, K) @ (N_patch, H, K, C//H) --> (N_patch, H, K, C//H) --> 仅仅换维度位置(N_patch, K, H, C//H) --> (N_pad, C)
-            # @ 操作：PyTorch 会自动将前面所有的维度 (N_patch, H) 视作独立的 Batch，然后对最后两个维度执行标准的 2D 矩阵乘法： [K, K] @ [K, C // H] -> [K, C // H]
+            # @ 操作: PyTorch 会自动将前面所有的维度 (N_patch, H) 视作独立的 Batch, 然后对最后两个维度执行标准的 2D 矩阵乘法: [K, K] @ [K, C // H] -> [K, C // H]
             feat = (attn @ v).transpose(1, 2).reshape(-1, C)
         
         # ------------------------------------------------------------
@@ -1000,10 +1000,10 @@ class PointConvCPE(PointModule):
         norm_layer=None,
     ):
         """
-        基于连续世界坐标的点云卷积条件位置编码(CPE)。
+        基于连续世界坐标的点云卷积条件位置编码(CPE). 
 
-        在每个 encoder/decoder stage 的 Block 内，替代稀疏卷积 CPE。
-        按世界坐标建 radius 邻域图，对邻居特征做低秩 MLP-weighted 聚合，再经 Linear + Norm 得到位置增量。
+        在每个 encoder/decoder stage 的 Block 内, 替代稀疏卷积 CPE. 
+        按世界坐标建 radius 邻域图, 对邻居特征做低秩 MLP-weighted 聚合, 再经 Linear + Norm 得到位置增量. 
 
         输入参数:
             - channels: int, 标量, 特征通道数(输入输出相同)
@@ -1054,7 +1054,7 @@ class PointConvCPE(PointModule):
 
     def _get_or_build_graph(self, point):
         """
-        只对纯point(不支持伪原子)使用。获取或构建邻域图，优先从 point 对象的缓存中取，否则新建并缓存。
+        只对纯point(不支持伪原子)使用. 获取或构建邻域图, 优先从 point 对象的缓存中取, 否则新建并缓存. 
 
         输入参数:
             - point: Point, 点云数据(需含 coord, batch)
@@ -1086,7 +1086,7 @@ class PointConvCPE(PointModule):
         edge_index: torch.Tensor,
     ) -> torch.Tensor:
         """
-        根据给定邻域图计算 CPE delta。
+        根据给定邻域图计算 CPE delta. 
 
         输入参数:
             - feat: torch.Tensor, (N_keep, C), 当前子图点特征
@@ -1126,7 +1126,7 @@ class PointConvCPE(PointModule):
         type_name: str,
     ) -> torch.Tensor:
         """
-        用于混合point(支持伪原子, 可以没有伪原子)的前向传播。在 real 或 pseudo 同类子图上计算 CPE delta。
+        用于混合point(支持伪原子, 可以没有伪原子)的前向传播. 在 real 或 pseudo 同类子图上计算 CPE delta. 
 
         输入参数:
             - point: Point, mixed 点对象, 包含 feat/coord/batch
@@ -1168,7 +1168,7 @@ class PointConvCPE(PointModule):
 
     def forward(self, point):
         """
-        只用于纯ponit(不支持伪原子)的前向传播。输出为纯 delta(不含残差), 残差在 Block.forward 外层做。
+        只用于纯ponit(不支持伪原子)的前向传播. 输出为纯 delta(不含残差), 残差在 Block.forward 外层做. 
 
         输入参数:
             - point: Point, 点云数据
@@ -1191,7 +1191,7 @@ class PointConvCPE(PointModule):
 
 class Block(PointModule):
     """
-    Transformer Block,Transformer块。
+    Transformer Block,Transformer块. 
     
     功能:
         包含条件位置编码(CPE)、序列化注意力、MLP和残差连接的标准Transformer块
@@ -1228,7 +1228,7 @@ class Block(PointModule):
         separate_cpe=False,
     ):
         """
-        初始化Block。
+        初始化Block. 
         
         输入参数:
             - channels: int, 输入、输出通道数
@@ -1404,7 +1404,7 @@ class Block(PointModule):
 
     def _run_cpe(self, point: Point, pseudo_mask: torch.Tensor | None) -> torch.Tensor | None:
         """
-        运行 shared 或 typed CPE 并返回 delta。
+        运行 shared 或 typed CPE 并返回 delta. 
 
         输入参数:
             - point: Point, 当前 Block 输入点对象
@@ -1445,7 +1445,7 @@ class Block(PointModule):
 
     def _run_ffn(self, feat: torch.Tensor, pseudo_mask: torch.Tensor | None) -> torch.Tensor:
         """
-        运行 shared 或 typed FFN。
+        运行 shared 或 typed FFN. 
 
         输入参数:
             - feat: torch.Tensor, (N_all, C), FFN 输入特征
@@ -1460,7 +1460,7 @@ class Block(PointModule):
 
     def forward(self, point: Point):
         """
-        前向传播,执行Transformer块。
+        前向传播,执行Transformer块. 
         
         输入参数:
             - point: Point, 点云数据
@@ -1489,7 +1489,7 @@ class Block(PointModule):
         shortcut = point.feat
         if self.pre_norm:
             point = self.norm1(point)
-        # Point, 应用注意力(带"随机深度"：本次运算有一定概率退化为恒等映射)
+        # Point, 应用注意力(带"随机深度": 本次运算有一定概率退化为恒等映射)
         point = self.drop_path(self.attn(point))
         # torch.Tensor, (N, C), 注意力残差连接
         point.feat = shortcut + point.feat
@@ -1520,10 +1520,10 @@ class Block(PointModule):
 
 class SerializedPooling(PointModule):
     """
-    Serialized Pooling,序列化池化层。
+    Serialized Pooling,序列化池化层. 
     
     功能:
-        基于序列化编码的下采样池化,支持多种归约方式, 并追踪父 point 。
+        基于序列化编码的下采样池化,支持多种归约方式, 并追踪父 point . 
     """
     
     def __init__(
@@ -1539,7 +1539,7 @@ class SerializedPooling(PointModule):
         separate_pooling_proj=False,
     ):
         """
-        初始化SerializedPooling。
+        初始化SerializedPooling. 
         
         输入参数:
             - in_channels: int, 输入通道数
@@ -1598,7 +1598,7 @@ class SerializedPooling(PointModule):
 
     def forward(self, point: Point):
         """
-        前向传播,执行序列化池化。
+        前向传播,执行序列化池化. 
         
         输入参数:
             - point: Point, 点云数据
@@ -1651,9 +1651,9 @@ class SerializedPooling(PointModule):
             cluster_key,
             # bool, 控制返回值是否按升序排列
             sorted=True,
-            # bool, 是否返回原输入元素在新去重结果中的索引(即生成 cluster 变量，告诉你“旧点”变成了哪个“新点”)
+            # bool, 是否返回原输入元素在新去重结果中的索引(即生成 cluster 变量, 告诉你“旧点”变成了哪个“新点”)
             return_inverse=True,
-            # bool, 是否返回每个去重后元素出现的次数(即生成 counts 变量，告诉你“新点”合并了几个“旧点”)
+            # bool, 是否返回每个去重后元素出现的次数(即生成 counts 变量, 告诉你“新点”合并了几个“旧点”)
             return_counts=True,
         )
         # torch.Tensor, (N,), 按照原始点云所属的簇id大小进行排序所返回的 原始点云的索引
@@ -1767,7 +1767,7 @@ class SerializedPooling(PointModule):
 
 class SerializedUnpooling(PointModule):
     """
-    Serialized Unpooling,序列化上采样层。
+    Serialized Unpooling,序列化上采样层. 
     """
     
     def __init__(
@@ -1781,7 +1781,7 @@ class SerializedUnpooling(PointModule):
         separate_unpooling_proj=False,
     ):
         """
-        初始化SerializedUnpooling。
+        初始化SerializedUnpooling. 
         
         输入参数:
             - in_channels: int, 输入通道数(来自解码器)
@@ -1823,7 +1823,7 @@ class SerializedUnpooling(PointModule):
 
     def forward(self, point):
         """
-        前向传播,执行序列化上采样。
+        前向传播,执行序列化上采样. 
         
         输入参数:
             - point: Point, 池化后的点云数据(包含pooling_parent和pooling_inverse)
@@ -1898,7 +1898,7 @@ class PointConvEmbedding(PointModule):
         act_layer=None,
     ):
         """
-            极似cpe。
+            极似cpe. 
 
             输入参数:
                 - in_channels: int, 标量, 输入特征维度
@@ -1940,7 +1940,7 @@ class PointConvEmbedding(PointModule):
         batch: torch.Tensor,
     ) -> torch.Tensor:
         """
-        对给定点子图执行 pointconv embedding。
+        对给定点子图执行 pointconv embedding. 
 
         输入参数:
             - feat: torch.Tensor, (N_keep, C_in), 子图输入特征
@@ -1985,7 +1985,7 @@ class PointConvEmbedding(PointModule):
 
     def forward_subset(self, point: Point, keep_mask: torch.Tensor) -> torch.Tensor:
         """
-        对 real 或 pseudo 同类子图执行 pointconv embedding。
+        对 real 或 pseudo 同类子图执行 pointconv embedding. 
 
         输入参数:
             - point: Point, mixed 点对象, 包含 feat/coord/batch
@@ -2004,7 +2004,7 @@ class PointConvEmbedding(PointModule):
 
     def forward(self, point):
         """
-        前向传播，执行点云卷积嵌入。
+        前向传播, 执行点云卷积嵌入. 
 
         输入参数:
             - point: Point, 点云数据
@@ -2031,7 +2031,7 @@ class Embedding(PointModule):
         separate_embedding=False,
     ):
         """
-            对最原始点特征执行 pointconv embedding，其实和cpe几乎一样。
+            对最原始点特征执行 pointconv embedding, 其实和cpe几乎一样. 
 
             输入参数:
                 - in_channels: int, 输入通道数
@@ -2092,7 +2092,7 @@ class Embedding(PointModule):
 
     def forward(self, point: Point):
         """
-            前向传播,执行特征嵌入。
+            前向传播,执行特征嵌入. 
             
             输入参数:
                 - point: Point, 点云数据
@@ -2127,12 +2127,12 @@ class Embedding(PointModule):
 
 class PointTransformerV3(PointModule):
     """
-    Point Transformer V3 (PTv3) 主干网络。
+    Point Transformer V3 (PTv3) 主干网络. 
 
     功能:
-        基于序列化注意力机制的3D点云Transformer骨干网络,采用U-Net式编码器-解码器结构。
-        支持多种空间填充曲线(Z-order, Hilbert)对点云进行序列化, 而在序列化后的patch内执行高效的注意力计算。
-        编码器通过SerializedPooling逐层下采样并提取多尺度特征, 解码器通过SerializedUnpooling逐层上采样并融合跳跃连接恢复分辨率。
+        基于序列化注意力机制的3D点云Transformer骨干网络,采用U-Net式编码器-解码器结构. 
+        支持多种空间填充曲线(Z-order, Hilbert)对点云进行序列化, 而在序列化后的patch内执行高效的注意力计算. 
+        编码器通过SerializedPooling逐层下采样并提取多尺度特征, 解码器通过SerializedUnpooling逐层上采样并融合跳跃连接恢复分辨率. 
 
     架构:
         输入 -> Embedding -> 编码器(多阶段: Block + SerializedPooling) -> 解码器(多阶段: SerializedUnpooling + Block) -> 输出
@@ -2178,7 +2178,7 @@ class PointTransformerV3(PointModule):
         pre_norm=True,
         shuffle_orders=True,
         enable_rpe=False,
-        enable_flash=True,                         # NOTE: 任务侧可在 Stage1PointBackbone 里切换 flash/rpe；当前骨架仅保留可配置开关，不直接内嵌特定任务的消融结论。  建议: 如果path_size=128时显存速度差别不大, 需要尝试禁止 flash, 打开相对位置编码。若有时间, 把注意力按照AF2的风格优化一下(降低中间特征到32; 后面加transition)
+        enable_flash=True,                         # NOTE: 任务侧可在 Stage1PointBackbone 里切换 flash/rpe; 当前骨架仅保留可配置开关, 不直接内嵌特定任务的消融结论. 建议: 如果path_size=128时显存速度差别不大, 需要尝试禁止 flash, 打开相对位置编码. 若有时间, 把注意力按照AF2的风格优化一下(降低中间特征到32; 后面加transition)
         upcast_attention=False,
         upcast_softmax=False,
         cls_mode=False,
@@ -2199,7 +2199,7 @@ class PointTransformerV3(PointModule):
         separate_unpooling_proj=False,
     ):
         """
-        初始化 PointTransformerV3。
+        初始化 PointTransformerV3. 
 
         输入参数:
             - 基础参数:
@@ -2223,7 +2223,7 @@ class PointTransformerV3(PointModule):
                 - dec_cpe_receptive_field: tuple[float], 解码器每层 CPE 世界坐标感受野(Å)(仅 pointconv 模式), len=num_stages-1
                 - pointconv_block_max_neighbors: int, Block CPE 点云卷积最大邻居数(仅 pointconv 模式)
 
-            - enc/dec 参数：
+            - enc/dec 参数: 
                 - enc_depths: tuple[int], 每个编码器阶段的Transformer Block数量,长度=num_stages,默认(2,2,2,6,2)
                 - enc_channels: tuple[int], 每个编码器的输出特征通道数,长度=num_stages,默认(32,64,128,256,512)
                 - enc_num_head: tuple[int], 每个编码器阶段的注意力头数,长度=num_stages,默认(2,4,8,16,32)
@@ -2234,7 +2234,7 @@ class PointTransformerV3(PointModule):
                 - dec_num_head: tuple[int], 每个解码器阶段的注意力头数,长度=num_stages-1,默认(4,4,8,16)
                 - dec_patch_size: tuple[int], 每个解码器阶段的patch大小,长度=num_stages-1,默认(1024,1024,1024,1024)
 
-            - 其余参数：
+            - 其余参数: 
                 - mlp_ratio: int, MLP隐藏层通道数相对于输入通道数的倍率,默认4
                 - qkv_bias: bool, QKV线性变换是否使用偏置项,默认True
                 - qk_scale: float 或 None, QK点积的缩放因子,若None则自动为1/sqrt(head_dim),默认None
@@ -2428,8 +2428,8 @@ class PointTransformerV3(PointModule):
 
         # -------------------------------------------------- 解码器 -------------------------------------------------
         if not self.cls_mode:
-            # dec_depths 长度 = num_stages; 最后一项 dec_depths[-1] 对应 dec4(最低分辨率层, 不做 unpooling)。
-            # 当 dec_depths[-1] == 0 时, 该阶段初始化为恒等映射(nn.Identity), 等价于无 dec4 行为。
+            # dec_depths 长度 = num_stages; 最后一项 dec_depths[-1] 对应 dec4(最低分辨率层, 不做 unpooling). 
+            # 当 dec_depths[-1] == 0 时, 该阶段初始化为恒等映射(nn.Identity), 等价于无 dec4 行为. 
             # list[float], 解码器随机深度drop路径
             dec_drop_path = [
                 x.item() for x in torch.linspace(0, drop_path, sum(dec_depths))
@@ -2459,7 +2459,7 @@ class PointTransformerV3(PointModule):
                         dec.add(nn.Linear(enc_channels[-1], dec_channels[s]), name="proj")
                         dec.add(ln_layer(dec_channels[s]), name="proj_norm")
                 else:
-                    # dec3–dec0: 正常 unpooling。in_channels 取上一层(更低分辨率)的输出通道。
+                    # dec3–dec0: 正常 unpooling. in_channels 取上一层(更低分辨率)的输出通道. 
                     up_in_channels = dec_channels[s + 1]
                     dec.add(
                         SerializedUnpooling(
@@ -2512,7 +2512,7 @@ class PointTransformerV3(PointModule):
 
     def forward(self, data_dict):
         """
-        前向传播,执行完整的PTv3编码-解码流程。
+        前向传播,执行完整的PTv3编码-解码流程. 
 
         输入参数:
             - data_dict: dict, 批量点云的属性字典,必须包含以下字段:

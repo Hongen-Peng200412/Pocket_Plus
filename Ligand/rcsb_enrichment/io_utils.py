@@ -18,7 +18,7 @@ NESTED_JSON_FIELDS = {"validation_detail", "download_attempts", "rcsb_nonpoly_sc
 
 def normalize_missing(value: Any) -> str:
     """
-    统一处理 mmCIF/npz 中的缺失标记。
+    统一处理 mmCIF/npz 中的缺失标记. 
 
     输入参数:
         - value: Any, 原始字段值, 可能为 '.', '?', None 或普通字符串
@@ -35,7 +35,7 @@ def normalize_missing(value: Any) -> str:
 
 def normalize_pdb_id(value: str) -> str:
     """
-    将 PDB ID 统一为小写。
+    将 PDB ID 统一为小写. 
 
     输入参数:
         - value: str, 原始 PDB ID
@@ -49,7 +49,7 @@ def normalize_pdb_id(value: str) -> str:
 
 def load_raw_mapping(raw_json_path: Path | None) -> list[dict[str, str]] | None:
     """
-    读取 raw.json 外层过滤文件。
+    读取 raw.json 外层过滤文件. 
 
     输入参数:
         - raw_json_path: Path | None, raw.json 路径; None 表示不过滤
@@ -72,7 +72,7 @@ def load_raw_mapping(raw_json_path: Path | None) -> list[dict[str, str]] | None:
 
 def resolve_pdb_samples(raw_mapping: list[dict[str, str]] | None, parsed_root: Path) -> tuple[list[SampleRef], list[MappingRow]]:
     """
-    根据 raw.json 和 parsed_pdb 目录确定待处理 PDB。
+    根据 raw.json 和 parsed_pdb 目录确定待处理 PDB. 
 
     输入参数:
         - raw_mapping: list[dict[str, str]] | None, None 表示不过滤; [] 表示显式空过滤集
@@ -121,7 +121,7 @@ def resolve_pdb_samples(raw_mapping: list[dict[str, str]] | None, parsed_root: P
 
 def load_make_data_ligands(parsed_dir: Path) -> list[MakeDataLigand]:
     """
-    读取一个 parsed_pdb 子目录中的 Make_Data ligand instance。
+    读取一个 parsed_pdb 子目录中的 Make_Data ligand instance. 
 
     输入参数:
         - parsed_dir: Path, 形如 parsed_pdb/{pdb_id} 的目录, 必须包含 labels.npz 和 candidates.npz
@@ -157,7 +157,7 @@ def load_make_data_ligands(parsed_dir: Path) -> list[MakeDataLigand]:
 
 def make_output_dirs(output_root: Path) -> None:
     """
-    创建正式输出目录树。
+    创建正式输出目录树. 
 
     输入参数:
         - output_root: Path, 输出根目录
@@ -181,7 +181,7 @@ def make_output_dirs(output_root: Path) -> None:
 
 def row_to_csv_dict(row: MappingRow) -> dict[str, Any]:
     """
-    将 MappingRow 转为 CSV 可写出的扁平字典。
+    将 MappingRow 转为 CSV 可写出的扁平字典. 
 
     输入参数:
         - row: MappingRow, 单个 ligand mapping 记录
@@ -198,7 +198,7 @@ def row_to_csv_dict(row: MappingRow) -> dict[str, Any]:
 
 def write_rows_csv(rows: list[MappingRow], path: Path) -> None:
     """
-    写出 mapping CSV。
+    写出 mapping CSV. 
 
     输入参数:
         - rows: list[MappingRow], 待写出的 mapping 行
@@ -219,7 +219,7 @@ def write_rows_csv(rows: list[MappingRow], path: Path) -> None:
 
 def write_rows_jsonl(rows: list[MappingRow], path: Path) -> None:
     """
-    写出 mapping JSONL。
+    写出 mapping JSONL. 
 
     输入参数:
         - rows: list[MappingRow], 待写出的 mapping 行
@@ -237,7 +237,7 @@ def write_rows_jsonl(rows: list[MappingRow], path: Path) -> None:
 
 def build_summary(rows: list[MappingRow], raw_json_entries: int, unique_pdb_ids_in_raw_json: int, matched_parsed_pdb_count: int, missing_parsed_pdb_count: int, output_root: Path) -> dict[str, Any]:
     """
-    汇总 mapping 结果。
+    汇总 mapping 结果. 
 
     输入参数:
         - rows: list[MappingRow], 全部 mapping 行
@@ -276,7 +276,7 @@ def build_summary(rows: list[MappingRow], raw_json_entries: int, unique_pdb_ids_
 
 def write_mapping_outputs(rows: list[MappingRow], output_root: Path, summary: dict[str, Any], part_index: int | None = None, part_count: int | None = None) -> None:
     """
-    写出 mapping、failed_cases 和 summary。
+    写出 mapping、failed_cases 和 summary. 
 
     输入参数:
         - rows: list[MappingRow], 全部 mapping 行
@@ -321,7 +321,7 @@ def write_mapping_outputs(rows: list[MappingRow], output_root: Path, summary: di
 
 def read_mapping_rows(output_root: Path) -> list[dict[str, Any]]:
     """
-    兼容读取总表或 array parts 表。
+    兼容读取总表或 array parts 表. 
 
     输入参数:
         - output_root: Path, 输出根目录
