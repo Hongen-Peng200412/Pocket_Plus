@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
-# 本文件由 Job 启动时的 task.sbatch source。它保留四锁、动态 run_cmd，
-# 并在每一次实际执行前从 TASK_SOURCE_ROOT 创建或复用 release：
+# 本文件由 Job 启动时的 task.sbatch source。它保留四锁和动态 run_cmd。
+# 完整模式在每一次实际执行前从 TASK_SOURCE_ROOT 创建或复用 release：
 #
 # allocations/
 # ├── pre_lock_<job-id>       # 仅 --hold 时创建；删除后开始
@@ -17,8 +17,16 @@
 
 run_allocation() {
     local job_id="${SLURM_JOB_ID:?缺少 SLURM_JOB_ID}"
-    local allocation_root="${TASK_FEEDBACK_ROOT}/allocations"
-    local job_directory="${allocation_root}/${job_id}"
+    local simple_mode="${TASK_SIMPLE_MODE:-0}"
+    local allocation_root
+    local job_directory
+    if [[ "${simple_mode}" == "1" ]]; then
+        allocation_root="${HOME}/SIMPLE_RUN"
+        job_directory="${allocation_root}"
+    else
+        allocation_root="${TASK_FEEDBACK_ROOT}/allocations"
+        job_directory="${allocation_root}/${job_id}"
+    fi
     local pre_lock="${allocation_root}/pre_lock_${job_id}"
     local try_lock="${allocation_root}/try_lock_${job_id}"
     local after_lock="${job_directory}/after_lock_${job_id}"
@@ -30,11 +38,12 @@ run_allocation() {
     local attempt=0
     local watcher_pid=""
     local command_pid=""
+    local last_command_exit=0
     # 正式默认值沿用旧四锁实现。测试可缩短轮询，但不会改变文件语义。
     local lock_poll_seconds="${TASK_LOCK_POLL_SECONDS:-20}"
     local kill_poll_seconds="${TASK_KILL_POLL_SECONDS:-10}"
 
-    task_name="$(basename "${TASK_RELATIVE_PATH}" .sh)"
+    task_name="$(basename "${TASK_PATH}" .sh)"
     task_name="${task_name//[^A-Za-z0-9_.-]/_}"
 
     stop_kill_watcher() {
@@ -83,12 +92,22 @@ run_allocation() {
             printf '#!/usr/bin/env bash\n'
             printf 'set -euo pipefail\n\n'
             printf '# 本文件可以在 pre_lock 或 try_lock 存在、任务未运行时编辑。\n'
-            printf '# TASK_PROJECT_ROOT 会在每次执行前指向该次刚创建的 release。\n'
-            printf 'exec bash "${TASK_PROJECT_ROOT}"/%q' "${TASK_RELATIVE_PATH}"
-            local argument
-            for argument in "${task_arguments[@]}"; do
-                printf ' %q' "${argument}"
-            done
+            if [[ "${TASK_PATH_MODE}" == "external" ]]; then
+                printf '# 下列任务路径由 --sh 原样传入，不经过项目路径转换。\n'
+                printf 'exec bash %q' "${TASK_PATH}"
+            elif [[ "${simple_mode}" == "1" ]]; then
+                printf '# simple 模式直接使用当前项目中的任务脚本，不创建 release。\n'
+                printf 'exec bash "${TASK_SOURCE_ROOT}"/%q' "${TASK_PATH}"
+            else
+                printf '# TASK_PROJECT_ROOT 会在每次执行前指向该次刚创建的 release。\n'
+                printf 'exec bash "${TASK_PROJECT_ROOT}"/%q' "${TASK_PATH}"
+            fi
+            if ((${#task_arguments[@]} > 0)); then
+                local argument
+                for argument in "${task_arguments[@]}"; do
+                    printf ' %q' "${argument}"
+                done
+            fi
             printf '\n'
         } >"${run_cmd}"
         chmod +x "${run_cmd}"
@@ -104,8 +123,12 @@ run_allocation() {
         [[ -f "${after_lock}" ]]
     }
 
-    mkdir -p "${job_directory}" "${releases_root}" \
-        "${TASK_FEEDBACK_ROOT}/launches/${job_id}"
+    if [[ "${simple_mode}" == "1" ]]; then
+        mkdir -p "${allocation_root}"
+    else
+        mkdir -p "${job_directory}" "${releases_root}" \
+            "${TASK_FEEDBACK_ROOT}/launches/${job_id}"
+    fi
     write_initial_run_cmd
     touch "${after_lock}"
 
@@ -132,68 +155,82 @@ run_allocation() {
         local launch_directory=""
         local command_exit=0
 
-        # 关键时序：release 在本次 run_cmd 即将执行时才产生。若排队期间或上一次
-        # try_lock 期间更新了发布源，本次哈希会得到相应的新 release。
-        if [[ ! -x "${release_helper}" ]]; then
-            printf '[allocation][错误] 发布源缺少 release 工具：%s\n' \
-                "${release_helper}" >&2
-            if ! wait_for_next_action; then
-                break
-            fi
-            continue
-        fi
-        if release_project_root="$(
-            "${release_helper}" "${TASK_SOURCE_ROOT}" "${releases_root}"
-        )"; then
-            :
+        if [[ "${simple_mode}" == "1" ]]; then
+            export TASK_PROJECT_ROOT="${TASK_SOURCE_ROOT}"
         else
-            command_exit=$?
-            printf '[allocation][错误] 第 %s 次执行无法创建 release，退出码 %s。\n' \
-                "${attempt}" "${command_exit}" >&2
-            if ! wait_for_next_action; then
-                break
+            # 关键时序：release 在本次 run_cmd 即将执行时才产生。若排队期间或上一次
+            # try_lock 期间更新了发布源，本次哈希会得到相应的新 release。
+            if [[ ! -x "${release_helper}" ]]; then
+                printf '[allocation][错误] 发布源缺少 release 工具：%s\n' \
+                    "${release_helper}" >&2
+                if ! wait_for_next_action; then
+                    break
+                fi
+                continue
             fi
-            continue
+            if release_project_root="$(
+                "${release_helper}" "${TASK_SOURCE_ROOT}" "${releases_root}"
+            )"; then
+                :
+            else
+                command_exit=$?
+                printf '[allocation][错误] 第 %s 次执行无法创建 release，退出码 %s。\n' \
+                    "${attempt}" "${command_exit}" >&2
+                if ! wait_for_next_action; then
+                    break
+                fi
+                continue
+            fi
+
+            export TASK_PROJECT_ROOT="${release_project_root}"
+            task_path="${TASK_PROJECT_ROOT}/${TASK_PATH}"
+            launch_helper="${TASK_PROJECT_ROOT}/与服务器交互/other/training_runtime/create_launch.sh"
+            if [[ "${TASK_PATH_MODE}" == "project" && ! -f "${task_path}" ]] \
+                || [[ ! -x "${launch_helper}" ]]; then
+                printf '[allocation][错误] release 缺少任务或 launch 工具：%s\n' \
+                    "${TASK_PROJECT_ROOT}" >&2
+                if ! wait_for_next_action; then
+                    break
+                fi
+                continue
+            fi
         fi
 
-        export TASK_PROJECT_ROOT="${release_project_root}"
-        task_path="${TASK_PROJECT_ROOT}/${TASK_RELATIVE_PATH}"
-        launch_helper="${TASK_PROJECT_ROOT}/与服务器交互/other/training_runtime/create_launch.sh"
-        if [[ ! -f "${task_path}" || ! -x "${launch_helper}" ]]; then
-            printf '[allocation][错误] release 缺少任务或 launch 工具：%s\n' \
-                "${TASK_PROJECT_ROOT}" >&2
-            if ! wait_for_next_action; then
-                break
-            fi
-            continue
-        fi
-
-        started_at="$(date '+%Y%m%dT%H%M%S')"
-        launch_id="${task_name}_job${job_id}_${started_at}_a${attempt}"
-        export POCKET_RUN_STAMP="${launch_id}"
-        export EXPERIMENT_FEEDBACK_ROOT="${TASK_FEEDBACK_ROOT}"
         export TASK_GPUS="${TASK_GPUS_PER_NODE}"
         export TASK_NNODES="${TASK_NODE_COUNT}"
 
-        if launch_directory="$(
-            "${launch_helper}" "${TASK_FEEDBACK_ROOT}" "${launch_id}" \
-                "${run_cmd}" "${TASK_RELATIVE_PATH}"
-        )"; then
+        if [[ "${simple_mode}" == "1" ]]; then
             :
         else
-            command_exit=$?
-            printf '[allocation][错误] 第 %s 次执行无法建立 launch，退出码 %s。\n' \
-                "${attempt}" "${command_exit}" >&2
-            if ! wait_for_next_action; then
-                break
+            started_at="$(date '+%Y%m%dT%H%M%S')"
+            launch_id="${task_name}_job${job_id}_${started_at}_a${attempt}"
+            export POCKET_RUN_STAMP="${launch_id}"
+            export EXPERIMENT_FEEDBACK_ROOT="${TASK_FEEDBACK_ROOT}"
+            if launch_directory="$(
+                "${launch_helper}" "${TASK_FEEDBACK_ROOT}" "${launch_id}" \
+                    "${run_cmd}" "${TASK_PATH}"
+            )"; then
+                :
+            else
+                command_exit=$?
+                printf '[allocation][错误] 第 %s 次执行无法建立 launch，退出码 %s。\n' \
+                    "${attempt}" "${command_exit}" >&2
+                if ! wait_for_next_action; then
+                    break
+                fi
+                continue
             fi
-            continue
+            export POCKET_LAUNCH_DIR="${launch_directory}"
         fi
-        export POCKET_LAUNCH_DIR="${launch_directory}"
 
-        printf '[allocation] 第 %s 次执行；release=%s\n' \
-            "${attempt}" "${TASK_PROJECT_ROOT}"
-        printf '[allocation] launch=%s\n' "${launch_directory}"
+        if [[ "${simple_mode}" == "1" ]]; then
+            printf '[allocation] 第 %s 次执行；simple 模式，不创建 release 或 launch。\n' \
+                "${attempt}"
+        else
+            printf '[allocation] 第 %s 次执行；release=%s\n' \
+                "${attempt}" "${TASK_PROJECT_ROOT}"
+            printf '[allocation] launch=%s\n' "${launch_directory}"
+        fi
         printf '[allocation] 动态命令：%s\n' "${run_cmd}"
         cat "${run_cmd}"
 
@@ -204,6 +241,7 @@ run_allocation() {
         command_pid=$!
         start_kill_watcher "${command_pid}"
         wait "${command_pid}" && command_exit=0 || command_exit=$?
+        last_command_exit="${command_exit}"
         stop_kill_watcher
         command_pid=""
 
@@ -223,4 +261,7 @@ run_allocation() {
     # 退出时，trap 会引用已经离开作用域的局部变量。
     trap - EXIT SIGTERM SIGINT
     cleanup_allocation
+    if [[ "${simple_mode}" == "1" ]]; then
+        return "${last_command_exit}"
+    fi
 }

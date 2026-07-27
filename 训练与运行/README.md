@@ -129,6 +129,44 @@ ${feedback_root}/allocations/<jobid>/err
 /home/penghongen/Feedback/Pocket_Plus/allocations/<jobid>/err
 ```
 
+### 2.1 `--simple`：保留 Slurm 和四锁，不保存完整运行证据
+
+不需要冻结项目代码、也不需要记录 launch 的一次性任务，可以使用：
+
+```bash
+bash /home/penghongen/My_Project/Pocket_Plus/训练与运行/submit_task.sh \
+  --simple \
+  --sh /home/penghongen/My_Project/Pocket_Plus/ops/materialize_filtered_stage1_preparation.sh \
+  --resource cpu \
+  --cpus 1
+```
+
+这条命令仍然调用一次 `sbatch`，CPU 作业仍然使用 `cpu` partition 和 `Cpu96`
+QOS，四锁循环也仍然有效。差别是它不创建
+`/home/penghongen/Feedback/Pocket_Plus/releases/` 和
+`/home/penghongen/Feedback/Pocket_Plus/launches/` 中的任何内容。假设 Slurm
+返回 Job `400002`，活动期间可以直接看到：
+
+```text
+/home/penghongen/SIMPLE_RUN/
+├── pre_lock_400002                         # 仅使用 --hold 时创建
+├── try_lock_400002                         # 一次执行结束后创建
+├── after_lock_400002                       # 删除后结束 Job
+├── kill_lock_400002                        # 仅人工要求终止当前命令时创建
+├── run_cmd_400002.sh                       # 当前 allocation 下一次执行的命令
+├── materialize_filtered_stage1_preparation_400002.out
+└── materialize_filtered_stage1_preparation_400002.err
+```
+
+`pre_lock`、`try_lock`、`after_lock`、`kill_lock` 与 `run_cmd` 的操作含义和完整
+模式相同，只是都集中到 `${HOME}/SIMPLE_RUN`，不再分成 `allocations/` 根目录
+和 Job 子目录。任务最后一次执行的退出码会成为 Slurm Job 的退出码；`.out`
+和 `.err` 在 Job 结束后继续保留。四个锁和 `run_cmd` 属于活动控制文件，在
+Job 正常退出时清理。
+
+`--simple` 不表示“不使用 Slurm”，也不表示“直接在登录节点运行”。它只关闭
+release 和 launch 两套留证机制，适合已有独立输入、输出和幂等规则的短期任务。
+
 ## 3. release 为什么必须在每次运行前创建
 
 下面用完整数值例子说明 Job `400001` 的时间顺序。
@@ -563,18 +601,24 @@ CPC1 src/train.py
 提交器不会解释 `SLURM_ARRAY_TASK_ID`。如果任务脚本没有读取这个变量，
 `--array 0-15` 就会执行 16 份相同任务；数组编号的科学含义由具体任务负责。
 
-`--sh` 只有文件名时从 `训练与运行/sh/` 查找。带相对目录时，从
-`训练与运行/` 解析：
+`--sh` 只有两种解释：
+
+1. 值是单独的 `文件名.sh`，例如 `Find_1.sh`，从 `训练与运行/sh/` 查找。
+2. 其他写法不做路径转换，原样交给任务执行器。此时通常应填写服务器绝对路径。
 
 ```bash
 bash 训练与运行/submit_task.sh \
-  --sh ../其他目录/自定义任务.sh \
+  --simple \
+  --sh /home/penghongen/My_Project/Pocket_Plus/ops/自定义任务.sh \
   --resource cpu \
   --cpus 16 \
   --array 0-15%4
 ```
 
-任务必须位于发布源项目内，才能与代码一起进入 release。
+第二种写法不检查脚本是否属于当前项目。完整模式仍会为当前项目建立 release 和
+launch，但这个外部任务脚本本身不会复制进 release；`--simple` 模式既原样执行
+该路径，也不建立 release 和 launch。路径不存在等错误由任务真正执行时的 shell
+直接报告。
 
 ## 10. 覆盖发布源
 
@@ -628,6 +672,8 @@ bash 训练与运行/submit_task.sh \
 - 用假的 `SBATCH_BIN` 查看最终 sbatch 参数；
 - 验证提交阶段没有创建 release；
 - 用临时任务验证第一次运行和 `try_lock` 重试分别绑定不同 release；
+- 用临时 `${HOME}` 直接运行 Slurm 包装层，验证 `--simple` 的锁、动态命令、
+  退出码以及“不创建 release/launch”；
 - 对脚本中的 Hydra 参数做静态对照。
 
 这些检查不代替真实 GPU smoke，但本目录的三个正式训练此前已经分别通过训练

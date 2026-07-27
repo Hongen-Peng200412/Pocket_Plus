@@ -112,6 +112,16 @@ Remove-Item Env:\CODEX_SSH_PASSWORD
 
 普通命令行会话不跑模型训练、模型加载或重型推理；这类任务应进入 sbatch/lock 资源流程。
 
+通用入口和完整示例见 `训练与运行/README.md`。其中：
+
+- 默认完整模式把 release、launch、训练 `logs/` 和 allocation 控制文件放在
+  `${HOME}/Feedback/<项目名>/` 的对应目录中。
+- `--simple` 仍通过 Slurm 和同一套四锁运行，但不创建 release 或 launch；
+  活动锁、`run_cmd_<job-id>.sh`、stdout 和 stderr 统一位于
+  `${HOME}/SIMPLE_RUN/`。
+- `--sh 文件名.sh` 从 `训练与运行/sh/` 查找；其他写法原样作为任务路径，
+  通常填写服务器绝对路径。
+
 ## 跨设备复用条件
 
 可复用部分：

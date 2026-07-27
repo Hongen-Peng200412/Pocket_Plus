@@ -5,8 +5,8 @@ set -euo pipefail
 # 传入，因此这里不固定任何 #SBATCH 硬件声明。
 #
 # Slurm 会在提交时保存本文件的内容，但不会保存 --source-root 指向的项目树。
-# Job 真正启动时，本文件从发布源加载 allocation_runner.sh；该执行器会在每次
-# run_cmd 开始前冻结当时最新的发布源。
+# Job 真正启动时，本文件从发布源加载 allocation_runner.sh。完整模式会在每次
+# run_cmd 开始前冻结当时最新的发布源；simple 模式直接执行当前任务。
 
 fail() {
     printf '[task.sbatch][错误] %s\n' "$*" >&2
@@ -15,8 +15,10 @@ fail() {
 
 source_root=""
 feedback_root=""
-task_relative_path=""
+task_path=""
+task_mode=""
 hold_mode=0
+simple_mode=0
 resource_type=""
 gpu_count=0
 node_count=1
@@ -28,7 +30,9 @@ while (($# > 0)); do
     case "$1" in
         --source-root) source_root="$2"; shift 2 ;;
         --feedback-root) feedback_root="$2"; shift 2 ;;
-        --task) task_relative_path="$2"; shift 2 ;;
+        --task) task_path="$2"; shift 2 ;;
+        --task-mode) task_mode="$2"; shift 2 ;;
+        --simple) simple_mode="$2"; shift 2 ;;
         --hold) hold_mode="$2"; shift 2 ;;
         --resource) resource_type="$2"; shift 2 ;;
         --gpus) gpu_count="$2"; shift 2 ;;
@@ -46,8 +50,12 @@ done
 
 [[ -n "${SLURM_JOB_ID:-}" ]] || fail "本文件只能在 Slurm Job 内运行"
 [[ -n "${source_root}" ]] || fail "缺少 --source-root"
-[[ -n "${feedback_root}" ]] || fail "缺少 --feedback-root"
-[[ -n "${task_relative_path}" ]] || fail "缺少 --task"
+[[ -n "${task_path}" ]] || fail "缺少 --task"
+[[ "${task_mode}" == "project" || "${task_mode}" == "external" ]] \
+    || fail "--task-mode 必须是 project 或 external"
+if [[ "${simple_mode}" == "0" ]]; then
+    [[ -n "${feedback_root}" ]] || fail "完整模式缺少 --feedback-root"
+fi
 
 source_root="$(cd "${source_root}" 2>/dev/null && pwd -P)" \
     || fail "发布源不存在：${source_root}"
@@ -55,18 +63,23 @@ runtime_dir="${source_root}/与服务器交互/other/training_runtime"
 [[ -f "${runtime_dir}/allocation_runner.sh" ]] \
     || fail "发布源中缺少四锁执行器：${runtime_dir}/allocation_runner.sh"
 
-allocation_root="${feedback_root}/allocations"
-job_directory="${allocation_root}/${SLURM_JOB_ID}"
-mkdir -p "${job_directory}"
+if [[ "${simple_mode}" == "0" ]]; then
+    allocation_root="${feedback_root}/allocations"
+    job_directory="${allocation_root}/${SLURM_JOB_ID}"
+    mkdir -p "${job_directory}"
 
-# submit_task.sh 让 Slurm 的初始 stdout/stderr 指向 /dev/null。从这一行开始，
-# allocation 控制器与其运行的任务共用 allocations/<job-id>/out 和 err。
-exec >>"${job_directory}/out" 2>>"${job_directory}/err"
+    # 完整模式把 allocation 控制器与任务输出集中到 allocations/<job-id>/out 和 err。
+    exec >>"${job_directory}/out" 2>>"${job_directory}/err"
+fi
 
 export TASK_SOURCE_ROOT="${source_root}"
 export TASK_FEEDBACK_ROOT="${feedback_root}"
-export TASK_RELATIVE_PATH="${task_relative_path}"
+export TASK_PATH="${task_path}"
+export TASK_PATH_MODE="${task_mode}"
+# 保留旧内部变量，避免完整模式的既有任务因读取它而改变行为。
+export TASK_RELATIVE_PATH="${task_path}"
 export TASK_HOLD_MODE="${hold_mode}"
+export TASK_SIMPLE_MODE="${simple_mode}"
 export TASK_RESOURCE_TYPE="${resource_type}"
 export TASK_GPUS_PER_NODE="${gpu_count}"
 export TASK_NODE_COUNT="${node_count}"

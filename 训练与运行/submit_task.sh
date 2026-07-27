@@ -20,7 +20,7 @@ usage() {
 
 必需参数：
   --sh PATH              任务脚本。只有文件名时从“训练与运行/sh/”查找；
-                         带相对目录时从“训练与运行/”解析。
+                         其他写法原样交给任务执行器。
   --resource TYPE        cpu、a100、a800、h100 或 h200。
 
 常用资源选项：
@@ -29,6 +29,8 @@ usage() {
   --nodes N              节点数，默认 1。
   --array SPEC           原样传给 Slurm，例如 0-11%4。
   --hold                 allocation 启动后创建 pre_lock，等待人工删除再执行。
+  --simple               使用四锁，但不创建 release 和 launch；锁、动态命令与
+                         Slurm 日志统一放在 $HOME/SIMPLE_RUN。
   --job-name NAME        Slurm 作业名；默认使用任务脚本文件名。
 
 高级选项：
@@ -44,7 +46,7 @@ usage() {
 示例：
   bash 训练与运行/submit_task.sh --sh Find_1.sh --resource h100 --gpus 2 --cpus 48
   bash 训练与运行/submit_task.sh --sh unet_c1.sh --resource h100 --gpus 1 --cpus 24
-  bash 训练与运行/submit_task.sh --sh ../其他任务.sh --resource cpu --cpus 16 --array 0-9
+  bash 训练与运行/submit_task.sh --simple --sh /绝对路径/其他任务.sh --resource cpu --cpus 1
 EOF
 }
 
@@ -67,6 +69,7 @@ cpu_count=""
 node_count=1
 array_spec=""
 hold_mode=0
+simple_mode=0
 job_name=""
 partition=""
 qos=""
@@ -111,6 +114,10 @@ while (($# > 0)); do
             ;;
         --hold)
             hold_mode=1
+            shift
+            ;;
+        --simple)
+            simple_mode=1
             shift
             ;;
         --job-name)
@@ -195,26 +202,25 @@ runtime_dir="${release_source_root}/与服务器交互/other/training_runtime"
 [[ -f "${live_sbatch}" ]] || fail "发布源中缺少通用 sbatch：${live_sbatch}"
 [[ -f "${runtime_dir}/allocation_runner.sh" ]] \
     || fail "发布源中缺少 allocation 执行器：${runtime_dir}/allocation_runner.sh"
-[[ -x "${runtime_dir}/create_release.sh" ]] \
-    || fail "发布源中缺少可执行的 release 工具：${runtime_dir}/create_release.sh"
-
-# 任务脚本只接受项目内相对路径。只有文件名时默认位于“训练与运行/sh/”；
-# 带目录时从“训练与运行/”解析，例如 ../推理/某任务.sh。
-[[ "${task_argument}" != /* ]] || fail "--sh 只接受相对路径"
-if [[ "${task_argument}" == */* ]]; then
-    task_candidate="${runner_root}/${task_argument}"
-else
-    task_candidate="${runner_root}/sh/${task_argument}"
+if [[ "${simple_mode}" == "0" ]]; then
+    [[ -x "${runtime_dir}/create_release.sh" ]] \
+        || fail "发布源中缺少可执行的 release 工具：${runtime_dir}/create_release.sh"
 fi
-task_parent="$(cd "$(dirname "${task_candidate}")" 2>/dev/null && pwd -P)" \
-    || fail "任务脚本父目录不存在：${task_candidate}"
-task_path="${task_parent}/$(basename "${task_candidate}")"
-[[ -f "${task_path}" ]] || fail "任务脚本不存在：${task_path}"
-case "${task_path}" in
-    "${release_source_root}/"*) ;;
-    *) fail "任务脚本必须位于发布源内：${task_path}" ;;
-esac
-task_relative_path="${task_path#"${release_source_root}/"}"
+
+# “文件名.sh”沿用学习版入口：从“训练与运行/sh/”查找，并在完整模式中随项目
+# 进入 release。其他写法不改写、不归一化，也不检查是否属于项目，直接交给执行器。
+if [[ "${task_argument}" != */* && "${task_argument}" == *.sh ]]; then
+    task_candidate="${runner_root}/sh/${task_argument}"
+    task_parent="$(cd "$(dirname "${task_candidate}")" 2>/dev/null && pwd -P)" \
+        || fail "任务脚本父目录不存在：${task_candidate}"
+    task_path="${task_parent}/$(basename "${task_candidate}")"
+    [[ -f "${task_path}" ]] || fail "任务脚本不存在：${task_path}"
+    task_mode="project"
+    task_spec="${task_path#"${release_source_root}/"}"
+else
+    task_mode="external"
+    task_spec="${task_argument}"
+fi
 
 # 资源映射来自项目中稳定使用的 CPU/A100/A800/H100/H200 模板。
 # --cpus 显式给出时优先；否则采用每种硬件的常用默认值。
@@ -257,7 +263,16 @@ case "${resource_type}" in
 esac
 is_positive_integer "${cpu_count}" || fail "--cpus 必须是正整数"
 
-job_name="${job_name:-$(basename "${task_path}" .sh)}"
+job_name="${job_name:-$(basename "${task_spec}" .sh)}"
+if [[ "${simple_mode}" == "1" ]]; then
+    simple_root="${HOME}/SIMPLE_RUN"
+    mkdir -p "${simple_root}"
+    slurm_stdout="${simple_root}/${job_name}_%j.out"
+    slurm_stderr="${simple_root}/${job_name}_%j.err"
+else
+    slurm_stdout="/dev/null"
+    slurm_stderr="/dev/null"
+fi
 sbatch_arguments=(
     "--job-name=${job_name}"
     "--partition=${partition}"
@@ -265,8 +280,8 @@ sbatch_arguments=(
     "--nodes=${node_count}"
     "--ntasks-per-node=1"
     "--cpus-per-task=${cpu_count}"
-    "--output=/dev/null"
-    "--error=/dev/null"
+    "--output=${slurm_stdout}"
+    "--error=${slurm_stderr}"
 )
 if [[ "${resource_type}" != "cpu" ]]; then
     sbatch_arguments+=("--gres=gpu:${resource_type}:${gpu_count}")
@@ -276,23 +291,38 @@ fi
 [[ -z "${memory_request}" ]] || sbatch_arguments+=("--mem=${memory_request}")
 [[ -z "${time_request}" ]] || sbatch_arguments+=("--time=${time_request}")
 
+printf '[submit_task] 模式：%s\n' "$([[ "${simple_mode}" == "1" ]] && printf 'simple' || printf 'full')"
 printf '[submit_task] 发布源：%s\n' "${release_source_root}"
-printf '[submit_task] 任务：%s\n' "${task_relative_path}"
-printf '[submit_task] 反馈根：%s\n' "${feedback_root}"
+printf '[submit_task] 任务：%s\n' "${task_spec}"
 printf '[submit_task] 资源：type=%s nodes=%s gpus_per_node=%s cpus_per_task=%s\n' \
     "${resource_type}" "${node_count}" "${gpu_count}" "${cpu_count}"
-printf '[submit_task] 此刻不创建 release；每次实际执行前才冻结发布源。\n'
+if [[ "${simple_mode}" == "1" ]]; then
+    printf '[submit_task] 控制目录：%s\n' "${simple_root}"
+    printf '[submit_task] simple 模式不创建 release 或 launch。\n'
+else
+    printf '[submit_task] 反馈根：%s\n' "${feedback_root}"
+    printf '[submit_task] 此刻不创建 release；每次实际执行前才冻结发布源。\n'
+fi
 
 # SBATCH_BIN 只供无卡测试替换成假 sbatch；正式使用时默认为系统 sbatch。
 sbatch_program="${SBATCH_BIN:-sbatch}"
-"${sbatch_program}" "${sbatch_arguments[@]}" "${live_sbatch}" \
+sbatch_command=(
+    "${sbatch_program}"
+    "${sbatch_arguments[@]}"
+    "${live_sbatch}"
     --source-root "${release_source_root}" \
     --feedback-root "${feedback_root}" \
-    --task "${task_relative_path}" \
+    --task "${task_spec}" \
+    --task-mode "${task_mode}" \
+    --simple "${simple_mode}" \
     --hold "${hold_mode}" \
     --resource "${resource_type}" \
     --gpus "${gpu_count}" \
     --nodes "${node_count}" \
     --cpus "${cpu_count}" \
-    --array "${array_spec}" \
-    -- "${task_arguments[@]}"
+    --array "${array_spec}"
+)
+if ((${#task_arguments[@]} > 0)); then
+    sbatch_command+=(-- "${task_arguments[@]}")
+fi
+"${sbatch_command[@]}"
