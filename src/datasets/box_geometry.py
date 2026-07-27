@@ -1,12 +1,10 @@
 # -*- coding: utf-8 -*-
-"""
-=============================================================================
-box_geometry — 共享几何工具函数
-=============================================================================
-从 BoxPointDataset 中提取的、不依赖任何 self 数据成员的纯函数。
-训练侧 (BoxPointDataset) 与推断侧 (src/inference/) 均可直接调用。
+"""提供 Stage1 训练与推理共用的 BOX 原子选择、坐标换算和硬掩码计算。
 
-所有函数的签名、注释与内部逻辑严格保持与原 BoxPointDataset 方法一致，只是将 `self` 和隐式读取的 `self.xxx` 改为显式参数。
+主要入口是 ``select_atoms_for_box``、``build_atom_coordinates`` 与
+``build_hardmask_from_atom_coordinates``。这些纯函数由
+``src.datasets.stage1_dataset.Stage1Dataset`` 和 ``src.inference`` 调用，
+只返回内存数组，不写入文件。
 """
 
 import numpy as np
@@ -139,7 +137,7 @@ def build_hardmask_from_atom_coordinates(
     hardmask 的语义固定为:
         - 只统计 core box 内的原子
         - 某个 voxel 只要落入至少一个 core atom 的 home voxel, 则记为 1
-        - 与 `pdb_feature_BOX` 是否存在、是否参与 `voxel_grid` 拼接无关
+        - 与 Stage1 密度输入包含哪些通道无关
 
     输入:
         - atom_coord_local_voxel: numpy.ndarray, 形如 (N_selected, 3), 原子的连续局部 voxel 坐标, 顺序为 (x, y, z), 采用 corner 语义

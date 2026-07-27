@@ -1004,37 +1004,6 @@ def main(cfg: DictConfig):
             stage_seed = self._get_stage_seed(stage)
             world_size = int(getattr(self.trainer, "world_size", 1) or 1)
 
-            # 前景平衡采样（训练阶段 + 配置启用 + 数据集支持, 支持多卡 DDP）
-            # → BalancedForegroundSampler 内置 DistributedSampler 分发逻辑,
-            #   保证每个全局 batch 中至少 foreground_ratio 的前景样本
-            use_balanced = bool(self.train_cfg.get("use_balanced_foreground_sampler", False))
-            if (
-                use_balanced
-                and stage == "train"
-                and shuffle
-                and hasattr(ds, "foreground_indices")
-                and hasattr(ds, "background_indices")
-                and len(ds.foreground_indices) > 0
-                and len(ds.background_indices) > 0
-            ):
-                from src.datasets.balanced_foreground_sampler import BalancedForegroundSampler
-                # float, 标量, 每个全局 batch 中前景最低占比
-                fg_ratio = float(self.train_cfg.get("balanced_foreground_ratio", 0.2))
-                # int, 标量, 全局 batch 大小 = per_device_bs × world_size
-                global_bs = int(self.batch_size) * world_size
-                # int, 标量, 当前进程的全局排名
-                rank = int(getattr(self.trainer, "global_rank", 0))
-                return BalancedForegroundSampler(
-                    foreground_indices=ds.foreground_indices,
-                    background_indices=ds.background_indices,
-                    total_size=len(ds),
-                    foreground_ratio=fg_ratio,
-                    global_batch_size=global_bs,
-                    seed=stage_seed,
-                    rank=rank,
-                    world_size=world_size,
-                )
-
             if world_size > 1:
                 return EpochAwareDistributedSampler(ds, shuffle=(stage == "train" and shuffle), seed=stage_seed)
             if stage == "train" and shuffle:

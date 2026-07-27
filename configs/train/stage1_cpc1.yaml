@@ -10,7 +10,6 @@ batch_size: 8
 strict_global_batch_size: true
 num_workers: 20
 dataloader_backend: torch
-use_balanced_foreground_sampler: false
 data_fault_tolerance:
   enabled: false                    # 冻结 BOX pool 不允许训练时跳样本或替换样本。
   stages: []

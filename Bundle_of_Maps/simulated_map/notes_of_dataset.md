@@ -200,23 +200,17 @@ cryatom_output/
 | `simu_map_path` | 服务器上 `.mrc` 输出路径 |
 | `batch` | 所属 `.cmd` 批次 |
 
-## 9. 下游读取关系
+## 9. Stage1 读取关系
 
-模拟密度图不会直接进入训练脚本。它的下游路径是：
+当前 Stage1 训练不读取预先切分的 `emdb_sim_BOX`。AdaLigand A—G 数据处理管线先把模拟密度图转换成以下整图产物：
 
 ```text
-/storage/penghongen/simulated_receptor_map/{emdb_id}.mrc
-或
-/storage/penghongen/simulated_cryoatom_map/{emdb_id}.mrc
-        ↓ processedPDB_EMDB_binder/bind.py
-sim_npz/{pdb_id}.npz
-        ↓ processedPDB_EMDB_binder/split_and_select_box.py
-emdb_sim_BOX/{class_name}/{stem}.npz
-        ↓ src/datasets/box_point_dataset.py
-voxel_grid 的模拟密度通道
+${ADALIGAND_DATA_ROOT}/density/{pdb_id}/sim.npz
 ```
 
-如果新增推理数据集或切换模拟图来源，需要同步检查对应 bind/split 配置中的 simulated map 输入目录，不能把训练用真实 receptor 模拟图和推理用 cryoatom 模拟图混在同一目录里。
+`src/datasets/stage1_dataset.py` 在物化一个冻结 BOX 请求时读取该文件的 `grid`、`voxel_size` 和 `origin`，再按照 `box_start_zyx` 裁剪 80³ 模拟密度。Find 配置随后由 `density_channel_config.enabled_channels` 决定模拟密度参与哪些模型输入通道；`unet_c1` 只使用实验密度。
+
+如果新增推理数据集或切换模拟图来源，需要同时核对 A—G 数据处理管线写入的 `density/{pdb_id}/sim.npz` 与实验密度 `density/{pdb_id}/exp.npz` 是否具有相同形状、体素大小和世界坐标原点，不能把训练用真实受体模拟图和推理用 cryoatom 模拟图混入同一产物根目录。
 
 ## 10. 维护检查清单
 

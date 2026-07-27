@@ -12,12 +12,12 @@
    - 看 Hydra 如何实例化 DataModule、`VoxelPointStage1Wrapper`、Trainer、logger、checkpoint。
 2. `configs/model/default.yaml` 与当前 `configs/experiment/*.yaml`
    - 看 wrapper、backbone、loss、optimizer/scheduler、`class_names`、`validation_diagnostics` 和 `monitor_metric` 的实际配置。
-3. `configs/dataset/*` 与当前实验 dataset 配置
-   - 看数据根目录、split、类别名、source folder 名、字段开关和增强配置。
-4. `src/datasets/box_point_dataset.py`
-   - 看单个 BOX 从哪些 `.npz` / metadata 字段读取 atom、voxel、label 和 ligand 距离图。
-5. `src/datasets/box_point_collate.py`
-   - 看单样本字段如何变成 batch 字段，尤其是 atom padding/offset、voxel mask、metadata list。
+3. `configs/dataset/stage1_find.yaml` 或 `configs/dataset/stage1_unet_c1.yaml`
+   - 看 A—G 整图资产根目录、冻结 BOX 请求目录、密度通道、请求抽样和增强配置。
+4. `src/datasets/stage1_dataset.py`
+   - 看 `Stage1Dataset` 如何读取 A—G 整图资产与冻结 BOX 请求，并物化一个 80³ 模型样本。
+5. `src/datasets/stage1_collate.py`
+   - 看固定 80³ 体素字段如何堆叠，以及不同 BOX 的受体原子如何通过 `atom_counts`、`atom_offsets` 和 `atom_batch_index` 拼成批次。
 6. `src/wrappers/voxel_point_stage1.py`
    - 当前正式 LightningModule。先读 `training_step()`、`validation_step()`、`on_validation_epoch_end()`，按运行时间顺序理解 forward、loss、metric、CPC diagnostics、candidate threshold cache。
 7. `src/wrappers/voxel_point_stage1_losses.py`
@@ -98,14 +98,17 @@
 
 | 字段 | 常见 shape | 说明 |
 | --- | --- | --- |
-| `voxel_grid` | `(B, C_in, D, H, W)` | dense voxel 输入特征 |
-| `voxel_valid_mask` | `(B, D, H, W)` 或 `(B, 1, D, H, W)` | dense voxel 有效掩码 |
-| `voxel_label` | `(B, D, H, W)` | receptor/auxiliary 体素 hard-label |
-| `hardmask` | 常见 `(B, 1, D, H, W)` | receptor metric/loss 相关空间掩码 |
-| `ligand_dist_map` | `(B, D, H, W)`、`(B, 1, D, H, W)` 或多通道变体 | dense ligand target 的来源 |
+| `density_input` | `(B, C_density, 80, 80, 80)` | `Stage1Dataset` 返回的密度通道；模型入口把它转换为内部名称 `voxel_grid` |
+| `hardmask` | `(B, 80, 80, 80)` | 当前 BOX 内受体原子的 home voxel 掩码 |
+| `voxel_label` | `(B, 80, 80, 80)` | 当前 BOX 内结合受体原子的 home voxel 标签 |
+| `ligand_area_target` | `(B, 80, 80, 80)` | 完整配体区域并集在当前 BOX 中的裁剪 |
+| `protein_mainchain_target` | `(B, C_protein, 80, 80, 80)` | Find_1 与 unet_c1 使用的蛋白主链原子类别标签 |
+| `nucleic_mainchain_target` | `(B, C_nucleic, 80, 80, 80)` | Find_1 与 unet_c1 使用的核酸主链原子类别标签 |
+| `ligand_inverse_distance_target` | `(B, 80, 80, 80)` | `1 / (1 + distance_Å)` 配体距离回归目标 |
 | `box_shape_zyx` | `(B, 3)` | 每个 BOX 的 z/y/x 空间形状 |
 | `box_origin_world` | `(B, 3)` | BOX 原点世界坐标，常按 x/y/z 解释 |
 | `voxel_size_world` | `(B, 3)` | voxel 物理尺寸，常按 x/y/z 解释 |
+| `pdb_id` / `request_role` | `list[str]`, 长度 B | 每个 BOX 对应的 PDB 编号与冻结请求职责 |
 | `atom_feat` | `(N, F_atom)` | atom 输入特征，mixed 后可含 pseudo slot |
 | `atom_coord_centered_world` | `(N, 3)` | 中心化世界坐标，通常 x/y/z |
 | `atom_coord_local_voxel` | `(N, 3)` | 连续 local voxel 坐标，通常 x/y/z |
@@ -114,8 +117,7 @@
 | `atom_offsets` | `(B,)` | batch 内 atom 累计 end offset |
 | `atom_counts` | `(B,)` | 每个 BOX 的 atom 数 |
 | `atom_label` | `(N_real,)` | 真实 atom 监督标签；pseudo slot 不参与监督 |
-| `atom_valid_mask` | `(N_real,)` | 真实 atom 有效监督掩码 |
-| `class_name` | `list[str]`, 长度 B | 原始 source folder 名，不是 task class 名 |
+| `atom_is_in_core_box` | `(N_real,)` | 每个受体原子是否位于 80³ 核心 BOX 内；其余原子来自外扩缓冲区 |
 
 涉及字段 shape 时，不要只看本文。优先读 dataset/collate，然后抽样真实 batch。
 
@@ -123,8 +125,8 @@
 
 当前代码里需要特别区分：
 
-- dense voxel tensor 统一按 `(B, C, D, H, W)` 读。
-- dense target/mask 常按 `(B, D, H, W)` 读，wrapper 会把 `(B, 1, D, H, W)` 的 valid mask squeeze 成 `(B, D, H, W)`。
+- 稠密体素输入在 Dataset 外部使用 `density_input`，形状为 `(B, C, D, H, W)`；模型内部把同一张量命名为 `voxel_grid`。
+- 稠密标签和掩码按 `(B, D, H, W)` 读取；蛋白与核酸多分类标签额外带类别维。
 - voxel 整数索引通常使用 `zyx`，例如 `candidate_voxel_zyx`、`anchor_voxel_zyx`。
 - 世界坐标和点坐标通常使用 `xyz`。
 - local voxel 连续坐标通常使用 `xyz`，P anchor 的 local voxel 坐标按 voxel center 表示，即 `(x+0.5, y+0.5, z+0.5)`。
@@ -232,7 +234,7 @@ sanity check 和 tuner 不应污染正式 cache；普通 fit validation 可以�
    - `refined_F1` / `unrefined_F1` 只允许 C 内体素预测为正，C 外 GT 正例计入 FN。
    - `refined_p` / `unrefined_p` 各自按对应 score histogram 独立选择，使 `val_score` 端到端 F1 最大；它和 `val_refined/global/F1` 的 local 语义不同。
 
-`batch["class_name"]` 是原始 source folder，例如 `metal_ion`、`peptide`、`nucleic`、`small_molecule`、`random_BOX`；它不是 task class。当前 wrapper diagnostics 不再按它生成分组指标，task class 才作为多分类 metric suffix。
+当前 Stage1 batch 不携带旧式样本目录名。`dataset.class_names` 表示模型任务类别，并决定多分类指标名称；`pdb_id` 与 `request_role` 分别保存结构编号和冻结请求职责。
 
 ## 10. 修改前检查清单
 
