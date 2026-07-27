@@ -6,8 +6,10 @@
     validation 300、calibration 100、train 75% 和 held-out pool。PDB 是不可跨
     split 的身份边界；同一 PDB 的全部 PDB-EMDB pair 始终随该身份一起移动。
 
-输出只承担“谁属于哪个 split”的身份契约。训练 BOX 的 center/bias/context
-几何位置由 ``stage1_box_pool.py`` 在 split 冻结后另行生成。
+输出只承担“谁属于哪个 split”的身份契约。训练 BOX 的 center/bias/context 几何位置由 ``stage1_box_pool.py`` 在 split 冻结后另行生成。
+
+文件副作用:
+    ``freeze_stage1_splits`` 在调用方给出的 ``output_root`` 下发布 ``train.json``、``validation.json``、``calibration.json``、``held_out_pool.json``、``config.json``、``summary.json`` 和最后写入的 ``_COMPLETE`` 完成标记；同名文件会被原子替换，目标目录中的其他文件不会被该模块清理。
 """
 
 from __future__ import annotations
@@ -42,8 +44,11 @@ def _atomic_write_text(path: Path, content: str) -> None:
 
     输出:
         - None: 临时文件完整写入后原子替换 `path`
-    """
 
+    文件副作用:
+        - 创建 `path` 的父目录（若尚不存在）；
+        - 用 UTF-8 临时文件原子替换同名正式文件，临时文件不会保留。
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     descriptor, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
     os.close(descriptor)
@@ -57,15 +62,14 @@ def _atomic_write_text(path: Path, content: str) -> None:
 
 def _read_keep_list(path: Path) -> dict[str, list[dict[str, Any]]]:
     """
-    读取 Stage G JSONL，并按规范化后的 PDB identity 聚合原始行。
+    读取 Stage G JSONL，并按规范化后的 PDB identity 聚合原始记录。
 
     输入参数:
         - path: Path, Stage G `keep_list.jsonl` 路径
 
     输出:
-        - groups: dict[str,list[dict[str,Any]]], PDB identity 到原始 occurrence 行列表的映射；PDB 内保持文件行序
+        - groups: dict[str,list[dict[str,Any]]], PDB identity 到原始 occurrence 记录列表的映射；每个 PDB 内保持文件记录顺序
     """
-
     groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
     with path.open("r", encoding="utf-8") as handle:
         for line_number, line in enumerate(handle, start=1):
@@ -96,7 +100,6 @@ def _stable_rank(seed: int, purpose: str, pdb_id: str) -> bytes:
     输出:
         - digest: bytes, (32,), `sha256(seed|purpose|pdb_id)` 排名键
     """
-
     payload = f"{int(seed)}|{purpose}|{pdb_id}".encode("utf-8")
     return hashlib.sha256(payload).digest()
 
@@ -112,7 +115,6 @@ def _read_exp_shape(data_root: Path, pdb_id: str) -> tuple[int, int, int]:
     输出:
         - shape_zyx: tuple[int,int,int], (3,), `canonical_shape_zyx` 的三个正整数
     """
-
     exp_path = data_root / "density" / pdb_id / "exp.npz"
     with np.load(exp_path, allow_pickle=False) as data:
         if "canonical_shape_zyx" not in data:
@@ -125,16 +127,15 @@ def _read_exp_shape(data_root: Path, pdb_id: str) -> tuple[int, int, int]:
 
 def _flatten_groups(groups: dict[str, list[dict[str, Any]]], pdb_ids: set[str]) -> list[dict[str, Any]]:
     """
-    按 PDB 稳定排序展开分组，同时保持每组 Stage G 原始行顺序。
+    按 PDB 稳定排序展开分组，同时保持每组 Stage G 原始记录顺序。
 
     输入参数:
-        - groups: dict[str,list[dict[str,Any]]], PDB 到原始 occurrence 行的映射
+        - groups: dict[str,list[dict[str,Any]]], PDB 到原始 occurrence 记录的映射
         - pdb_ids: set[str], 要展开的 PDB identity 集合
 
     输出:
-        - rows: list[dict[str,Any]], 先按 PDB identity 排序、再按 PDB 内原始行序展开的记录
+        - rows: list[dict[str,Any]], 先按 PDB identity 排序、再按 PDB 内原始记录顺序展开的记录
     """
-
     return [row for pdb_id in sorted(pdb_ids) for row in groups[pdb_id]]
 
 
@@ -149,28 +150,51 @@ def freeze_stage1_splits(
     """一次冻结 PDB 不跨界的 train/validation/calibration/held-out 主划分。
 
     输入参数:
-        - keep_list_path: str | Path, Stage G `keep_list.jsonl`；同一 PDB 可含多条 occurrence 行
-        - data_root: str | Path, A-G 正式数据根目录，用于读取 `density/{pdb_id}/exp.npz` 的
-            ``canonical_shape_zyx``。
+        - keep_list_path: str | Path, Stage G `keep_list.jsonl`；同一 PDB 可含多条 occurrence 记录
+        - data_root: str | Path, A-G 正式数据根目录，用于读取 `density/{pdb_id}/exp.npz` 的 ``canonical_shape_zyx``。
         - output_root: str | Path, 本次 split run 的独立输出目录
         - seed: int, 冻结排名 seed；正式值为 3407
         - validation_pdb_count: int, validation 的 PDB 数；正式值为 300
         - calibration_pdb_count: int, calibration 的 PDB 数；正式值为 100
 
+    文件副作用:
+        目标目录 `output_root` 不存在时创建；写入新产物前删除旧的 `<output_root>/_COMPLETE`。
+        - `<output_root>/train.json`: list[dict]，创建或原子替换；每个元素是一条 train split 的原始 Stage G keep-list 记录，字段和类型保持输入不变，同一 PDB 的全部记录位于同一文件。
+        - `<output_root>/validation.json`: list[dict]，创建或原子替换；每个元素是一条 validation split 的原始 Stage G keep-list 记录，字段和类型保持输入不变，同一 PDB 的全部记录位于同一文件。
+        - `<output_root>/calibration.json`: list[dict]，创建或原子替换；每个元素是一条 calibration split 的原始 Stage G keep-list 记录，字段和类型保持输入不变，同一 PDB 的全部记录位于同一文件。
+        - `<output_root>/held_out_pool.json`: list[dict]，创建或原子替换；每个元素是一条 held-out pool 的原始 Stage G keep-list 记录，字段和类型保持输入不变，同一 PDB 的全部记录位于同一文件。
+        - `<output_root>/config.json`: JSON object，创建或原子替换。
+            - `schema_version`: int，配置格式版本。
+            - `seed`: int，PDB 排名使用的 seed。
+            - `train_fraction`: float，train PDB 占输入 PDB 的比例。
+            - `validation_pdb_count`: int，validation PDB 数量约束。
+            - `calibration_pdb_count`: int，calibration PDB 数量约束。
+            - `minimum_validation_calibration_shape_zyx`: list[int], (3,)，validation 和 calibration 允许使用的最小完整图形状，轴顺序 ZYX。
+            - `assignment`: str，PDB 稳定排名规则。
+            - `keep_list_path`: str，输入 keep-list 路径。
+            - `keep_list_sha256`: str，输入 keep-list 的 SHA-256 十六进制摘要。
+            - `held_out_deduplication`: bool，held-out 是否执行去冗余；当前值为 false。
+        - `<output_root>/summary.json`: JSON object，创建或原子替换。
+            - `seed`: int，本次 split 使用的 seed。
+            - `source_pdb_count`: int，输入 keep-list 中的唯一 PDB 数量。
+            - `source_row_count`: int，输入 keep-list 中的原始记录数量；字段名保持既有产物契约不变。
+            - `validation_calibration_shape_checked_pdb_count`: int，选择 validation 和 calibration 时检查完整图形状的 PDB 数量。
+            - `short_map_encountered_while_selecting_eval_count`: int，选择 validation 和 calibration 时遇到的短图 PDB 数量。
+            - `splits`: dict[str, dict[str, int]]，每个 split 的计数对象；`splits[name]` 包含 `pdb_count: int` 与 `row_count: int`。
+        - `<output_root>/_COMPLETE`: 所有其他文件成功写出后最后创建的空完成标记；目标目录中的其他文件不会被本函数删除。
+        示例：若 `output_root` 为 `C:\\data\\stage1_split\\run_20260727`，产物位于该目录下的 `train.json`、`validation.json`、`calibration.json`、`held_out_pool.json`、`config.json`、`summary.json` 和 `_COMPLETE`。
+
     输出:
-        - summary: dict[str,Any], 与 `summary.json` 相同的 PDB/row 计数，包含:
+        - summary: dict[str,Any], 与 `summary.json` 相同的 PDB/记录计数，包含:
             - `seed`: int, 实际排名 seed
             - `source_pdb_count`: int, keep-list 中唯一 PDB 数
-            - `source_row_count`: int, keep-list 原始行数
+            - `source_row_count`: int, keep-list 原始记录数；字段名保持既有产物契约不变
             - `validation_calibration_shape_checked_pdb_count`: int, eval 选择时检查过 shape 的 PDB 数
             - `short_map_encountered_while_selecting_eval_count`: int, eval 扫描中遇到的短图数
             - `splits`: dict[str,dict[str,int]], 各 split 的 `pdb_count` 与 `row_count`
 
-        train PDB 数严格为
-        ``floor(0.75*N)``；validation 与 calibration 只从三轴均不小于 80 的
-        PDB 选择。held-out 不做尺寸检查或去冗余。
+        train PDB 数严格为 ``floor(0.75*N)``；validation 与 calibration 只从三轴均不小于 80 的 PDB 选择。held-out 不做尺寸检查或去冗余。
     """
-
     keep_path = Path(keep_list_path)
     data_path = Path(data_root)
     root = Path(output_root)
@@ -179,7 +203,7 @@ def freeze_stage1_splits(
     if validation_count < 0 or calibration_count < 0:
         raise ValueError("validation_pdb_count 与 calibration_pdb_count 不能为负数。")
 
-    # dict[str,list[dict]], PDB -> Stage G occurrence 行；同一 PDB 的全部行必须留在同一 split。
+    # dict[str,list[dict]], PDB -> Stage G occurrence 记录；同一 PDB 的全部记录必须留在同一 split。
     groups = _read_keep_list(keep_path)
     all_pdb_ids = set(groups)
     total_pdb_count = len(all_pdb_ids)
@@ -232,7 +256,7 @@ def freeze_stage1_splits(
 
     root.mkdir(parents=True, exist_ok=True)
     (root / "_COMPLETE").unlink(missing_ok=True)
-    # dict[str,list[dict]], split -> 原始 occurrence 行；PDB 排序稳定，PDB 内行序保持不变。
+    # dict[str,list[dict]], split -> 原始 occurrence 记录；PDB 排序稳定，PDB 内记录顺序保持不变。
     split_rows = {name: _flatten_groups(groups, pdb_ids) for name, pdb_ids in split_ids.items()}
     for split_name, rows in split_rows.items():
         _atomic_write_text(
@@ -276,6 +300,9 @@ def _main() -> None:
 
     输出:
         - None: 写出 split 产物，并把 summary 以 JSON 打印到标准输出
+
+    文件副作用:
+        - 将命令行参数转交给 `freeze_stage1_splits`；实际写入的文件、目标目录和 `_COMPLETE` 完成标记由 `--output-root` 与该函数的文件副作用契约决定。
     """
 
     parser = argparse.ArgumentParser(description="从 Stage G keep-list 冻结 AdaLigand Stage1 主 split。")

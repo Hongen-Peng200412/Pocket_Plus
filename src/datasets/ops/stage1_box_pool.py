@@ -1,14 +1,38 @@
 # -*- coding: utf-8 -*-
-"""AdaLigand Stage1 训练 BOX pool 的确定性几何原语与一键生成入口。
+"""从 A-G 正式资产生成 Stage1 的确定性 80³ BOX 起点池。
 
-阅读主线:
-    1. 每个 occurrence 从 schema-v3 稀疏 mask 得到一个 center 和 30 个 bias 起点。
-    2. 每个 PDB 独立生成不绑定 occurrence 的 receptor context 起点池。
-    3. train/validation 分别发布单 PDB NPZ，并由根 ``manifest.json`` 精确列举。
-    4. validation 再把固定的 ``1:5:3`` 选择写入 ``validation_selection.npz``。
+阅读入口:
+    1. :func:`build_pdb_box_pool` 为一个 PDB 生成 occurrence、center、bias 和 context 起点字段。
+    2. :func:`freeze_validation_selection` 把 validation 的 ``1:5:3`` 请求索引冻结为一个 NPZ。
+    3. :func:`build_stage1_box_pools` 批量发布 train/validation 的 PDB NPZ、根 manifest、配置、摘要和 ``_COMPLETE``。
 
-这里保存的是整数起点和身份索引，不保存 80³ 密度或标签数组。运行时请求层
-读取这些索引，Dataset 才从权威整图资产物化真实 BOX。
+单 PDB NPZ 字段:
+    - ``pdb_id``: 字符串标量；当前 PDB 身份。
+    - ``occurrence_id``: int32 ``(N_occ,)``；occurrence 编号。
+    - ``center_start_zyx``: int32 ``(N_occ, 3)``；与 occurrence_id 第 0 维对齐的 center 起点，轴序为 ZYX。
+    - ``bias_start_zyx``: int32 ``(N_occ, 30, 3)``；与 occurrence_id 第 0 维对齐的 30 个 bias 起点，轴序为 ZYX。
+    - ``context_start_zyx``: int32 ``(N_context, 3)``；当前 PDB 共享的 context 起点，轴序为 ZYX。
+
+validation selection NPZ 字段:
+    - ``validation_pdb_id``: bytes ``(N_pdb,)``；PDB 身份数组。
+    - ``center_pdb_index``: int32 ``(N_center,)``；每个 center 请求引用 validation_pdb_id 的下标。
+    - ``center_occurrence_id``: int32 ``(N_center,)``；与 center_pdb_index 同下标定位 occurrence。
+    - ``bias_pdb_index``: int32 ``(N_bias,)``；每个 bias 请求引用 validation_pdb_id 的下标。
+    - ``bias_occurrence_id``: int32 ``(N_bias,)``；与 bias_pdb_index 同下标定位 occurrence。
+    - ``bias_candidate_index``: int16 ``(N_bias,)``；与 bias_pdb_index 同下标定位 occurrence 的 bias 候选下标。
+    - ``context_pdb_index``: int32 ``(N_context,)``；每个 context 请求引用 validation_pdb_id 的下标。
+    - ``context_candidate_index``: int32 ``(N_context,)``；与 context_pdb_index 同下标定位 context 候选下标。
+
+文件副作用:
+    - ``<output_root>/train/{pdb_id}.npz``: train PDB 起点字段。
+    - ``<output_root>/validation/{pdb_id}.npz``: validation PDB 起点字段。
+    - ``<output_root>/manifest.json``: schema 版本和 train/validation PDB 相对路径清单。
+    - ``<output_root>/validation_selection.npz``: 固定 validation 请求索引。
+    - ``<output_root>/config.json``: BOX 形状、候选数量、抽样比例和随机规则。
+    - ``<output_root>/summary.json``: 请求、发布、短图、context 和 selection 计数。
+    - ``<output_root>/_COMPLETE``: 上述正式产物全部写出后最后创建的空完成标记。
+
+这里保存的是整数起点和身份索引，不保存 80³ 密度或标签数组；请求层读取起点，Dataset 再从权威整图资产物化真实 BOX。
 """
 
 from __future__ import annotations
@@ -65,6 +89,10 @@ def _atomic_save_npz(path: Path, **arrays: np.ndarray) -> None:
 
     输出:
         - None: 完整临时文件原子替换到 `path`
+
+    文件副作用:
+        - 创建 `path` 的父目录（若尚不存在）；
+        - 用临时 NPZ 原子替换同名正式文件，临时文件不会保留。
     """
 
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -89,6 +117,10 @@ def _atomic_write_text(path: Path, content: str) -> None:
 
     输出:
         - None: 完整临时文件原子替换到 `path`
+
+    文件副作用:
+        - 创建 `path` 的父目录（若尚不存在）；
+        - 用 UTF-8 临时文件原子替换同名正式文件，临时文件不会保留。
     """
 
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -107,7 +139,7 @@ def _load_split_pdb_ids(path: str | Path) -> tuple[str, ...]:
     从冻结 split JSON 读取并排序唯一 PDB identity。
 
     输入参数:
-        - path: str | Path, split JSON 路径；内容可为列表或包含 `entries/pairs/items/pdb_ids` 的对象
+        - path: str | Path, split JSON 路径；内容可为列表或包含 `entries/pairs/items/pdb_ids` 字段的 JSON 对象
 
     输出:
         - pdb_ids: tuple[str,...], 去重并按字典序排列的规范化 PDB identity
@@ -393,12 +425,27 @@ def freeze_validation_selection(
     一次冻结 validation 的 `1:5:3` 真实读取项。
 
     输入参数:
-        - validation_pool_directory: str | Path, `box_pool/validation` 目录
-        - output_path: str | Path, `validation_selection.npz` 正式路径
-        - seed: int, validation 冻结抽样 seed
+        - ``validation_pool_directory``: ``str | Path``；通常为 ``<output_root>/validation``。
+        - ``output_path``: ``str | Path``；``validation_selection.npz`` 正式路径。
+        - ``seed``: int；validation 冻结抽样 seed。
 
-    输出:
-        - summary: dict[str,int], 包含 `pdb_count`、`center_count`、`bias_count` 与 `context_count`
+    输出字段:
+        - ``pdb_count``: int；validation PDB 数量。
+        - ``center_count``: int；冻结 center 请求数量。
+        - ``bias_count``: int；冻结 bias 请求数量。
+        - ``context_count``: int；冻结 context 请求数量。
+
+    文件副作用:
+        - ``output_path``: ``validation_selection.npz``；父目录由写入函数创建，文件被创建或原子替换，其他 validation pool 文件不会被删除。
+            - ``validation_pdb_id``: bytes ``(N_pdb,)``；validation PDB 身份。
+            - ``center_pdb_index``: int32 ``(N_center,)``；索引 validation_pdb_id。
+            - ``center_occurrence_id``: int32 ``(N_center,)``；与 center_pdb_index 共同定位 center occurrence。
+            - ``bias_pdb_index``: int32 ``(N_bias,)``；索引 validation_pdb_id。
+            - ``bias_occurrence_id``: int32 ``(N_bias,)``；与 bias_pdb_index 共同定位 bias occurrence。
+            - ``bias_candidate_index``: int16 ``(N_bias,)``；定位 occurrence 的 bias 候选下标。
+            - ``context_pdb_index``: int32 ``(N_context,)``；索引 validation_pdb_id。
+            - ``context_candidate_index``: int32 ``(N_context,)``；定位 PDB 的 context 候选下标。
+        示例：若 ``output_path`` 为 ``C:\\data\\stage1_preparation\\box_pool\\validation_selection.npz``，则文件直接写入此路径。
     """
 
     from src.datasets.stage1_requests import _load_pdb_pool
@@ -477,14 +524,89 @@ def build_stage1_box_pools(
     端到端生成 train/validation pool、冻结 selection 与完成标记。
 
     输入参数:
-        - data_root: str | Path, A-G 正式数据根目录
-        - train_split: str | Path, 冻结 train split JSON
-        - validation_split: str | Path, 冻结 validation split JSON
-        - output_root: str | Path, `stage1_preparation/box_pool` 输出根目录
-        - seed: int, BOX pool 基准 seed
+        - ``data_root``: ``str | Path``；A-G 正式数据根目录。
+        - ``train_split``: ``str | Path``；冻结 train split JSON 路径。
+        - ``validation_split``: ``str | Path``；冻结 validation split JSON 路径。
+        - ``output_root``: ``str | Path``；通常为 ``<stage1_preparation>/box_pool`` 的输出根目录。
+        - ``seed``: int；BOX pool 基准 seed。
 
-    输出:
-        - summary: dict[str,object], train/validation 发布计数、短图/context 统计、selection 计数与 manifest 计数
+    输出字段:
+        - ``seed``: int；本次 BOX pool 使用的 seed。
+        - ``train``: dict[str, int]；train 请求数、发布数、短图数和 context 数量统计。
+        - ``validation``: dict[str, int]；validation 请求数、发布数和 context 数量统计。
+        - ``validation_selection``: dict[str, int]；冻结 validation 的 PDB、center、bias 和 context 数量。
+        - ``manifest``: dict[str, int]；manifest 中 train 与 validation PDB NPZ 数量。
+
+    文件副作用:
+        目录 `<output_root>`、`<output_root>/train` 和 `<output_root>/validation` 不存在时创建；写入新产物前删除根目录已有的 `_COMPLETE`、`manifest.json` 和 `validation_selection.npz`。
+        - `<output_root>/train/{pdb_id}.npz`: 每个成功处理的 train PDB 创建或原子替换一个 NPZ；起点最后一维按完整图 ZYX 排列，三轴短于 80 的 PDB 不发布 NPZ。
+            - `pdb_id`: 字符串标量数组，当前 PDB identity。
+            - `occurrence_id`: int32, (N_occ,)，occurrence 编号。
+            - `center_start_zyx`: int32, (N_occ, 3)，与 occurrence_id 第一维对齐的居中 BOX 起点。
+            - `bias_start_zyx`: int32, (N_occ, 30, 3)，与 occurrence_id 第一维对齐的 30 个 bias BOX 起点。
+            - `context_start_zyx`: int32, (N_context, 3)，当前 PDB 共享的 context BOX 起点。
+        - ``<output_root>/validation/{pdb_id}.npz``: 每个成功处理的 validation PDB 创建或原子替换一个 NPZ。
+            - ``pdb_id``: 字符串标量数组；当前 PDB 身份。
+            - ``occurrence_id``: int32 ``(N_occ,)``；occurrence 编号。
+            - ``center_start_zyx``: int32 ``(N_occ, 3)``；与 occurrence_id 第 0 维对齐的 center 起点，轴序为 ZYX。
+            - ``bias_start_zyx``: int32 ``(N_occ, 30, 3)``；与 occurrence_id 第 0 维对齐的 bias 起点，轴序为 ZYX。
+            - ``context_start_zyx``: int32 ``(N_context, 3)``；当前 PDB 共享的 context 起点，轴序为 ZYX。
+        - `<output_root>/manifest.json`: JSON object，创建或原子替换。
+            - `schema_version`: int，清单格式版本。
+            - `splits`: dict[str, list[dict[str, str]]]，包含 train 和 validation 的 PDB 清单。
+                - `train`: list[dict[str, str]]，每个元素包含 `pdb_id: str` 与 `path: str`，`path` 是相对于 box-pool 根目录的 NPZ 路径。
+                - `validation`: list[dict[str, str]]，每个元素包含 `pdb_id: str` 与 `path: str`，`path` 是相对于 box-pool 根目录的 NPZ 路径。
+        - `<output_root>/validation_selection.npz`: 创建或原子替换；每个索引数组分别与对应的 PDB、occurrence 或候选起点集合对齐。
+            - `validation_pdb_id`: bytes, (N_pdb,)，validation PDB identity。
+            - `center_pdb_index`: int32, (N_center,)，索引 validation_pdb_id。
+            - `center_occurrence_id`: int32, (N_center,)，与 center_pdb_index 共同定位居中 BOX 的 occurrence。
+            - `bias_pdb_index`: int32, (N_bias,)，索引 validation_pdb_id。
+            - `bias_occurrence_id`: int32, (N_bias,)，与 bias_pdb_index 共同定位 bias BOX 的 occurrence。
+            - `bias_candidate_index`: int16, (N_bias,)，定位 occurrence 的第几个 bias 起点。
+            - `context_pdb_index`: int32, (N_context,)，索引 validation_pdb_id。
+            - `context_candidate_index`: int32, (N_context,)，定位 PDB 的第几个 context 起点。
+        - `<output_root>/config.json`: JSON object，创建或原子替换。
+            - `box_shape_zyx`: list[int], (3,)，BOX 的完整图 ZYX 形状。
+            - `bias_candidates_per_occurrence`: int，每个 occurrence 冻结的 bias 候选数。
+            - `bias_radius_formula`: str，bias 半径计算公式。
+            - `bias_selected_per_epoch`: int，每个 epoch 从 bias 候选中选择的数量。
+            - `context_generator`: dict，context 起点生成规则。
+                - `sampling`: str，context 起点采样方式。
+                - `target_count`: int，每个 PDB 目标 context 起点数。
+                - `max_attempts`: int，context 起点采样最大尝试次数。
+                - `min_core_receptor_heavy_atoms`: int，context 起点要求覆盖的最少受体重原子数。
+                - `ligand_filter`: bool，context 起点是否使用配体过滤。
+            - `occurrence_cap_per_pdb_per_epoch`: int，每个 PDB 每个 epoch 的 occurrence 上限。
+            - `entry_ratio`: dict[str, int]，center、bias、context 的读取比例。
+                - `center`: int，center 读取比例。
+                - `bias`: int，bias 读取比例。
+                - `context`: int，context 读取比例。
+            - `train_random_rotation_90_degree`: bool，train 是否使用 90 度整数旋转增强。
+            - `seed`: int，BOX pool 基准 seed。
+            - `seed_rule`: str，从 seed、split_name 和 pdb_id 派生 PDB seed 的规则。
+        - `<output_root>/summary.json`: JSON object，创建或原子替换。
+            - `seed`: int，本次 BOX pool 使用的 seed。
+            - `train`: dict[str, int]，train 统计。
+                - `requested_pdb`: int，请求处理的 train PDB 数量。
+                - `published_pdb`: int，成功发布 NPZ 的 train PDB 数量。
+                - `short_map_count`: int，完整图三轴短于 80 的 train PDB 数量。
+                - `zero_context_pdb_count`: int，没有 context 起点的 train PDB 数量。
+                - `underfilled_context_pdb_count`: int，context 起点少于 3 个的 train PDB 数量。
+            - `validation`: dict[str, int]，validation 统计。
+                - `requested_pdb`: int，请求处理的 validation PDB 数量。
+                - `published_pdb`: int，成功发布 NPZ 的 validation PDB 数量。
+                - `zero_context_pdb_count`: int，没有 context 起点的 validation PDB 数量。
+                - `underfilled_context_pdb_count`: int，context 起点少于 3 个的 validation PDB 数量。
+            - `validation_selection`: dict[str, int]，validation_selection 统计。
+                - `pdb_count`: int，validation PDB 数量。
+                - `center_count`: int，center 读取项数量。
+                - `bias_count`: int，bias 读取项数量。
+                - `context_count`: int，context 读取项数量。
+            - `manifest`: dict[str, int]，train 与 validation 清单中的 NPZ 数量。
+                - `train`: int，manifest.splits.train 的 NPZ 数量。
+                - `validation`: int，manifest.splits.validation 的 NPZ 数量。
+        - `<output_root>/_COMPLETE`: 上述产物全部成功写出后最后创建的空完成标记；根目录中未列出的其他文件不会被本函数删除，单 PDB NPZ 只会按相同路径原子替换。
+        示例：若 `output_root` 为 `C:\\data\\stage1_preparation\\box_pool`，根目录产物包括 `manifest.json`、`validation_selection.npz`、`config.json`、`summary.json` 和 `_COMPLETE`，单 PDB NPZ 位于其 `train\\` 或 `validation\\` 子目录。
 
     已存在的单 PDB pool 会重新按同一稳定 seed 原子覆盖；只有全部输入成功后才发布
     根目录 ``_COMPLETE``。train 中三轴短于 80 的 PDB 只计入普通 summary，validation
@@ -587,6 +709,9 @@ def _main() -> None:
 
     输出:
         - None: 写出 BOX pool 产物，并把 summary 以 JSON 打印到标准输出
+
+    文件副作用:
+        - 将命令行参数转交给 `build_stage1_box_pools`；实际写入的目录、NPZ、清单、配置和 `_COMPLETE` 完成标记由 `--output-root` 与该函数的文件副作用契约决定。
     """
 
     parser = argparse.ArgumentParser(description="生成 AdaLigand Stage1 train/validation BOX pool。")
