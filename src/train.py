@@ -225,13 +225,12 @@ class LearningRateReductionStopper(Callback):
                 lrs.append(float(group["lr"]))
         return tuple(lrs)
 
-    def _observe(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
+    def _observe(self, trainer: pl.Trainer) -> None:
         """
         比较当前 LR 与上一次记录值, 若发生实际下降则累加并按阈值停训. 
 
         输入参数:
             - trainer: pl.Trainer, 当前训练器
-            - pl_module: pl.LightningModule, 当前 Lightning 模型, 用于记录 runtime 日志
 
         输出:
             - None, 原地更新计数或 trainer.should_stop
@@ -250,14 +249,6 @@ class LearningRateReductionStopper(Callback):
             return
 
         self.lr_reduction_count += 1
-        pl_module.log(
-            "train/runtime/lr_reduction_count",
-            float(self.lr_reduction_count),
-            prog_bar=True,
-            on_step=False,
-            on_epoch=True,
-            sync_dist=False,
-        )
         if self.lr_reduction_count >= self.stop_after_lr_reductions:
             if bool(getattr(trainer, "is_global_zero", True)):
                 print(
@@ -272,10 +263,12 @@ class LearningRateReductionStopper(Callback):
         self._last_lrs = self._current_lrs(trainer)
 
     def on_validation_epoch_end(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
-        self._observe(trainer, pl_module)
+        del pl_module
+        self._observe(trainer)
 
     def on_validation_end(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
-        self._observe(trainer, pl_module)
+        del pl_module
+        self._observe(trainer)
 
     def on_train_batch_start(
         self,
@@ -284,8 +277,8 @@ class LearningRateReductionStopper(Callback):
         batch: object,
         batch_idx: int,
     ) -> None:
-        del batch, batch_idx
-        self._observe(trainer, pl_module)
+        del pl_module, batch, batch_idx
+        self._observe(trainer)
 
     def state_dict(self) -> dict[str, object]:
         return {

@@ -182,7 +182,7 @@
     },
     {
       "date": "2026-08-02",
-      "summary": "Stage1 centered 契约补齐：Find 归档新增原始 float32 A_feat_L0，Selector 取消 receptor_tokens 二次读取；语义 Dice 改为显式 micro 名并新增按 PDB 等权 macro；三类 centered 集合、概率、阈值和索引语义已同步到代码与文档。用户审核后又把 max_voxels 冻结倍率从 Q95 的1.5倍改为3.0倍，正式值从1023改为2046；相关87项测试通过，并已授权继续一对一重建历史。",
+      "summary": "Stage1 centered 契约补齐并完成历史收口：Find 归档新增原始 float32 A_feat_L0，Selector 取消 receptor_tokens 二次读取；语义 Dice 改为显式 micro 名并新增按 PDB 等权 macro；max_voxels 冻结倍率从 Q95 的1.5倍改为3.0倍，正式值从1023改为2046。相关87项测试通过；53个受影响提交与12个本地分支已一对一重建，提交数量和分支拓扑保持不变，远端引用未修改。",
       "handoff": "CLAUDE/memory/handoffs/2026-08-02-stage1-centered-contract-clarification.md"
     }
   ],
