@@ -7,7 +7,12 @@ import torch
 from lightning.pytorch.callbacks import ModelCheckpoint
 from lightning.pytorch.trainer.connectors.callback_connector import _validate_callbacks_list
 
-from src.train import BestCheckpointAlias, PeriodicCheckpointSaver, WarmupPlateauController
+from src.train import (
+    BestCheckpointAlias,
+    LearningRateReductionStopper,
+    PeriodicCheckpointSaver,
+    WarmupPlateauController,
+)
 
 
 class _FakeTrainer:
@@ -151,6 +156,29 @@ def test_plateau_missing_monitor_metric_fails_fast() -> None:
 
     with pytest.raises(RuntimeError, match="monitor metric"):
         controller.on_validation_end(trainer, module)
+
+
+def test_lr_reduction_stopper_does_not_log_from_validation_end() -> None:
+    """学习率下降后直接更新回调状态，不能从 validation end 调用 LightningModule.log。"""
+
+    optimizer = _build_optimizer(lr=1.0)
+    trainer = _FakeTrainer(optimizer, global_step=0)
+    trainer.should_stop = False
+    trainer.is_global_zero = False
+
+    class _ModuleThatRejectsLog:
+        def log(self, *_args, **_kwargs) -> None:
+            raise AssertionError("validation end 不应调用 LightningModule.log")
+
+    module = _ModuleThatRejectsLog()
+    stopper = LearningRateReductionStopper(stop_after_lr_reductions=1)
+    stopper.on_train_start(trainer, module)
+    optimizer.param_groups[0]["lr"] = 0.5
+
+    stopper.on_validation_end(trainer, module)
+
+    assert stopper.lr_reduction_count == 1
+    assert trainer.should_stop is True
 
 
 def test_checkpoint_callbacks_have_unique_lightning_state_keys(tmp_path) -> None:
