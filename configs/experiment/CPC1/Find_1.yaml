@@ -46,8 +46,9 @@ model:
       enable_multiscale_output: false
       enable_structure_heads: true
   class_names: ${dataset.class_names}
-  monitor_metric: val_loss/global/total
-  monitor_mode: min
+  # 配体区域 PRAUC 越高越好；checkpoint 选择与平台期学习率调度共同读取这两个字段。
+  monitor_metric: val_score/global/voxel_ligand_PRAUC
+  monitor_mode: max
   validation_diagnostics:
     enabled: true
 
