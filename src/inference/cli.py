@@ -292,11 +292,19 @@ def _standard_role_producers(
         producers["probability"] = make_probability_role_producer(
             runtime.full_map_input
         )
-    producers["components"] = make_component_role_producer(
+    component_producer = make_component_role_producer(
         occurrence_voxel_provider=runtime.occurrence_voxels,
         clg_config=_clg_config(arguments),
         f1_eligible_limit=arguments.f1_eligible_limit,
     )
+
+    def produce_components(task, paths) -> None:
+        # 组件起点算法来自 checkpoint 的 Dataset 快照；先恢复 wrapper 以激活唯一快照，
+        # 再让组件生产器按需导入该算法。wrapper 在当前进程只加载一次。
+        runtime.wrapper_provider(task)
+        component_producer(task, paths)
+
+    producers["components"] = produce_components
     centered_producers = make_f1_clg_centered_role_producers(
         wrapper_provider=runtime.wrapper_provider,
         batch_builder_provider=runtime.centered_batch_builder,

@@ -23,7 +23,12 @@ from src.inference.assembly import (
     load_pdb_id_list,
 )
 from src.inference.centered import CenteredRequest
-from src.inference.cli import DEFAULT_MAX_VOXELS, build_parser, main
+from src.inference.cli import (
+    DEFAULT_MAX_VOXELS,
+    _standard_role_producers,
+    build_parser,
+    main,
+)
 from src.inference.runner import (
     ProductionTask,
     Stage1ProductionRunner,
@@ -481,6 +486,54 @@ def test_inference_cli_default_cache_allows_five_hundred_gibibytes() -> None:
     )
 
     assert arguments.cache_max_bytes == 500 * 1024**3
+
+
+def test_component_producer_activates_checkpoint_source_before_dataset_import(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """组件算法按需导入 Dataset 前，必须先激活 checkpoint 的唯一源码快照。"""
+    activated = False
+
+    def wrapper_provider(task):
+        nonlocal activated
+        del task
+        activated = True
+        return object()
+
+    def component_factory(**kwargs):
+        del kwargs
+
+        def produce(task, paths):
+            del task, paths
+            assert activated
+
+        return produce
+
+    monkeypatch.setattr(
+        "src.inference.cli.make_component_role_producer",
+        component_factory,
+    )
+    runtime = SimpleNamespace(
+        occurrence_voxels=lambda *args: {},
+        wrapper_provider=wrapper_provider,
+        centered_batch_builder=lambda task: None,
+        centered_batch_size=12,
+    )
+    arguments = SimpleNamespace(
+        max_split_events=1,
+        max_merge_events=1,
+        max_nodes_per_clg=32,
+        f1_eligible_limit=200,
+    )
+    producers = _standard_role_producers(
+        runtime,
+        arguments,
+        include_probability=False,
+        include_clg=False,
+    )
+
+    producers["components"](ProductionTask("Find_0", "calibration", "1abc"), object())
+    assert activated
 
 
 def test_selected_role_loads_selection_reruns_and_publishes(tmp_path: Path) -> None:
