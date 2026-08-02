@@ -2,7 +2,7 @@
 """AdaLigand Stage1 完整图、阈值校准、居中特征与最终精修产物的命令行入口。
 
 主要入口:
-    - `build_parser`: 声明六个互斥子命令及其显式参数。
+    - `build_parser`: 声明九个互斥子命令及其显式参数。
     - `main`: 把命令行参数转换为运行时对象和固定 PDB 任务，再调用阶段编排器。
 
 本模块只负责选择明确阶段、装配回调函数和输出任务摘要。数据读取与模型恢复由
@@ -84,7 +84,7 @@ def _add_runtime_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--device", required=True)
     parser.add_argument("--window-batch-size", type=int, default=1)
     parser.add_argument("--centered-batch-size", type=int, default=12)
-    parser.add_argument("--cache-max-bytes", type=int, default=536_870_912)
+    parser.add_argument("--cache-max-bytes", type=int, default=536_870_912_000)
 
 
 def _add_component_arguments(parser: argparse.ArgumentParser) -> None:
@@ -106,10 +106,10 @@ def _add_component_arguments(parser: argparse.ArgumentParser) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     """
-    构造阈值冻结前后五个生产入口和 Selected 独立补跑入口。
+    构造阈值冻结、F1 优先生产、F1/CLG 完整生产和 Selected 独立补跑入口。
 
     输出:
-        - parser: argparse.ArgumentParser, 含六个子命令及其参数契约的根解析器；
+        - parser: argparse.ArgumentParser, 含九个子命令及其参数契约的根解析器；
           解析结果始终含唯一 `command`
     """
     parser = argparse.ArgumentParser(
@@ -143,14 +143,29 @@ def build_parser() -> argparse.ArgumentParser:
 
     for command, split, help_text in (
         (
+            "cal-produce-f1",
+            "calibration",
+            "阶段二：为已有 calibration probability 只补齐 components/F1",
+        ),
+        (
             "cal-produce-f1-clg",
             "calibration",
             "阶段二：为已有 calibration probability 补齐 components/F1/CLG",
         ),
         (
+            "val-produce-prob-f1",
+            "validation",
+            "为固定 validation 分片连续补齐 probability/components/F1",
+        ),
+        (
             "val-produce-prob-f1-clg",
             "validation",
             "为固定 validation 分片连续补齐 probability/components/F1/CLG",
+        ),
+        (
+            "train-produce-prob-f1",
+            "train",
+            "为固定 train 分片连续补齐 probability/components/F1",
         ),
         (
             "train-produce-prob-f1-clg",
@@ -252,6 +267,7 @@ def _standard_role_producers(
     runtime: Stage1RuntimeAssembly,
     arguments: argparse.Namespace,
     include_probability: bool,
+    include_clg: bool,
 ) -> dict[str, Any]:
     """
     装配完整图概率、组件谱系与两类居中特征产物的生成回调。
@@ -261,12 +277,13 @@ def _standard_role_producers(
         - arguments: argparse.Namespace, 含 CLG 与 blob 上限的解析结果
         - include_probability: bool, 是否把完整图概率生成回调纳入当前命令；校准集
           第二阶段为 False，validation/train 连续生产为 True
+        - include_clg: bool, 是否在 F1-centered 之后继续生成 CLG-centered
 
     输出:
         - producers: dict[str, RoleProducer], 产物角色名到生成回调的映射。
         - `components`: 构造组件森林、组件谱系组及 occurrence 交集。
         - `F1_centered`: 为 `t_F1` 层 eligible component 生成居中特征。
-        - `CLG_centered`: 为组件谱系组的候选集合生成居中特征。
+        - `CLG_centered`: 仅在 `include_clg=True` 时存在，为组件谱系组生成居中特征。
         - `probability`: 仅在 `include_probability=True` 时存在，生成完整图概率。
     """
     # dict[str, RoleProducer]，当前命令按依赖装配的产物角色回调表。
@@ -275,18 +292,27 @@ def _standard_role_producers(
         producers["probability"] = make_probability_role_producer(
             runtime.full_map_input
         )
-    producers["components"] = make_component_role_producer(
+    component_producer = make_component_role_producer(
         occurrence_voxel_provider=runtime.occurrence_voxels,
         clg_config=_clg_config(arguments),
         f1_eligible_limit=arguments.f1_eligible_limit,
     )
-    producers.update(
-        make_f1_clg_centered_role_producers(
-            wrapper_provider=runtime.wrapper_provider,
-            batch_builder_provider=runtime.centered_batch_builder,
-            centered_batch_size=runtime.centered_batch_size,
-        )
+
+    def produce_components(task, paths) -> None:
+        # 组件起点算法来自 checkpoint 的 Dataset 快照；先恢复 wrapper 以激活唯一快照，
+        # 再让组件生产器按需导入该算法。wrapper 在当前进程只加载一次。
+        runtime.wrapper_provider(task)
+        component_producer(task, paths)
+
+    producers["components"] = produce_components
+    centered_producers = make_f1_clg_centered_role_producers(
+        wrapper_provider=runtime.wrapper_provider,
+        batch_builder_provider=runtime.centered_batch_builder,
+        centered_batch_size=runtime.centered_batch_size,
     )
+    producers["F1_centered"] = centered_producers["F1_centered"]
+    if include_clg:
+        producers["CLG_centered"] = centered_producers["CLG_centered"]
     return producers
 
 
@@ -379,7 +405,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         return 0
 
-    # 其余五个命令均需要模型或数据访问；运行时对象按需加载并在当前进程复用。
+    # 其余八个命令均需要模型或数据访问；运行时对象按需加载并在当前进程复用。
     runtime = _build_runtime(arguments)
     tasks = _tasks(arguments)
     if arguments.command == "cal-probability":
@@ -393,21 +419,34 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         records = runner.run_calibration_probability(tasks)
     elif arguments.command in {
+        "cal-produce-f1",
         "cal-produce-f1-clg",
+        "val-produce-prob-f1",
         "val-produce-prob-f1-clg",
+        "train-produce-prob-f1",
         "train-produce-prob-f1-clg",
     }:
-        include_probability = arguments.command != "cal-produce-f1-clg"
+        include_probability = not arguments.command.startswith("cal-produce-")
+        include_clg = arguments.command.endswith("-clg")
         runner = Stage1ProductionRunner.for_current_process(
             output_root=arguments.output_root,
             role_producers=_standard_role_producers(
-                runtime, arguments, include_probability=include_probability
+                runtime,
+                arguments,
+                include_probability=include_probability,
+                include_clg=include_clg,
             ),
         )
-        if arguments.command == "cal-produce-f1-clg":
+        if arguments.command == "cal-produce-f1":
+            records = runner.run_cal_produce_f1(tasks)
+        elif arguments.command == "cal-produce-f1-clg":
             records = runner.run_cal_produce_f1_clg(tasks)
+        elif arguments.command == "val-produce-prob-f1":
+            records = runner.run_val_produce_prob_f1(tasks)
         elif arguments.command == "val-produce-prob-f1-clg":
             records = runner.run_val_produce_prob_f1_clg(tasks)
+        elif arguments.command == "train-produce-prob-f1":
+            records = runner.run_train_produce_prob_f1(tasks)
         else:
             records = runner.run_train_produce_prob_f1_clg(tasks)
     elif arguments.command == "selected-refined":

@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
 import numpy as np
+import torch
 
 from .centered import CenteredRequest
 from .checkpoint import load_stage1_wrapper, resolve_checkpoint_config_path
@@ -486,7 +487,14 @@ class _TaskDatasetMaterializer:
             )
             for request in requests
         ]
-        return _move_batch_to_device(self.collator(samples), self.device)
+        batch = self.collator(samples)
+        if "atom_global_indices" in batch and "atom_label" not in batch:
+            # 旧版 Find 的伪原子注入会读取该监督字段的数据类型，但推理不使用其数值。
+            batch["atom_label"] = batch["atom_global_indices"].new_zeros(
+                batch["atom_global_indices"].shape,
+                dtype=torch.bool,
+            )
+        return _move_batch_to_device(batch, self.device)
 
 
 
@@ -506,7 +514,7 @@ class Stage1RuntimeAssembly:
         - device: str，模型和批次拼装器（collator）输出的 tensor batch 的目标设备，例如 `cpu`、`cuda` 或 `cuda:0`；PDB identity、计数和其他 Python 元数据不搬到该设备。
         - window_batch_size: int，一次完整图滑窗模型调用包含的窗口数；只影响 full-map forward 的批大小，不影响 centered BOX 批大小。
         - centered_batch_size: int，一次 centered 模型调用包含的 80³ BOX 数；只影响 centered forward 的批大小，正式默认值为 12。
-        - cache_max_bytes: int，单个 PDB 的 Stage1Dataset 资产缓存允许占用的最大字节数，默认值为 5368709120（5120 MiB）。
+        - cache_max_bytes: int，单个推理进程的 Stage1Dataset 资产缓存允许占用的最大字节数，默认值为 536870912000（500 GiB）；该值是上限，不会预先分配内存。
         - wrapper_loader: Callable | None，可选的模型包装器加载函数；为 None 时使用 `load_stage1_wrapper`，该函数接收 checkpoint/config 路径并返回可调用的完整 wrapper。
         - allow_current_workspace_code: bool，checkpoint 缺少完整代码快照时是否允许加载当前工作区代码；正式可复现运行应保持 False。
 
@@ -539,7 +547,7 @@ class Stage1RuntimeAssembly:
         device: str,
         window_batch_size: int,
         centered_batch_size: int = 12,
-        cache_max_bytes: int = 536_870_9120,
+        cache_max_bytes: int = 536_870_912_000,
         wrapper_loader: Callable[..., Any] | None = None,
         allow_current_workspace_code: bool = False,
     ) -> None:
@@ -555,7 +563,7 @@ class Stage1RuntimeAssembly:
             - device: str，模型和批次拼装器（collator）输出的 tensor batch 的目标设备，例如 `cpu`、`cuda` 或 `cuda:0`；PDB identity、计数和其他 Python 元数据不搬到该设备。
             - window_batch_size: int，一次完整图滑窗模型调用包含的窗口数；只影响 full-map forward 的批大小，不影响 centered BOX 批大小。
             - centered_batch_size: int，一次 centered 模型调用包含的 80³ BOX 数；只影响 centered forward 的批大小，正式默认值为 12。
-            - cache_max_bytes: int，单个 PDB 的 Stage1Dataset 资产缓存允许占用的最大字节数，默认值为 5368709120（5120 MiB）。
+            - cache_max_bytes: int，单个推理进程的 Stage1Dataset 资产缓存允许占用的最大字节数，默认值为 536870912000（500 GiB）；该值是上限，不会预先分配内存。
             - wrapper_loader: Callable | None，可选的模型包装器加载函数；为 None 时使用 `load_stage1_wrapper`，该函数接收 checkpoint/config 路径并返回可调用的完整 wrapper。
             - allow_current_workspace_code: bool，checkpoint 缺少完整代码快照时是否允许加载当前工作区代码；正式可复现运行应保持 False。
 
