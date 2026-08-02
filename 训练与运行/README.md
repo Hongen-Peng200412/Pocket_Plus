@@ -17,8 +17,13 @@ submit_task.sh
   使用的数据、环境、experiment、Hydra 覆盖和正式产物位置。
 
 release、launch 与四锁循环的实现位于
-`与服务器交互/other/training_runtime/`。这些文件主要供 AI 维护和审计；
+`训练与运行/runtime/`。这些文件主要供 AI 维护和审计；
 运行实验不要求先阅读其实现。
+
+本文中的“任务根目录”是一次提交需要冻结的完整项目目录。未填写
+`--task-root` 时，它就是 `训练与运行` 的上一层；因此把整个 `训练与运行`
+复制到 AdaLigand 等另一个项目后，提交器会默认冻结那个项目，不依赖
+`Pocket_Plus` 这个名称。
 
 ## 1. 直接启动三项正式训练
 
@@ -95,7 +100,7 @@ sbatch
   --output=/dev/null
   --error=/dev/null
   训练与运行/sbatch/task.sbatch
-  --source-root <当前项目根>
+  --task-root <当前项目根>
   --feedback-root /home/penghongen/Feedback/Pocket_Plus
   --task 训练与运行/sh/Find_1.sh
   --hold 1
@@ -110,7 +115,7 @@ sbatch
 这里有三个容易混淆的事实：
 
 1. `submit_task.sh` 此时不复制项目，也不创建 release。
-2. Slurm 会保存本次提交的 `task.sbatch` 内容，但 `--source-root` 仍指向可继续
+2. Slurm 会保存本次提交的 `task.sbatch` 内容，但 `--task-root` 仍指向可继续
    修改的项目目录。
 3. Job 获得资源后，`task.sbatch` 从该项目目录加载四锁执行器；四锁执行器
    在每一次真正执行 `run_cmd` 前，才创建或复用当时最新代码的 release。
@@ -136,6 +141,7 @@ ${feedback_root}/allocations/<jobid>/err
 ```bash
 bash /home/penghongen/My_Project/Pocket_Plus/训练与运行/submit_task.sh \
   --simple \
+  --task-root /home/penghongen/My_Project/Pocket_Plus \
   --sh /home/penghongen/My_Project/Pocket_Plus/ops/materialize_filtered_stage1_preparation.sh \
   --resource cpu \
   --cpus 1
@@ -166,6 +172,8 @@ Job 正常退出时清理。
 
 `--simple` 不表示“不使用 Slurm”，也不表示“直接在登录节点运行”。它只关闭
 release 和 launch 两套留证机制，适合已有独立输入、输出和幂等规则的短期任务。
+任务脚本仍须位于任务根目录内；这保证完整模式与 simple 模式使用同一套路径
+解释，不会出现某个绝对路径被悄悄当作特殊“外部任务”的情况。
 
 ## 3. release 为什么必须在每次运行前创建
 
@@ -263,7 +271,7 @@ release。`launch.json` 记录该次执行的：
 - 原始任务脚本相对路径；
 - Job ID、资源类型、节点数、GPU 数和 CPU 数；
 - Slurm array 表达式；
-- 唯一 `POCKET_RUN_STAMP`。
+- 唯一 `TASK_RUN_STAMP`，即本次实际执行传给训练程序的目录标识。
 
 `run_cmd.sh` 是执行前动态命令的只读副本。若人工修改过
 `allocations/400001/run_cmd_400001.sh`，launch 保存的是修改后的真实命令。
@@ -278,7 +286,7 @@ release 与 launch 不重复：
 `src/train.py` 读取最终 Hydra 配置后建立：
 
 ```text
-logs/<experiment_group>/<tag>____<POCKET_RUN_STAMP>/
+logs/<experiment_group>/<tag>____<TASK_RUN_STAMP>/
 ```
 
 例如 Job `400001` 的 Find_1 CPC1 可能生成：
@@ -449,7 +457,7 @@ Find 的完整链路：
 → src/train.py:53–55
 → ExperimentManager(feedback_root=...)
 → ExperimentManager._resolve_run_dir()
-→ <变量>/logs/<experiment_group>/<tag>____<POCKET_RUN_STAMP>/
+→ <变量>/logs/<experiment_group>/<tag>____<TASK_RUN_STAMP>/
 → config、源码快照、checkpoint、W&B 与训练日志
 ```
 
@@ -574,7 +582,7 @@ CPC1 src/train.py
 四锁执行器。allocation 随后创建 `try_lock`，允许修复代码后继续使用同一资源。
 
 `init_from` 是模型权重初始化，不是恢复旧训练目录后继续写入；CPC1 与 CPC2
-分别拥有独立的 `POCKET_RUN_STAMP` 后缀和独立 logs 目录。
+分别拥有独立的 `TASK_RUN_STAMP` 后缀和独立 logs 目录。
 
 ## 9. 通用资源参数
 
@@ -600,50 +608,65 @@ CPC1 src/train.py
 提交器不会解释 `SLURM_ARRAY_TASK_ID`。如果任务脚本没有读取这个变量，
 `--array 0-15` 就会执行 16 份相同任务；数组编号的科学含义由具体任务负责。
 
-`--sh` 只有两种解释：
+`--sh` 接受三种等价写法：
 
-1. 值是单独的 `文件名.sh`，例如 `Find_1.sh`，从 `训练与运行/sh/` 查找。
-2. 其他写法不做路径转换，原样交给任务执行器。此时通常应填写服务器绝对路径。
+1. 单独的文件名，例如 `Find_1.sh`，从 `<任务根目录>/训练与运行/sh/` 查找；
+2. 从任务根目录开始的相对路径，例如 `训练与运行/sh/Find_1.sh`；
+3. 指向同一文件的绝对路径，例如
+   `/home/penghongen/My_Project/Pocket_Plus/训练与运行/sh/Find_1.sh`。
+
+提交器会把三种写法都解析成真实文件位置，再保存相对于任务根目录的路径。因此
+它们进入 release 后执行的是同一个脚本。若脚本不在任务根目录内，提交器会在
+调用 `sbatch` 前报错；此时应使用 `--task-root` 选择包含该脚本的项目。
 
 ```bash
 bash 训练与运行/submit_task.sh \
   --simple \
+  --task-root /home/penghongen/My_Project/Pocket_Plus \
   --sh /home/penghongen/My_Project/Pocket_Plus/ops/自定义任务.sh \
   --resource cpu \
   --cpus 16 \
   --array 0-15%4
 ```
 
-第二种写法不检查脚本是否属于当前项目。完整模式仍会为当前项目建立 release 和
-launch，但这个外部任务脚本本身不会复制进 release；`--simple` 模式既原样执行
-该路径，也不建立 release 和 launch。路径不存在等错误由任务真正执行时的 shell
-直接报告。
+这个 simple 示例不会创建 release 和 launch，但仍使用同一任务根目录解释脚本
+位置。若将同一脚本改为完整模式，它会随整个项目进入 release，不存在另外一套
+“外部脚本直接执行”的行为。
 
 ## 10. 覆盖发布源
 
-默认发布源是 `submit_task.sh` 上一层，不含任何 Pocket_Plus 绝对路径。
-把整个目录结构复制到另一个项目后，默认会发布那个新项目。
+本节标题沿用原有章节范式；当前命令行参数把“发布源”统一称为“任务根目录”。
+默认任务根目录是 `submit_task.sh` 所在 `训练与运行` 的上一层，不含任何
+Pocket_Plus 绝对路径。把整个 `训练与运行` 复制到另一个项目后，默认会冻结
+那个项目。
 
-如确实要从同一提交入口发布另一份项目副本：
+如需从当前提交入口运行另一个项目：
 
 ```bash
 bash 训练与运行/submit_task.sh \
-  --release-source ../Pocket_Plus_candidate \
-  --sh Find_1.sh \
+  --task-root /home/penghongen/My_Project/AdaLigand \
+  --sh /home/penghongen/My_Project/AdaLigand/训练与运行/sh/train.sh \
   --resource h100 \
-  --gpus 2
+  --gpus 1
 ```
 
-相对 `--release-source` 从默认项目根解析；也可以传绝对路径。被覆盖的目录仍须
-包含：
+相对 `--task-root` 从默认任务根目录解析；也可以传绝对路径。所选目录应包含：
 
 ```text
-训练与运行/sbatch/task.sbatch
-与服务器交互/other/training_runtime/
-训练与运行/sh/Find_1.sh
+训练与运行/
+├── submit_task.sh
+├── README.md
+├── sbatch/task.sbatch
+├── runtime/
+│   ├── allocation_runner.sh
+│   ├── create_launch.sh
+│   └── create_release.sh
+└── sh/<项目自己的任务脚本>.sh
 ```
 
-这只是一个简单覆盖入口，不要求训练脚本声明 release 来源，也没有递归保护协议。
+`训练与运行/README.md` 和 `训练与运行/sh/` 是人类使用入口。复制到新项目时，
+应把示例任务替换成新项目自己的任务脚本，并相应更新 README；`submit_task.sh`、
+`sbatch/` 与 `runtime/` 可以保持不变。
 
 ## 11. 怎样修改实验
 
@@ -678,22 +701,21 @@ bash 训练与运行/submit_task.sh \
 这些检查不代替真实 GPU smoke，但本目录的三个正式训练此前已经分别通过训练
 启动验证。本次整理不提交新 Job，也不接管正在运行的 allocation。
 
-## 13. 与既有三个 Job 的关系
+## 13. 与既有提交系统的关系
 
-Job `321107`、`321540` 和 `321743` 在本目录建立前已由旧运行体系启动。
-它们继续使用各自的旧 release/runtime 和
-`/home/penghongen/My_Project/feedback_plus/logs/`，不会被本目录迁移、覆盖或
-接管。精确入口与运行事实保存在 AdaLigand：
+`训练与运行` 是当前正式提交入口。项目中旧的 `与服务器交互/sbatch/` 只保留
+历史模板或特定兼容用途，不再作为新任务的默认入口；其中的脚本可能固定旧环境、
+旧路径或旧训练命令，不能仅因文件名相似就替代本目录。
 
-```text
-talk/三个训练的检查记录.md
-```
+已经启动的 Slurm Job 会继续使用提交时保存的 `task.sbatch` 和 Job 启动时加载的
+allocation 控制器。移动当前仓库中的 runtime 不会热替换这些正在运行的控制器，
+也不会覆盖既有 release、launch、训练日志或 checkpoint。
 
-以后由本目录新提交的任务才默认写入：
+判断一次新任务属于本体系时，依次核对：
 
-```text
-/home/penghongen/Feedback/Pocket_Plus/
-```
+1. Slurm 命令中的 `训练与运行/sbatch/task.sbatch`；
+2. launch 中的 `release_project_root`、`task_script` 与 `task_run_stamp`；
+3. release 的 `manifest.json`；
+4. 训练目录中的最终 `config.yaml`、`src_snapshot/` 与 checkpoint。
 
-检查训练时，应先根据 Job 命令、launch 与 `POCKET_RUN_STAMP` 判断它属于旧体系
-还是本体系，不能把新目录规则套到三个既有 Job。
+单次 Job 编号、某次运行的实际目录和事故处理过程属于运行记录，不写入本 README。

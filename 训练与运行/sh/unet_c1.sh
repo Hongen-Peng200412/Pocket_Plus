@@ -39,15 +39,15 @@ unset SLURM_NTASKS SLURM_NTASKS_PER_NODE SLURM_PROCID SLURM_LOCALID SLURM_NODEID
 
 # 正式训练产物根目录。src/train.py:53–55 读取本变量；
 # ExperimentManager._resolve_run_dir()（experiment_manager.py:97–104）建立：
-# <本目录>/logs/<experiment_group>/<tag>____<POCKET_RUN_STAMP>/。
+# <本目录>/logs/<experiment_group>/<tag>____<TASK_RUN_STAMP>/。
 export EXPERIMENT_FEEDBACK_ROOT="${EXPERIMENT_FEEDBACK_ROOT:-${HOME}/Feedback/${PROJECT_NAME}}"
 formal_experiment_group="AdaLigand_Stage1/unet_c1"
 formal_tag="unet_c1"                                                                    # 额外兼任：wandb 项目名下的运行名称
 
-run_stamp_base="${POCKET_RUN_STAMP:-$(date '+%Y%m%dT%H%M%S')}"
+run_stamp_base="${TASK_RUN_STAMP:-$(date '+%Y%m%dT%H%M%S')}"
 formal_stamp="${run_stamp_base}_formal"
 
-# (示例前提：HOME=/home/penghongen、项目目录名为 Pocket_Plus，且外部没有传入 POCKET_RUN_STAMP；以 2026-07-26 16:40:33 为启动时间)
+# (示例前提：HOME=/home/penghongen、项目目录名为 Pocket_Plus，且外部没有传入 TASK_RUN_STAMP；以 2026-07-26 16:40:33 为启动时间)
 # 正式训练的运行产物落盘地址: /home/penghongen/Feedback/Pocket_Plus/logs/AdaLigand_Stage1-unet_c1/unet_c1____20260726T164033_formal
 formal_run="${EXPERIMENT_FEEDBACK_ROOT}/logs/${formal_experiment_group//\//-}/${formal_tag//\//-}____${formal_stamp}"
 
@@ -142,7 +142,7 @@ training_overrides=(
 
 # ================================================================== 正式启动命令 ==================================================================
 echo "[unet_c1] 启动正式训练：${formal_run}"
-export POCKET_RUN_STAMP="${formal_stamp}"
+export TASK_RUN_STAMP="${formal_stamp}"
 #################################### 启动正式训练 ####################################
 python -u src/train.py "${training_overrides[@]}" "$@"
 

@@ -22,7 +22,7 @@ from omegaconf import DictConfig, OmegaConf
 class ExperimentManager:
     """管理一次训练运行的唯一目录和复现材料. 
 
-    ``POCKET_RUN_STAMP`` 优先决定跨进程共享的运行标识; 没有该环境变量时, 
+    ``TASK_RUN_STAMP`` 优先决定跨进程共享的运行标识; 没有该环境变量时,
     依次回退到 Slurm 作业身份和本地时间. 只有 rank 0 创建目录、保存配置和源码、
     迁移日志, 其他训练进程只持有同一个路径计算结果. 
     """
@@ -80,9 +80,9 @@ class ExperimentManager:
         return text.replace("\\", "-").replace("/", "-").replace(" ", "_")
 
     def _resolve_run_stamp(self) -> Tuple[str, str]:
-        shared_stamp = os.environ.get("POCKET_RUN_STAMP", "").strip()
+        shared_stamp = os.environ.get("TASK_RUN_STAMP", "").strip()
         if shared_stamp:
-            return self._sanitize_path_component(shared_stamp), "POCKET_RUN_STAMP"
+            return self._sanitize_path_component(shared_stamp), "TASK_RUN_STAMP"
 
         job_id = os.environ.get("SLURM_JOB_ID", "").strip()
         step_id = os.environ.get("SLURM_STEP_ID", "").strip()
@@ -122,12 +122,12 @@ class ExperimentManager:
         因此快照不能只保存 `src/model/`. 运行目录一经创建便不允许覆盖既有快照. 
         """
 
-        pocket_root = Path(__file__).resolve().parents[2]  # src/utils/ → src → Pocket_Plus
-        source_dir = pocket_root / "src"
+        project_root = Path(__file__).resolve().parents[2]  # src/utils/ → src → 项目根目录
+        source_dir = project_root / "src"
         snapshot_root = self.run_dir / "src_snapshot"
         snapshot_dir = snapshot_root / "src"
         if not source_dir.is_dir():
-            raise FileNotFoundError(f"Pocket_Plus 源代码目录不存在: {source_dir}")
+            raise FileNotFoundError(f"项目源代码目录不存在: {source_dir}")
         if snapshot_root.exists():
             raise FileExistsError(f"运行目录已经包含代码快照，拒绝覆盖: {snapshot_root}")
         shutil.copytree(

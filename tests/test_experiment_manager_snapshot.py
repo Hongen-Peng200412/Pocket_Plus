@@ -25,6 +25,21 @@ def test_process_rank_prefers_lightning_child_rank(
     assert ExperimentManager._resolve_process_rank() == 0
 
 
+def test_run_stamp_prefers_generic_task_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """任务提交器提供的统一标识应优先于 Slurm 作业编号。"""
+
+    monkeypatch.setenv("TASK_RUN_STAMP", "find_1/job 400001")
+    monkeypatch.setenv("SLURM_JOB_ID", "400001")
+    manager = object.__new__(ExperimentManager)
+
+    assert manager._resolve_run_stamp() == (
+        "find_1-job_400001",
+        "TASK_RUN_STAMP",
+    )
+
+
 def test_archive_model_source_copies_complete_src_and_rejects_overwrite(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

@@ -4,8 +4,8 @@ set -euo pipefail
 # 通用 Slurm 提交入口。它只把任务脚本与人类可读的资源参数交给 sbatch；
 # release 不在提交时创建，而在 allocation 内每次真正执行 run_cmd 前创建。
 #
-# 默认发布源是本脚本上一层的项目根目录。需要发布另一份同结构项目时，可用
-# --release-source 覆盖；脚本内部没有写死 Pocket_Plus 或任何本机绝对路径。
+# 默认任务根目录是本脚本上一层的项目根目录。需要提交另一个同结构项目时，可用
+# --task-root 覆盖；脚本内部不写死项目名称或本机绝对路径。
 
 usage() {
     cat <<'EOF'
@@ -20,7 +20,7 @@ usage() {
 
 必需参数：
   --sh PATH              任务脚本。只有文件名时从“训练与运行/sh/”查找；
-                         其他写法原样交给任务执行器。
+                         绝对路径和其他相对路径都必须位于任务根目录内。
   --resource TYPE        cpu、a100、a800、h100 或 h200。
 
 常用资源选项：
@@ -39,14 +39,14 @@ usage() {
   --nodelist NAME        显式请求节点，例如 hnode01。
   --mem VALUE            原样传给 sbatch --mem。
   --time VALUE           原样传给 sbatch --time。
-  --feedback-root PATH   覆盖反馈根目录；默认是 $HOME/Feedback/<发布源目录名>。
-  --release-source PATH  覆盖每次执行时冻结的项目目录。相对路径从本脚本默认项目
-                         根目录解析；默认就是本脚本上一层。
+  --feedback-root PATH   覆盖反馈根目录；默认是 $HOME/Feedback/<任务根目录名>。
+  --task-root PATH       覆盖每次执行时冻结的项目目录。相对路径从本脚本默认项目
+                         根目录解析；默认就是“训练与运行”的上一层。
 
 示例：
   bash 训练与运行/submit_task.sh --sh Find_1.sh --resource h100 --gpus 2 --cpus 48
   bash 训练与运行/submit_task.sh --sh unet_c1.sh --resource h100 --gpus 1 --cpus 24
-  bash 训练与运行/submit_task.sh --simple --sh /绝对路径/其他任务.sh --resource cpu --cpus 1
+  bash 训练与运行/submit_task.sh --simple --task-root /项目根 --sh /项目根/ops/任务.sh --resource cpu --cpus 1
 EOF
 }
 
@@ -77,7 +77,7 @@ nodelist=""
 memory_request=""
 time_request=""
 feedback_root=""
-release_source_argument=""
+task_root_argument=""
 task_arguments=()
 
 while (($# > 0)); do
@@ -155,9 +155,9 @@ while (($# > 0)); do
             feedback_root="$2"
             shift 2
             ;;
-        --release-source)
-            (($# >= 2)) || fail "--release-source 缺少项目目录"
-            release_source_argument="$2"
+        --task-root)
+            (($# >= 2)) || fail "--task-root 缺少项目目录"
+            task_root_argument="$2"
             shift 2
             ;;
         --help|-h)
@@ -179,48 +179,52 @@ done
 [[ -n "${resource_type}" ]] || fail "必须提供 --resource"
 is_positive_integer "${node_count}" || fail "--nodes 必须是正整数"
 
-# --release-source 没有填写时，发布源就是 submit_task.sh 所在项目。
+# --task-root 没有填写时，任务根目录就是“训练与运行”所在项目。
 # 相对覆盖路径从默认项目根目录解析，使行为不依赖调用命令时的工作目录。
-if [[ -z "${release_source_argument}" ]]; then
-    release_source_root="${DEFAULT_PROJECT_ROOT}"
-elif [[ "${release_source_argument}" == /* ]]; then
-    release_source_root="$(
-        cd "${release_source_argument}" 2>/dev/null && pwd -P
-    )" || fail "发布源不存在：${release_source_argument}"
+if [[ -z "${task_root_argument}" ]]; then
+    task_root="${DEFAULT_PROJECT_ROOT}"
+elif [[ "${task_root_argument}" == /* ]]; then
+    task_root="$(
+        cd "${task_root_argument}" 2>/dev/null && pwd -P
+    )" || fail "任务根目录不存在：${task_root_argument}"
 else
-    release_source_root="$(
-        cd "${DEFAULT_PROJECT_ROOT}/${release_source_argument}" 2>/dev/null && pwd -P
-    )" || fail "发布源不存在：${DEFAULT_PROJECT_ROOT}/${release_source_argument}"
+    task_root="$(
+        cd "${DEFAULT_PROJECT_ROOT}/${task_root_argument}" 2>/dev/null && pwd -P
+    )" || fail "任务根目录不存在：${DEFAULT_PROJECT_ROOT}/${task_root_argument}"
 fi
 
-project_name="$(basename "${release_source_root}")"
+project_name="$(basename "${task_root}")"
 feedback_root="${feedback_root:-${HOME}/Feedback/${project_name}}"
-runner_root="${release_source_root}/训练与运行"
+runner_root="${task_root}/训练与运行"
 live_sbatch="${runner_root}/sbatch/task.sbatch"
-runtime_dir="${release_source_root}/与服务器交互/other/training_runtime"
+runtime_dir="${runner_root}/runtime"
 
-[[ -f "${live_sbatch}" ]] || fail "发布源中缺少通用 sbatch：${live_sbatch}"
+[[ -f "${live_sbatch}" ]] || fail "任务根目录中缺少通用 sbatch：${live_sbatch}"
 [[ -f "${runtime_dir}/allocation_runner.sh" ]] \
-    || fail "发布源中缺少 allocation 执行器：${runtime_dir}/allocation_runner.sh"
+    || fail "任务根目录中缺少 allocation 执行器：${runtime_dir}/allocation_runner.sh"
 if [[ "${simple_mode}" == "0" ]]; then
-    [[ -x "${runtime_dir}/create_release.sh" ]] \
-        || fail "发布源中缺少可执行的 release 工具：${runtime_dir}/create_release.sh"
+    [[ -f "${runtime_dir}/create_release.sh" ]] \
+        || fail "任务根目录中缺少 release 工具：${runtime_dir}/create_release.sh"
 fi
 
-# “文件名.sh”沿用学习版入口：从“训练与运行/sh/”查找，并在完整模式中随项目
-# 进入 release。其他写法不改写、不归一化，也不检查是否属于项目，直接交给执行器。
+# “文件名.sh”从“训练与运行/sh/”查找；其他相对路径从任务根目录解析。
+# 所有写法都先得到真实绝对路径，再证明任务脚本属于本次冻结的任务根目录。
 if [[ "${task_argument}" != */* && "${task_argument}" == *.sh ]]; then
     task_candidate="${runner_root}/sh/${task_argument}"
-    task_parent="$(cd "$(dirname "${task_candidate}")" 2>/dev/null && pwd -P)" \
-        || fail "任务脚本父目录不存在：${task_candidate}"
-    task_path="${task_parent}/$(basename "${task_candidate}")"
-    [[ -f "${task_path}" ]] || fail "任务脚本不存在：${task_path}"
-    task_mode="project"
-    task_spec="${task_path#"${release_source_root}/"}"
+elif [[ "${task_argument}" == /* ]]; then
+    task_candidate="${task_argument}"
 else
-    task_mode="external"
-    task_spec="${task_argument}"
+    task_candidate="${task_root}/${task_argument}"
 fi
+task_parent="$(cd "$(dirname "${task_candidate}")" 2>/dev/null && pwd -P)" \
+    || fail "任务脚本父目录不存在：${task_candidate}"
+task_path="${task_parent}/$(basename "${task_candidate}")"
+[[ -f "${task_path}" ]] || fail "任务脚本不存在：${task_path}"
+case "${task_path}" in
+    "${task_root}"/*) ;;
+    *) fail "任务脚本不属于任务根目录：${task_path}；请用 --task-root 选择包含该脚本的项目" ;;
+esac
+task_spec="${task_path#"${task_root}/"}"
 
 # 资源映射来自项目中稳定使用的 CPU/A100/A800/H100/H200 模板。
 # --cpus 显式给出时优先；否则采用每种硬件的常用默认值。
@@ -292,7 +296,7 @@ fi
 [[ -z "${time_request}" ]] || sbatch_arguments+=("--time=${time_request}")
 
 printf '[submit_task] 模式：%s\n' "$([[ "${simple_mode}" == "1" ]] && printf 'simple' || printf 'full')"
-printf '[submit_task] 发布源：%s\n' "${release_source_root}"
+printf '[submit_task] 任务根目录：%s\n' "${task_root}"
 printf '[submit_task] 任务：%s\n' "${task_spec}"
 printf '[submit_task] 资源：type=%s nodes=%s gpus_per_node=%s cpus_per_task=%s\n' \
     "${resource_type}" "${node_count}" "${gpu_count}" "${cpu_count}"
@@ -301,7 +305,7 @@ if [[ "${simple_mode}" == "1" ]]; then
     printf '[submit_task] simple 模式不创建 release 或 launch。\n'
 else
     printf '[submit_task] 反馈根：%s\n' "${feedback_root}"
-    printf '[submit_task] 此刻不创建 release；每次实际执行前才冻结发布源。\n'
+    printf '[submit_task] 此刻不创建 release；每次实际执行前才冻结任务根目录。\n'
 fi
 
 # SBATCH_BIN 只供无卡测试替换成假 sbatch；正式使用时默认为系统 sbatch。
@@ -310,10 +314,9 @@ sbatch_command=(
     "${sbatch_program}"
     "${sbatch_arguments[@]}"
     "${live_sbatch}"
-    --source-root "${release_source_root}" \
+    --task-root "${task_root}" \
     --feedback-root "${feedback_root}" \
     --task "${task_spec}" \
-    --task-mode "${task_mode}" \
     --simple "${simple_mode}" \
     --hold "${hold_mode}" \
     --resource "${resource_type}" \

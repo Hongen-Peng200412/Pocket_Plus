@@ -37,7 +37,7 @@ cat >"${launch_directory}/launch.json" <<EOF
   "created_at": "$(printf '%s' "${created_at}" | json_escape)",
   "release_project_root": "$(printf '%s' "${TASK_PROJECT_ROOT}" | json_escape)",
   "task_script": "$(printf '%s' "${task_path}" | json_escape)",
-  "pocket_run_stamp": "$(printf '%s' "${POCKET_RUN_STAMP}" | json_escape)",
+  "task_run_stamp": "$(printf '%s' "${TASK_RUN_STAMP}" | json_escape)",
   "resource_type": "$(printf '%s' "${TASK_RESOURCE_TYPE}" | json_escape)",
   "nodes": ${TASK_NODE_COUNT},
   "gpus_per_node": ${TASK_GPUS_PER_NODE},

@@ -174,7 +174,7 @@ def log_distributed_launch_state(stage: str):
     rank = os.environ.get("RANK", "NA")
     local_rank = os.environ.get("LOCAL_RANK", "NA")
     world_size = os.environ.get("WORLD_SIZE", "NA")
-    run_stamp = os.environ.get("POCKET_RUN_STAMP", "NA")
+    run_stamp = os.environ.get("TASK_RUN_STAMP", "NA")
     master_addr = os.environ.get("MASTER_ADDR", "NA")
     master_port = os.environ.get("MASTER_PORT", "NA")
     gloo_ifname = os.environ.get("GLOO_SOCKET_IFNAME", "AUTO")

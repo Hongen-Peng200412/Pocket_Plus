@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # 本文件由 Job 启动时的 task.sbatch source。它保留四锁和动态 run_cmd。
-# 完整模式在每一次实际执行前从 TASK_SOURCE_ROOT 创建或复用 release：
+# 完整模式在每一次实际执行前从 TASK_ROOT 创建或复用 release：
 #
 # allocations/
 # ├── pre_lock_<job-id>       # 仅 --hold 时创建；删除后开始
@@ -32,7 +32,7 @@ run_allocation() {
     local after_lock="${job_directory}/after_lock_${job_id}"
     local kill_lock="${job_directory}/kill_lock_${job_id}"
     local run_cmd="${job_directory}/run_cmd_${job_id}.sh"
-    local release_helper="${TASK_SOURCE_ROOT}/与服务器交互/other/training_runtime/create_release.sh"
+    local release_helper="${TASK_ROOT}/训练与运行/runtime/create_release.sh"
     local releases_root="${TASK_FEEDBACK_ROOT}/releases"
     local task_name
     local attempt=0
@@ -92,12 +92,9 @@ run_allocation() {
             printf '#!/usr/bin/env bash\n'
             printf 'set -euo pipefail\n\n'
             printf '# 本文件可以在 pre_lock 或 try_lock 存在、任务未运行时编辑。\n'
-            if [[ "${TASK_PATH_MODE}" == "external" ]]; then
-                printf '# 下列任务路径由 --sh 原样传入，不经过项目路径转换。\n'
-                printf 'exec bash %q' "${TASK_PATH}"
-            elif [[ "${simple_mode}" == "1" ]]; then
+            if [[ "${simple_mode}" == "1" ]]; then
                 printf '# simple 模式直接使用当前项目中的任务脚本，不创建 release。\n'
-                printf 'exec bash "${TASK_SOURCE_ROOT}"/%q' "${TASK_PATH}"
+                printf 'exec bash "${TASK_ROOT}"/%q' "${TASK_PATH}"
             else
                 printf '# TASK_PROJECT_ROOT 会在每次执行前指向该次刚创建的 release。\n'
                 printf 'exec bash "${TASK_PROJECT_ROOT}"/%q' "${TASK_PATH}"
@@ -156,11 +153,11 @@ run_allocation() {
         local command_exit=0
 
         if [[ "${simple_mode}" == "1" ]]; then
-            export TASK_PROJECT_ROOT="${TASK_SOURCE_ROOT}"
+            export TASK_PROJECT_ROOT="${TASK_ROOT}"
         else
             # 关键时序：release 在本次 run_cmd 即将执行时才产生。若排队期间或上一次
             # try_lock 期间更新了发布源，本次哈希会得到相应的新 release。
-            if [[ ! -x "${release_helper}" ]]; then
+            if [[ ! -f "${release_helper}" ]]; then
                 printf '[allocation][错误] 发布源缺少 release 工具：%s\n' \
                     "${release_helper}" >&2
                 if ! wait_for_next_action; then
@@ -169,7 +166,7 @@ run_allocation() {
                 continue
             fi
             if release_project_root="$(
-                "${release_helper}" "${TASK_SOURCE_ROOT}" "${releases_root}"
+                bash "${release_helper}" "${TASK_ROOT}" "${releases_root}"
             )"; then
                 :
             else
@@ -184,9 +181,8 @@ run_allocation() {
 
             export TASK_PROJECT_ROOT="${release_project_root}"
             task_path="${TASK_PROJECT_ROOT}/${TASK_PATH}"
-            launch_helper="${TASK_PROJECT_ROOT}/与服务器交互/other/training_runtime/create_launch.sh"
-            if [[ "${TASK_PATH_MODE}" == "project" && ! -f "${task_path}" ]] \
-                || [[ ! -x "${launch_helper}" ]]; then
+            launch_helper="${TASK_PROJECT_ROOT}/训练与运行/runtime/create_launch.sh"
+            if [[ ! -f "${task_path}" || ! -f "${launch_helper}" ]]; then
                 printf '[allocation][错误] release 缺少任务或 launch 工具：%s\n' \
                     "${TASK_PROJECT_ROOT}" >&2
                 if ! wait_for_next_action; then
@@ -204,10 +200,10 @@ run_allocation() {
         else
             started_at="$(date '+%Y%m%dT%H%M%S')"
             launch_id="${task_name}_job${job_id}_${started_at}_a${attempt}"
-            export POCKET_RUN_STAMP="${launch_id}"
+            export TASK_RUN_STAMP="${launch_id}"
             export EXPERIMENT_FEEDBACK_ROOT="${TASK_FEEDBACK_ROOT}"
             if launch_directory="$(
-                "${launch_helper}" "${TASK_FEEDBACK_ROOT}" "${launch_id}" \
+                bash "${launch_helper}" "${TASK_FEEDBACK_ROOT}" "${launch_id}" \
                     "${run_cmd}" "${TASK_PATH}"
             )"; then
                 :
@@ -220,7 +216,7 @@ run_allocation() {
                 fi
                 continue
             fi
-            export POCKET_LAUNCH_DIR="${launch_directory}"
+            export TASK_LAUNCH_DIR="${launch_directory}"
         fi
 
         if [[ "${simple_mode}" == "1" ]]; then

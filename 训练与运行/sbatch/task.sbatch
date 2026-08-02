@@ -4,19 +4,18 @@ set -euo pipefail
 # 通用 Slurm allocation wrapper。资源参数由 submit_task.sh 通过 sbatch 命令
 # 传入，因此这里不固定任何 #SBATCH 硬件声明。
 #
-# Slurm 会在提交时保存本文件的内容，但不会保存 --source-root 指向的项目树。
-# Job 真正启动时，本文件从发布源加载 allocation_runner.sh。完整模式会在每次
-# run_cmd 开始前冻结当时最新的发布源；simple 模式直接执行当前任务。
+# Slurm 会在提交时保存本文件的内容，但不会保存 --task-root 指向的项目树。
+# Job 真正启动时，本文件从任务根目录加载 allocation_runner.sh。完整模式会在每次
+# run_cmd 开始前冻结当时最新的项目；simple 模式直接执行当前任务。
 
 fail() {
     printf '[task.sbatch][错误] %s\n' "$*" >&2
     exit 2
 }
 
-source_root=""
+task_root=""
 feedback_root=""
 task_path=""
-task_mode=""
 hold_mode=0
 simple_mode=0
 resource_type=""
@@ -28,10 +27,9 @@ task_arguments=()
 
 while (($# > 0)); do
     case "$1" in
-        --source-root) source_root="$2"; shift 2 ;;
+        --task-root) task_root="$2"; shift 2 ;;
         --feedback-root) feedback_root="$2"; shift 2 ;;
         --task) task_path="$2"; shift 2 ;;
-        --task-mode) task_mode="$2"; shift 2 ;;
         --simple) simple_mode="$2"; shift 2 ;;
         --hold) hold_mode="$2"; shift 2 ;;
         --resource) resource_type="$2"; shift 2 ;;
@@ -49,19 +47,17 @@ while (($# > 0)); do
 done
 
 [[ -n "${SLURM_JOB_ID:-}" ]] || fail "本文件只能在 Slurm Job 内运行"
-[[ -n "${source_root}" ]] || fail "缺少 --source-root"
+[[ -n "${task_root}" ]] || fail "缺少 --task-root"
 [[ -n "${task_path}" ]] || fail "缺少 --task"
-[[ "${task_mode}" == "project" || "${task_mode}" == "external" ]] \
-    || fail "--task-mode 必须是 project 或 external"
 if [[ "${simple_mode}" == "0" ]]; then
     [[ -n "${feedback_root}" ]] || fail "完整模式缺少 --feedback-root"
 fi
 
-source_root="$(cd "${source_root}" 2>/dev/null && pwd -P)" \
-    || fail "发布源不存在：${source_root}"
-runtime_dir="${source_root}/与服务器交互/other/training_runtime"
+task_root="$(cd "${task_root}" 2>/dev/null && pwd -P)" \
+    || fail "任务根目录不存在：${task_root}"
+runtime_dir="${task_root}/训练与运行/runtime"
 [[ -f "${runtime_dir}/allocation_runner.sh" ]] \
-    || fail "发布源中缺少四锁执行器：${runtime_dir}/allocation_runner.sh"
+    || fail "任务根目录中缺少四锁执行器：${runtime_dir}/allocation_runner.sh"
 
 if [[ "${simple_mode}" == "0" ]]; then
     allocation_root="${feedback_root}/allocations"
@@ -72,12 +68,9 @@ if [[ "${simple_mode}" == "0" ]]; then
     exec >>"${job_directory}/out" 2>>"${job_directory}/err"
 fi
 
-export TASK_SOURCE_ROOT="${source_root}"
+export TASK_ROOT="${task_root}"
 export TASK_FEEDBACK_ROOT="${feedback_root}"
 export TASK_PATH="${task_path}"
-export TASK_PATH_MODE="${task_mode}"
-# 保留旧内部变量，避免完整模式的既有任务因读取它而改变行为。
-export TASK_RELATIVE_PATH="${task_path}"
 export TASK_HOLD_MODE="${hold_mode}"
 export TASK_SIMPLE_MODE="${simple_mode}"
 export TASK_RESOURCE_TYPE="${resource_type}"

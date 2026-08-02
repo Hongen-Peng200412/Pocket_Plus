@@ -39,18 +39,18 @@ unset SLURM_NTASKS SLURM_NTASKS_PER_NODE SLURM_PROCID SLURM_LOCALID SLURM_NODEID
 
 # 正式训练产物根目录。src/train.py:53–55 读取本变量；
 # ExperimentManager._resolve_run_dir()（experiment_manager.py:97–104）建立：
-# <本目录>/logs/<experiment_group>/<tag>____<POCKET_RUN_STAMP>/。
+# <本目录>/logs/<experiment_group>/<tag>____<TASK_RUN_STAMP>/。
 export EXPERIMENT_FEEDBACK_ROOT="${EXPERIMENT_FEEDBACK_ROOT:-${HOME}/Feedback/${PROJECT_NAME}}"
 cpc1_experiment_group="AdaLigand_Stage1/Find_1/CPC1"
 cpc1_tag="Find_1/CPC1"                                                                # 额外兼任：wandb 项目名下的运行名称
 cpc2_experiment_group="AdaLigand_Stage1/Find_1/CPC2"
 cpc2_tag="Find_1/CPC2"                                                                # 额外兼任：wandb 项目名下的运行名称
 
-run_stamp_base="${POCKET_RUN_STAMP:-$(date '+%Y%m%dT%H%M%S')}"
+run_stamp_base="${TASK_RUN_STAMP:-$(date '+%Y%m%dT%H%M%S')}"
 cpc1_stamp="${run_stamp_base}_CPC1"
 cpc2_stamp="${run_stamp_base}_CPC2"
 
-# (示例前提：HOME=/home/penghongen、项目目录名为 Pocket_Plus，且外部没有传入 POCKET_RUN_STAMP；以 2026-07-26 16:40:33 为启动时间)
+# (示例前提：HOME=/home/penghongen、项目目录名为 Pocket_Plus，且外部没有传入 TASK_RUN_STAMP；以 2026-07-26 16:40:33 为启动时间)
 # CPC1的运行产物落盘地址: /home/penghongen/Feedback/Pocket_Plus/logs/AdaLigand_Stage1-Find_1-CPC1/Find_1-CPC1____20260726T164033_CPC1
 cpc1_run="${EXPERIMENT_FEEDBACK_ROOT}/logs/${cpc1_experiment_group//\//-}/${cpc1_tag//\//-}____${cpc1_stamp}"
 # CPC2的运行产物落盘地址: /home/penghongen/Feedback/Pocket_Plus/logs/AdaLigand_Stage1-Find_1-CPC2/Find_1-CPC2____20260726T164033_CPC2
@@ -146,7 +146,7 @@ cpc1_overrides=(
 
 # ================================================================== 正式启动命令 ==================================================================
 echo "[Find_1] 启动 CPC1：${cpc1_run}"
-export POCKET_RUN_STAMP="${cpc1_stamp}"
+export TASK_RUN_STAMP="${cpc1_stamp}"
 #################################### 启动正式 CPC1 ####################################
 python -u src/train.py "${cpc1_overrides[@]}" "$@"
 
@@ -173,7 +173,7 @@ cpc2_overrides=(
     "train.scheduler.patience=1"                  # 连续第 2 次验证无足够改进时降低学习率。
     "train.scheduler.stop_after_lr_reductions=1"  # 第一次实际降学习率后结束 CPC2。
 )
-export POCKET_RUN_STAMP="${cpc2_stamp}"
+export TASK_RUN_STAMP="${cpc2_stamp}"
 echo "[Find_1] CPC1 完成，启动 CPC2：${cpc2_run}"
 #################################### 启动正式 CPC2 ####################################
 python -u src/train.py "${cpc2_overrides[@]}" "$@"

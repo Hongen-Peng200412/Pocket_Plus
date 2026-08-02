@@ -10,7 +10,7 @@ fail() {
     exit 2
 }
 
-[[ $# -eq 2 ]] || fail "用法：create_release.sh PROJECT_ROOT RELEASES_ROOT"
+[[ $# -eq 2 ]] || fail "用法：create_release.sh TASK_ROOT RELEASES_ROOT"
 source_root="$(cd "$1" && pwd -P)"
 releases_root="$2"
 project_name="$(basename "${source_root}")"
