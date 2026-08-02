@@ -1,6 +1,6 @@
 # Stage1 推理入口与生产阶段
 
-本文说明 `python -m src.inference.cli` 的六个稳定子命令、每个子命令需要的输入、发布的文件角色、阶段依赖、分片规则和续跑状态。读者无需阅读推理源码即可判断应该执行哪个子命令，以及一个 PDB 的输出能否被后续阶段读取。
+本文说明 `python -m src.inference.cli` 的九个稳定子命令、每个子命令需要的输入、发布的文件角色、阶段依赖、分片规则和续跑状态。读者无需阅读推理源码即可判断应该执行哪个子命令，以及一个 PDB 的输出能否被后续阶段读取。
 
 命令参数 `--producer` 表示 Stage1 模型来源，当前只允许 `Find_0`、`Find_1`、`Find_2` 和 `unet_c1`。命令参数 `--split` 表示数据划分，正式推理使用 `calibration`、`validation` 或 `train`。`pdb_id` 表示小写 PDB 身份。
 
@@ -35,7 +35,7 @@
 
 ### 1.3 checkpoint 与配置
 
-除 `freeze-thresholds` 外，五个模型推理子命令都要求 `--checkpoint`，即模型检查点路径。运行时优先从模型检查点所属训练目录读取：
+除 `freeze-thresholds` 外，八个模型推理子命令都要求 `--checkpoint`，即模型检查点路径。运行时优先从模型检查点所属训练目录读取：
 
 - `src_snapshot/src/`：训练时冻结的源码快照。
 - 唯一存在的 `config.yaml` 或 `resolved_config.yaml`：训练时解析后的配置。
@@ -56,7 +56,7 @@
 {output_root}/{producer}/calibration/
 ```
 
-## 2. 六个稳定子命令
+## 2. 九个稳定子命令
 
 ### 2.1 子命令与产物
 
@@ -66,8 +66,11 @@
 | --- | --- | --- | --- |
 | `cal-probability` | 固定为 `calibration` | 模型检查点、A—G 数据 | `probability` |
 | `freeze-thresholds` | 固定为 `calibration` | 清单中全部 PDB 的可读 `probability`、真实配体实例 | 模型来源级 `thresholds.json`、`threshold_scan.npz`、`metrics.json` 和 `_COMPLETE` |
+| `cal-produce-f1` | 固定为 `calibration` | 已有 `probability`、模型来源级校准、模型检查点 | `components`、`F1_centered` |
 | `cal-produce-f1-clg` | 固定为 `calibration` | 已有 `probability`、模型来源级校准、模型检查点 | `components`、`F1_centered`、`CLG_centered` |
+| `val-produce-prob-f1` | 固定为 `validation` | 模型来源级校准、模型检查点、A—G 数据 | `probability`、`components`、`F1_centered` |
 | `val-produce-prob-f1-clg` | 固定为 `validation` | 模型来源级校准、模型检查点、A—G 数据 | `probability`、`components`、`F1_centered`、`CLG_centered` |
+| `train-produce-prob-f1` | 固定为 `train` | 模型来源级校准、模型检查点、A—G 数据 | `probability`、`components`、`F1_centered` |
 | `train-produce-prob-f1-clg` | 固定为 `train` | 模型来源级校准、模型检查点、A—G 数据 | `probability`、`components`、`F1_centered`、`CLG_centered` |
 | `selected-refined` | 由 `--split` 指定 | 可读 `components`、`selection.npz`、`geometry.json`、模型检查点、A—G 数据 | `Selected_Refined_Centered` |
 
@@ -94,19 +97,37 @@ python -m src.inference.cli cal-probability --producer <PRODUCER> --pdb-list <PD
 python -m src.inference.cli freeze-thresholds --producer <PRODUCER> --pdb-list <PDB_LIST> --data-root <DATA_ROOT> --output-root <OUTPUT_ROOT>
 ```
 
-补齐 calibration 的组件与两类居中归档：
+补齐 calibration 的组件与 F1 居中归档：
+
+```text
+python -m src.inference.cli cal-produce-f1 --producer <PRODUCER> --pdb-list <PDB_LIST> --data-root <DATA_ROOT> --checkpoint <CHECKPOINT> --device <DEVICE> --output-root <OUTPUT_ROOT>
+```
+
+补齐 calibration 的组件、F1 与 CLG 居中归档：
 
 ```text
 python -m src.inference.cli cal-produce-f1-clg --producer <PRODUCER> --pdb-list <PDB_LIST> --data-root <DATA_ROOT> --checkpoint <CHECKPOINT> --device <DEVICE> --output-root <OUTPUT_ROOT>
 ```
 
-连续生产 validation：
+连续生产 validation 到 F1 居中归档：
+
+```text
+python -m src.inference.cli val-produce-prob-f1 --producer <PRODUCER> --pdb-list <PDB_LIST> --data-root <DATA_ROOT> --checkpoint <CHECKPOINT> --device <DEVICE> --output-root <OUTPUT_ROOT>
+```
+
+连续生产 validation 到 CLG 居中归档：
 
 ```text
 python -m src.inference.cli val-produce-prob-f1-clg --producer <PRODUCER> --pdb-list <PDB_LIST> --data-root <DATA_ROOT> --checkpoint <CHECKPOINT> --device <DEVICE> --output-root <OUTPUT_ROOT>
 ```
 
-连续生产 train：
+连续生产 train 到 F1 居中归档：
+
+```text
+python -m src.inference.cli train-produce-prob-f1 --producer <PRODUCER> --pdb-list <PDB_LIST> --data-root <DATA_ROOT> --checkpoint <CHECKPOINT> --device <DEVICE> --output-root <OUTPUT_ROOT>
+```
+
+连续生产 train 到 CLG 居中归档：
 
 ```text
 python -m src.inference.cli train-produce-prob-f1-clg --producer <PRODUCER> --pdb-list <PDB_LIST> --data-root <DATA_ROOT> --checkpoint <CHECKPOINT> --device <DEVICE> --output-root <OUTPUT_ROOT>
@@ -120,7 +141,7 @@ python -m src.inference.cli selected-refined --split <calibration|validation|tra
 
 ### 2.3 可选参数
 
-除 `freeze-thresholds` 外的五个 PDB 级推理子命令都接受：
+除 `freeze-thresholds` 外的八个 PDB 级推理子命令都接受：
 
 | 参数 | 类型与默认值 | 具体作用 |
 | --- | --- | --- |
@@ -130,9 +151,9 @@ python -m src.inference.cli selected-refined --split <calibration|validation|tra
 | `--allow-current-workspace-code` | 开关，默认关闭 | checkpoint 缺少源码快照时允许使用当前工作区源码 |
 | `--window-batch-size` | 正整数，默认 `1` | 一次模型调用包含的完整图窗口数 |
 | `--centered-batch-size` | 正整数，默认 `12` | 一次 centered 完整 wrapper forward 包含的 80³ BOX 数；尾批可以更短 |
-| `--cache-max-bytes` | 整数，默认 `536870912` | 单 PDB Dataset 缓存上限，单位 byte |
+| `--cache-max-bytes` | 整数，默认 `536870912000` | 当前推理进程的 Dataset 缓存上限，单位 byte；等于 500 GiB，只限制最多保留多少缓存，不预先分配内存 |
 
-生成 components 的三个子命令还接受：
+生成 components 的六个子命令还接受：
 
 | 参数 | 类型与默认值 | 具体作用 |
 | --- | --- | --- |
@@ -164,11 +185,11 @@ cal-probability
     ↓
 freeze-thresholds
     ↓
-cal-produce-f1-clg
+cal-produce-f1 ──→ 同目录按需补充 CLG：cal-produce-f1-clg
 
 freeze-thresholds
-    ├──→ val-produce-prob-f1-clg
-    └──→ train-produce-prob-f1-clg
+    ├──→ val-produce-prob-f1 ──→ 同目录按需补充 CLG：val-produce-prob-f1-clg
+    └──→ train-produce-prob-f1 ──→ 同目录按需补充 CLG：train-produce-prob-f1-clg
 
 Selector selection.npz
     ↓
@@ -178,8 +199,8 @@ selected-refined
 具体约束：
 
 1. `freeze-thresholds` 要求清单中每个 calibration PDB 的 `probability` 都可读，不允许用部分清单冻结阈值。
-2. `cal-produce-f1-clg` 不重新生成 probability；缺少任一请求 PDB 的 probability 完成标记时直接失败。
-3. validation 和 train 命令在同一个 PDB 租约内依次补齐 probability、components、F1 和 CLG。
+2. `cal-produce-f1` 与 `cal-produce-f1-clg` 都不重新生成 probability；缺少任一请求 PDB 的 probability 完成标记时直接失败。
+3. validation 和 train 的 F1-only 命令在同一个 PDB 租约内依次补齐 probability、components 和 F1。对应 `*-f1-clg` 命令再增加 CLG；若前三个角色已经有 `_COMPLETE`，它们保持不变，只生成缺少的 CLG。
 4. `selected-refined` 要求 `components` 角色可读，并读取 `selection.npz`、`forest.npz`、`clg.npz` 和 `probability/geometry.json`；它不读取 `probability_map.npz`，也不修改已有组件文件。
 
 ## 4. 每个阶段发布的文件
@@ -302,7 +323,7 @@ _BLOB_EXCEED
 
 ## 6. 分片规则
 
-除 `freeze-thresholds` 外，五个 PDB 级推理子命令接受下列分片参数。
+除 `freeze-thresholds` 外，八个 PDB 级推理子命令接受下列分片参数。
 
 `--shard-count n --shard-index i` 选择清单中满足以下关系的记录：
 

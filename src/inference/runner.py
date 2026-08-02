@@ -34,8 +34,6 @@ from src.component_lineage.forest import (
 )
 from src.component_lineage.overlap import build_candidate_occurrence_overlap
 from src.component_lineage.structures import ComponentForest, clgs_from_arrays
-from src.datasets.stage1_requests import centered_start_from_centroid_zyx
-
 from .centered import (
     CenteredGeometry,
     CenteredRequest,
@@ -142,6 +140,13 @@ SelectionPathProvider = Callable[[ProductionTask, Stage1ArtifactPaths], Path]
 
 # 完整图输入提供器把任务身份解析为一次 probability 生产所需的全部冻结输入。
 FullMapInputProvider = Callable[[ProductionTask], FullMapTaskInput]
+
+
+def _load_centered_start_resolver() -> Callable[..., tuple[int, int, int]]:
+    """在 checkpoint 源码激活后加载训练同源的居中 BOX 起点解析函数。"""
+    from src.datasets.stage1_requests import centered_start_from_centroid_zyx
+
+    return centered_start_from_centroid_zyx
 
 
 def make_probability_role_producer(
@@ -336,7 +341,7 @@ def make_component_role_producer(
             denominator=contract.denominator,
             min_voxels=contract.min_voxels,
             max_voxels=contract.max_voxels,
-            resolve_box_start=centered_start_from_centroid_zyx,
+            resolve_box_start=_load_centered_start_resolver(),
         )
         # int, t_F1 层满足体积与 bbox 约束的 component 数
         n_f1_eligible = count_f1_eligible(
@@ -451,7 +456,7 @@ def make_f1_clg_centered_role_producers(
             stage1_model_name=task.stage1_model_name,
             split=task.split,
             pdb_id=task.pdb_id,
-            resolve_box_start=centered_start_from_centroid_zyx,
+            resolve_box_start=_load_centered_start_resolver(),
             wrapper=wrapper,
             batch_builder=batch_builder,
             centered_batch_size=centered_batch_size,
@@ -483,7 +488,7 @@ def make_f1_clg_centered_role_producers(
             stage1_model_name=task.stage1_model_name,
             split=task.split,
             pdb_id=task.pdb_id,
-            resolve_box_start=centered_start_from_centroid_zyx,
+            resolve_box_start=_load_centered_start_resolver(),
             wrapper=wrapper,
             batch_builder=batch_builder,
             centered_batch_size=centered_batch_size,
@@ -563,7 +568,7 @@ def make_selected_refined_role_producer(
             stage1_model_name=task.stage1_model_name,
             split=task.split,
             pdb_id=task.pdb_id,
-            resolve_box_start=centered_start_from_centroid_zyx,
+            resolve_box_start=_load_centered_start_resolver(),
             wrapper=wrapper,
             batch_builder=batch_builder,
             centered_batch_size=centered_batch_size,
@@ -741,6 +746,21 @@ class Stage1ProductionRunner:
         输出:
             - records: tuple[RunRecord,...], 与输入固定顺序一致的续跑结果
         """
+        return self._run_calibration_f1(tasks, include_clg=True)
+
+    def run_cal_produce_f1(
+        self,
+        tasks: Sequence[ProductionTask],
+    ) -> tuple[RunRecord, ...]:
+        """为已有 calibration probability 只补齐 components 与 F1-centered。"""
+        return self._run_calibration_f1(tasks, include_clg=False)
+
+    def _run_calibration_f1(
+        self,
+        tasks: Sequence[ProductionTask],
+        include_clg: bool,
+    ) -> tuple[RunRecord, ...]:
+        """执行 calibration 共用前置检查，并按需包含 CLG-centered。"""
         task_tuple = tuple(tasks)
         self._require_calibration_frozen(task_tuple)
         for task in task_tuple:
@@ -752,10 +772,19 @@ class Stage1ProductionRunner:
             )
             if not is_role_complete(paths, "probability"):
                 raise RuntimeError(
-                    f"cal-produce-F1-CLG 要求既有 probability `_COMPLETE`: {task}"
+                    f"cal-produce-F1 要求既有 probability `_COMPLETE`: {task}"
                 )
-        roles = ("components", "F1_centered", "CLG_centered")
+        roles = ("components", "F1_centered")
+        if include_clg:
+            roles = (*roles, "CLG_centered")
         return tuple(self.run_task(task, roles) for task in task_tuple)
+
+    def run_val_produce_prob_f1(
+        self,
+        tasks: Sequence[ProductionTask],
+    ) -> tuple[RunRecord, ...]:
+        """为 validation 依次补齐 probability、components 与 F1-centered。"""
+        return self._run_probability_f1(tasks, include_clg=False)
 
     def run_val_produce_prob_f1_clg(
         self,
@@ -770,7 +799,14 @@ class Stage1ProductionRunner:
         输出:
             - records: tuple[RunRecord,...], 与输入固定顺序一致的续跑结果
         """
-        return self._run_probability_f1_clg(tasks)
+        return self._run_probability_f1(tasks, include_clg=True)
+
+    def run_train_produce_prob_f1(
+        self,
+        tasks: Sequence[ProductionTask],
+    ) -> tuple[RunRecord, ...]:
+        """为 train 依次补齐 probability、components 与 F1-centered。"""
+        return self._run_probability_f1(tasks, include_clg=False)
 
     def run_train_produce_prob_f1_clg(
         self,
@@ -785,11 +821,12 @@ class Stage1ProductionRunner:
         输出:
             - records: tuple[RunRecord,...], 与输入固定顺序一致的续跑结果
         """
-        return self._run_probability_f1_clg(tasks)
+        return self._run_probability_f1(tasks, include_clg=True)
 
-    def _run_probability_f1_clg(
+    def _run_probability_f1(
         self,
         tasks: Sequence[ProductionTask],
+        include_clg: bool,
     ) -> tuple[RunRecord, ...]:
         """
         为 validation/train 共用正式 role 顺序与阈值前置检查。
@@ -802,12 +839,9 @@ class Stage1ProductionRunner:
         """
         task_tuple = tuple(tasks)
         self._require_calibration_frozen(task_tuple)
-        roles = (
-            "probability",
-            "components",
-            "F1_centered",
-            "CLG_centered",
-        )
+        roles = ("probability", "components", "F1_centered")
+        if include_clg:
+            roles = (*roles, "CLG_centered")
         return tuple(self.run_task(task, roles) for task in task_tuple)
 
     def _require_calibration_frozen(

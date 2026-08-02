@@ -159,7 +159,7 @@ def _common_cli_arguments(
     config: Path,
     pdb_list: Path,
 ) -> list[str]:
-    """返回五个生产命令共用的显式参数. """
+    """返回八个 PDB 级模型推理命令共用的显式参数。"""
     return [
         command,
         "--producer",
@@ -235,6 +235,7 @@ def test_runtime_assembly_uses_in_memory_dataset_and_find_full_hardmask(
         centered_batch_size=12,
         wrapper_loader=lambda **kwargs: wrapper,
     )
+    assert runtime.cache_max_bytes == 500 * 1024**3
     task = ProductionTask("Find_0", "calibration", "1abc")
     inputs = runtime.full_map_input(task)
     batch = inputs.window_batch_builder([(0, 0, 0)])
@@ -266,7 +267,7 @@ def test_cli_calibration_then_cal_centered_is_resumable(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """合成 A—G fixture 贯通 probability→freeze→cal F1/CLG, 并验证续跑跳过. """
+    """贯通 F1 优先生产、同目录补充 CLG 和再次运行跳过。"""
     data_root = tmp_path / "ag"
     output_root = tmp_path / "outputs"
     _write_ag_fixture(data_root)
@@ -325,7 +326,7 @@ def test_cli_calibration_then_cal_centered_is_resumable(
 
     assert main(
         _common_cli_arguments(
-            "cal-produce-f1-clg",
+            "cal-produce-f1",
             data_root,
             output_root,
             checkpoint,
@@ -335,15 +336,57 @@ def test_cli_calibration_then_cal_centered_is_resumable(
     ) == 0
     assert is_role_complete(paths, "components")
     assert is_role_complete(paths, "F1_centered")
-    assert is_role_complete(paths, "CLG_centered")
+    assert not is_role_complete(paths, "CLG_centered")
+    assert not paths.centered_npz("CLG_centered").exists()
 
-    for command, split in (
-        ("val-produce-prob-f1-clg", "validation"),
-        ("train-produce-prob-f1-clg", "train"),
+    preserved = (
+        paths.probability_npz,
+        paths.probability_geometry_json,
+        paths.forest_npz,
+        paths.clg_npz,
+        paths.overlap_npz,
+        paths.component_summary_json,
+        paths.centered_npz("F1_centered"),
+        paths.role_complete_path("probability"),
+        paths.role_complete_path("components"),
+        paths.role_complete_path("F1_centered"),
+    )
+    before_clg = {path: path.read_bytes() for path in preserved}
+    assert main(
+        _common_cli_arguments(
+            "cal-produce-f1-clg",
+            data_root,
+            output_root,
+            checkpoint,
+            config,
+            pdb_list,
+        )
+    ) == 0
+    assert is_role_complete(paths, "CLG_centered")
+    assert before_clg == {path: path.read_bytes() for path in preserved}
+
+    clg_bytes = paths.centered_npz("CLG_centered").read_bytes()
+    clg_marker_bytes = paths.role_complete_path("CLG_centered").read_bytes()
+    assert main(
+        _common_cli_arguments(
+            "cal-produce-f1-clg",
+            data_root,
+            output_root,
+            checkpoint,
+            config,
+            pdb_list,
+        )
+    ) == 0
+    assert paths.centered_npz("CLG_centered").read_bytes() == clg_bytes
+    assert paths.role_complete_path("CLG_centered").read_bytes() == clg_marker_bytes
+
+    for f1_command, clg_command, split in (
+        ("val-produce-prob-f1", "val-produce-prob-f1-clg", "validation"),
+        ("train-produce-prob-f1", "train-produce-prob-f1-clg", "train"),
     ):
         assert main(
             _common_cli_arguments(
-                command,
+                f1_command,
                 data_root,
                 output_root,
                 checkpoint,
@@ -352,8 +395,29 @@ def test_cli_calibration_then_cal_centered_is_resumable(
             )
         ) == 0
         split_paths = Stage1ArtifactPaths(output_root, "Find_0", split, "1abc")
-        for role in ("probability", "components", "F1_centered", "CLG_centered"):
+        for role in ("probability", "components", "F1_centered"):
             assert is_role_complete(split_paths, role)
+        assert not is_role_complete(split_paths, "CLG_centered")
+        before_clg = {
+            path: path.read_bytes()
+            for path in (
+                split_paths.probability_npz,
+                split_paths.forest_npz,
+                split_paths.centered_npz("F1_centered"),
+            )
+        }
+        assert main(
+            _common_cli_arguments(
+                clg_command,
+                data_root,
+                output_root,
+                checkpoint,
+                config,
+                pdb_list,
+            )
+        ) == 0
+        assert is_role_complete(split_paths, "CLG_centered")
+        assert before_clg == {path: path.read_bytes() for path in before_clg}
 
 
 def test_freeze_cli_default_max_voxels_is_frozen_q95_value() -> None:
@@ -394,6 +458,29 @@ def test_centered_cli_default_batch_size_is_twelve() -> None:
         ]
     )
     assert arguments.centered_batch_size == 12
+
+
+def test_inference_cli_default_cache_allows_five_hundred_gibibytes() -> None:
+    """正式 CLI 缺省缓存上限为 500 GiB，且该值不会预先分配内存。"""
+    arguments = build_parser().parse_args(
+        [
+            "cal-probability",
+            "--producer",
+            "Find_0",
+            "--pdb-list",
+            "ids.json",
+            "--data-root",
+            "ag",
+            "--checkpoint",
+            "BEST.ckpt",
+            "--device",
+            "cuda:0",
+            "--output-root",
+            "out",
+        ]
+    )
+
+    assert arguments.cache_max_bytes == 500 * 1024**3
 
 
 def test_selected_role_loads_selection_reruns_and_publishes(tmp_path: Path) -> None:
