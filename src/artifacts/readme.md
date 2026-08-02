@@ -104,8 +104,11 @@ BOX 池和 centered 几何都不保存实际密度裁剪。Dataset 或推理运�
 | 训练预定位 BOX 池 | `python -m src.datasets.ops.stage1_box_pool` |
 | calibration 完整图概率 | `python -m src.inference.cli cal-probability` |
 | 模型来源级阈值和校准指标 | `python -m src.inference.cli freeze-thresholds` |
+| calibration 组件与 F1 centered | `python -m src.inference.cli cal-produce-f1` |
 | calibration 组件、F1 centered、CLG centered | `python -m src.inference.cli cal-produce-f1-clg` |
+| validation 的概率、组件与 F1 centered | `python -m src.inference.cli val-produce-prob-f1` |
 | validation 的概率、组件、F1 centered、CLG centered | `python -m src.inference.cli val-produce-prob-f1-clg` |
+| train 的概率、组件与 F1 centered | `python -m src.inference.cli train-produce-prob-f1` |
 | train 的概率、组件、F1 centered、CLG centered | `python -m src.inference.cli train-produce-prob-f1-clg` |
 | Selector 冻结输入清单 | `python -m src.selector.train --config <selector.yaml>` 在训练启动时创建 |
 | Selector 每 PDB 分数 | `python -m src.selector.inference scores` |
@@ -388,7 +391,7 @@ PDB 处理汇总状态只有 `completed`、`skipped_complete`、`skipped_running
 
 ### 5.1 生产入口与融合规则
 
-`calibration` 的 probability 由 `cal-probability` 生成；`validation` 和 `train` 的 probability 分别由 `val-produce-prob-f1-clg` 与 `train-produce-prob-f1-clg` 在连续生产过程中生成。
+`calibration` 的 probability 由 `cal-probability` 生成；`validation` 的 probability 由 `val-produce-prob-f1` 或 `val-produce-prob-f1-clg` 生成，`train` 的 probability 由 `train-produce-prob-f1` 或 `train-produce-prob-f1-clg` 生成。
 
 - 滑窗形状为 `80×80×80`，步长为 `40×40×40`，不使用空间填充。
 - 每个轴补入最后一个合法起点，使末端被最后一个窗口覆盖。
@@ -504,7 +507,7 @@ python -m src.inference.cli freeze-thresholds --producer <模型来源> --pdb-li
 
 ## 7. 组件森林与组件谱系组产物
 
-`cal-produce-f1-clg`、`val-produce-prob-f1-clg`、`train-produce-prob-f1-clg` 都会产生本节文件。calibration 命令复用既有 probability；validation 和 train 命令先补齐 probability。三者都要求模型来源级校准已经完整发布。
+六个 F1 或 F1/CLG 生产命令都会产生本节文件。calibration 命令复用既有 probability；validation 和 train 命令先补齐 probability。六个命令都要求模型来源级校准已经完整发布。
 
 ### 7.1 `components/forest.npz`
 
@@ -685,7 +688,7 @@ Stage1-Find 前向计算仍可产生交叉注意力后的 `A_feat_L4` 与 `P_fea
 
 ### 9.1 `centered/F1_centered.npz`
 
-生产命令：`cal-produce-f1-clg`、`val-produce-prob-f1-clg` 或 `train-produce-prob-f1-clg`。
+生产命令：`cal-produce-f1`、`val-produce-prob-f1`、`train-produce-prob-f1`，或对应的 `*-f1-clg` 命令。
 
 - 每个归档项对应 `t_F1` 层一个 `candidate_eligible == True` 的组件。
 - 排序键依次是 `probability_mean` 降序、`tree_id` 升序、`node_id` 升序。
