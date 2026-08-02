@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
 import numpy as np
+import torch
 
 from .centered import CenteredRequest
 from .checkpoint import load_stage1_wrapper, resolve_checkpoint_config_path
@@ -486,7 +487,14 @@ class _TaskDatasetMaterializer:
             )
             for request in requests
         ]
-        return _move_batch_to_device(self.collator(samples), self.device)
+        batch = self.collator(samples)
+        if "atom_global_indices" in batch and "atom_label" not in batch:
+            # 旧版 Find 的伪原子注入会读取该监督字段的数据类型，但推理不使用其数值。
+            batch["atom_label"] = batch["atom_global_indices"].new_zeros(
+                batch["atom_global_indices"].shape,
+                dtype=torch.bool,
+            )
+        return _move_batch_to_device(batch, self.device)
 
 
 

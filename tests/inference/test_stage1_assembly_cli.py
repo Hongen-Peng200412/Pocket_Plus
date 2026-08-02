@@ -261,6 +261,8 @@ def test_runtime_assembly_uses_in_memory_dataset_and_find_full_hardmask(
     assert batch["density_input"].shape == (1, 56, *SHAPE)
     assert centered_batch["density_input"].shape == (1, 56, *SHAPE)
     assert batch["atom_global_indices"].tolist() == [0]
+    assert centered_batch["atom_label"].dtype == torch.bool
+    assert centered_batch["atom_label"].tolist() == [False]
     assert bool(inputs.receptor_hardmask_full[0, 0, 0])
     assert grid_loads.count("exp.npz") == 1
     assert grid_loads.count("sim.npz") == 1
