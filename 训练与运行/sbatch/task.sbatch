@@ -16,7 +16,8 @@ fail() {
 task_root=""
 feedback_root=""
 task_path=""
-hold_mode=0
+pre_hold_mode=0
+after_hold_mode=0
 simple_mode=0
 resource_type=""
 gpu_count=0
@@ -31,7 +32,8 @@ while (($# > 0)); do
         --feedback-root) feedback_root="$2"; shift 2 ;;
         --task) task_path="$2"; shift 2 ;;
         --simple) simple_mode="$2"; shift 2 ;;
-        --hold) hold_mode="$2"; shift 2 ;;
+        --pre_hold) pre_hold_mode="$2"; shift 2 ;;
+        --after_hold) after_hold_mode="$2"; shift 2 ;;
         --resource) resource_type="$2"; shift 2 ;;
         --gpus) gpu_count="$2"; shift 2 ;;
         --nodes) node_count="$2"; shift 2 ;;
@@ -71,7 +73,8 @@ fi
 export TASK_ROOT="${task_root}"
 export TASK_FEEDBACK_ROOT="${feedback_root}"
 export TASK_PATH="${task_path}"
-export TASK_HOLD_MODE="${hold_mode}"
+export TASK_PRE_HOLD_MODE="${pre_hold_mode}"
+export TASK_AFTER_HOLD_MODE="${after_hold_mode}"
 export TASK_SIMPLE_MODE="${simple_mode}"
 export TASK_RESOURCE_TYPE="${resource_type}"
 export TASK_GPUS_PER_NODE="${gpu_count}"

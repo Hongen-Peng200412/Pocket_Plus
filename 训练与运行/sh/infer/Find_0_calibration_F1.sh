@@ -2,6 +2,19 @@
 set -euo pipefail
 
 # 本脚本读取已经冻结的 calibration 阈值，只补充 components 与 F1_centered，不重跑完整图概率。
+# 在 Pocket_Plus 服务器项目根目录提交两个 calibration 分片：
+#
+# bash /home/penghongen/My_Project/Pocket_Plus/训练与运行/submit_task.sh \
+#   --sh /home/penghongen/My_Project/Pocket_Plus/训练与运行/sh/infer/Find_0_calibration_F1.sh \
+#   --resource <gpu_resource> \
+#   --gpus 1 \
+#   --cpus 8 \
+#   --array '0-1' \
+#   --after_hold \
+#   --job-name find0_cal_f1
+#
+# 两个数组元素分别读取概率图分片 0 和 1；已有 `_COMPLETE` 产物会按推理管线契约跳过。
+# 将 `<gpu_resource>` 替换为当时可用的 GPU 资源名；`--after_hold` 使每个数组元素完成后保留资源，省略它则完成后自动释放。
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd -P)"
 CONDA_BASE="${CONDA_BASE:-${HOME}/anaconda3}"
@@ -22,20 +35,21 @@ run_root="/home/penghongen/My_Project/feedback_plus/logs/AdaLigand_Stage1-Find_0
 checkpoint="${run_root}/checkpoints/TOP_epoch_00_score_0.2843.ckpt"
 config="${run_root}/config.yaml"
 data_root="/storage/penghongen/AdaLigand/Ori_Data"
-formal_root="/storage/penghongen/AdaLigand_stage1_inference/Find_0-CPC1-ligand_PRAUC_0.675477"
-pdb_list="${formal_root}/inputs/calibration_pdb_ids.json"
+inference_root="/storage/penghongen/AdaLigand_stage1_inference"
+formal_root="${inference_root}/Find_0-CPC1-ligand_PRAUC_0.675477"
+pdb_list="${inference_root}/calibration_pdb_ids.json"
 output_root="${formal_root}/artifacts"
 
-global_shard_count=16                    # calibration 的 100 个唯一 PDB 固定拆成 16 个互斥分片。
+global_shard_count=2                     # 与 calibration probability 相同：两个互斥分片各含 50 个 PDB。
 shard_index="${SLURM_ARRAY_TASK_ID:-0}" # 与 calibration probability 使用相同分片编号。
-centered_batch_size=8                    # A800 smoke 的 12 个 BOX 批量余量过小；正式值降为 8。
-cache_max_bytes=536870912000             # 单进程最多缓存 500 GiB 已读取的 PDB 资产。
+centered_batch_size=8                    # 当前 smoke 的 12 个 BOX 批量余量过小；保守值为 8，正式提交时按可用显存调整。
+cache_max_bytes=107374182400             # 单进程最多缓存 100 GiB 已读取的 PDB 资产。
 max_split_events=1                       # 每条候选谱系最多允许一次拆分事件。
 max_merge_events=1                       # 每条候选谱系最多允许一次合并事件。
 max_nodes_per_clg=32                     # 单个候选谱系组最多保留 32 个组件节点。
 f1_eligible_limit=200                    # t_F1 层候选组件超过 200 时拒绝该 PDB，避免无界居中推理。
 
-[[ -f "${formal_root}/inputs/manifest.json" && -f "${output_root}/Find_0/calibration/thresholds.json" ]] || { echo "缺少冻结阈值或输入 manifest" >&2; exit 2; }
+[[ -f "${pdb_list}" && -f "${output_root}/Find_0/calibration/thresholds.json" ]] || { echo "缺少公共 PDB 清单或冻结阈值" >&2; exit 2; }
 
 cd "${PROJECT_ROOT}"
 python -u -m src.inference.cli cal-produce-f1 \

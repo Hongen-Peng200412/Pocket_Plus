@@ -27,8 +27,10 @@ usage() {
   --gpus N               每个节点的 GPU 数；CPU 任务不填写。
   --cpus N               每个 Slurm task 的 CPU 核数；不填写时按硬件类型推导。
   --nodes N              节点数，默认 1。
-  --array SPEC           原样传给 Slurm，例如 0-11%4。
-  --hold                 allocation 启动后创建 pre_lock，等待人工删除再执行。
+  --array SPEC           原样传给 Slurm，例如 0-11。
+  --pre_hold             allocation 启动后创建 pre_lock，等待人工删除再执行。
+  --after_hold           每次任务脚本结束后创建 try_lock，保留 allocation 供人工复用。
+                         两者都不填写时，任务脚本结束后立即释放 allocation。
   --simple               使用四锁，但不创建 release 和 launch；锁、动态命令与
                          Slurm 日志统一放在 $HOME/SIMPLE_RUN。
   --job-name NAME        Slurm 作业名；默认使用任务脚本文件名。
@@ -68,7 +70,8 @@ gpu_count=""
 cpu_count=""
 node_count=1
 array_spec=""
-hold_mode=0
+pre_hold_mode=0
+after_hold_mode=0
 simple_mode=0
 job_name=""
 partition=""
@@ -112,8 +115,12 @@ while (($# > 0)); do
             array_spec="$2"
             shift 2
             ;;
-        --hold)
-            hold_mode=1
+        --pre_hold)
+            pre_hold_mode=1
+            shift
+            ;;
+        --after_hold)
+            after_hold_mode=1
             shift
             ;;
         --simple)
@@ -300,6 +307,8 @@ printf '[submit_task] 任务根目录：%s\n' "${task_root}"
 printf '[submit_task] 任务：%s\n' "${task_spec}"
 printf '[submit_task] 资源：type=%s nodes=%s gpus_per_node=%s cpus_per_task=%s\n' \
     "${resource_type}" "${node_count}" "${gpu_count}" "${cpu_count}"
+printf '[submit_task] 保留策略：pre_hold=%s after_hold=%s\n' \
+    "${pre_hold_mode}" "${after_hold_mode}"
 if [[ "${simple_mode}" == "1" ]]; then
     printf '[submit_task] 控制目录：%s\n' "${simple_root}"
     printf '[submit_task] simple 模式不创建 release 或 launch。\n'
@@ -318,7 +327,8 @@ sbatch_command=(
     --feedback-root "${feedback_root}" \
     --task "${task_spec}" \
     --simple "${simple_mode}" \
-    --hold "${hold_mode}" \
+    --pre_hold "${pre_hold_mode}" \
+    --after_hold "${after_hold_mode}" \
     --resource "${resource_type}" \
     --gpus "${gpu_count}" \
     --nodes "${node_count}" \

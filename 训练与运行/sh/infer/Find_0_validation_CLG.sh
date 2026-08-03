@@ -2,6 +2,19 @@
 set -euo pipefail
 
 # 后续补跑入口：复用同一正式目录，跳过已完成的概率、组件和 F1 文件，只增加 CLG_centered。
+# 在 Pocket_Plus 服务器项目根目录提交全部 16 个 validation 分片：
+#
+# bash /home/penghongen/My_Project/Pocket_Plus/训练与运行/submit_task.sh \
+#   --sh /home/penghongen/My_Project/Pocket_Plus/训练与运行/sh/infer/Find_0_validation_CLG.sh \
+#   --resource <gpu_resource> \
+#   --gpus 1 \
+#   --cpus 8 \
+#   --array '0-15' \
+#   --after_hold \
+#   --job-name find0_val_clg
+#
+# 本脚本可在 F1 正式任务之后独立续跑；完整的概率、组件和 F1 产物不会重复计算。
+# 将 `<gpu_resource>` 替换为当时可用的 GPU 资源名；`--after_hold` 使每个数组元素完成后保留资源，省略它则完成后自动释放。
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd -P)"
 CONDA_BASE="${CONDA_BASE:-${HOME}/anaconda3}"
@@ -21,15 +34,16 @@ run_root="/home/penghongen/My_Project/feedback_plus/logs/AdaLigand_Stage1-Find_0
 checkpoint="${run_root}/checkpoints/TOP_epoch_00_score_0.2843.ckpt"
 config="${run_root}/config.yaml"
 data_root="/storage/penghongen/AdaLigand/Ori_Data"
-formal_root="/storage/penghongen/AdaLigand_stage1_inference/Find_0-CPC1-ligand_PRAUC_0.675477"
-pdb_list="${formal_root}/inputs/train_pdb_ids.json"
+inference_root="/storage/penghongen/AdaLigand_stage1_inference"
+formal_root="${inference_root}/Find_0-CPC1-ligand_PRAUC_0.675477"
+pdb_list="${inference_root}/validation_pdb_ids.json"
 output_root="${formal_root}/artifacts"
 
-global_shard_count=16                    # 必须与此前 train 分片总数一致。
+global_shard_count=16                    # 必须与此前 validation 分片总数一致。
 shard_index="${SLURM_ARRAY_TASK_ID:-0}" # 只补当前全局分片；不同任务不得处理同一编号。
 window_batch_size=8                      # 只有缺少旧产物时才会使用；完整分片通常直接跳过概率角色。
-centered_batch_size=8                    # A800 正式居中批量。
-cache_max_bytes=536870912000             # 单进程 Dataset 缓存上限 500 GiB。
+centered_batch_size=8                    # 当前 smoke 验证的保守居中批量；正式提交时按可用显存调整。
+cache_max_bytes=107374182400             # 单进程 Dataset 缓存上限 100 GiB。
 max_split_events=1                       # 每条候选谱系最多一次拆分。
 max_merge_events=1                       # 每条候选谱系最多一次合并。
 max_nodes_per_clg=32                     # 单个候选谱系组最多 32 个组件节点。
@@ -37,7 +51,7 @@ f1_eligible_limit=200                    # t_F1 层候选组件数上限。
 
 [[ -f "${output_root}/Find_0/calibration/thresholds.json" ]] || { echo "缺少冻结阈值" >&2; exit 2; }
 cd "${PROJECT_ROOT}"
-python -u -m src.inference.cli train-produce-prob-f1-clg \
+python -u -m src.inference.cli val-produce-prob-f1-clg \
     --producer Find_0 --pdb-list "${pdb_list}" \
     --shard-index "${shard_index}" --shard-count "${global_shard_count}" \
     --data-root "${data_root}" --checkpoint "${checkpoint}" --config "${config}" \

@@ -182,7 +182,7 @@ cpc2_best="${cpc2_run}/checkpoints/BEST.ckpt"
 
 
 # -----------------------------------------------------------------
-# 缺少 CPC2 BEST 时返回失败，四锁执行器将进入 try_lock。
+# 缺少 CPC2 BEST 时返回失败；只有提交时使用 --after_hold 才会进入 try_lock 并保留资源。
 [[ -f "${cpc2_best}" ]] || {
     echo "[Find_1][错误] CPC2 没有产生 BEST.ckpt：${cpc2_best}" >&2
     exit 1

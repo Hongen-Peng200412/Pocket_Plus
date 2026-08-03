@@ -4,6 +4,7 @@ import json
 import os
 import shutil
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -152,6 +153,52 @@ def test_absolute_and_relative_task_paths_produce_same_frozen_task(
     )
 
 
+def test_submitter_forwards_pre_hold_and_after_hold_without_old_hold(
+    tmp_path: Path,
+) -> None:
+    """提交器应转发两个独立保留开关，并拒绝已经删除的 hold 参数。"""
+
+    bash = _find_bash()
+    copied_project = tmp_path / "AdaLigand"
+    copied_runner = copied_project / "训练与运行"
+    shutil.copytree(RUNNER_DIRECTORY, copied_runner)
+    task_script = copied_runner / "sh" / "smoke.sh"
+    task_script.parent.mkdir(exist_ok=True)
+    task_script.write_text("#!/usr/bin/env bash\n", encoding="utf-8", newline="\n")
+
+    capture_path = tmp_path / "hold-options.arguments"
+    completed = _run_submitter(
+        bash,
+        copied_runner / "submit_task.sh",
+        capture_path,
+        [
+            "--sh",
+            "smoke.sh",
+            "--resource",
+            "cpu",
+            "--cpus",
+            "1",
+            "--pre_hold",
+            "--after_hold",
+        ],
+        cwd=tmp_path,
+    )
+    assert completed.returncode == 0, completed.stderr
+    submitted = capture_path.read_text(encoding="utf-8").splitlines()
+    assert _argument_value(submitted, "--pre_hold") == "1"
+    assert _argument_value(submitted, "--after_hold") == "1"
+
+    rejected = _run_submitter(
+        bash,
+        copied_runner / "submit_task.sh",
+        tmp_path / "old-hold.arguments",
+        ["--sh", "smoke.sh", "--resource", "cpu", "--cpus", "1", "--hold"],
+        cwd=tmp_path,
+    )
+    assert rejected.returncode == 2
+    assert "未知参数：--hold" in rejected.stderr
+
+
 def test_task_root_selects_another_project_and_rejects_outside_script(
     tmp_path: Path,
 ) -> None:
@@ -224,9 +271,7 @@ def test_full_runtime_freezes_copied_project_and_records_generic_stamp(
     task_script.write_text(
         "#!/usr/bin/env bash\n"
         "set -euo pipefail\n"
-        "printf '%s\\n' \"${TASK_RUN_STAMP}\" >\"${TEST_OUTPUT}\"\n"
-        "rm -f -- \"${EXPERIMENT_FEEDBACK_ROOT}/allocations/"
-        "${SLURM_JOB_ID}/after_lock_${SLURM_JOB_ID}\"\n",
+        "printf '%s\\n' \"${TASK_RUN_STAMP}\" >\"${TEST_OUTPUT}\"\n",
         encoding="utf-8",
         newline="\n",
     )
@@ -257,7 +302,9 @@ def test_full_runtime_freezes_copied_project_and_records_generic_stamp(
             "训练与运行/sh/runtime_contract.sh",
             "--simple",
             "0",
-            "--hold",
+            "--pre_hold",
+            "0",
+            "--after_hold",
             "0",
             "--resource",
             "cpu",
@@ -299,8 +346,7 @@ def test_simple_runtime_uses_same_task_root_without_release(
     task_script.write_text(
         "#!/usr/bin/env bash\n"
         "set -euo pipefail\n"
-        "pwd -P >\"${TEST_OUTPUT}\"\n"
-        "rm -f -- \"${HOME}/SIMPLE_RUN/after_lock_${SLURM_JOB_ID}\"\n",
+        "pwd -P >\"${TEST_OUTPUT}\"\n",
         encoding="utf-8",
         newline="\n",
     )
@@ -333,7 +379,9 @@ def test_simple_runtime_uses_same_task_root_without_release(
             "训练与运行/sh/simple_contract.sh",
             "--simple",
             "1",
-            "--hold",
+            "--pre_hold",
+            "0",
+            "--after_hold",
             "0",
             "--resource",
             "cpu",
@@ -357,3 +405,185 @@ def test_simple_runtime_uses_same_task_root_without_release(
     assert working_directory.endswith("/AdaLigand")
     assert not (temporary_home / "Feedback").exists()
     assert not (temporary_home / "SIMPLE_RUN" / "after_lock_900002").exists()
+
+
+def _wait_for_path(path: Path, process: subprocess.Popen[str]) -> None:
+    """等待控制文件出现，同时保证模拟 allocation 没有提前退出。"""
+
+    deadline = time.monotonic() + 10.0
+    while time.monotonic() < deadline:
+        if path.exists():
+            return
+        if process.poll() is not None:
+            stdout, stderr = process.communicate()
+            raise AssertionError(f"allocation 提前退出: {stdout=} {stderr=}")
+        time.sleep(0.02)
+    raise AssertionError(f"等待控制文件超时: {path}")
+
+
+def test_pre_hold_delays_first_run_without_enabling_after_hold(tmp_path: Path) -> None:
+    """pre_hold 应只延迟第一次执行，任务完成后仍按默认策略自动释放。"""
+
+    bash = _find_bash(required_command="setsid")
+    copied_project = tmp_path / "AdaLigand"
+    copied_runner = copied_project / "训练与运行"
+    shutil.copytree(RUNNER_DIRECTORY, copied_runner)
+    task_script = copied_runner / "sh" / "pre_hold_contract.sh"
+    task_script.write_text(
+        "#!/usr/bin/env bash\nset -euo pipefail\nprintf done >\"${TEST_OUTPUT}\"\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    temporary_home = tmp_path / "home"
+    temporary_home.mkdir()
+    output_path = tmp_path / "pre-hold-output.txt"
+    environment = os.environ.copy()
+    environment["PATH"] = os.pathsep.join((str(Path(bash).parent), environment.get("PATH", "")))
+    environment.update(
+        {
+            "HOME": _bash_path(bash, temporary_home),
+            "SLURM_JOB_ID": "900003",
+            "TASK_LOCK_POLL_SECONDS": "0.01",
+            "TASK_KILL_POLL_SECONDS": "0.01",
+            "TEST_OUTPUT": _bash_path(bash, output_path),
+        }
+    )
+    process = subprocess.Popen(
+        [
+            bash,
+            _bash_path(bash, copied_runner / "sbatch" / "task.sbatch"),
+            "--task-root", _bash_path(bash, copied_project),
+            "--feedback-root", "",
+            "--task", "训练与运行/sh/pre_hold_contract.sh",
+            "--simple", "1",
+            "--pre_hold", "1",
+            "--after_hold", "0",
+            "--resource", "cpu",
+            "--gpus", "0",
+            "--nodes", "1",
+            "--cpus", "1",
+            "--array", "",
+        ],
+        env=environment,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        encoding="utf-8",
+    )
+    pre_lock = temporary_home / "SIMPLE_RUN" / "pre_lock_900003"
+    try:
+        _wait_for_path(pre_lock, process)
+        assert not output_path.exists()
+        pre_lock.unlink()
+        stdout, stderr = process.communicate(timeout=10)
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.communicate()
+    assert process.returncode == 0, (stdout, stderr)
+    assert output_path.read_text(encoding="utf-8") == "done"
+    assert not (temporary_home / "SIMPLE_RUN" / "try_lock_900003").exists()
+
+
+def test_after_hold_retains_allocation_after_run(tmp_path: Path) -> None:
+    """after_hold 应在任务结束后建立 try_lock，直到人工删除 after_lock。"""
+
+    bash = _find_bash(required_command="setsid")
+    copied_project = tmp_path / "AdaLigand"
+    copied_runner = copied_project / "训练与运行"
+    shutil.copytree(RUNNER_DIRECTORY, copied_runner)
+    task_script = copied_runner / "sh" / "after_hold_contract.sh"
+    task_script.write_text("#!/usr/bin/env bash\nset -euo pipefail\nexit 0\n", encoding="utf-8", newline="\n")
+    temporary_home = tmp_path / "home"
+    temporary_home.mkdir()
+    environment = os.environ.copy()
+    environment["PATH"] = os.pathsep.join((str(Path(bash).parent), environment.get("PATH", "")))
+    environment.update(
+        {
+            "HOME": _bash_path(bash, temporary_home),
+            "SLURM_JOB_ID": "900004",
+            "TASK_LOCK_POLL_SECONDS": "0.01",
+            "TASK_KILL_POLL_SECONDS": "0.01",
+        }
+    )
+    process = subprocess.Popen(
+        [
+            bash,
+            _bash_path(bash, copied_runner / "sbatch" / "task.sbatch"),
+            "--task-root", _bash_path(bash, copied_project),
+            "--feedback-root", "",
+            "--task", "训练与运行/sh/after_hold_contract.sh",
+            "--simple", "1",
+            "--pre_hold", "0",
+            "--after_hold", "1",
+            "--resource", "cpu",
+            "--gpus", "0",
+            "--nodes", "1",
+            "--cpus", "1",
+            "--array", "",
+        ],
+        env=environment,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        encoding="utf-8",
+    )
+    control_root = temporary_home / "SIMPLE_RUN"
+    try_lock = control_root / "try_lock_900004"
+    after_lock = control_root / "after_lock_900004"
+    try:
+        _wait_for_path(try_lock, process)
+        assert process.poll() is None
+        assert after_lock.is_file()
+        after_lock.unlink()
+        stdout, stderr = process.communicate(timeout=10)
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.communicate()
+    assert process.returncode == 0, (stdout, stderr)
+    assert not try_lock.exists()
+
+
+def test_default_release_preserves_failed_task_exit_code(tmp_path: Path) -> None:
+    """未启用 after_hold 时，失败任务应立即释放并成为 Slurm Job 的退出码。"""
+
+    bash = _find_bash(required_command="setsid")
+    copied_project = tmp_path / "AdaLigand"
+    copied_runner = copied_project / "训练与运行"
+    shutil.copytree(RUNNER_DIRECTORY, copied_runner)
+    task_script = copied_runner / "sh" / "failure_contract.sh"
+    task_script.write_text("#!/usr/bin/env bash\nexit 7\n", encoding="utf-8", newline="\n")
+    temporary_home = tmp_path / "home"
+    temporary_home.mkdir()
+    environment = os.environ.copy()
+    environment["PATH"] = os.pathsep.join((str(Path(bash).parent), environment.get("PATH", "")))
+    environment.update(
+        {
+            "HOME": _bash_path(bash, temporary_home),
+            "SLURM_JOB_ID": "900005",
+            "TASK_LOCK_POLL_SECONDS": "0.01",
+            "TASK_KILL_POLL_SECONDS": "0.01",
+        }
+    )
+    completed = subprocess.run(
+        [
+            bash,
+            _bash_path(bash, copied_runner / "sbatch" / "task.sbatch"),
+            "--task-root", _bash_path(bash, copied_project),
+            "--feedback-root", "",
+            "--task", "训练与运行/sh/failure_contract.sh",
+            "--simple", "1",
+            "--pre_hold", "0",
+            "--after_hold", "0",
+            "--resource", "cpu",
+            "--gpus", "0",
+            "--nodes", "1",
+            "--cpus", "1",
+            "--array", "",
+        ],
+        env=environment,
+        capture_output=True,
+        encoding="utf-8",
+        timeout=10,
+    )
+    assert completed.returncode == 7, completed.stderr
+    assert not (temporary_home / "SIMPLE_RUN" / "try_lock_900005").exists()

@@ -4,8 +4,8 @@
 # 完整模式在每一次实际执行前从 TASK_ROOT 创建或复用 release：
 #
 # allocations/
-# ├── pre_lock_<job-id>       # 仅 --hold 时创建；删除后开始
-# ├── try_lock_<job-id>       # 成功、失败或 kill 后创建；删除后再次执行
+# ├── pre_lock_<job-id>       # 仅 --pre_hold 时创建；删除后开始
+# ├── try_lock_<job-id>       # 仅 --after_hold 时在执行结束后创建；删除后再次执行
 # └── <job-id>/
 #     ├── after_lock_<job-id> # 删除后退出并释放 allocation
 #     ├── kill_lock_<job-id>  # 人工创建；哨兵终止当前进程组
@@ -18,6 +18,8 @@
 run_allocation() {
     local job_id="${SLURM_JOB_ID:?缺少 SLURM_JOB_ID}"
     local simple_mode="${TASK_SIMPLE_MODE:-0}"
+    local pre_hold_mode="${TASK_PRE_HOLD_MODE:-0}"
+    local after_hold_mode="${TASK_AFTER_HOLD_MODE:-0}"
     local allocation_root
     local job_directory
     if [[ "${simple_mode}" == "1" ]]; then
@@ -39,7 +41,7 @@ run_allocation() {
     local watcher_pid=""
     local command_pid=""
     local last_command_exit=0
-    # 正式默认值沿用旧四锁实现。测试可缩短轮询，但不会改变文件语义。
+    # 正式轮询间隔保持稳定；测试可缩短间隔，但不会改变锁文件语义。
     local lock_poll_seconds="${TASK_LOCK_POLL_SECONDS:-20}"
     local kill_poll_seconds="${TASK_KILL_POLL_SECONDS:-10}"
 
@@ -113,11 +115,19 @@ run_allocation() {
     wait_for_next_action() {
         touch "${try_lock}"
         printf '[allocation] 已创建 %s。\n' "${try_lock}"
-        printf '[allocation] 删除 try_lock 再次执行；删除 %s 结束 Job。\n' "${after_lock}"
+        printf '[allocation] --after_hold 正在保留资源；删除 try_lock 再次执行，删除 %s 结束 Job。\n' "${after_lock}"
         while [[ -f "${try_lock}" && -f "${after_lock}" ]]; do
             sleep "${lock_poll_seconds}"
         done
         [[ -f "${after_lock}" ]]
+    }
+
+    wait_after_attempt_if_requested() {
+        if [[ "${after_hold_mode}" != "1" ]]; then
+            printf '[allocation] 未启用 --after_hold；本次执行结束后立即释放 allocation。\n'
+            return 1
+        fi
+        wait_for_next_action
     }
 
     if [[ "${simple_mode}" == "1" ]]; then
@@ -129,9 +139,9 @@ run_allocation() {
     write_initial_run_cmd
     touch "${after_lock}"
 
-    if [[ "${TASK_HOLD_MODE}" == "1" ]]; then
+    if [[ "${pre_hold_mode}" == "1" ]]; then
         touch "${pre_lock}"
-        printf '[allocation] --hold 已创建 %s；删除它后执行初始命令。\n' "${pre_lock}"
+        printf '[allocation] --pre_hold 已创建 %s；删除它后执行初始命令。\n' "${pre_lock}"
         while [[ -f "${pre_lock}" && -f "${after_lock}" ]]; do
             sleep "${lock_poll_seconds}"
         done
@@ -158,9 +168,10 @@ run_allocation() {
             # 关键时序：release 在本次 run_cmd 即将执行时才产生。若排队期间或上一次
             # try_lock 期间更新了发布源，本次哈希会得到相应的新 release。
             if [[ ! -f "${release_helper}" ]]; then
+                last_command_exit=2
                 printf '[allocation][错误] 发布源缺少 release 工具：%s\n' \
                     "${release_helper}" >&2
-                if ! wait_for_next_action; then
+                if ! wait_after_attempt_if_requested; then
                     break
                 fi
                 continue
@@ -171,9 +182,10 @@ run_allocation() {
                 :
             else
                 command_exit=$?
+                last_command_exit="${command_exit}"
                 printf '[allocation][错误] 第 %s 次执行无法创建 release，退出码 %s。\n' \
                     "${attempt}" "${command_exit}" >&2
-                if ! wait_for_next_action; then
+                if ! wait_after_attempt_if_requested; then
                     break
                 fi
                 continue
@@ -183,9 +195,10 @@ run_allocation() {
             task_path="${TASK_PROJECT_ROOT}/${TASK_PATH}"
             launch_helper="${TASK_PROJECT_ROOT}/训练与运行/runtime/create_launch.sh"
             if [[ ! -f "${task_path}" || ! -f "${launch_helper}" ]]; then
+                last_command_exit=2
                 printf '[allocation][错误] release 缺少任务或 launch 工具：%s\n' \
                     "${TASK_PROJECT_ROOT}" >&2
-                if ! wait_for_next_action; then
+                if ! wait_after_attempt_if_requested; then
                     break
                 fi
                 continue
@@ -209,9 +222,10 @@ run_allocation() {
                 :
             else
                 command_exit=$?
+                last_command_exit="${command_exit}"
                 printf '[allocation][错误] 第 %s 次执行无法建立 launch，退出码 %s。\n' \
                     "${attempt}" "${command_exit}" >&2
-                if ! wait_for_next_action; then
+                if ! wait_after_attempt_if_requested; then
                     break
                 fi
                 continue
@@ -248,7 +262,7 @@ run_allocation() {
                 "${attempt}" "${command_exit}" >&2
         fi
 
-        if ! wait_for_next_action; then
+        if ! wait_after_attempt_if_requested; then
             break
         fi
     done
@@ -257,7 +271,5 @@ run_allocation() {
     # 退出时，trap 会引用已经离开作用域的局部变量。
     trap - EXIT SIGTERM SIGINT
     cleanup_allocation
-    if [[ "${simple_mode}" == "1" ]]; then
-        return "${last_command_exit}"
-    fi
+    return "${last_command_exit}"
 }
