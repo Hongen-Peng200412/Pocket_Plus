@@ -456,7 +456,7 @@ def iter_model_centered_payloads(
         - requests: Sequence[CenteredRequest]，同一 producer、split、PDB 和 role 的有序请求。
         - wrapper: 完整 Stage1 wrapper；输入是 Dataset/Collator 生成的目标设备 batch。
         - batch_builder: 接收连续请求切片，返回训练同源 Collator 生成的 dense/ragged batch。
-        - centered_batch_size: int，每次 GPU forward 的 BOX 数，正式默认值为 12，尾批可以更短。
+        - centered_batch_size: int，每次 GPU forward 的 BOX 数，正式默认值为 10，尾批可以更短。
 
     输出:
         - payloads: Iterator[dict[str, np.ndarray]]，与 requests 严格同序；每项是一个已去除 batch 维的 BOX payload。

@@ -464,7 +464,7 @@ def test_centered_cli_default_batch_size_is_twelve() -> None:
             "out",
         ]
     )
-    assert arguments.centered_batch_size == 12
+    assert arguments.centered_batch_size == 10
 
 
 def test_inference_cli_default_cache_allows_five_hundred_gibibytes() -> None:

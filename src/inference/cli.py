@@ -83,7 +83,7 @@ def _add_runtime_arguments(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument("--device", required=True)
     parser.add_argument("--window-batch-size", type=int, default=1)
-    parser.add_argument("--centered-batch-size", type=int, default=12)
+    parser.add_argument("--centered-batch-size", type=int, default=10)
     parser.add_argument("--cache-max-bytes", type=int, default=536_870_912_000)
 
 
@@ -132,7 +132,7 @@ def build_parser() -> argparse.ArgumentParser:
     freeze.add_argument("--pdb-list", required=True)
     freeze.add_argument("--data-root", required=True)
     freeze.add_argument("--output-root", required=True)
-    freeze.add_argument("--min-voxels", type=int, default=32)
+    freeze.add_argument("--min-voxels", type=int, default=10)
     freeze.add_argument(
         "--max-voxels",
         type=int,

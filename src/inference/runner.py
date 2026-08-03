@@ -420,7 +420,7 @@ def _load_centered_context(
 def make_f1_clg_centered_role_producers(
     wrapper_provider: CenteredWrapperProvider,
     batch_builder_provider: CenteredBatchBuilderProvider,
-    centered_batch_size: int = 12,
+    centered_batch_size: int = 10,
 ) -> dict[str, RoleProducer]:
     """
     构造 F1/CLG 两个居中 role 的正式 runner callbacks。
@@ -429,7 +429,7 @@ def make_f1_clg_centered_role_producers(
         - wrapper_provider: Callable，按 ProductionTask 返回已 strict 恢复且 eval 的同一
           producer 完整 wrapper；调用方可在 worker 内缓存，不能换用裸 backbone
         - batch_builder_provider: Callable，正式由 `Stage1RuntimeAssembly.centered_batch_builder` 提供；按 task 返回接收同一 producer/split/PDB/role 有序 `CenteredRequest` 序列的 Stage1Dataset/Collator batch builder。
-        - centered_batch_size: int, 单次完整 wrapper forward 的 BOX 数；尾批允许更短，CLI 正式默认 12，拆分后 entry 顺序不变。
+        - centered_batch_size: int, 单次完整 wrapper forward 的 BOX 数；尾批允许更短，CLI 正式默认 10，拆分后 entry 顺序不变。
 
     输出:
         - role_producers: dict[str, RoleProducer]，含 `F1_centered` 与
@@ -509,7 +509,7 @@ def make_f1_clg_centered_role_producers(
 def make_selected_refined_role_producer(
     wrapper_provider: CenteredWrapperProvider,
     batch_builder_provider: CenteredBatchBuilderProvider,
-    centered_batch_size: int = 12,
+    centered_batch_size: int = 10,
     selection_path_provider: SelectionPathProvider | None = None,
 ) -> RoleProducer:
     """
@@ -518,7 +518,7 @@ def make_selected_refined_role_producer(
     输入参数:
         - wrapper_provider: Callable, 按 task 返回完整、strict 恢复且处于 eval 的 Stage1 wrapper
         - batch_builder_provider: Callable, 正式由 `Stage1RuntimeAssembly.centered_batch_builder` 提供；按 task 返回接收有序 `CenteredRequest` 序列的 Stage1Dataset/Collator batch builder。
-        - centered_batch_size: int, 单次完整 wrapper forward 的 BOX 数；尾批允许更短，CLI 正式默认 12，拆分后 Selected 来源顺序不变。
+        - centered_batch_size: int, 单次完整 wrapper forward 的 BOX 数；尾批允许更短，CLI 正式默认 10，拆分后 Selected 来源顺序不变。
         - selection_path_provider: Callable | None, 可选路径解析器; None 读取当前 PDB 正式目录中的 `selector/selection.npz`
 
     输出:

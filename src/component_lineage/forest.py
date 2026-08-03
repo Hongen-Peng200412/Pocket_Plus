@@ -82,7 +82,7 @@ def build_component_forest(
         - probability_map: float32, (D, H, W), producer 后处理后的完整图概率，三维轴顺序 ZYX，所有数值必须有限。
         - threshold_grid_indices: Sequence[int], 要实际构树的阈值网格整数 j；本函数去重并按 j 从高到低排列————去重后就是树的层数 N_layer 。
         - denominator: int, 概率阈值分母 D_threshold；节点阈值为 `j/D_threshold`，正式值为 32768。
-        - min_voxels: int, candidate 最小组件 voxel 数，正式值为 32。
+        - min_voxels: int, candidate 最小组件 voxel 数，正式值为 10。
         - max_voxels: int, candidate 最大组件 voxel 数，由 GT occurrence 体积 Q95×3.0 冻结。
         - resolve_box_start: Callable[[np.ndarray, tuple[int, int, int]], Sequence[int]], 接收连续 ZYX voxel-index 质心和完整图 ZYX 形状，返回合法的离散 ZYX BOX 起点；必须与训练及 centered 请求共用同一实现。
         - box_shape_zyx: tuple[int, int, int], centered BOX 的 ZYX voxel 形状，正式值为 `(80, 80, 80)`。
