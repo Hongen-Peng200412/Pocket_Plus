@@ -283,7 +283,7 @@ validation 使用冻结请求，不保存增强后的数组。train 的随机 90
 
 其中 `{fraction}` 使用有效数字格式 `.12g`。`stage1_box_pool` 命令本身不创建这两个文件；`box_sample_fraction == 1` 时也不创建。
 
-设完整请求数为 `N_full`，则文件中的请求数 `N_req == floor(N_full * box_sample_fraction)`；抽样结果允许为空。
+设完整请求数为 `N_full`。对 train，`N_full` 是当前 epoch 按完整清单和正式请求比例生成的 center、bias、context 请求总数；对 validation，`N_full` 是冻结 `validation_selection.npz` 展开的全部请求数。比例文件中的请求数满足 `N_req == floor(N_full * box_sample_fraction)`；抽样结果允许为空。
 
 | 字段 | dtype 与形状 | 含义 |
 | --- | --- | --- |
@@ -450,7 +450,7 @@ python -m src.inference.cli freeze-thresholds --producer <模型来源> --pdb-li
 | `max_voxels` | `int`，正式候选组件体素数上限，包含端点 |
 | `connectivity` | `int`，固定为 `26` |
 
-默认 `denominator=32768`、`min_voxels=32`、`max_voxels=2046`，但消费者必须读取实际文件值。
+默认 `denominator=32768`、`min_voxels=10`、`max_voxels=2046`，但消费者必须读取实际文件值；calibration、validation 和 train 的组件与 F1 居中阶段必须共享同一份冻结值。
 
 ### 6.2 `calibration/threshold_scan.npz`
 
@@ -480,12 +480,15 @@ python -m src.inference.cli freeze-thresholds --producer <模型来源> --pdb-li
 | `voxel_average_precision_macro` | `float`，有效 PDB 的平均精确率等权均值；没有有效 PDB 时为 NaN |
 | `n_valid_voxel_ap_pdb` | `int`，至少含一个真实正体素的 PDB 数 |
 | `n_total_pdb` | `int`，calibration 清单 PDB 总数 |
-| `semantic_dice_micro_t_F1` | `float`，先汇总全部 calibration PDB 在 `t_F1` 上的 TP、FP、FN，再按 `2TP/(2TP+FP+FN)` 计算；总分母为 0 时为 `0.0` |
-| `semantic_dice_macro_t_F1` | `float`，每个 calibration PDB 分别在 `t_F1` 上计算 Dice 后等权平均；单个 PDB 的分母为 0 时，该 PDB 的 Dice 按 `0.0` 进入平均 |
-| `semantic_tp_t_F1` | `int`，全部 calibration PDB 在 `t_F1` 上汇总的 TP，属于 micro 聚合计数 |
-| `semantic_fp_t_F1` | `int`，全部 calibration PDB 在 `t_F1` 上汇总的 FP，属于 micro 聚合计数 |
-| `semantic_fn_t_F1` | `int`，全部 calibration PDB 在 `t_F1` 上汇总的 FN，属于 micro 聚合计数 |
-| `n_blob_exceed_pdb` | `int`，校准指标计算中 `t_F1` 合格组件数大于固定统计界限 200 的 PDB 数 |
+| `n_evaluated_pdb` | `int`，冻结 `t_F1` 后没有触发组件数上限、实际进入全部拟合评估指标的 PDB 数 |
+| `semantic_dice_micro_t_F1` | `float`，先汇总全部未超限 PDB 在 `t_F1` 上的 TP、FP、FN，再按 `2TP/(2TP+FP+FN)` 计算；总分母为 0 时为 `0.0` |
+| `semantic_dice_macro_t_F1` | `float`，每个未超限 PDB 分别在 `t_F1` 上计算 Dice 后等权平均；单个 PDB 的分母为 0 时，该 PDB 的 Dice 按 `0.0` 进入平均 |
+| `semantic_tp_t_F1` | `int`，全部未超限 PDB 在 `t_F1` 上汇总的 TP，属于 micro 聚合计数 |
+| `semantic_fp_t_F1` | `int`，全部未超限 PDB 在 `t_F1` 上汇总的 FP，属于 micro 聚合计数 |
+| `semantic_fn_t_F1` | `int`，全部未超限 PDB 在 `t_F1` 上汇总的 FN，属于 micro 聚合计数 |
+| `n_blob_exceed_pdb` | `int`，冻结 `t_F1` 后合格组件数大于固定统计界限 200、因而从平均精确率、Dice、实例与 top-K 指标中完全排除的 PDB 数 |
+
+阈值扫描阶段仍使用 calibration 清单中全部可读概率图来选择 `t_F1`。`t_F1` 冻结后才构建单层组件；触发组件数上限的 PDB 不以零分代替，也不进入任何 `metrics.json` 分子或分母。
 
 实例级字段：
 
@@ -532,8 +535,27 @@ python -m src.inference.cli freeze-thresholds --producer <模型来源> --pdb-li
 | `probability_max` | `float32 (N_node,)` | 节点体素的最大概率 |
 | `candidate_eligible` | `bool (N_node,)` | `True` 表示节点可作为正式候选；`False` 表示不可 |
 | `ineligible_reason_code` | `uint8 (N_node,)` | 候选资格原因码 |
+| `gauss_score` | `float32 (N_node,)`，可选 | 独立 Gauss scorer 的节点分数；只对具有 F1-centered A 原子表的来源节点为有限值，其余节点为 `NaN` |
+| `gauss_selected` | `bool (N_node,)`，可选 | 独立 Gauss scorer 的保留决定；没有有限 `gauss_score` 的节点固定为 `False` |
 
 `children_offsets[i:i+2]` 给出节点 `i` 在 `children_node_id` 中的半开区间；首值必须为 0，末值必须等于 `L_child`。`node_voxel_offsets` 同理切分 `node_voxel_global_linear_index`，首值为 0，末值为 `L_voxel`。每个节点的体素编号在自己的段内升序且不重复。
+
+`gauss_score` 与 `gauss_selected` 必须同时存在或同时缺席。它们属于 F1-centered 完成后的独立评分结果，不改写 `candidate_eligible`，也不改变 `clg.npz`、CLG-centered 或 Selector 的有效节点和候选集合。CLG 与 Selector 继续按原有字段工作，并忽略这两个可选字段。Gauss scorer 的四个正参数与固定距离截断单独保存在 producer 级 `gauss_scorer/calibration.json`，不重复写入每个 PDB 的 `forest.npz`。
+
+#### 7.1.1 Gauss scorer 数值定义
+
+Gauss scorer 只处理 `F1_centered.npz` 中由 `(source_tree_id, source_node_id)` 指向的来源节点。对节点 `j` 的每个 A 原子 `i`，先计算该原子到来源 blob 任一体素中心的最近世界坐标距离 `d_ji`。固定截断距离为 5 Å；超过该距离的原子权重为 0。其余原子的权重为：
+
+`w_ji = exp(-d_ji² / (2 * tau_angstrom²))`
+
+令 `p_i` 为 `A_probability` 中同一原子的结合概率，则：
+
+- `positive_sum_j = sum_i(w_ji * p_i)`；
+- `negative_sum_j = sum_i(w_ji * (1 - p_i))`；
+- `gauss_score_j = probability_mean_j + lambda_positive * positive_sum_j - lambda_negative * negative_sum_j`；
+- `gauss_selected_j = gauss_score_j >= gauss_score_min`。
+
+两个高斯和都是直接求和，不按原子数或权重和归一化。`lambda_positive`、`lambda_negative`、`tau_angstrom` 和 `gauss_score_min` 都必须是有限正数。它们只用 calibration 集合选择一次，validation 与 train 复用同一份冻结参数。
 
 原因码：
 
@@ -574,7 +596,7 @@ python -m src.inference.cli freeze-thresholds --producer <模型来源> --pdb-li
 | `occurrence_id` | `int32 (N_occ,)` | 升序 occurrence 身份表 |
 | `occurrence_voxel_count` | `int32 (N_occ,)` | 与 `occurrence_id` 同序的真实体素数 |
 
-第 `j` 个候选组件的交集段是 `[candidate_occurrence_offsets[j], candidate_occurrence_offsets[j+1])`。首值必须为 0，末值必须同时等于两个交集值表的第一维长度。候选组件自身的体素数从 `forest.npz` 对应节点读取。
+`candidate_occurrence_offsets` 的候选顺序不是 forest 全节点顺序，而是先按 `clg.npz` 的 `CLG_id` 顺序、再按每个 CLG 的 `candidate_node_id` 段顺序展开。第 `j` 个展开候选的交集段是 `[candidate_occurrence_offsets[j], candidate_occurrence_offsets[j+1])`；该段中的每个 `overlap_occurrence_index[k]` 是同文件 `occurrence_id` 与 `occurrence_voxel_count` 的本地行号，`intersection_voxel_count[k]` 则是这个候选与该真实 occurrence 的交集体素数。首值必须为 0，末值必须同时等于两个交集值表的第一维长度。候选自身的体素数通过同一个 CLG 候选身份回指 `forest.npz` 读取。
 
 ### 7.4 `components/summary.json`
 
@@ -606,7 +628,7 @@ python -m src.inference.cli freeze-thresholds --producer <模型来源> --pdb-li
 - `mean_candidates_per_completed_CLG: float`
 - `CLG_cap_reached: bool`
 
-`CLG_cap_reached` 只有在完成数等于 `n_CLG_cap` 且仍有未消费的活跃种子时为 `true`。
+`max_split_events` 与 `max_merge_events` 分别限制一次 CLG 枚举允许跨过的分支和合并事件数；`max_nodes_per_CLG` 限制一个已完成 CLG 可保存的候选节点数。`n_f1_eligible_seeds` 是冻结 `t_F1` 层的合格种子数；`n_CLG_cap` 是当前 PDB 允许发布的 CLG 数上限；`n_CLG_completed` 是实际完成并写入 `clg.npz` 的数量；`n_CLG_rejected_by_node_cap` 统计因候选节点数超过上限而拒绝的枚举结果；`mean_candidates_per_completed_CLG` 是已完成 CLG 的平均候选数。`CLG_cap_reached` 只有在完成数等于 `n_CLG_cap` 且仍有未消费的活跃种子时为 `true`。
 
 ## 8. 三类 centered NPZ 的共同契约
 
@@ -614,7 +636,7 @@ python -m src.inference.cli freeze-thresholds --producer <模型来源> --pdb-li
 
 一个 PDB 的同一 centered 角色只发布一个 NPZ。变长表使用 offsets；第 `i` 个归档项或候选项的值段一律是半开区间 `[offsets[i], offsets[i+1])`。
 
-运行时可以把多个有序 80³ BOX 放入同一次完整 wrapper forward，正式默认批量大小为 12。稠密 V 输出按 batch 第 0 维拆分，Find A 表按 forward 后的 `atom_counts` 连续段拆分；输入 `atom_feat` 在每个 BOX 内通过 `A_global_index` 对齐到 forward 输出 A 行序，形成 `A_feat_L0`。P 表按 `anchor_batch_index` 归属拆分。运行批量只影响执行吞吐，不进入 NPZ schema，也不得改变 `centered_box_index`、entry 顺序、来源身份或任一 offsets/value 对齐关系。
+运行时可以把多个有序 80³ BOX 放入同一次完整 wrapper forward，A800 的正式默认批量大小为 10。稠密 V 输出按 batch 第 0 维拆分，Find A 表按 forward 后的 `atom_counts` 连续段拆分；输入 `atom_feat` 在每个 BOX 内通过 `A_global_index` 对齐到 forward 输出 A 行序，形成 `A_feat_L0`。P 表按 `anchor_batch_index` 归属拆分。运行批量只影响执行吞吐，不进入 NPZ schema，也不得改变 `centered_box_index`、entry 顺序、来源身份或任一 offsets/value 对齐关系。
 
 ### 8.1 共同归档项字段
 
@@ -676,7 +698,7 @@ python -m src.inference.cli freeze-thresholds --producer <模型来源> --pdb-li
 | `A_feat_L2` | `float16 (L_A,C_L2)` | `outputs["A_feat_L2"]`；真实原子密度调制完成后送入点骨干网络的 A 输入表示 |
 | `A_feat_L3` | `float16 (L_A,C_L3)` | `outputs["real_feat_before_interaction"]`；点骨干网络处理完成、A↔P 交叉注意力发生之前的 A 最终表示 |
 
-`A_offsets` 首值必须为 0，末值必须等于八个 A 值表的第一维长度。A 表保存 80³ 核心与来源组件 10 Å 包络的交集。`A_feat_L0` 已直接持久化；`A_global_index` 仍保留原子身份追踪语义。
+`A_offsets` 首值必须为 0，末值必须等于八个 A 值表的第一维长度。这里的“来源组件”就是当前 centered 条目对应的预测 blob：F1 角色使用来源 F1 节点，CLG 角色使用最老来源节点，Selected 角色使用被选中的来源节点。A 表保存完整受体原子表中同时落入当前 80³ 核心并位于该预测 blob 体素集合 10 Å 包络内的原子。`A_feat_L0` 已直接持久化；`A_global_index` 仍保留原子身份追踪语义。
 
 Stage1-Find 前向计算仍可产生交叉注意力后的 `A_feat_L4` 与 `P_feat_L4`，但 centered 归档不保存这两组张量。Selector 只读取本节列出的 L3 及以前特征；A/P 分类概率仍使用 Stage1-Find 原有分类头结果。
 

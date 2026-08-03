@@ -101,3 +101,75 @@ def test_published_calibration_entry_freezes_thresholds_and_full_report(tmp_path
     assert paths.thresholds_json.is_file()
     assert paths.threshold_scan_npz.is_file()
     assert paths.calibration_complete_path.is_file()
+
+
+def test_fitted_metrics_exclude_blob_exceed_pdb_from_every_metric(tmp_path) -> None:
+    """阈值扫描保留完整 calibration；冻结阈值后的指标完全排除组件超限 PDB。"""
+    shape = (80, 80, 80)
+    occurrence_indices: dict[str, dict[int, np.ndarray]] = {}
+
+    normal_probability = np.zeros(shape, dtype=np.float32)
+    normal_zyx = (40, 40, 40)
+    normal_probability[normal_zyx] = 0.9
+    occurrence_indices["normal"] = {
+        1: np.asarray([np.ravel_multi_index(normal_zyx, shape)], dtype=np.int64)
+    }
+
+    exceed_probability = np.zeros(shape, dtype=np.float32)
+    isolated_points = [
+        (z, y, 40)
+        for z in range(1, 79, 3)
+        for y in range(1, 79, 3)
+    ][:201]
+    for zyx in isolated_points:
+        exceed_probability[zyx] = 0.9
+    occurrence_indices["exceed"] = {
+        2: np.asarray(
+            [np.ravel_multi_index(isolated_points[0], shape)], dtype=np.int64
+        )
+    }
+
+    for pdb_id, probability in (
+        ("normal", normal_probability),
+        ("exceed", exceed_probability),
+    ):
+        publish_full_map(
+            paths=Stage1ArtifactPaths(
+                tmp_path, "Find_0", "calibration", pdb_id
+            ),
+            result=FullMapResult(
+                probability_map=probability,
+                weight_sum=np.ones(shape, dtype=np.float32),
+                window_starts_zyx=((0, 0, 0),),
+            ),
+            origin_xyz=(0.0, 0.0, 0.0),
+            voxel_size_xyz=(1.0, 1.0, 1.0),
+        )
+
+    _, metrics = calibrate_published_full_maps_and_freeze_thresholds(
+        output_root=tmp_path,
+        stage1_model_name="Find_0",
+        calibration_pdb_ids=("normal", "exceed"),
+        occurrence_voxel_loader=lambda pdb_id, shape_zyx: occurrence_indices[
+            pdb_id
+        ],
+        min_voxels=1,
+        max_voxels=1,
+        denominator=8,
+    )
+
+    assert metrics["n_total_pdb"] == 2
+    assert metrics["n_blob_exceed_pdb"] == 1
+    assert metrics["n_evaluated_pdb"] == 1
+    assert metrics["n_valid_voxel_ap_pdb"] == 1
+    assert metrics["semantic_dice_micro_t_F1"] == 1.0
+    assert metrics["semantic_dice_macro_t_F1"] == 1.0
+    assert metrics["semantic_tp_t_F1"] == 1
+    assert metrics["semantic_fp_t_F1"] == 0
+    assert metrics["semantic_fn_t_F1"] == 0
+    assert metrics["n_pred_instances"] == 1
+    assert metrics["n_gt_instances"] == 1
+    assert metrics["coverage_f1_0p3"] == 1.0
+    assert metrics["one_to_one_f1_0p3"] == 1.0
+    assert metrics["n_topk_eligible_pdb"] == 1
+    assert metrics["top3_success_ratio_0p3"] == 1.0

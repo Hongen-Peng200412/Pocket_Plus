@@ -453,6 +453,10 @@ class ComponentForest:
         missing = [field for field in required if field not in arrays]
         if missing:
             raise KeyError(f"forest.npz 缺少字段: {missing}")
+        gauss_fields = ("gauss_score", "gauss_selected")
+        present_gauss_fields = [field for field in gauss_fields if field in arrays]
+        if present_gauss_fields and len(present_gauss_fields) != len(gauss_fields):
+            raise KeyError("forest.npz 的 gauss_score 与 gauss_selected 必须同时存在或同时缺席")
         # int32, (N_node,), forest 主表的 tree identity；与 `node_id` 共同组成全局唯一节点键。
         tree_ids = np.asarray(arrays["tree_id"], dtype=np.int32)
         # int32, (N_node,), 在各 tree 内唯一的 node identity；与 `tree_id` 第一维逐节点对齐。
@@ -460,6 +464,20 @@ class ComponentForest:
         n_node = int(tree_ids.size)
         if node_ids.shape != (n_node,):
             raise ValueError("tree_id 与 node_id 长度不一致")
+        if present_gauss_fields:
+            gauss_score = np.asarray(arrays["gauss_score"])
+            gauss_selected = np.asarray(arrays["gauss_selected"])
+            if gauss_score.dtype != np.dtype(np.float32) or gauss_score.shape != (n_node,):
+                raise ValueError("gauss_score 必须为 float32 [N_node]")
+            if gauss_selected.dtype != np.dtype(np.bool_) or gauss_selected.shape != (n_node,):
+                raise ValueError("gauss_selected 必须为 bool [N_node]")
+            if bool(np.any(np.isinf(gauss_score))):
+                raise ValueError("gauss_score 不得包含正负无穷")
+            if bool(np.any(gauss_selected & np.isnan(gauss_score))):
+                raise ValueError("gauss_selected=True 的节点必须具有有限 gauss_score")
+            eligible = np.asarray(arrays["candidate_eligible"], dtype=np.bool_)
+            if bool(np.any(gauss_selected & ~eligible)):
+                raise ValueError("gauss_selected=True 的节点必须满足原始 candidate_eligible")
         for field in ("bbox_min_zyx", "bbox_max_zyx", "centroid_zyx"):
             if np.asarray(arrays[field]).shape != (n_node, 3):
                 raise ValueError(f"{field} 必须为 [N_node,3]")

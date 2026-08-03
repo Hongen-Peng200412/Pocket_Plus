@@ -150,7 +150,7 @@ python -m src.inference.cli selected-refined --split <calibration|validation|tra
 | `--config` | 路径，默认不指定 | 显式指定解析后配置 |
 | `--allow-current-workspace-code` | 开关，默认关闭 | checkpoint 缺少源码快照时允许使用当前工作区源码 |
 | `--window-batch-size` | 正整数，默认 `1` | 一次模型调用包含的完整图窗口数 |
-| `--centered-batch-size` | 正整数，默认 `12` | 一次 centered 完整 wrapper forward 包含的 80³ BOX 数；尾批可以更短 |
+| `--centered-batch-size` | 正整数，默认 `10` | 一次 centered 完整 wrapper forward 包含的 80³ BOX 数；尾批可以更短 |
 | `--cache-max-bytes` | 整数，默认 `536870912000` | 当前推理进程的 Dataset 缓存上限，单位 byte；等于 500 GiB，只限制最多保留多少缓存，不预先分配内存 |
 
 生成 components 的六个子命令还接受：
@@ -162,7 +162,7 @@ python -m src.inference.cli selected-refined --split <calibration|validation|tra
 | `--max-nodes-per-clg` | 正整数，默认 `32` | 一个 CLG 最多包含的候选组件数 |
 | `--f1-eligible-limit` | 正整数，默认 `200` | `t_F1` 层合格组件数的继续生产上限 |
 
-`freeze-thresholds` 还接受 `--min-voxels`、`--max-voxels` 和 `--denominator`，默认值依次为 32、2046 和 32768。
+`freeze-thresholds` 还接受 `--min-voxels`、`--max-voxels` 和 `--denominator`，默认值依次为 10、2046 和 32768。本轮及后续同一套正式推理产物必须从冻结后的 `thresholds.json` 读取实际 `min_voxels`，不能由各数据划分单独覆盖。
 
 `selected-refined` 还接受 `--selection-root`。未指定时读取：
 
@@ -227,7 +227,7 @@ status/probability/_COMPLETE
 └── _COMPLETE
 ```
 
-`thresholds.json` 保存七个 F-alpha 阈值、`t_F1`、组件体素上下限和 26 邻域连通规则。`threshold_scan.npz` 保存全部阈值编号上的 F-alpha 曲线及 TP、FP、FN。`metrics.json` 保存同一 calibration 数据上的拟合指标，不表示独立 validation 结果。其中 `semantic_dice_micro_t_F1` 先跨 PDB 汇总 TP、FP、FN 再计算 Dice；`semantic_dice_macro_t_F1` 先逐 PDB 计算 Dice 再等权平均。`semantic_tp_t_F1`、`semantic_fp_t_F1` 和 `semantic_fn_t_F1` 是前一种 micro 计算使用的全 calibration 汇总计数。
+`thresholds.json` 保存七个 F-alpha 阈值、`t_F1`、组件体素上下限和 26 邻域连通规则。`threshold_scan.npz` 保存全部阈值编号上的 F-alpha 曲线及 TP、FP、FN；阈值扫描使用 calibration 清单中的全部可读概率图。`metrics.json` 保存同一 calibration 数据上的拟合指标，不表示独立 validation 结果。冻结 `t_F1` 后，合格组件数超过 200 的 PDB 从平均精确率、Dice、实例和 top-K 指标中完全排除，不以零分代替；`n_total_pdb`、`n_blob_exceed_pdb` 和 `n_evaluated_pdb` 分别记录清单总数、排除数和实际评估数。`semantic_dice_micro_t_F1` 先跨未超限 PDB 汇总 TP、FP、FN 再计算 Dice；`semantic_dice_macro_t_F1` 先逐个未超限 PDB 计算 Dice再等权平均。`semantic_tp_t_F1`、`semantic_fp_t_F1` 和 `semantic_fn_t_F1` 是前一种 micro 计算使用的汇总计数。
 
 ### 4.3 components
 
@@ -252,7 +252,7 @@ status/CLG_centered/_COMPLETE
 
 `centered` 表示把一个来源组件放入不填充的 80³ BOX 后重新执行模型前向，并把稀疏 `voxel_final` 体素表示以及 Find 的 P 点和 A 原子特征保存为一个 PDB 级聚合 NPZ。归档不保存 Stage1 骨干内部的固定多尺度体素网格，也不保存 A/P 交叉注意力后的 L4 特征。Find A 表直接保存 float32 的 49 维 `A_feat_L0` 及 float16 的 L1–L3 特征；`A_global_index` 继续承担原子身份追踪，不要求 Selector 为恢复 L0 再读一次原始受体表。
 
-同一 PDB/role 的有序 BOX 默认按 12 个一批执行完整 wrapper forward。正式 Stage1Dataset 现场裁剪每个 BOX，训练同源 Collator 堆叠 dense V 输入并拼接变长 A 表；forward 后，V 网格按 batch 第 0 维拆分，A 表按模型输出的 `atom_counts` 连续段拆分，P 表按 `anchor_batch_index` 归属拆分。执行批量不改变 `centered_box_index`、来源身份、归档顺序或 offsets 语义；显存不足时可以用 `--centered-batch-size` 下调。
+同一 PDB/role 的有序 BOX 默认按 10 个一批执行完整 wrapper forward。正式 Stage1Dataset 现场裁剪每个 BOX，训练同源 Collator 堆叠 dense V 输入并拼接变长 A 表；forward 后，V 网格按 batch 第 0 维拆分，A 表按模型输出的 `atom_counts` 连续段拆分，P 表按 `anchor_batch_index` 归属拆分。执行批量不改变 `centered_box_index`、来源身份、归档顺序或 offsets 语义；显存不足时可以用 `--centered-batch-size` 下调。
 
 - `F1_centered.npz`：每个条目对应原始滑窗融合概率在 `t_F1` 上形成的一个合格 forest 组件；成员坐标沿用该来源组件，坐标上的概率和特征来自当前 centered 重算。
 - `CLG_centered.npz`：每个条目对应一个 CLG，权威体素成员是最老 forest 节点的来源组件；概率和特征来自当前 centered 重算。归档额外保存候选组件在该条目体素表和 A 原子表中的成员行号。

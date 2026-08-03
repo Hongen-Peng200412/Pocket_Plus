@@ -513,7 +513,7 @@ class Stage1RuntimeAssembly:
         - resolved_config_path: str | Path | None，已经解析完变量和默认值的配置文件路径；传入 None 时由 checkpoint 的固定相邻路径规则解析，配置中必须包含与 stage1_model_name 一致的 Dataset 输入契约。
         - device: str，模型和批次拼装器（collator）输出的 tensor batch 的目标设备，例如 `cpu`、`cuda` 或 `cuda:0`；PDB identity、计数和其他 Python 元数据不搬到该设备。
         - window_batch_size: int，一次完整图滑窗模型调用包含的窗口数；只影响 full-map forward 的批大小，不影响 centered BOX 批大小。
-        - centered_batch_size: int，一次 centered 模型调用包含的 80³ BOX 数；只影响 centered forward 的批大小，正式默认值为 12。
+        - centered_batch_size: int，一次 centered 模型调用包含的 80³ BOX 数；只影响 centered forward 的批大小，正式默认值为 10。
         - cache_max_bytes: int，单个推理进程的 Stage1Dataset 资产缓存允许占用的最大字节数，默认值为 536870912000（500 GiB）；该值是上限，不会预先分配内存。
         - wrapper_loader: Callable | None，可选的模型包装器加载函数；为 None 时使用 `load_stage1_wrapper`，该函数接收 checkpoint/config 路径并返回可调用的完整 wrapper。
         - allow_current_workspace_code: bool，checkpoint 缺少完整代码快照时是否允许加载当前工作区代码；正式可复现运行应保持 False。
@@ -546,7 +546,7 @@ class Stage1RuntimeAssembly:
         resolved_config_path: str | Path | None,
         device: str,
         window_batch_size: int,
-        centered_batch_size: int = 12,
+        centered_batch_size: int = 10,
         cache_max_bytes: int = 536_870_912_000,
         wrapper_loader: Callable[..., Any] | None = None,
         allow_current_workspace_code: bool = False,
@@ -562,7 +562,7 @@ class Stage1RuntimeAssembly:
             - resolved_config_path: str | Path | None，已经解析完变量和默认值的配置文件路径；传入 None 时由 checkpoint 的固定相邻路径规则解析，配置中必须包含与 stage1_model_name 一致的 Dataset 输入契约。
             - device: str，模型和批次拼装器（collator）输出的 tensor batch 的目标设备，例如 `cpu`、`cuda` 或 `cuda:0`；PDB identity、计数和其他 Python 元数据不搬到该设备。
             - window_batch_size: int，一次完整图滑窗模型调用包含的窗口数；只影响 full-map forward 的批大小，不影响 centered BOX 批大小。
-            - centered_batch_size: int，一次 centered 模型调用包含的 80³ BOX 数；只影响 centered forward 的批大小，正式默认值为 12。
+            - centered_batch_size: int，一次 centered 模型调用包含的 80³ BOX 数；只影响 centered forward 的批大小，正式默认值为 10。
             - cache_max_bytes: int，单个推理进程的 Stage1Dataset 资产缓存允许占用的最大字节数，默认值为 536870912000（500 GiB）；该值是上限，不会预先分配内存。
             - wrapper_loader: Callable | None，可选的模型包装器加载函数；为 None 时使用 `load_stage1_wrapper`，该函数接收 checkpoint/config 路径并返回可调用的完整 wrapper。
             - allow_current_workspace_code: bool，checkpoint 缺少完整代码快照时是否允许加载当前工作区代码；正式可复现运行应保持 False。
