@@ -194,6 +194,11 @@
       "date": "2026-08-03",
       "summary": "通用调度把首次执行前等待与执行后保留资源拆为--pre_hold和--after_hold，默认运行一次后释放且不保留旧--hold；Find_0九个正式推理入口补齐提交注释，calibration统一为两个全局分片，GPU资源由提交时按可用卡选择，单进程缓存降至100 GiB。两仓调度契约测试各9项通过，改动保持未暂存且未提交真实作业。",
       "handoff": "CLAUDE/memory/handoffs/2026-08-03-task-hold-semantics-and-find0-infer-entries.md"
+    },
+    {
+      "date": "2026-08-03",
+      "summary": "Windows 用户级统一 AI SSH 入口已建立，Pocket_Plus 项目入口改为薄包装；密码只保存在本机私有文件，固定主机密钥校验与失败状态传播已验证。关闭 ATrust 后已真实登录 master，并从两仓库入口验证远端命令、LF 标准输入脚本、sbatch 可用性及两份 submit_task.sh 的 Bash 语法。",
+      "handoff": "CLAUDE/memory/handoffs/2026-08-03-unified-ai-ssh-entry.md"
     }
   ],
   "blockers": [

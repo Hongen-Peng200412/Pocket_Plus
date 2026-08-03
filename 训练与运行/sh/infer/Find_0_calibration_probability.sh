@@ -5,7 +5,8 @@
 #
 # bash /home/penghongen/My_Project/Pocket_Plus/训练与运行/submit_task.sh \
 #   --sh /home/penghongen/My_Project/Pocket_Plus/训练与运行/sh/infer/Find_0_calibration_probability.sh \
-#   --resource a100 \
+#   --resource a800 \
+#   --qos cpu96 \
 #   --gpus 1 \
 #   --cpus 8 \
 #   --array '0-1' \
@@ -13,9 +14,9 @@
 #   --job-name find0_cal_prob
 #
 # 上述命令只调用一次 sbatch，但建立两个数组元素：编号 0 和 1 各申请一张 GPU。
-# 每个数组元素申请 1 张 GPU 和 8 个 CPU 核；提交时将 `<gpu_resource>` 替换为
-# 当时可用的资源名（例如 a800、a100、h100 或 h200）。Slurm 为每个数组元素
-# 设置不同的 SLURM_ARRAY_TASK_ID, 本脚本把该编号直接作为全局分片编号。
+# 每个数组元素通过 nvlink 分区申请 1 张 A800 和 8 个 CPU 核；`--qos cpu96`
+# 覆盖 a800 资源类型默认使用的 nvlinkg8。Slurm 为每个数组元素设置不同的
+# SLURM_ARRAY_TASK_ID，本脚本把该编号直接作为全局分片编号。
 #
 # 正式模式会在每次真正执行前冻结项目 release，并由 allocation_runner.sh 管理四锁：
 # `pre_lock` 只在提交时增加 --pre_hold 才出现；本示例的 --after_hold 会在执行结束后创建 `try_lock`；
@@ -85,7 +86,7 @@ global_shard_count=2                                                   # calibra
 shard_index="${SLURM_ARRAY_TASK_ID:-0}"                               # 0-based，必须满足 0 <= shard_index < global_shard_count。
 
 # 每次模型前向同时处理 8 个 80³ 滑窗。它影响单个 PDB 的速度和显存，不改变 PDB 分片。
-window_batch_size=6                                                    # 当前 smoke 验证的保守批量；正式提交时按可用显存调整。
+window_batch_size=10                                                    # 当前 smoke 验证的保守批量；正式提交时按可用显存调整。
 
 # 单进程 Dataset 缓存最多保留约 100 GiB 的已读取内容，但不会启动时一次性分配 100 GiB。
 # 这不是 Slurm 的 `--mem` 申请；多个数组元素落在同一节点时，各自拥有独立缓存上限。

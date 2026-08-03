@@ -6,7 +6,8 @@ set -euo pipefail
 #
 # bash /home/penghongen/My_Project/Pocket_Plus/训练与运行/submit_task.sh \
 #   --sh /home/penghongen/My_Project/Pocket_Plus/训练与运行/sh/infer/Find_0_calibration_CLG.sh \
-#   --resource <gpu_resource> \
+#   --resource a800 \
+#   --qos cpu96 \
 #   --gpus 1 \
 #   --cpus 8 \
 #   --array '0-1' \
@@ -14,7 +15,8 @@ set -euo pipefail
 #   --job-name find0_cal_clg
 #
 # 本脚本和 probability、F1 脚本使用相同的两份 PDB 归属，可在以后独立续跑 CLG-centered。
-# 将 `<gpu_resource>` 替换为当时可用的 GPU 资源名；`--after_hold` 使每个数组元素完成后保留资源，省略它则完成后自动释放。
+# `--resource a800` 选择 nvlink 分区和 A800；`--qos cpu96` 覆盖默认 nvlinkg8。
+# `--after_hold` 使每个数组元素完成后保留资源，省略它则完成后自动释放。
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd -P)"
 CONDA_BASE="${CONDA_BASE:-${HOME}/anaconda3}"

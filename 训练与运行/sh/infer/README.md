@@ -56,11 +56,11 @@ bash /home/penghongen/My_Project/Pocket_Plus/训练与运行/submit_task.sh \
   --after_hold \
   --job-name find0_infer_inputs
 
-# 用两张可用 GPU 完成两个 calibration probability 分片；提交前设置当时可用的资源名。
-gpu_resource="${GPU_RESOURCE:?请设置可用的 Slurm GPU 资源名，例如 a800、a100、h100 或 h200}"
+# 用两个数组元素各申请一张 A800，完成两个 calibration probability 分片。
+# cpu96 覆盖 a800 默认使用的 nvlinkg8 QOS；分区仍由 a800 映射为 nvlink。
 bash /home/penghongen/My_Project/Pocket_Plus/训练与运行/submit_task.sh \
   --sh /home/penghongen/My_Project/Pocket_Plus/训练与运行/sh/infer/Find_0_calibration_probability.sh \
-  --resource "${gpu_resource}" --gpus 1 --cpus 8 \
+  --resource a800 --qos cpu96 --gpus 1 --cpus 8 \
   --array '0-1' \
   --after_hold \
   --job-name find0_cal_prob
