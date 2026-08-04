@@ -3,7 +3,7 @@
 
 阅读入口:
     1. :func:`build_pdb_box_pool` 为一个 PDB 生成 occurrence、center、bias 和 context 起点字段. 
-    2. :func:`freeze_validation_selection` 把 validation 的配置指定请求索引冻结为一个 NPZ. 
+    2. :func:`freeze_validation_selection` 把 validation 的配置指定请求索引冻结为一个 NPZ.
     3. :func:`build_stage1_box_pools` 批量发布 train/validation 的 PDB NPZ、根 manifest、配置、摘要和 ``_COMPLETE``. 
 
 单 PDB NPZ 字段:
@@ -670,7 +670,7 @@ def freeze_validation_selection(                 # 最后才用到的函数
     context_per_occurrence: int = 3,
 ) -> dict[str, int]:
     """
-    一次冻结 validation 的配置指定比例真实读取项. 
+    一次冻结 validation 的配置指定比例真实读取项.
 
     输入参数:
         - validation_pool_directory: ``str | Path``, 是.../(stage1_preparation)/box_pool/validation(这是个文件夹), 仅用于定位 boox_pool 这层地址, 从而找到 manifest.json. 

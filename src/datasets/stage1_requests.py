@@ -4,7 +4,7 @@
 阅读入口:
     1. :class:`ResolvedStage1Crop` 保存一个请求的 PDB 身份、ZYX 起点、角色和监督开关. 
     2. :func:`resolve_stage1_start` 把请求起点限制在完整密度图内, 保证 ``[start_zyx, start_zyx + box_shape_zyx)`` 不补零越界. 
-    3. :class:`Stage1TrainingRequestSet` 从 ``box_pool/train`` 的 PDB NPZ 和根 ``config.json`` 生成每个 epoch 的请求, 比例小于 1 时额外保存固定子集. 
+    3. :class:`Stage1TrainingRequestSet` 从 ``box_pool/train`` 的 PDB NPZ 和根 ``config.json`` 生成每个 epoch 的请求, 比例小于 1 时额外保存固定子集.
     4. :func:`load_validation_selection` 从 ``validation_selection.npz`` 的索引恢复固定验证请求, 不重新抽样. 
     5. :func:`build_request_source` 选择训练 BOX pool 或固定验证表. 
 
@@ -633,13 +633,13 @@ def _string_array(values: np.ndarray) -> list[str]:
 # ================================================================== 最终的请求 ================================================================== 
 # ----------------- 训练时每个epoch 的请求 -----------------
 class Stage1TrainingRequestSet:
-    """按 epoch 从冻结 PDB BOX 池生成配置指定比例的请求表. 
+    """按 epoch 从冻结 PDB BOX 池生成配置指定比例的请求表.
 
     字段:
         - pool_directory: ``str | Path``; 通常为 ``<box_pool_root>/train``, 其中每个 PDB NPZ 由根 ``manifest.json`` 列出. 
         - seed: int; 与 epoch 一起决定 center、bias 和 context 的选择. 
         - box_sample_fraction: float; ``1.0`` 时每个 epoch 重新选择完整请求池, 小于 ``1.0`` 时固定 epoch 0 的比例子集. 
-        - requests: ``tuple[ResolvedStage1Crop, ...]``; 当前 epoch 的请求, 按 PDB、occurrence 和配置指定的角色数量展开. 
+        - requests: ``tuple[ResolvedStage1Crop, ...]``; 当前 epoch 的请求, 按 PDB、occurrence 和配置指定的角色数量展开.
         - epoch: int; ``1.0`` 模式下当前请求所属 epoch, 小于 ``1.0`` 时固定为 ``0``. 
 
     文件副作用:
@@ -730,10 +730,10 @@ class Stage1TrainingRequestSet:
             self.epoch = 0
 
     def _build_epoch_requests(self, epoch: int) -> tuple[ResolvedStage1Crop, ...]:
-        """按 ``seed``、``epoch`` 与根配置构造完整请求表. 
+        """按 ``seed``、``epoch`` 与根配置构造完整请求表.
 
         输出:
-            - tuple[ResolvedStage1Crop, ...]: 每个 PDB 最多选 50 个 occurrence；每个 occurrence 按 ``entry_ratio`` 追加请求，顺序保留 PDB 和随机选择顺序. 
+            - tuple[ResolvedStage1Crop, ...]: 每个 PDB 最多选 50 个 occurrence；每个 occurrence 按 ``entry_ratio`` 追加请求，顺序保留 PDB 和随机选择顺序.
         """
         rng = np.random.default_rng(np.random.SeedSequence([self.seed, int(epoch)]))
         requests: list[ResolvedStage1Crop] = []
