@@ -16,11 +16,33 @@ checkpoint 的 `src_snapshot/src` 提供模型与 wrapper 定义；当前 releas
 
 1. `prepare_inference_pdb_lists.sh`：从已经过滤的 Stage1 集合文件提取、排序并写出三份公共 PDB 清单，同时记录本次 Find_0 推理的路径和启用配置。
 2. `Find_0_calibration_probability.sh`：按分片产生 calibration 完整图概率。
-3. `Find_0_freeze_thresholds.sh`：在完整 calibration 集合上冻结阈值，并写出语义与实例评估结果；`min_voxels=15`、`max_voxels=2046`、阈值网格分母为 `32768`。
+3. `Find_0_freeze_thresholds.sh`：在完整 calibration 集合上冻结阈值，并写出语义与实例评估结果；`min_voxels=10`、`max_voxels=2046`、阈值网格分母为 `32768`。后续 calibration、validation 和 train 的组件与 F1-centered 生产都从冻结的 `thresholds.json` 读取同一个体素数下限。
 4. `Find_0_calibration_F1.sh`：只补充 calibration 的组件和 `F1_centered`。
 5. `Find_0_validation_F1.sh` 与 `Find_0_train_F1.sh`：连续产生完整图概率、组件和 `F1_centered`，不计算 CLG。
+6. `Find_0_Gauss.sh`：使用 calibration 集合冻结的参数，为已经完成且静止的 forest 增量回填 `gauss_score` 与 `gauss_selected`；它不重新运行模型，也不影响 CLG 或 Selector 候选。
 
 以后需要 CLG 时，在相同正式产物根目录运行三个 `*_CLG.sh`。这些脚本使用原有 `*-f1-clg` 命令；已经完成的 probability、components 和 `F1_centered` 会按完成标记跳过，只增加 `CLG_centered`。重复运行同一分片不会重写已经完成的文件。
+
+## Gauss CPU 增量回填
+
+`Find_0_Gauss.sh` 读取同一正式根目录中的冻结参数和公共 PDB 清单。脚本顶部的 `target_split` 选择 calibration、validation 或 train，`global_shard_count` 声明全局分片数，Slurm 数组编号作为 `shard_index`。train 可以采用较大的固定分片数，并只提交当前可用 CPU 所能承担的部分编号。
+
+该任务可以与 validation 或 train 的 GPU 主线同时运行。对每个 PDB，它只在 `probability`、`components` 和 `F1_centered` 都已完成且能够取得根目录 `_RUNNING` 租约时回填；尚未完成的 PDB 记为 `pending`，正在被 GPU 持有的 PDB 记为 `skipped_running`，随后继续处理其他 PDB。GPU 主线结束后再次提交相同分片即可补齐。最终验收要求所有分片汇总后 `n_pending=0`、`n_skipped_running=0`。
+
+正式参数固定读取：
+
+`/storage/penghongen/AdaLigand_stage1_inference/Find_0-CPC1-ligand_PRAUC_0.675477/artifacts/Find_0/gauss_scorer/calibration.json`
+
+一次普通 CPU16 提交示例：
+
+```bash
+bash /home/penghongen/My_Project/Pocket_Plus/训练与运行/submit_task.sh \
+  --sh /home/penghongen/My_Project/Pocket_Plus/训练与运行/sh/infer/Find_0_Gauss.sh \
+  --resource cpu --cpus 16 \
+  --job-name find0_gauss
+```
+
+`forest.npz` 只增加两个字段。已有两个字段与冻结参数重算结果完全相同时视为幂等完成；仅存在一个字段或已有结果不同会立即失败，不能自动覆盖。
 
 ## 公共 PDB 清单与运行记录
 

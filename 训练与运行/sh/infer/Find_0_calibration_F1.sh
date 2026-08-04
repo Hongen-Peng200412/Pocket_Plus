@@ -42,8 +42,8 @@ formal_root="${inference_root}/Find_0-CPC1-ligand_PRAUC_0.675477"
 pdb_list="${inference_root}/calibration_pdb_ids.json"
 output_root="${formal_root}/artifacts"
 
-global_shard_count=2                     # 与 calibration probability 相同：两个互斥分片各含 50 个 PDB。
-shard_index="${SLURM_ARRAY_TASK_ID:-0}" # 与 calibration probability 使用相同分片编号。
+global_shard_count=1                     # 与 calibration probability 相同：两个互斥分片各含 50 个 PDB。
+shard_index=0                            # 与 calibration probability 使用相同分片编号。
 centered_batch_size=8                    # 当前 smoke 的 12 个 BOX 批量余量过小；保守值为 8，正式提交时按可用显存调整。
 cache_max_bytes=107374182400             # 单进程最多缓存 100 GiB 已读取的 PDB 资产。
 max_split_events=1                       # 每条候选谱系最多允许一次拆分事件。

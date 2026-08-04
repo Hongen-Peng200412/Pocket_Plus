@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import numpy as np
@@ -11,6 +12,7 @@ from src.inference.Gauss_Scorer import (
     publish_gauss_fields,
     score_f1_centered_nodes,
 )
+from src.inference.Gauss_Scorer import cli as gauss_cli
 
 
 def _forest_arrays() -> dict[str, np.ndarray]:
@@ -132,3 +134,126 @@ def test_forest_rejects_partial_or_inconsistent_gauss_fields() -> None:
                 "gauss_selected": np.asarray([False, True], dtype=np.bool_),
             }
         )
+
+
+def test_cli_incrementally_skips_pending_and_running_pdb(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """GPU 仍在生产时，CPU 回填应处理静止项并报告其余项，而不是整批失败。"""
+
+    pdb_list = tmp_path / "pdb_ids.json"
+    pdb_list.write_text(
+        json.dumps(["complete", "pending", "running", "blob_exceed"]),
+        encoding="utf-8",
+    )
+    calibration = tmp_path / "calibration.json"
+    calibration.write_text(
+        json.dumps(
+            {
+                "selected_parameters": {
+                    "lambda_positive": 0.1,
+                    "lambda_negative": 0.001,
+                    "tau_angstrom": 1.0,
+                    "gauss_score_min": 1.0,
+                    "distance_cutoff_angstrom": 5.0,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    class _BlobExceedPath:
+        def __init__(self, exists: bool) -> None:
+            self._exists = exists
+
+        def is_file(self) -> bool:
+            return self._exists
+
+    class _Paths:
+        def __init__(
+            self,
+            *,
+            output_root: str,
+            stage1_model_name: str,
+            split: str,
+            pdb_id: str,
+        ) -> None:
+            del output_root, stage1_model_name, split
+            self.pdb_id = pdb_id
+            self.blob_exceed_path = _BlobExceedPath(pdb_id == "blob_exceed")
+            self.forest_npz = Path(f"{pdb_id}.forest.npz")
+            self.probability_npz = Path(f"{pdb_id}.probability.npz")
+
+        def centered_npz(self, role: str) -> Path:
+            return Path(f"{self.pdb_id}.{role}.npz")
+
+    class _Lease:
+        def __enter__(self) -> "_Lease":
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            del args
+
+    class _LeaseFactory:
+        @staticmethod
+        def acquire(paths: _Paths, owner_token: str) -> _Lease | None:
+            del owner_token
+            return None if paths.pdb_id == "running" else _Lease()
+
+    published: list[Path] = []
+    monkeypatch.setattr(gauss_cli, "Stage1ArtifactPaths", _Paths)
+    monkeypatch.setattr(
+        gauss_cli,
+        "is_role_complete",
+        lambda paths, role: not (paths.pdb_id == "pending" and role == "F1_centered"),
+    )
+    monkeypatch.setattr(gauss_cli, "PdbRunningLease", _LeaseFactory)
+    monkeypatch.setattr(
+        gauss_cli,
+        "load_npz_strict",
+        lambda path: (
+            {"probability_map": np.zeros((1, 1, 1), dtype=np.float32)}
+            if "probability" in path.name
+            else {}
+        ),
+    )
+    monkeypatch.setattr(
+        gauss_cli,
+        "score_f1_centered_nodes",
+        lambda **kwargs: (
+            np.empty(0, dtype=np.float32),
+            np.empty(0, dtype=np.bool_),
+        ),
+    )
+    monkeypatch.setattr(
+        gauss_cli,
+        "publish_gauss_fields",
+        lambda path, score, selected: published.append(path),
+    )
+
+    result = gauss_cli.main(
+        [
+            "--pdb-list",
+            str(pdb_list),
+            "--output-root",
+            str(tmp_path),
+            "--producer",
+            "Find_0",
+            "--split",
+            "validation",
+            "--calibration-json",
+            str(calibration),
+        ]
+    )
+
+    assert result == 0
+    assert published == [Path("complete.forest.npz")]
+    summary = json.loads(capsys.readouterr().out)
+    assert summary["n_completed"] == 1
+    assert summary["n_pending"] == 1
+    assert summary["n_skipped_running"] == 1
+    assert summary["n_blob_exceed"] == 1
+    assert summary["pending"] == [
+        {"pdb_id": "pending", "missing_roles": ["F1_centered"]}
+    ]
+    assert summary["skipped_running"] == ["running"]

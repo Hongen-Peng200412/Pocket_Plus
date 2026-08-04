@@ -1,6 +1,6 @@
 # Stage1 推理入口与生产阶段
 
-本文说明 `python -m src.inference.cli` 的九个稳定子命令、每个子命令需要的输入、发布的文件角色、阶段依赖、分片规则和续跑状态。读者无需阅读推理源码即可判断应该执行哪个子命令，以及一个 PDB 的输出能否被后续阶段读取。
+本文说明 `python -m src.inference.cli` 的九个稳定模型推理子命令，以及独立 CPU Gauss scorer 的输入、发布文件、阶段依赖、分片规则和续跑状态。读者无需阅读推理源码即可判断应该执行哪个入口，以及一个 PDB 的输出能否被后续阶段读取。
 
 命令参数 `--producer` 表示 Stage1 模型来源，当前只允许 `Find_0`、`Find_1`、`Find_2` 和 `unet_c1`。命令参数 `--split` 表示数据划分，正式推理使用 `calibration`、`validation` 或 `train`。`pdb_id` 表示小写 PDB 身份。
 
@@ -139,6 +139,14 @@ python -m src.inference.cli train-produce-prob-f1-clg --producer <PRODUCER> --pd
 python -m src.inference.cli selected-refined --split <calibration|validation|train> --producer <PRODUCER> --pdb-list <PDB_LIST> --data-root <DATA_ROOT> --checkpoint <CHECKPOINT> --device <DEVICE> --output-root <OUTPUT_ROOT>
 ```
 
+使用已经冻结的 calibration 参数增量回填 Gauss scorer：
+
+```text
+python -m src.inference.Gauss_Scorer.cli --split <calibration|validation|train> --producer Find_0 --pdb-list <PDB_LIST> --calibration-json <GAUSS_CALIBRATION_JSON> --shard-index <SHARD_INDEX> --shard-count <SHARD_COUNT> --output-root <OUTPUT_ROOT>
+```
+
+该入口不加载模型或 Dataset，也不需要 GPU。项目的人类可读提交入口是 `训练与运行/sh/infer/Find_0_Gauss.sh`；脚本中的 `target_split`、`global_shard_count` 和 Slurm 数组编号共同决定本次扫描范围。
+
 ### 2.3 可选参数
 
 除 `freeze-thresholds` 外的八个 PDB 级推理子命令都接受：
@@ -191,6 +199,8 @@ freeze-thresholds
     ├──→ val-produce-prob-f1 ──→ 同目录按需补充 CLG：val-produce-prob-f1-clg
     └──→ train-produce-prob-f1 ──→ 同目录按需补充 CLG：train-produce-prob-f1-clg
 
+任一数据划分的 F1-centered 完成项 ──→ CPU Gauss scorer 增量回填 forest
+
 Selector selection.npz
     ↓
 selected-refined
@@ -202,6 +212,7 @@ selected-refined
 2. `cal-produce-f1` 与 `cal-produce-f1-clg` 都不重新生成 probability；缺少任一请求 PDB 的 probability 完成标记时直接失败。
 3. validation 和 train 的 F1-only 命令在同一个 PDB 租约内依次补齐 probability、components 和 F1。对应 `*-f1-clg` 命令再增加 CLG；若前三个角色已经有 `_COMPLETE`，它们保持不变，只生成缺少的 CLG。
 4. `selected-refined` 要求 `components` 角色可读，并读取 `selection.npz`、`forest.npz`、`clg.npz` 和 `probability/geometry.json`；它不读取 `probability_map.npz`，也不修改已有组件文件。
+5. Gauss scorer 与 GPU 主线并行时，只回填已经具有 `probability`、`components` 和 `F1_centered` 完成标记且成功取得 PDB 租约的 forest。尚未完成的 PDB 记为 `pending`，正由其他生产者持有租约的 PDB 记为 `skipped_running`；两类都不会使整个任务失败，后续重复执行同一分片即可补齐。
 
 ## 4. 每个阶段发布的文件
 
@@ -279,6 +290,20 @@ Selector 选择先恢复为 `(tree_id, node_id)` 来源组件。推理重新执�
 只有 `success` 条目保存体素和可用的 P/A 模态；其他状态的变长数据段为空。完全没有成功条目且无法确定体素特征宽度时，`voxel_final` 的形状为 `(0, 0)`。
 
 模型 forward、字段读取或精修实现抛出的异常不是领域状态。异常会终止当前 role，且不会发布该 role 的 `_COMPLETE`；调用方修复原因后按现有续跑机制重新执行，不能把异常编码成一个看似可消费的 Selected entry。
+
+### 4.6 独立 Gauss scorer 回填
+
+Gauss scorer 读取一个 PDB 已经完成的 `components/forest.npz`、`centered/F1_centered.npz` 和完整图形状，再把 `gauss_score` 与 `gauss_selected` 原子写回同一份 forest。字段公式、类型和形状见 [`../artifacts/readme.md`](../artifacts/readme.md) 第 7.1 节。它不创建新的产物角色完成标记，也不改变 `candidate_eligible`、CLG 或 Selector 的候选集合。
+
+正式参数保存在：
+
+```text
+{output_root}/Find_0/gauss_scorer/calibration.json
+```
+
+一次执行会打印 JSON 汇总，其中 `n_completed` 是本次完成或幂等确认的 PDB 数，`n_pending` 是前置角色尚未完成的 PDB 数，`n_skipped_running` 是当前租约被 GPU 或其他生产者持有的 PDB 数，`n_blob_exceed` 是 `_BLOB_EXCEED` 终态数量。只要输入文件本身没有损坏或违反科学契约，存在 `pending` 或 `skipped_running` 时进程仍以成功状态结束。因此该 CPU 入口可以在 GPU 主线运行期间随时扫描；要获得完整覆盖，必须在 GPU 主线结束后再次运行相同分片，并确认 `n_pending=0`、`n_skipped_running=0`。
+
+已经同时存在两个 Gauss 字段时，代码重新计算并逐值确认结果相同；仅存在一个字段或已有数组与冻结参数结果不同都会拒绝覆盖。正式发布使用同目录临时文件和原子替换，不产生第二套 forest。
 
 ## 5. 续跑、互斥与终态
 

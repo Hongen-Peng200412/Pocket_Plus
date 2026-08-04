@@ -557,6 +557,14 @@ Gauss scorer 只处理 `F1_centered.npz` 中由 `(source_tree_id, source_node_id
 
 两个高斯和都是直接求和，不按原子数或权重和归一化。`lambda_positive`、`lambda_negative`、`tau_angstrom` 和 `gauss_score_min` 都必须是有限正数。它们只用 calibration 集合选择一次，validation 与 train 复用同一份冻结参数。
 
+#### 7.1.2 Gauss scorer 的增量发布
+
+正式 CPU 入口是 `训练与运行/sh/infer/Find_0_Gauss.sh`，Python 入口是 `python -m src.inference.Gauss_Scorer.cli`。两者只消费已经完成的 `probability`、`components` 和 `F1_centered`，不加载模型，也不创建新的 PDB 角色完成标记。
+
+回填对每个 PDB 复用根目录 `_RUNNING` 租约。前置角色尚未完成时记录 `pending`，租约正被 GPU 或其他生产者持有时记录 `skipped_running`，随后继续扫描其余 PDB。重复运行同一清单与分片会补齐后来完成的 PDB；已经具有相同两个字段的 forest 通过幂等校验。仅存在一个 Gauss 字段或已有数组与本次冻结参数结果不同都会拒绝覆盖。
+
+正式参数文件位于 `{output_root}/Find_0/gauss_scorer/calibration.json`。`selected_parameters` 至少包含 `lambda_positive`、`lambda_negative`、`tau_angstrom` 和 `gauss_score_min`，并记录固定的 `distance_cutoff_angstrom`。该文件还负责保存 calibration 清单、代码和指标身份；这些运行身份不重复写入每个 PDB 的 forest。
+
 原因码：
 
 | 值 | 含义 |

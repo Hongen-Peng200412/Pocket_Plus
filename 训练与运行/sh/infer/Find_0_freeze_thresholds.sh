@@ -30,7 +30,7 @@ inference_root="/storage/penghongen/AdaLigand_stage1_inference"
 formal_root="${inference_root}/Find_0-CPC1-ligand_PRAUC_0.675477"
 pdb_list="${inference_root}/calibration_pdb_ids.json"  # 所有模型共用；必须覆盖完整 calibration 集合，不能传入单个分片。
 output_root="${formal_root}/artifacts"
-min_voxels=15       # 连通组件少于 15 个体素时不作为实例候选。
+min_voxels=10       # 连通组件少于 10 个体素时不作为实例候选；该冻结值由后续全部 F1 推理复用。
 max_voxels=2046     # 连通组件体素数上限，沿用冻结的 Stage1 calibration 契约。
 denominator=32768   # 阈值网格包含 0/32768 至 32768/32768，共 32769 个位置。
 

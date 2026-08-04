@@ -42,9 +42,10 @@ formal_root="${inference_root}/Find_0-CPC1-ligand_PRAUC_0.675477"
 pdb_list="${inference_root}/train_pdb_ids.json"                       # 所有模型共用的 13714 个唯一 train PDB。
 output_root="${formal_root}/artifacts"
 
-global_shard_count=16                    # train 集合固定拆成 16 个互斥分片；可用少量显卡分批完成这些编号。
-shard_index="${SLURM_ARRAY_TASK_ID:-0}" # 数组编号就是全局分片编号；多类显卡合跑时不得重复。
-window_batch_size=8                      # 当前 smoke 验证的保守完整图滑窗批量；正式提交时按可用显存调整。
+global_shard_count=50                    # train 集合固定拆成 16 个互斥分片；可用少量显卡分批完成这些编号。
+# shard_index="${SLURM_ARRAY_TASK_ID:-0}" # 数组编号就是全局分片编号；多类显卡合跑时不得重复。
+shard_index=0                            # 数组编号就是全局分片编号；多类显卡合跑时不得重复。
+window_batch_size=10                      # 当前 smoke 验证的保守完整图滑窗批量；正式提交时按可用显存调整。
 centered_batch_size=8                    # 正式居中批量；避免 smoke 值 12 仅剩约 0.7 GiB 的显存余量。
 cache_max_bytes=107374182400             # 单进程 Dataset 缓存上限 100 GiB。
 max_split_events=1                       # 每条候选谱系最多一次拆分。

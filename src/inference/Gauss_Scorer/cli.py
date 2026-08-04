@@ -62,6 +62,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     completed: list[str] = []
     blob_exceed: list[str] = []
+    pending: list[dict[str, object]] = []
+    skipped_running: list[str] = []
 
     for pdb_id in assigned:
         paths = Stage1ArtifactPaths(
@@ -76,11 +78,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         required_roles = ("probability", "components", "F1_centered")
         missing_roles = [role for role in required_roles if not is_role_complete(paths, role)]
         if missing_roles:
-            raise RuntimeError(f"{pdb_id}: Gauss scorer 缺少完成角色 {missing_roles}")
+            pending.append({"pdb_id": pdb_id, "missing_roles": missing_roles})
+            continue
         owner_token = f"{socket.gethostname()}:{os.getpid()}:{arguments.split}:{pdb_id}"
         lease = PdbRunningLease.acquire(paths, owner_token)
         if lease is None:
-            raise RuntimeError(f"{pdb_id}: 已被其它生产者持有 _RUNNING")
+            skipped_running.append(pdb_id)
+            continue
         with lease:
             forest_arrays = load_npz_strict(paths.forest_npz)
             centered_arrays = load_npz_strict(paths.centered_npz("F1_centered"))
@@ -105,7 +109,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "shard_count": arguments.shard_count,
                 "n_assigned": len(assigned),
                 "n_completed": len(completed),
+                "n_blob_exceed": len(blob_exceed),
+                "n_pending": len(pending),
+                "n_skipped_running": len(skipped_running),
                 "blob_exceed": blob_exceed,
+                "pending": pending,
+                "skipped_running": skipped_running,
             },
             ensure_ascii=False,
             sort_keys=True,

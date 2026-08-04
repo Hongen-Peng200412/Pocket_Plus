@@ -89,7 +89,7 @@ manifest = {
         "window_batch_size": 8,
         "centered_batch_size": 8,
         "cache_max_bytes": 107374182400,
-        "min_voxels": 15,
+        "min_voxels": 10,
         "max_voxels": 2046,
         "threshold_denominator": 32768,
         "main_centered_role": "F1_centered",

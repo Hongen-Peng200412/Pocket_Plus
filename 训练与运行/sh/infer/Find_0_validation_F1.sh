@@ -42,9 +42,9 @@ formal_root="${inference_root}/Find_0-CPC1-ligand_PRAUC_0.675477"
 pdb_list="${inference_root}/validation_pdb_ids.json"                  # 所有模型共用的 200 个唯一 validation PDB。
 output_root="${formal_root}/artifacts"
 
-global_shard_count=16                    # validation 集合固定拆成 16 个互斥分片。
-shard_index="${SLURM_ARRAY_TASK_ID:-0}" # 数组编号就是全局分片编号；多类显卡合跑时不得重复。
-window_batch_size=8                      # 当前 smoke 验证的保守完整图滑窗批量；正式提交时按可用显存调整。
+global_shard_count=1                    # validation 集合固定拆成 16 个互斥分片。
+shard_index=0                           # 数组编号就是全局分片编号；多类显卡合跑时不得重复。
+window_batch_size=10                      # 当前 smoke 验证的保守完整图滑窗批量；正式提交时按可用显存调整。
 centered_batch_size=8                    # 正式居中批量；比成功但接近显存上限的 smoke 值 12 更保守。
 cache_max_bytes=107374182400             # 单进程 Dataset 缓存上限 100 GiB。
 max_split_events=1                       # 每条候选谱系最多一次拆分。
