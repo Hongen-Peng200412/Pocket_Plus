@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from argparse import Namespace
 from collections import Counter
 from pathlib import Path
 
@@ -12,7 +13,12 @@ import src.datasets.stage1_dataset as stage1_dataset_module
 from src.datasets.density_channel_builder import ALL_CHANNEL_NAMES
 from src.datasets.stage1_collate import Stage1BatchCollator
 from src.datasets.stage1_dataset import Stage1Dataset
-from src.datasets.ops.stage1_box_pool import build_stage1_box_pools, generate_context_starts
+from ops.box_pool_2.build_box_pool_2 import build_shard, finalize
+from src.datasets.ops.stage1_box_pool import (
+    build_stage1_box_pools,
+    generate_context_starts,
+    sample_bias_starts,
+)
 from src.datasets.stage1_requests import (
     ResolvedStage1Crop,
     Stage1TrainingRequestSet,
@@ -493,6 +499,52 @@ def test_context_generator_uses_core_atom_count_and_stable_legal_starts() -> Non
     assert np.array_equal(first, np.zeros((5, 3), dtype=np.int32))
 
 
+def test_context_generator_without_atom_threshold_samples_all_legal_starts() -> None:
+    """第二版 context 不依赖受体原子数量，并严格产生目标数量。"""
+
+    starts = generate_context_starts(
+        receptor_coords_world=np.zeros((0, 3), dtype=np.float32),
+        full_origin_world=(0.0, 0.0, 0.0),
+        voxel_size_world=(1.0, 1.0, 1.0),
+        full_shape_zyx=(84, 85, 86),
+        rng=np.random.default_rng(19),
+        target_count=25,
+        max_attempts=25,
+        min_core_atoms=0,
+    )
+
+    assert starts.shape == (25, 3)
+    assert starts.dtype == np.int32
+    assert np.all(starts >= 0)
+    assert np.all(starts <= np.asarray([4, 5, 6], dtype=np.int32))
+
+
+def test_bias_extra_drift_is_deterministic_and_keeps_legal_starts() -> None:
+    """第二版 bias 叠加 0–3 Å 漂移后仍稳定且不越界。"""
+
+    sparse = np.asarray([[98, 99, 100], [99, 100, 101], [100, 101, 102]], dtype=np.int32)
+    first = sample_bias_starts(
+        sparse,
+        full_shape_zyx=(200, 200, 200),
+        rng=np.random.default_rng(17),
+        num_candidates=30,
+        voxel_size_world=(0.5, 1.0, 2.0),
+        extra_drift_max_angstrom=3.0,
+    )
+    second = sample_bias_starts(
+        sparse,
+        full_shape_zyx=(200, 200, 200),
+        rng=np.random.default_rng(17),
+        num_candidates=30,
+        voxel_size_world=(0.5, 1.0, 2.0),
+        extra_drift_max_angstrom=3.0,
+    )
+
+    assert np.array_equal(first, second)
+    assert np.all(first >= 0)
+    assert np.all(first <= 120)
+
+
 def test_synced_rotation_swaps_anisotropic_voxel_axes_and_keeps_alignment(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -611,3 +663,79 @@ def test_box_pool_one_click_entry_publishes_train_validation_and_selection(tmp_p
     ) as saved:
         assert len(str(saved["source_manifest_sha256"].item())) == 64
         assert len(str(saved["source_validation_sha256"].item())) == 64
+
+
+def test_box_pool_second_version_uses_frozen_zero_five_five_ratio(tmp_path: Path) -> None:
+    """第二版 train 与 validation 都从自身配置读取 0 center、5 bias、5 context。"""
+
+    data_root = tmp_path / "data"
+    _write_pool_upstream(data_root, "1abc")
+    _write_pool_upstream(data_root, "2def")
+    train_split = tmp_path / "train.json"
+    validation_split = tmp_path / "validation.json"
+    train_split.write_text(json.dumps([{"pdb_id": "1abc"}]), encoding="utf-8")
+    validation_split.write_text(json.dumps([{"pdb_id": "2def"}]), encoding="utf-8")
+    output_root = tmp_path / "box_pool_2"
+
+    build_stage1_box_pools(
+        data_root=data_root,
+        train_split=train_split,
+        validation_split=validation_split,
+        output_root=output_root,
+        seed=23,
+        center_per_occurrence=0,
+        bias_per_occurrence=5,
+        context_per_occurrence=5,
+        context_min_core_atoms=0,
+        extra_bias_drift_max_angstrom=3.0,
+    )
+
+    config = json.loads((output_root / "config.json").read_text(encoding="utf-8"))
+    assert config["entry_ratio"] == {"center": 0, "bias": 5, "context": 5}
+    assert config["context_generator"]["min_core_receptor_heavy_atoms"] == 0
+    assert config["extra_bias_drift_max_angstrom"] == pytest.approx(3.0)
+
+    train_requests = tuple(Stage1TrainingRequestSet(output_root / "train", seed=23).requests)
+    assert len(train_requests) == 10
+    assert Counter(request.role for request in train_requests) == {"bias": 5, "context": 5}
+
+    validation_requests = load_validation_selection(
+        output_root / "validation_selection.npz",
+        output_root,
+    )
+    assert len(validation_requests) == 10
+    assert Counter(request.role for request in validation_requests) == {"bias": 5, "context": 5}
+
+
+def test_box_pool_second_version_parallel_publish_contract(tmp_path: Path) -> None:
+    """分片只写单 PDB；finalize 核对齐全后才写根完成标记。"""
+
+    data_root = tmp_path / "data"
+    _write_pool_upstream(data_root, "1abc")
+    _write_pool_upstream(data_root, "2def")
+    train_split = tmp_path / "train.json"
+    validation_split = tmp_path / "validation.json"
+    train_split.write_text(json.dumps([{"pdb_id": "1abc"}]), encoding="utf-8")
+    validation_split.write_text(json.dumps([{"pdb_id": "2def"}]), encoding="utf-8")
+    output_root = tmp_path / "box_pool_2"
+    state_root = tmp_path / "run_state"
+
+    common = {
+        "data_root": str(data_root),
+        "train_split": str(train_split),
+        "validation_split": str(validation_split),
+        "output_root": str(output_root),
+        "state_root": str(state_root),
+        "shard_count": 2,
+        "workers": 1,
+        "seed": 23,
+    }
+    build_shard(Namespace(**common, shard_index=0))
+    assert not (output_root / "_COMPLETE").exists()
+    build_shard(Namespace(**common, shard_index=1))
+    finalize(Namespace(**common, shard_index=0))
+
+    assert (output_root / "_COMPLETE").is_file()
+    config = json.loads((output_root / "config.json").read_text(encoding="utf-8"))
+    assert config["entry_ratio"] == {"center": 0, "bias": 5, "context": 5}
+    assert len(Stage1TrainingRequestSet(output_root / "train", seed=23)) == 10

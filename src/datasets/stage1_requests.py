@@ -4,7 +4,7 @@
 阅读入口:
     1. :class:`ResolvedStage1Crop` 保存一个请求的 PDB 身份、ZYX 起点、角色和监督开关. 
     2. :func:`resolve_stage1_start` 把请求起点限制在完整密度图内, 保证 ``[start_zyx, start_zyx + box_shape_zyx)`` 不补零越界. 
-    3. :class:`Stage1TrainingRequestSet` 从 ``box_pool/train`` 的 PDB NPZ 生成每个 epoch 的 ``1:5:3`` 请求, 比例小于 1 时额外保存固定子集. 
+    3. :class:`Stage1TrainingRequestSet` 从 ``box_pool/train`` 的 PDB NPZ 和根 ``config.json`` 生成每个 epoch 的请求, 比例小于 1 时额外保存固定子集. 
     4. :func:`load_validation_selection` 从 ``validation_selection.npz`` 的索引恢复固定验证请求, 不重新抽样. 
     5. :func:`build_request_source` 选择训练 BOX pool 或固定验证表. 
 
@@ -633,19 +633,19 @@ def _string_array(values: np.ndarray) -> list[str]:
 # ================================================================== 最终的请求 ================================================================== 
 # ----------------- 训练时每个epoch 的请求 -----------------
 class Stage1TrainingRequestSet:
-    """按 epoch 从冻结 PDB BOX 池生成 ``1:5:3`` 请求表. 
+    """按 epoch 从冻结 PDB BOX 池生成配置指定比例的请求表. 
 
     字段:
         - pool_directory: ``str | Path``; 通常为 ``<box_pool_root>/train``, 其中每个 PDB NPZ 由根 ``manifest.json`` 列出. 
         - seed: int; 与 epoch 一起决定 center、bias 和 context 的选择. 
         - box_sample_fraction: float; ``1.0`` 时每个 epoch 重新选择完整请求池, 小于 ``1.0`` 时固定 epoch 0 的比例子集. 
-        - requests: ``tuple[ResolvedStage1Crop, ...]``; 当前 epoch 的请求, 按 PDB、occurrence 和角色展开为 ``1:5:3``. 
+        - requests: ``tuple[ResolvedStage1Crop, ...]``; 当前 epoch 的请求, 按 PDB、occurrence 和配置指定的角色数量展开. 
         - epoch: int; ``1.0`` 模式下当前请求所属 epoch, 小于 ``1.0`` 时固定为 ``0``. 
 
     文件副作用:
         - <box_pool_root>/train_selection_<fraction>_seed<seed>.npz: 仅在 ``box_sample_fraction < 1.0`` 且文件不存在时创建, 字段级契约由 ``_save_request_selection`` 定义. 
 
-    每个 occurrence 最多产生 1 个 center、5 个不重复 bias 和 3 个 context 请求; 重复起点不去重. 
+    根 ``config.json`` 缺失 ``entry_ratio`` 时兼容旧的 ``1:5:3``；第二版池明确写入 ``0:5:5``。重复起点不去重.
     """
     def __init__(
         self,
@@ -673,6 +673,27 @@ class Stage1TrainingRequestSet:
             _load_pdb_pool(path, expected_pdb_id=pdb_id)
             for pdb_id, path in manifest_entries
         )
+        config_path = pool_dir.parent / "config.json"
+        entry_ratio = {"center": 1, "bias": 5, "context": 3}
+        if config_path.is_file():
+            config_value = json.loads(config_path.read_text(encoding="utf-8"))
+            configured_ratio = config_value.get("entry_ratio") if isinstance(config_value, dict) else None
+            if configured_ratio is not None:
+                if not isinstance(configured_ratio, dict):
+                    raise TypeError(f"{config_path}: entry_ratio 必须为 object。")
+                entry_ratio = {
+                    role: int(configured_ratio.get(role, -1))
+                    for role in ("center", "bias", "context")
+                }
+        if entry_ratio["center"] not in (0, 1):
+            raise ValueError(f"{config_path}: entry_ratio.center 只允许 0 或 1。")
+        if not 0 <= entry_ratio["bias"] <= 30:
+            raise ValueError(f"{config_path}: entry_ratio.bias 必须位于 [0,30]。")
+        if entry_ratio["context"] < 0:
+            raise ValueError(f"{config_path}: entry_ratio.context 必须为非负整数。")
+        if sum(entry_ratio.values()) <= 0:
+            raise ValueError(f"{config_path}: entry_ratio 至少启用一种请求。")
+        self.entry_ratio = entry_ratio
         self.seed = int(seed)
         self.box_sample_fraction = _validate_box_sample_fraction(box_sample_fraction)
         self.epoch = -1
@@ -709,10 +730,10 @@ class Stage1TrainingRequestSet:
             self.epoch = 0
 
     def _build_epoch_requests(self, epoch: int) -> tuple[ResolvedStage1Crop, ...]:
-        """按 ``seed`` 与 ``epoch`` 构造完整的 ``1:5:3`` 请求表. 
+        """按 ``seed``、``epoch`` 与根配置构造完整请求表. 
 
         输出:
-            - tuple[ResolvedStage1Crop, ...]: 每个 PDB 最多选 50 个 occurrence; 每个 occurrence 追加 1 个 center、5 个 bias 和 3 个 context 请求, 顺序保留 PDB 和随机选择顺序. 
+            - tuple[ResolvedStage1Crop, ...]: 每个 PDB 最多选 50 个 occurrence；每个 occurrence 按 ``entry_ratio`` 追加请求，顺序保留 PDB 和随机选择顺序. 
         """
         rng = np.random.default_rng(np.random.SeedSequence([self.seed, int(epoch)]))
         requests: list[ResolvedStage1Crop] = []
@@ -725,17 +746,22 @@ class Stage1TrainingRequestSet:
             context_count = int(pool.context_start_zyx.shape[0])
             for occ_row in selected_occ_rows.tolist():
                 occurrence_id = int(pool.occurrence_id[occ_row])
-                requests.append(
-                    ResolvedStage1Crop(
-                        pool.pdb_id,
-                        tuple(pool.center_start_zyx[occ_row].tolist()),
-                        True,
-                        "center",
-                        occurrence_id,
-                        None,
+                if self.entry_ratio["center"] == 1:
+                    requests.append(
+                        ResolvedStage1Crop(
+                            pool.pdb_id,
+                            tuple(pool.center_start_zyx[occ_row].tolist()),
+                            True,
+                            "center",
+                            occurrence_id,
+                            None,
+                        )
                     )
-                )
-                for candidate_index in rng.choice(30, size=5, replace=False).tolist():
+                for candidate_index in rng.choice(
+                    30,
+                    size=self.entry_ratio["bias"],
+                    replace=False,
+                ).tolist():
                     requests.append(
                         ResolvedStage1Crop(
                             pool.pdb_id,
@@ -746,8 +772,12 @@ class Stage1TrainingRequestSet:
                             int(candidate_index),
                         )
                     )
-                if context_count > 0:
-                    context_indices = rng.choice(context_count, size=3, replace=context_count < 3)
+                if context_count > 0 and self.entry_ratio["context"] > 0:
+                    context_indices = rng.choice(
+                        context_count,
+                        size=self.entry_ratio["context"],
+                        replace=context_count < self.entry_ratio["context"],
+                    )
                     for candidate_index in context_indices.tolist():
                         requests.append(
                             ResolvedStage1Crop(
