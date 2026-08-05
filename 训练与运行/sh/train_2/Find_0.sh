@@ -60,10 +60,8 @@ training_overrides=(
     "train.val_per_epoch=30"
     "train.optimizer.lr=5.0e-5"
     "train.scheduler.warmup_ratio=0.005"
-    "train.scheduler.patience=2"
+    "train.scheduler.patience=3"
     "train.scheduler.stop_after_lr_reductions=4"
-    "model.backbone.real_atom_density_cube_size=11"
-    "model.backbone.real_density_cube_cfg.cube_size=11"
     "offline=false"
 )
 

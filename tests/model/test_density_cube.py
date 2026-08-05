@@ -162,3 +162,26 @@ def test_density_cube_encoder_default_has_downsample_before_plain_conv() -> None
     convs = [module for module in encoder.encoder if isinstance(module, nn.Conv3d)]
 
     assert [conv.stride for conv in convs] == [(2, 2, 2), (2, 2, 2), (1, 1, 1)]
+
+
+def test_density_cube_encoder_allows_zero_plain_conv_after_downsample() -> None:
+    """验证 num_conv=0 时仅保留下采样卷积，且前向输出形状不变。"""
+
+    encoder = _make_encoder(num_downsample=2, num_conv=0)
+    convs = [module for module in encoder.encoder if isinstance(module, nn.Conv3d)]
+
+    output = encoder(
+        torch.randn(1, 2, 9, 9, 9),
+        torch.tensor([[4, 4, 4]], dtype=torch.long),
+        torch.tensor([0], dtype=torch.long),
+    )
+
+    assert [conv.stride for conv in convs] == [(2, 2, 2), (2, 2, 2)]
+    assert tuple(output.shape) == (1, 4)
+
+
+def test_density_cube_encoder_rejects_empty_encoder() -> None:
+    """验证下采样卷积与普通卷积同时为零时在构造阶段报错。"""
+
+    with pytest.raises(ValueError, match="不能同时为 0"):
+        _make_encoder(num_downsample=0, num_conv=0)

@@ -76,8 +76,10 @@ def test_find_configs_encode_common_stage1_contract(experiment: str) -> None:
     assert cfg.model.backbone.embed_head.num_voxel_blocks == 0
     assert cfg.model.backbone.embed_head.num_point_blocks == 3
     assert list(cfg.model.backbone.embed_head.point_buffer_radii) == [8.0, 4.0, 0.0]
-    assert cfg.model.backbone.density_cube_cfg.cube_size == 11
+    assert cfg.model.backbone.density_cube_cfg.cube_size == 9
     assert cfg.model.backbone.real_density_cube_cfg.cube_size == 9
+    assert cfg.model.backbone.density_cube_cfg.num_conv == 0
+    assert cfg.model.backbone.real_density_cube_cfg.num_conv == 0
     assert cfg.model.backbone.density_cube_cfg.chunk_size == 2048
     assert cfg.model.backbone.real_density_cube_cfg.chunk_size == 4096
     assert cfg.train.global_batch_size == 64
