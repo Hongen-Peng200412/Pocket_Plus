@@ -14,7 +14,7 @@ class DensityCubeEncoder(nn.Module):
         - in_channels: int | None, density voxel_grid 输入通道数; None 表示由训练入口 lazy 初始化
         - cube_size: int, 每个 P 周围抽取的 cube 边长, 必须为奇数, 推荐默认 11
         - hidden_channels: int, 3D 卷积隐藏通道数, 推荐值 64
-        - num_conv: int, stride 下采样后的普通 Conv3d block 数, 推荐值 2
+        - num_conv: int, stride 下采样后的普通 Conv3d block 数; 可以为 0，但此时 num_downsample 必须大于 0
         - out_dim: int, 输出 pseudo_feat 维度, 必须对齐 point_backbone.atom_feature_dim
         - encoder_type: str, encoder 类型, 当前只支持 conv_gap
         - norm: str, 归一化类型, 取值 group/none
@@ -53,10 +53,12 @@ class DensityCubeEncoder(nn.Module):
             raise ValueError("cube_size 必须为 >=1 的奇数。")
         if int(hidden_channels) <= 0:
             raise ValueError("hidden_channels 必须 > 0。")
-        if int(num_conv) < 1:
-            raise ValueError("num_conv 必须 >= 1。")
+        if int(num_conv) < 0:
+            raise ValueError("num_conv 必须 >= 0。")
         if int(num_downsample) < 0:
             raise ValueError("num_downsample 必须 >= 0。")
+        if int(num_downsample) == 0 and int(num_conv) == 0:
+            raise ValueError("num_downsample 与 num_conv 不能同时为 0。")
         if int(out_dim) <= 0:
             raise ValueError("out_dim 必须 > 0。")
         if encoder_type != "conv_gap":

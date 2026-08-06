@@ -3,7 +3,7 @@
 
 阅读入口:
     1. :func:`build_pdb_box_pool` 为一个 PDB 生成 occurrence、center、bias 和 context 起点字段. 
-    2. :func:`freeze_validation_selection` 把 validation 的 ``1:5:3`` 请求索引冻结为一个 NPZ. 
+    2. :func:`freeze_validation_selection` 把 validation 的配置指定请求索引冻结为一个 NPZ.
     3. :func:`build_stage1_box_pools` 批量发布 train/validation 的 PDB NPZ、根 manifest、配置、摘要和 ``_COMPLETE``. 
 
 单 PDB NPZ 字段:
@@ -240,8 +240,8 @@ def generate_context_starts(
     if origin.shape != (3,) or voxel_size.shape != (3,) or np.any(voxel_size <= 0):
         raise ValueError("full_origin_world/voxel_size_world 必须为合法 (3,) XYZ。")
     resolve_stage1_start((0, 0, 0), full_shape)   # 仅用于检验(该函数内置报错)
-    if int(target_count) <= 0 or int(max_attempts) <= 0 or int(min_core_atoms) <= 0:
-        raise ValueError("context target/max_attempts/min_core_atoms 必须为正整数。")
+    if int(target_count) <= 0 or int(max_attempts) <= 0 or int(min_core_atoms) < 0:
+        raise ValueError("context target/max_attempts 必须为正整数，min_core_atoms 必须为非负整数。")
 
     # np.ndarray[float64], (N_atom,3), 世界 XYZ 坐标转换成完整图连续 voxel XYZ 坐标. 
     local_xyz = (coords - origin[None, :]) / voxel_size[None, :]
@@ -256,11 +256,12 @@ def generate_context_starts(
             [rng.integers(0, int(axis_max) + 1) for axis_max in max_start],
             dtype=np.int64,
         )
-        upper = requested + np.asarray(STAGE1_BOX_SHAPE_ZYX, dtype=np.int64)
-        # np.ndarray[bool], (N_atom,), receptor 原子是否落在当前 80³ core 的半开区间内. 
-        in_core = np.all((local_zyx >= requested[None, :]) & (local_zyx < upper[None, :]), axis=1)
-        if int(np.count_nonzero(in_core)) < int(min_core_atoms):
-            continue
+        if int(min_core_atoms) > 0:
+            upper = requested + np.asarray(STAGE1_BOX_SHAPE_ZYX, dtype=np.int64)
+            # np.ndarray[bool], (N_atom,), receptor 原子是否落在当前 80³ core 的半开区间内.
+            in_core = np.all((local_zyx >= requested[None, :]) & (local_zyx < upper[None, :]), axis=1)
+            if int(np.count_nonzero(in_core)) < int(min_core_atoms):
+                continue
         starts.append(requested.astype(np.int32, copy=False))
         if len(starts) >= int(target_count):
             break
@@ -273,6 +274,8 @@ def sample_bias_starts(
     rng: np.random.Generator,
     num_candidates: int = 30,
     box_shape_zyx: Sequence[int] = STAGE1_BOX_SHAPE_ZYX,
+    voxel_size_world: Sequence[float] = (1.0, 1.0, 1.0),
+    extra_drift_max_angstrom: float = 0.0,
 ) -> np.ndarray:
     """
     对于一列 occurrence, 按"体积均匀球偏移法"生成相应的冻结 bias-boxs 起点. 
@@ -295,6 +298,11 @@ def sample_bias_starts(
     if int(num_candidates) <= 0:
         raise ValueError("num_candidates 必须为正整数。")
     box_shape = np.asarray(box_shape_zyx, dtype=np.float64)
+    voxel_size_xyz = np.asarray(voxel_size_world, dtype=np.float64)
+    if voxel_size_xyz.shape != (3,) or not np.isfinite(voxel_size_xyz).all() or np.any(voxel_size_xyz <= 0):
+        raise ValueError("voxel_size_world 必须为逐轴有限且为正的 (3,) XYZ 数组。")
+    if not np.isfinite(float(extra_drift_max_angstrom)) or float(extra_drift_max_angstrom) < 0:
+        raise ValueError("extra_drift_max_angstrom 必须为有限非负数。")
     # np.ndarray[float64], (3,), occurrence 体素中心的连续 corner-语义 ZYX 质心. 
     centroid_corner_zyx = sparse.astype(np.float64).mean(axis=0) + 0.5
     # float, 与 K_occ 等体积球的 voxel 半径, 用于限定 bias center 的采样范围. 
@@ -307,6 +315,17 @@ def sample_bias_starts(
     radii = radius * np.cbrt(rng.random(int(num_candidates)))                  # 生成形状为 (K,) 的一维数组, 每个元素在[0,1) 均匀分布
     # np.ndarray[float64], (N_bias,3), occurrence 质心加球内偏移后的候选 BOX 中心. 
     biased_centers = centroid_corner_zyx[None, :] + directions * radii[:, None]
+    if float(extra_drift_max_angstrom) > 0:
+        # 额外漂移在真实 XYZ 空间采样，再按实际体素尺寸换算为 ZYX 体素位移。
+        drift_directions_xyz = rng.normal(size=(int(num_candidates), 3))
+        drift_norm = np.linalg.norm(drift_directions_xyz, axis=1, keepdims=True)
+        drift_directions_xyz = drift_directions_xyz / np.maximum(
+            drift_norm,
+            np.finfo(np.float64).tiny,
+        )
+        drift_lengths = rng.uniform(0.0, float(extra_drift_max_angstrom), size=int(num_candidates))
+        drift_voxel_xyz = drift_directions_xyz * drift_lengths[:, None] / voxel_size_xyz[None, :]
+        biased_centers = biased_centers + drift_voxel_xyz[:, [2, 1, 0]]
     requested_starts = np.rint(biased_centers - box_shape[None, :] / 2.0)
     return np.asarray(
         [resolve_stage1_start(start, full_shape_zyx, box_shape_zyx) for start in requested_starts],
@@ -318,6 +337,8 @@ def build_occurrence_pool_rows(
     occurrence_masks_zyx: dict[int, np.ndarray],
     full_shape_zyx: Sequence[int],
     rng: np.random.Generator,
+    voxel_size_world: Sequence[float] = (1.0, 1.0, 1.0),
+    extra_bias_drift_max_angstrom: float = 0.0,
 ) -> dict[str, np.ndarray]:
     """
     为一个 PDB 的全部非空 occurrence 构造 center 与 30 个 bias 起点. 
@@ -342,7 +363,16 @@ def build_occurrence_pool_rows(
     for occurrence_id in occurrence_ids.tolist():
         sparse = np.asarray(occurrence_masks_zyx[occurrence_id], dtype=np.int32)
         centers.append(centered_start_from_sparse_mask(sparse, full_shape_zyx))
-        biases.append(sample_bias_starts(sparse, full_shape_zyx, rng, num_candidates=30))
+        biases.append(
+            sample_bias_starts(
+                sparse,
+                full_shape_zyx,
+                rng,
+                num_candidates=30,
+                voxel_size_world=voxel_size_world,
+                extra_drift_max_angstrom=extra_bias_drift_max_angstrom,
+            )
+        )
     return {
         "occurrence_id": occurrence_ids,
         "center_start_zyx": np.asarray(centers, dtype=np.int32).reshape(-1, 3),
@@ -355,6 +385,8 @@ def build_pdb_box_pool(
     pdb_id: str,
     split_name: str,
     seed: int = _POOL_SEED,
+    context_min_core_atoms: int = _CONTEXT_MIN_CORE_ATOMS,
+    extra_bias_drift_max_angstrom: float = 0.0,
 ) -> dict[str, np.ndarray]:
     """
     从一份 A-G PDB 三件套（"exp.npz"、"ligand_area.npz"、"receptor_tokens.npz"）构造 center、bias 和 context 索引池. 
@@ -394,7 +426,13 @@ def build_pdb_box_pool(
         receptor_coords = np.asarray(data["coords"], dtype=np.float32)
     rng = np.random.default_rng(_pdb_seed(seed, split_name, pdb_id))
     # dict[str,np.ndarray], 对齐的 occurrence_id/center(N,3)/bias(N,30,3) 冻结表. 
-    occurrence_rows = build_occurrence_pool_rows(occurrence_masks, grid_shape_zyx, rng)
+    occurrence_rows = build_occurrence_pool_rows(
+        occurrence_masks,
+        grid_shape_zyx,
+        rng,
+        voxel_size_world=voxel_size,
+        extra_bias_drift_max_angstrom=extra_bias_drift_max_angstrom,
+    )
     # np.ndarray[int32], (N_context,3), 与 occurrence 无关且满足 core 原子数门槛的起点. 
     contexts = generate_context_starts(
         receptor_coords_world=receptor_coords,
@@ -402,6 +440,7 @@ def build_pdb_box_pool(
         voxel_size_world=voxel_size,
         full_shape_zyx=grid_shape_zyx,
         rng=rng,
+        min_core_atoms=context_min_core_atoms,
     )
     return {
         "pdb_id": np.asarray(pdb_id),
@@ -421,6 +460,11 @@ def build_stage1_box_pools(
     validation_split: str | Path,
     output_root: str | Path,
     seed: int = _POOL_SEED,
+    center_per_occurrence: int = 1,
+    bias_per_occurrence: int = 5,
+    context_per_occurrence: int = 3,
+    context_min_core_atoms: int = _CONTEXT_MIN_CORE_ATOMS,
+    extra_bias_drift_max_angstrom: float = 0.0,
 ) -> dict[str, object]:
     """
     端到端生成 train/validation pool、冻结 selection 与完成标记. 
@@ -547,7 +591,14 @@ def build_stage1_box_pools(
         output_directory.mkdir(parents=True, exist_ok=True)
         for pdb_id in pdb_ids:
             try:
-                pool = build_pdb_box_pool(data_root, pdb_id, split_name, seed=seed)
+                pool = build_pdb_box_pool(
+                    data_root,
+                    pdb_id,
+                    split_name,
+                    seed=seed,
+                    context_min_core_atoms=context_min_core_atoms,
+                    extra_bias_drift_max_angstrom=extra_bias_drift_max_angstrom,
+                )
             except ValueError as error:
                 if split_name == "train" and "完整图三轴必须不小于" in str(error):
                     summary["train"]["short_map_count"] += 1  # type: ignore[index]
@@ -576,6 +627,9 @@ def build_stage1_box_pools(
         validation_pool_directory=root / "validation",
         output_path=root / "validation_selection.npz",
         seed=seed,
+        center_per_occurrence=center_per_occurrence,
+        bias_per_occurrence=bias_per_occurrence,
+        context_per_occurrence=context_per_occurrence,
     )
     summary["validation_selection"] = selection_summary
     summary["manifest"] = {split_name: len(entries) for split_name, entries in manifest_entries.items()}
@@ -583,16 +637,21 @@ def build_stage1_box_pools(
         "box_shape_zyx": list(STAGE1_BOX_SHAPE_ZYX),
         "bias_candidates_per_occurrence": 30,
         "bias_radius_formula": "R=(3*K_occ/(4*pi))**(1/3)",
-        "bias_selected_per_epoch": 5,
+        "extra_bias_drift_max_angstrom": float(extra_bias_drift_max_angstrom),
+        "bias_selected_per_epoch": int(bias_per_occurrence),
         "context_generator": {
             "sampling": "uniform_integer_legal_start_per_axis",
             "target_count": _CONTEXT_TARGET,
             "max_attempts": _CONTEXT_MAX_ATTEMPTS,
-            "min_core_receptor_heavy_atoms": _CONTEXT_MIN_CORE_ATOMS,
+            "min_core_receptor_heavy_atoms": int(context_min_core_atoms),
             "ligand_filter": False,
         },
         "occurrence_cap_per_pdb_per_epoch": 50,
-        "entry_ratio": {"center": 1, "bias": 5, "context": 3},
+        "entry_ratio": {
+            "center": int(center_per_occurrence),
+            "bias": int(bias_per_occurrence),
+            "context": int(context_per_occurrence),
+        },
         "train_random_rotation_90_degree": True,
         "seed": int(seed),
         "seed_rule": "sha256(base_seed|split_name|pdb_id) first_uint64",
@@ -606,9 +665,12 @@ def freeze_validation_selection(                 # 最后才用到的函数
     validation_pool_directory: str | Path,
     output_path: str | Path,
     seed: int = _POOL_SEED,
+    center_per_occurrence: int = 1,
+    bias_per_occurrence: int = 5,
+    context_per_occurrence: int = 3,
 ) -> dict[str, int]:
     """
-    一次冻结 validation 的 `1:5:3` 真实读取项. 
+    一次冻结 validation 的配置指定比例真实读取项.
 
     输入参数:
         - validation_pool_directory: ``str | Path``, 是.../(stage1_preparation)/box_pool/validation(这是个文件夹), 仅用于定位 boox_pool 这层地址, 从而找到 manifest.json. 
@@ -634,6 +696,15 @@ def freeze_validation_selection(                 # 最后才用到的函数
         示例: 若 ``output_path`` 为 ``C:\\data\\stage1_preparation\\box_pool\\validation_selection.npz``, 则文件直接写入此路径. 
     """
     from src.datasets.stage1_requests import _load_pdb_pool
+
+    if int(center_per_occurrence) not in (0, 1):
+        raise ValueError("center_per_occurrence 只允许 0 或 1。")
+    if not 0 <= int(bias_per_occurrence) <= 30:
+        raise ValueError("bias_per_occurrence 必须位于 [0,30]。")
+    if int(context_per_occurrence) < 0:
+        raise ValueError("context_per_occurrence 必须为非负整数。")
+    if int(center_per_occurrence) + int(bias_per_occurrence) + int(context_per_occurrence) <= 0:
+        raise ValueError("validation 每个 occurrence 至少启用一种请求。")
 
     pool_directory = Path(validation_pool_directory)
     manifest_entries = _load_manifest_pool_paths(
@@ -664,14 +735,23 @@ def freeze_validation_selection(                 # 最后才用到的函数
         context_count = int(pool.context_start_zyx.shape[0])
         for occurrence_row in selected_rows.tolist():
             occurrence_id = int(pool.occurrence_id[occurrence_row])
-            center_pdb_index.append(pdb_index)
-            center_occurrence_id.append(occurrence_id)
-            for candidate_index in rng.choice(30, size=5, replace=False).tolist():
+            if int(center_per_occurrence) == 1:
+                center_pdb_index.append(pdb_index)
+                center_occurrence_id.append(occurrence_id)
+            for candidate_index in rng.choice(
+                30,
+                size=int(bias_per_occurrence),
+                replace=False,
+            ).tolist():
                 bias_pdb_index.append(pdb_index)
                 bias_occurrence_id.append(occurrence_id)
                 bias_candidate_index.append(int(candidate_index))
-            if context_count > 0:
-                for candidate_index in rng.choice(context_count, size=3, replace=context_count < 3).tolist():
+            if context_count > 0 and int(context_per_occurrence) > 0:
+                for candidate_index in rng.choice(
+                    context_count,
+                    size=int(context_per_occurrence),
+                    replace=context_count < int(context_per_occurrence),
+                ).tolist():
                     context_pdb_index.append(pdb_index)
                     context_candidate_index.append(int(candidate_index))
 
@@ -713,6 +793,21 @@ def _main() -> None:
     parser.add_argument("--validation-split", required=True, help="冻结 validation.json。")
     parser.add_argument("--output-root", required=True, help="stage1_preparation/box_pool 输出目录。")
     parser.add_argument("--seed", type=int, default=_POOL_SEED, help="BOX pool 基准随机 seed。")
+    parser.add_argument("--center-per-occurrence", type=int, default=1, help="每个 occurrence 的 center 请求数。")
+    parser.add_argument("--bias-per-occurrence", type=int, default=5, help="每个 occurrence 的 bias 请求数。")
+    parser.add_argument("--context-per-occurrence", type=int, default=3, help="每个 occurrence 的 context 请求数。")
+    parser.add_argument(
+        "--context-min-core-atoms",
+        type=int,
+        default=_CONTEXT_MIN_CORE_ATOMS,
+        help="context BOX 的最少受体重原子数；0 表示不设门槛。",
+    )
+    parser.add_argument(
+        "--extra-bias-drift-max-angstrom",
+        type=float,
+        default=0.0,
+        help="叠加在原 bias 上的额外物理漂移长度上界（Å）。",
+    )
     arguments = parser.parse_args()
     summary = build_stage1_box_pools(
         data_root=arguments.data_root,
@@ -720,6 +815,11 @@ def _main() -> None:
         validation_split=arguments.validation_split,
         output_root=arguments.output_root,
         seed=arguments.seed,
+        center_per_occurrence=arguments.center_per_occurrence,
+        bias_per_occurrence=arguments.bias_per_occurrence,
+        context_per_occurrence=arguments.context_per_occurrence,
+        context_min_core_atoms=arguments.context_min_core_atoms,
+        extra_bias_drift_max_angstrom=arguments.extra_bias_drift_max_angstrom,
     )
     print(json.dumps(summary, ensure_ascii=False, indent=2))
 
