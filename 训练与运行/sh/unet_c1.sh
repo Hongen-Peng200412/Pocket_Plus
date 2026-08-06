@@ -151,7 +151,7 @@ python -u src/train.py "${training_overrides[@]}" "$@"
 # -----------------------------------------------------------------
 # 正式训练只使用本轮产生的 BEST.ckpt。
 formal_best="${formal_run}/checkpoints/BEST.ckpt"
-# 缺少 BEST 时返回失败，四锁执行器将进入 try_lock。
+# 缺少 BEST 时返回失败；只有提交时使用 --after_hold 才会进入 try_lock 并保留资源。
 [[ -f "${formal_best}" ]] || {
     echo "[unet_c1][错误] 没有产生 BEST.ckpt：${formal_best}" >&2
     exit 1
