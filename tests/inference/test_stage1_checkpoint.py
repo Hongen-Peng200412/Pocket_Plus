@@ -142,6 +142,7 @@ def test_loader_instantiates_wrapper_from_run_snapshot(tmp_path: Path) -> None:
 
     script = textwrap.dedent(
         f"""
+        import src.inference.cli
         from src.inference.checkpoint import load_stage1_wrapper
 
         wrapper = load_stage1_wrapper(
@@ -152,6 +153,28 @@ def test_loader_instantiates_wrapper_from_run_snapshot(tmp_path: Path) -> None:
         assert wrapper.origin == "snapshot"
         assert wrapper.weight.item() == 5.0
         assert wrapper.runtime_value == 23
+        """
+    )
+    completed = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=Path(__file__).resolve().parents[2],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+
+
+def test_cli_import_does_not_preload_snapshot_owned_packages() -> None:
+    """导入推理入口时不得提前加载应由训练快照提供的 Dataset。"""
+    script = textwrap.dedent(
+        """
+        import sys
+        import src.inference.cli
+
+        assert "src.datasets" not in sys.modules
+        assert not any(name.startswith("src.datasets.") for name in sys.modules)
         """
     )
     completed = subprocess.run(
