@@ -45,7 +45,7 @@ else
     ddp_find_unused_parameters=false
 fi
 
-# 保留现有 unet_c1 的模型、损失、批量、学习率、验证频率与停止制度。
+# 保留现有 unet_c1 的模型、损失、学习率、验证频率与停止制度；双 H200 正式任务每卡使用 8 个 BOX，全局批量仍为 48。
 training_overrides=(
     "+experiment=unet_c1"
     "experiment_group=${experiment_group}"
@@ -56,7 +56,7 @@ training_overrides=(
     "train.nnodes=${nnodes}"
     "train.ddp_find_unused_parameters=${ddp_find_unused_parameters}"
     "train.global_batch_size=48"
-    "train.batch_size=6"
+    "train.batch_size=8"
     "train.strict_global_batch_size=true"
     "train.enable_batch_size_tuning=false"
     "train.num_workers=20"
