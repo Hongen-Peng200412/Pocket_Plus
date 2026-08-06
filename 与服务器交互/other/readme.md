@@ -31,7 +31,7 @@
 
 - 同步入口免密：使用 MSYS2 `rsync + sshpass + ssh`，密码存放在本机私有文件 `%USERPROFILE%\.ssh\pocket_plus_sshpass.txt`，项目内不保存密码。
 - VS Code 免密：使用 `%USERPROFILE%\.ssh\ssh_with_askpass.cmd` 作为 `remote.SSH.path`，并在 SSH config 中配置 `emap-server`。
-- AI 远端探测免密：由 agent 在当前进程临时设置 `CODEX_SSH_PASSWORD`，再调用 `other\Invoke-PasswordSsh.ps1`；该脚本不保存密码。
+- AI 远端命令免密：调用 `other\Invoke-PasswordSsh.ps1`；项目薄入口委托 `%USERPROFILE%\.codex\tools\Invoke-ProjectSsh.ps1`，统一读取本机私有密码文件并执行严格主机密钥检查。
 
 服务器当前不提供 `publickey` 认证方式，因此 SSH key 免密不是当前可用方案。若以后服务器开放 publickey，应优先切回 SSH key。
 
@@ -84,21 +84,27 @@
 
 ## AI helper 使用纪律
 
-`Invoke-PasswordSsh.ps1` 用于轻量远端命令、只读探测或把本地 LF 行尾的 bash 脚本通过 stdin 送给远端 `bash -s`。
+`Invoke-PasswordSsh.ps1` 用于轻量远端命令、只读探测或把本地 LF 行尾的 bash 脚本通过 stdin 送给远端 `bash -s`。密码默认由本机统一入口从 `%USERPROFILE%\.ssh\pocket_plus_sshpass.txt` 读取，不需要出现在 Agent 命令中。
 
-调用前由当前 PowerShell 进程设置密码环境变量：
+执行命令：
 
 ```powershell
-$env:CODEX_SSH_PASSWORD = "<user-provided password>"
-& "<project>\与服务器交互\other\Invoke-PasswordSsh.ps1" `
-  -HostName "10.102.33.220" -Port 10022 -UserName "penghongen" `
-  -Command "hostname"
-Remove-Item Env:\CODEX_SSH_PASSWORD
+& ".\与服务器交互\other\Invoke-PasswordSsh.ps1" -Command "hostname"
+```
+
+执行本地 LF 行尾脚本：
+
+```powershell
+& ".\与服务器交互\other\Invoke-PasswordSsh.ps1" `
+  -Command "bash -s" -InputFile ".\tmp\probe.sh"
 ```
 
 注意：
 
-- 不把密码写入项目文件。
+- 统一入口固定使用 `StrictHostKeyChecking=yes`；未知或变化的主机密钥必须停止并由人类核验。
+- 只对认证前断连、连接重置、拒绝和超时进行有限退避重试；认证失败不重试。
+- 若连接在 SSH 协议横幅或密钥交换前持续关闭，先关闭或调整 ATrust 等 VPN 后重试；本机已确认 ATrust 会干扰该私网地址的新连接。
+- 密码只存在于本机私有文件和 SSH 子进程的临时环境中，不写入项目、release、日志或服务器。
 - 不用它跑模型训练、模型加载或重型推理。
 - 远端写入默认只允许在用户明确授权的位置进行。
 - `-InputFile` 传给远端 bash 时必须使用 LF 行尾。

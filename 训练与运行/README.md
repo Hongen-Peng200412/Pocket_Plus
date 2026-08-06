@@ -16,7 +16,7 @@ submit_task.sh
 - `sh/Find_0.sh`、`sh/Find_1.sh`、`sh/unet_c1.sh`：直接决定具体训练
   使用的数据、环境、experiment、Hydra 覆盖和正式产物位置。
 
-release、launch 与四锁循环的实现位于
+release、launch 与四种锁控制的实现位于
 `训练与运行/runtime/`。这些文件主要供 AI 维护和审计；
 运行实验不要求先阅读其实现。
 
@@ -52,8 +52,8 @@ bash 训练与运行/submit_task.sh \
   --cpus 24
 ```
 
-每条命令只调用一次 `sbatch`。默认不创建 `pre_lock`，因此作业获得资源后
-立即进入第一次正式运行。若希望先占有资源、再由人工决定何时开始，添加：
+每条命令只调用一次 `sbatch`。默认不创建 `pre_lock` 或 `try_lock`：作业获得资源后
+立即执行一次任务，任务结束后自动退出并释放资源。若希望先占有资源、再由人工决定何时开始，添加：
 
 ```bash
 bash 训练与运行/submit_task.sh \
@@ -61,16 +61,20 @@ bash 训练与运行/submit_task.sh \
   --resource h100 \
   --gpus 2 \
   --cpus 48 \
-  --hold
+  --pre_hold
 ```
 
-假设 Slurm 返回 Job `400001`，上述 `--hold` 会在 Job 启动后创建：
+假设 Slurm 返回 Job `400001`，上述 `--pre_hold` 会在 Job 启动后创建：
 
 ```text
 /home/penghongen/Feedback/Pocket_Plus/allocations/pre_lock_400001
 ```
 
 删除该文件后，第一次正式执行才开始。
+
+若希望任务结束后继续保留 allocation 和计算资源，添加 `--after_hold`。执行器会在每次
+任务结束后创建 `try_lock`；删除 `try_lock` 会再次执行当前动态命令，删除 `after_lock`
+才会结束 Job 并释放资源。`--pre_hold` 与 `--after_hold` 相互独立，可以只用一个或同时使用。
 
 ## 2. 一次提交到底做了什么
 
@@ -82,7 +86,8 @@ bash 训练与运行/submit_task.sh \
   --resource h100 \
   --gpus 2 \
   --cpus 48 \
-  --hold \
+  --pre_hold \
+  --after_hold \
   -- train.optimizer.weight_decay=0.02
 ```
 
@@ -103,7 +108,8 @@ sbatch
   --task-root <当前项目根>
   --feedback-root /home/penghongen/Feedback/Pocket_Plus
   --task 训练与运行/sh/Find_1.sh
-  --hold 1
+  --pre_hold 1
+  --after_hold 1
   --resource h100
   --gpus 2
   --nodes 1
@@ -117,11 +123,11 @@ sbatch
 1. `submit_task.sh` 此时不复制项目，也不创建 release。
 2. Slurm 会保存本次提交的 `task.sbatch` 内容，但 `--task-root` 仍指向可继续
    修改的项目目录。
-3. Job 获得资源后，`task.sbatch` 从该项目目录加载四锁执行器；四锁执行器
+3. Job 获得资源后，`task.sbatch` 从该项目目录加载 allocation 执行器；执行器
    在每一次真正执行 `run_cmd` 前，才创建或复用当时最新代码的 release。
 
-因此，排队期间修改代码会影响第一次运行；`try_lock` 期间修改代码会影响下一次
-运行。它们都不要求重新申请 GPU。
+因此，排队期间修改代码会影响第一次运行；启用 `--after_hold` 后，`try_lock` 期间
+修改代码会影响下一次运行。它们都不要求重新申请 GPU。
 
 关于 out 和 error 日志，它们实际输出重定向到：
 ```text
@@ -134,7 +140,7 @@ ${feedback_root}/allocations/<jobid>/err
 /home/penghongen/Feedback/Pocket_Plus/allocations/<jobid>/err
 ```
 
-### 2.1 `--simple`：保留 Slurm 和四锁，不保存完整运行证据
+### 2.1 `--simple`：保留 Slurm 和锁控制，不保存完整运行证据
 
 不需要冻结项目代码、也不需要记录 launch 的一次性任务，可以使用：
 
@@ -148,15 +154,15 @@ bash /home/penghongen/My_Project/Pocket_Plus/训练与运行/submit_task.sh \
 ```
 
 这条命令仍然调用一次 `sbatch`，CPU 作业仍然使用 `cpu` partition 和 `Cpu96`
-QOS，四锁循环也仍然有效。差别是它不创建
+QOS，锁控制也仍然有效。差别是它不创建
 `/home/penghongen/Feedback/Pocket_Plus/releases/` 和
 `/home/penghongen/Feedback/Pocket_Plus/launches/` 中的任何内容。假设 Slurm
 返回 Job `400002`，活动期间可以直接看到：
 
 ```text
 /home/penghongen/SIMPLE_RUN/
-├── pre_lock_400002                         # 仅使用 --hold 时创建
-├── try_lock_400002                         # 一次执行结束后创建
+├── pre_lock_400002                         # 仅使用 --pre_hold 时创建
+├── try_lock_400002                         # 仅使用 --after_hold 时在执行结束后创建
 ├── after_lock_400002                       # 删除后结束 Job
 ├── kill_lock_400002                        # 仅人工要求终止当前命令时创建
 ├── run_cmd_400002.sh                       # 当前 allocation 下一次执行的命令
@@ -190,7 +196,7 @@ release 和 launch 两套留证机制，适合已有独立输入、输出和幂�
 
 ### 3.2 `try_lock` 期间修复代码
 
-1. 版本 B 的第一次训练报错，执行器创建 `try_lock_400001`，但保留 GPU。
+1. 提交时启用了 `--after_hold`；版本 B 的第一次训练报错后，执行器创建 `try_lock_400001` 并保留 GPU。
 2. 用户在共享项目中修复代码并同步为版本 C。
 3. 用户确认 `run_cmd_400001.sh` 后，删除 `try_lock_400001`。
 4. 执行器再次对当前发布源计算哈希，创建
@@ -336,8 +342,8 @@ allocations/
 
 这些文件不会同时永久存在：
 
-- `pre_lock_400001`：只有提交时使用 `--hold` 才创建。删除后开始第一次运行。
-- `try_lock_400001`：一次命令成功、失败或被 kill 后创建。删除后再次运行。
+- `pre_lock_400001`：只有提交时使用 `--pre_hold` 才创建。删除后开始第一次运行。
+- `try_lock_400001`：只有提交时使用 `--after_hold`，才在一次命令成功、失败或被 kill 后创建。删除后再次运行。
 - `after_lock_400001`：Job 启动即创建。删除后结束循环并释放 allocation。
 - `kill_lock_400001`：默认不存在。人工创建后，哨兵终止当前 `run_cmd` 进程组，
   删除该锁，再进入 `try_lock`。
@@ -348,7 +354,7 @@ allocations/
 四个常用人工动作：
 
 ```bash
-# 开始 --hold 后的第一次运行
+# 开始 --pre_hold 后的第一次运行
 rm /home/penghongen/Feedback/Pocket_Plus/allocations/pre_lock_400001
 
 # 终止当前训练进程，但保留 GPU，随后等待 try_lock
@@ -579,7 +585,8 @@ CPC1 src/train.py
 ```
 
 如果 CPC1 报错或没有产生 `BEST.ckpt`，脚本不会启动 CPC2，并以失败状态返回
-四锁执行器。allocation 随后创建 `try_lock`，允许修复代码后继续使用同一资源。
+allocation 执行器。启用 `--after_hold` 时，执行器随后创建 `try_lock`，允许修复代码后
+继续使用同一资源；没有启用时，Job 以失败状态结束并释放资源。
 
 `init_from` 是模型权重初始化，不是恢复旧训练目录后继续写入；CPC1 与 CPC2
 分别拥有独立的 `TASK_RUN_STAMP` 后缀和独立 logs 目录。
@@ -602,8 +609,9 @@ CPC1 src/train.py
 - `--partition`、`--qos`：覆盖资源类型映射。
 - `--nodelist NAME`：要求指定节点。
 - `--mem VALUE`、`--time VALUE`：原样传给 sbatch。
-- `--array SPEC`：原样传给 sbatch，例如 `0-15%4`。
-- `--hold`：Job 启动后先建立可见的 `pre_lock`。
+- `--array SPEC`：原样传给 sbatch，例如 `0-15`。
+- `--pre_hold`：Job 启动后先建立可见的 `pre_lock`，删除后才开始第一次执行。
+- `--after_hold`：任务结束后建立 `try_lock` 并保留 allocation；默认不保留。
 
 提交器不会解释 `SLURM_ARRAY_TASK_ID`。如果任务脚本没有读取这个变量，
 `--array 0-15` 就会执行 16 份相同任务；数组编号的科学含义由具体任务负责。
@@ -626,7 +634,7 @@ bash 训练与运行/submit_task.sh \
   --sh /home/penghongen/My_Project/Pocket_Plus/ops/自定义任务.sh \
   --resource cpu \
   --cpus 16 \
-  --array 0-15%4
+  --array 0-15
 ```
 
 这个 simple 示例不会创建 release 和 launch，但仍使用同一任务根目录解释脚本
@@ -682,8 +690,8 @@ bash 训练与运行/submit_task.sh \
 修改共享项目后：
 
 - 尚未开始的排队 Job 会在第一次运行前发布新内容；
-- 处于 `pre_lock` 的 Job 会在删除该锁后发布新内容；
-- 处于 `try_lock` 的 Job 会在删除该锁后发布新内容；
+- 使用 `--pre_hold` 且处于 `pre_lock` 的 Job 会在删除该锁后发布新内容；
+- 使用 `--after_hold` 且处于 `try_lock` 的 Job 会在删除该锁后发布新内容；
 - 正在运行的 Python 进程不会被共享项目改动影响，因为它来自既有 release。
 
 ## 12. 无卡验证边界

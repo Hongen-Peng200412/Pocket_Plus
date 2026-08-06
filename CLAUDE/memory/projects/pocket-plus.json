@@ -184,6 +184,21 @@
       "date": "2026-08-02",
       "summary": "Stage1 centered 契约补齐并完成历史收口：Find 归档新增原始 float32 A_feat_L0，Selector 取消 receptor_tokens 二次读取；语义 Dice 改为显式 micro 名并新增按 PDB 等权 macro；max_voxels 冻结倍率从 Q95 的1.5倍改为3.0倍，正式值从1023改为2046。相关87项测试通过；53个受影响提交与12个本地分支已一对一重建，提交数量和分支拓扑保持不变，远端引用未修改。",
       "handoff": "CLAUDE/memory/handoffs/2026-08-02-stage1-centered-contract-clarification.md"
+    },
+    {
+      "date": "2026-08-03",
+      "summary": "Find_0 正式推理输入已在工作区简化：calibration、validation、train 的 PDB 清单改为所有 Stage1 模型共用并直接放在 AdaLigand_stage1_inference 根目录；准备脚本改名为 prepare_inference_pdb_lists.sh，manifest 只记录路径和启用参数，infer 入口不再包含哈希校验或模型专属 inputs 路径。全部 Shell 语法与差异检查通过，尚未运行服务器任务；提交前必须避开当前索引中的旧脚本版本。",
+      "handoff": "CLAUDE/memory/handoffs/2026-08-03-find0-inference-shared-pdb-lists.md"
+    },
+    {
+      "date": "2026-08-03",
+      "summary": "通用调度把首次执行前等待与执行后保留资源拆为--pre_hold和--after_hold，默认运行一次后释放且不保留旧--hold；Find_0九个正式推理入口补齐提交注释，calibration统一为两个全局分片，GPU资源由提交时按可用卡选择，单进程缓存降至100 GiB。两仓调度契约测试各9项通过，改动保持未暂存且未提交真实作业。",
+      "handoff": "CLAUDE/memory/handoffs/2026-08-03-task-hold-semantics-and-find0-infer-entries.md"
+    },
+    {
+      "date": "2026-08-03",
+      "summary": "Windows 用户级统一 AI SSH 入口已建立，Pocket_Plus 项目入口改为薄包装；密码只保存在本机私有文件，固定主机密钥校验与失败状态传播已验证。关闭 ATrust 后已真实登录 master，并从两仓库入口验证远端命令、LF 标准输入脚本、sbatch 可用性及两份 submit_task.sh 的 Bash 语法。",
+      "handoff": "CLAUDE/memory/handoffs/2026-08-03-unified-ai-ssh-entry.md"
     }
   ],
   "blockers": [

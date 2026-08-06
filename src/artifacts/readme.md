@@ -1,6 +1,6 @@
 # Stage1 推理产物契约
 
-本文说明 Pocket Plus 当前 Stage1 数据准备、完整图概率、阈值校准、组件森林、组件谱系组、三类居中 BOX、Selector 打分与最终选择产物。读者不需要先阅读源代码，也应能据此判断：
+本文说明 Pocket Plus 当前 Stage1 数据准备、完整图概率、阈值校准、组件森林、组件谱系组、Fα/Li/CLG/Selected 居中 BOX、Selector 打分与最终选择产物。读者不需要先阅读源代码，也应能据此判断：
 
 - 一个产物由哪个命令生成；
 - 文件位于哪里；
@@ -104,8 +104,11 @@ BOX 池和 centered 几何都不保存实际密度裁剪。Dataset 或推理运�
 | 训练预定位 BOX 池 | `python -m src.datasets.ops.stage1_box_pool` |
 | calibration 完整图概率 | `python -m src.inference.cli cal-probability` |
 | 模型来源级阈值和校准指标 | `python -m src.inference.cli freeze-thresholds` |
+| calibration 组件与 F1 centered | `python -m src.inference.cli cal-produce-f1` |
 | calibration 组件、F1 centered、CLG centered | `python -m src.inference.cli cal-produce-f1-clg` |
+| validation 的概率、组件与 F1 centered | `python -m src.inference.cli val-produce-prob-f1` |
 | validation 的概率、组件、F1 centered、CLG centered | `python -m src.inference.cli val-produce-prob-f1-clg` |
+| train 的概率、组件与 F1 centered | `python -m src.inference.cli train-produce-prob-f1` |
 | train 的概率、组件、F1 centered、CLG centered | `python -m src.inference.cli train-produce-prob-f1-clg` |
 | Selector 冻结输入清单 | `python -m src.selector.train --config <selector.yaml>` 在训练启动时创建 |
 | Selector 每 PDB 分数 | `python -m src.selector.inference scores` |
@@ -280,7 +283,7 @@ validation 使用冻结请求，不保存增强后的数组。train 的随机 90
 
 其中 `{fraction}` 使用有效数字格式 `.12g`。`stage1_box_pool` 命令本身不创建这两个文件；`box_sample_fraction == 1` 时也不创建。
 
-设完整请求数为 `N_full`，则文件中的请求数 `N_req == floor(N_full * box_sample_fraction)`；抽样结果允许为空。
+设完整请求数为 `N_full`。对 train，`N_full` 是当前 epoch 按完整清单和正式请求比例生成的 center、bias、context 请求总数；对 validation，`N_full` 是冻结 `validation_selection.npz` 展开的全部请求数。比例文件中的请求数满足 `N_req == floor(N_full * box_sample_fraction)`；抽样结果允许为空。
 
 | 字段 | dtype 与形状 | 含义 |
 | --- | --- | --- |
@@ -319,7 +322,14 @@ validation 使用冻结请求，不保存增强后的数组。train 的随机 90
         ├── status/
         │   ├── probability/_COMPLETE
         │   ├── components/_COMPLETE
+        │   ├── F_1_2_centered/_COMPLETE
+        │   ├── F_2_3_centered/_COMPLETE
+        │   ├── F_4_5_centered/_COMPLETE
         │   ├── F1_centered/_COMPLETE
+        │   ├── F_5_4_centered/_COMPLETE
+        │   ├── F_3_2_centered/_COMPLETE
+        │   ├── F_2_centered/_COMPLETE
+        │   ├── Li_centered/_COMPLETE
         │   ├── CLG_centered/_COMPLETE
         │   └── Selected_Refined_Centered/_COMPLETE
         ├── probability/
@@ -331,7 +341,14 @@ validation 使用冻结请求，不保存增强后的数组。train 的随机 90
         │   ├── overlap.npz
         │   └── summary.json
         ├── centered/
+        │   ├── F_1_2_centered.npz
+        │   ├── F_2_3_centered.npz
+        │   ├── F_4_5_centered.npz
         │   ├── F1_centered.npz
+        │   ├── F_5_4_centered.npz
+        │   ├── F_3_2_centered.npz
+        │   ├── F_2_centered.npz
+        │   ├── Li_centered.npz
         │   ├── CLG_centered.npz
         │   └── Selected_Refined_Centered.npz
         └── selector/selection.npz
@@ -354,13 +371,14 @@ validation 使用冻结请求，不保存增强后的数组。train 的随机 90
 
 ### 4.3 角色完成标记
 
-正式角色名只有：
+PDB 级正式角色包括：
 
 1. `probability`
 2. `components`
-3. `F1_centered`
-4. `CLG_centered`
-5. `Selected_Refined_Centered`
+3. 七个 Fα centered 角色：`F_1_2_centered`、`F_2_3_centered`、`F_4_5_centered`、`F1_centered`、`F_5_4_centered`、`F_3_2_centered`、`F_2_centered`
+4. 独立 Li 变体的 `Li_centered`
+5. `CLG_centered`
+6. `Selected_Refined_Centered`
 
 每个 `status/{role}/_COMPLETE` 是 JSON 对象，精确字段为：
 
@@ -380,7 +398,7 @@ validation 使用冻结请求，不保存增强后的数组。train 的随机 90
 | `N_F1_eligible` | `int`，当前 PDB 在 `t_F1` 层合格的组件数 |
 | `limit` | `int`，本次命令实际使用的上限 |
 
-此时已完成的 `probability` 角色可以保留；`components`、`F1_centered` 和 `CLG_centered` 不发布。消费者必须拒绝存在 `_BLOB_EXCEED` 的 PDB，不得把 `limit` 固定理解为默认值 200。
+默认行为仍在标记后停止后续生产。显式启用 `continue_on_blob_exceed` 时，标记保留，但请求的 components 与 centered 角色继续按原契约发布；该开关只改变是否继续生产，不改变任何数组字段。评估使用独立的 `evaluate_on_blob_exceed` 开关：开启后，只要该评估所需产物完整，就纳入指标；关闭时仍排除带标记的 PDB。生产开关与评估开关不能互相推导。
 
 PDB 处理汇总状态只有 `completed`、`skipped_complete`、`skipped_running`、`blob_exceed`。
 
@@ -388,7 +406,7 @@ PDB 处理汇总状态只有 `completed`、`skipped_complete`、`skipped_running
 
 ### 5.1 生产入口与融合规则
 
-`calibration` 的 probability 由 `cal-probability` 生成；`validation` 和 `train` 的 probability 分别由 `val-produce-prob-f1-clg` 与 `train-produce-prob-f1-clg` 在连续生产过程中生成。
+`calibration` 的 probability 由 `cal-probability` 生成；`validation` 的 probability 由 `val-produce-prob-f1` 或 `val-produce-prob-f1-clg` 生成，`train` 的 probability 由 `train-produce-prob-f1` 或 `train-produce-prob-f1-clg` 生成。
 
 - 滑窗形状为 `80×80×80`，步长为 `40×40×40`，不使用空间填充。
 - 每个轴补入最后一个合法起点，使末端被最后一个窗口覆盖。
@@ -447,7 +465,7 @@ python -m src.inference.cli freeze-thresholds --producer <模型来源> --pdb-li
 | `max_voxels` | `int`，正式候选组件体素数上限，包含端点 |
 | `connectivity` | `int`，固定为 `26` |
 
-默认 `denominator=32768`、`min_voxels=32`、`max_voxels=2046`，但消费者必须读取实际文件值。
+默认 `denominator=32768`、`min_voxels=10`、`max_voxels=2046`，但消费者必须读取实际文件值；calibration、validation 和 train 的组件与 F1 居中阶段必须共享同一份冻结值。
 
 ### 6.2 `calibration/threshold_scan.npz`
 
@@ -477,12 +495,16 @@ python -m src.inference.cli freeze-thresholds --producer <模型来源> --pdb-li
 | `voxel_average_precision_macro` | `float`，有效 PDB 的平均精确率等权均值；没有有效 PDB 时为 NaN |
 | `n_valid_voxel_ap_pdb` | `int`，至少含一个真实正体素的 PDB 数 |
 | `n_total_pdb` | `int`，calibration 清单 PDB 总数 |
-| `semantic_dice_micro_t_F1` | `float`，先汇总全部 calibration PDB 在 `t_F1` 上的 TP、FP、FN，再按 `2TP/(2TP+FP+FN)` 计算；总分母为 0 时为 `0.0` |
-| `semantic_dice_macro_t_F1` | `float`，每个 calibration PDB 分别在 `t_F1` 上计算 Dice 后等权平均；单个 PDB 的分母为 0 时，该 PDB 的 Dice 按 `0.0` 进入平均 |
-| `semantic_tp_t_F1` | `int`，全部 calibration PDB 在 `t_F1` 上汇总的 TP，属于 micro 聚合计数 |
-| `semantic_fp_t_F1` | `int`，全部 calibration PDB 在 `t_F1` 上汇总的 FP，属于 micro 聚合计数 |
-| `semantic_fn_t_F1` | `int`，全部 calibration PDB 在 `t_F1` 上汇总的 FN，属于 micro 聚合计数 |
-| `n_blob_exceed_pdb` | `int`，校准指标计算中 `t_F1` 合格组件数大于固定统计界限 200 的 PDB 数 |
+| `n_evaluated_pdb` | `int`，实际进入全部拟合评估指标的 PDB 数；是否纳入超限 PDB 由 `evaluate_on_blob_exceed` 决定 |
+| `semantic_dice_micro_t_F1` | `float`，先汇总全部未超限 PDB 在 `t_F1` 上的 TP、FP、FN，再按 `2TP/(2TP+FP+FN)` 计算；总分母为 0 时为 `0.0` |
+| `semantic_dice_macro_t_F1` | `float`，每个未超限 PDB 分别在 `t_F1` 上计算 Dice 后等权平均；单个 PDB 的分母为 0 时，该 PDB 的 Dice 按 `0.0` 进入平均 |
+| `semantic_tp_t_F1` | `int`，全部未超限 PDB 在 `t_F1` 上汇总的 TP，属于 micro 聚合计数 |
+| `semantic_fp_t_F1` | `int`，全部未超限 PDB 在 `t_F1` 上汇总的 FP，属于 micro 聚合计数 |
+| `semantic_fn_t_F1` | `int`，全部未超限 PDB 在 `t_F1` 上汇总的 FN，属于 micro 聚合计数 |
+| `n_blob_exceed_pdb` | `int`，冻结 `t_F1` 后合格组件数大于固定统计界限 200、因而从平均精确率、Dice、实例与 top-K 指标中完全排除的 PDB 数 |
+| `evaluate_on_blob_exceed` | `bool`，本次 fitted 指标是否纳入具有可用产物的超限 PDB |
+
+阈值扫描阶段仍使用 calibration 清单中全部可读概率图选择阈值。冻结后才构建单层组件；`evaluate_on_blob_exceed=false` 时超限 PDB 不以零分代替且不进入指标分母，`true` 时只要产物完整便照常纳入。
 
 实例级字段：
 
@@ -504,7 +526,7 @@ python -m src.inference.cli freeze-thresholds --producer <模型来源> --pdb-li
 
 ## 7. 组件森林与组件谱系组产物
 
-`cal-produce-f1-clg`、`val-produce-prob-f1-clg`、`train-produce-prob-f1-clg` 都会产生本节文件。calibration 命令复用既有 probability；validation 和 train 命令先补齐 probability。三者都要求模型来源级校准已经完整发布。
+六个 F1 或 F1/CLG 生产命令都会产生本节文件。calibration 命令复用既有 probability；validation 和 train 命令先补齐 probability。六个命令都要求模型来源级校准已经完整发布。
 
 ### 7.1 `components/forest.npz`
 
@@ -529,8 +551,35 @@ python -m src.inference.cli freeze-thresholds --producer <模型来源> --pdb-li
 | `probability_max` | `float32 (N_node,)` | 节点体素的最大概率 |
 | `candidate_eligible` | `bool (N_node,)` | `True` 表示节点可作为正式候选；`False` 表示不可 |
 | `ineligible_reason_code` | `uint8 (N_node,)` | 候选资格原因码 |
+| `gauss_score` | `float32 (N_node,)`，可选 | 独立 Gauss scorer 的节点分数；只对本次指定 Fα-centered 角色的来源节点为有限值，其余节点为 `NaN` |
+| `gauss_selected` | `bool (N_node,)`，可选 | 独立 Gauss scorer 的保留决定；没有有限 `gauss_score` 的节点固定为 `False` |
 
 `children_offsets[i:i+2]` 给出节点 `i` 在 `children_node_id` 中的半开区间；首值必须为 0，末值必须等于 `L_child`。`node_voxel_offsets` 同理切分 `node_voxel_global_linear_index`，首值为 0，末值为 `L_voxel`。每个节点的体素编号在自己的段内升序且不重复。
+
+`gauss_score` 与 `gauss_selected` 必须同时存在或同时缺席。它们属于某个已完成 Fα-centered 角色的独立评分结果，不改写 `candidate_eligible`，也不改变 `clg.npz`、CLG-centered 或 Selector 的有效节点和候选集合。CLG 与 Selector 继续按原有字段工作，并忽略这两个可选字段。Gauss scorer 的四个正参数与固定距离截断单独保存在 producer 级 `gauss_scorer/calibration.json`，不重复写入每个 PDB 的 `forest.npz`。
+
+#### 7.1.1 Gauss scorer 数值定义
+
+Gauss scorer 处理命令指定的 Fα-centered 文件中由 `(source_tree_id, source_node_id)` 指向的来源节点。对节点 `j` 的每个 A 原子 `i`，先计算该原子到来源 blob 任一体素中心的最近世界坐标距离 `d_ji`。固定截断距离为 5 Å；超过该距离的原子权重为 0。其余原子的权重为：
+
+`w_ji = exp(-d_ji² / (2 * tau_angstrom²))`
+
+令 `p_i` 为 `A_probability` 中同一原子的结合概率，则：
+
+- `positive_sum_j = sum_i(w_ji * p_i)`；
+- `negative_sum_j = sum_i(w_ji * (1 - p_i))`；
+- `gauss_score_j = probability_mean_j + lambda_positive * positive_sum_j - lambda_negative * negative_sum_j`；
+- `gauss_selected_j = gauss_score_j >= gauss_score_min`。
+
+两个高斯和都是直接求和，不按原子数或权重和归一化。`lambda_positive`、`lambda_negative`、`tau_angstrom` 和 `gauss_score_min` 都必须是有限正数。它们只用 calibration 集合选择一次，validation 与 train 复用同一份冻结参数。
+
+#### 7.1.2 Gauss scorer 的增量发布
+
+正式 CPU 入口是 `训练与运行/sh/infer/Find_0_Gauss.sh`，Python 入口是 `python -m src.inference.Gauss_Scorer.cli`。Fα 模式消费已经完成的 `probability`、`components` 和指定 Fα-centered；Li 模式只消费独立根中已经完成的 `Li_centered`。两者都不加载模型，也不创建新的 PDB 角色完成标记。
+
+回填对每个 PDB 复用根目录 `_RUNNING` 租约。前置角色尚未完成时记录 `pending`，租约正被 GPU 或其他生产者持有时记录 `skipped_running`，随后继续扫描其余 PDB。重复运行同一清单与分片会补齐后来完成的 PDB。正式 CLI 的 `--force-overwrite` 默认开启：已有两个 Gauss 字段时只替换这两个字段，forest 其他字段保持不变；`--no-force-overwrite` 则只接受逐值相同的幂等结果。仅存在一个 Gauss 字段始终视为损坏并拒绝覆盖。
+
+历史 F1 参数文件继续位于 `{output_root}/Find_0/gauss_scorer/calibration.json`；其他 Fα 或 Li 角色位于 `{output_root}/Find_0/gauss_scorer/{centered_role}/calibration.json`。`selected_parameters` 至少包含 `lambda_positive`、`lambda_negative`、`tau_angstrom` 和 `gauss_score_min`，并记录固定的 `distance_cutoff_angstrom`。该文件还保存 calibration 清单、角色和指标身份；这些运行身份不重复写入每个 PDB 的 NPZ。
 
 原因码：
 
@@ -571,7 +620,7 @@ python -m src.inference.cli freeze-thresholds --producer <模型来源> --pdb-li
 | `occurrence_id` | `int32 (N_occ,)` | 升序 occurrence 身份表 |
 | `occurrence_voxel_count` | `int32 (N_occ,)` | 与 `occurrence_id` 同序的真实体素数 |
 
-第 `j` 个候选组件的交集段是 `[candidate_occurrence_offsets[j], candidate_occurrence_offsets[j+1])`。首值必须为 0，末值必须同时等于两个交集值表的第一维长度。候选组件自身的体素数从 `forest.npz` 对应节点读取。
+`candidate_occurrence_offsets` 的候选顺序不是 forest 全节点顺序，而是先按 `clg.npz` 的 `CLG_id` 顺序、再按每个 CLG 的 `candidate_node_id` 段顺序展开。第 `j` 个展开候选的交集段是 `[candidate_occurrence_offsets[j], candidate_occurrence_offsets[j+1])`；该段中的每个 `overlap_occurrence_index[k]` 是同文件 `occurrence_id` 与 `occurrence_voxel_count` 的本地行号，`intersection_voxel_count[k]` 则是这个候选与该真实 occurrence 的交集体素数。首值必须为 0，末值必须同时等于两个交集值表的第一维长度。候选自身的体素数通过同一个 CLG 候选身份回指 `forest.npz` 读取。
 
 ### 7.4 `components/summary.json`
 
@@ -603,15 +652,15 @@ python -m src.inference.cli freeze-thresholds --producer <模型来源> --pdb-li
 - `mean_candidates_per_completed_CLG: float`
 - `CLG_cap_reached: bool`
 
-`CLG_cap_reached` 只有在完成数等于 `n_CLG_cap` 且仍有未消费的活跃种子时为 `true`。
+`max_split_events` 与 `max_merge_events` 分别限制一次 CLG 枚举允许跨过的分支和合并事件数；`max_nodes_per_CLG` 限制一个已完成 CLG 可保存的候选节点数。`n_f1_eligible_seeds` 是冻结 `t_F1` 层的合格种子数；`n_CLG_cap` 是当前 PDB 允许发布的 CLG 数上限；`n_CLG_completed` 是实际完成并写入 `clg.npz` 的数量；`n_CLG_rejected_by_node_cap` 统计因候选节点数超过上限而拒绝的枚举结果；`mean_candidates_per_completed_CLG` 是已完成 CLG 的平均候选数。`CLG_cap_reached` 只有在完成数等于 `n_CLG_cap` 且仍有未消费的活跃种子时为 `true`。
 
-## 8. 三类 centered NPZ 的共同契约
+## 8. centered NPZ 的共同契约
 
-本节定义 `F1_centered.npz`、`CLG_centered.npz` 和 `Selected_Refined_Centered.npz` 共同使用的字段、数据类型和 offsets 规则；第 9 节在此基础上分别定义三种角色如何决定“哪些体素是权威成员”。因此，读取某个 centered NPZ 时必须同时应用第 8 节的共同结构和第 9 节对应角色的成员语义。
+本节定义七个 Fα-centered、`Li_centered.npz`、`CLG_centered.npz` 和 `Selected_Refined_Centered.npz` 共同使用的字段、数据类型和 offsets 规则；第 9 节在此基础上定义各角色如何决定权威体素成员。
 
 一个 PDB 的同一 centered 角色只发布一个 NPZ。变长表使用 offsets；第 `i` 个归档项或候选项的值段一律是半开区间 `[offsets[i], offsets[i+1])`。
 
-运行时可以把多个有序 80³ BOX 放入同一次完整 wrapper forward，正式默认批量大小为 12。稠密 V 输出按 batch 第 0 维拆分，Find A 表按 forward 后的 `atom_counts` 连续段拆分；输入 `atom_feat` 在每个 BOX 内通过 `A_global_index` 对齐到 forward 输出 A 行序，形成 `A_feat_L0`。P 表按 `anchor_batch_index` 归属拆分。运行批量只影响执行吞吐，不进入 NPZ schema，也不得改变 `centered_box_index`、entry 顺序、来源身份或任一 offsets/value 对齐关系。
+运行时可以把多个有序 80³ BOX 放入同一次完整 wrapper forward，A800 的正式默认批量大小为 10。稠密 V 输出按 batch 第 0 维拆分，Find A 表按 forward 后的 `atom_counts` 连续段拆分；输入 `atom_feat` 在每个 BOX 内通过 `A_global_index` 对齐到 forward 输出 A 行序，形成 `A_feat_L0`。P 表按 `anchor_batch_index` 归属拆分。运行批量只影响执行吞吐，不进入 NPZ schema，也不得改变 `centered_box_index`、entry 顺序、来源身份或任一 offsets/value 对齐关系。
 
 ### 8.1 共同归档项字段
 
@@ -673,23 +722,23 @@ python -m src.inference.cli freeze-thresholds --producer <模型来源> --pdb-li
 | `A_feat_L2` | `float16 (L_A,C_L2)` | `outputs["A_feat_L2"]`；真实原子密度调制完成后送入点骨干网络的 A 输入表示 |
 | `A_feat_L3` | `float16 (L_A,C_L3)` | `outputs["real_feat_before_interaction"]`；点骨干网络处理完成、A↔P 交叉注意力发生之前的 A 最终表示 |
 
-`A_offsets` 首值必须为 0，末值必须等于八个 A 值表的第一维长度。A 表保存 80³ 核心与来源组件 10 Å 包络的交集。`A_feat_L0` 已直接持久化；`A_global_index` 仍保留原子身份追踪语义。
+`A_offsets` 首值必须为 0，末值必须等于八个 A 值表的第一维长度。这里的“来源组件”就是当前 centered 条目对应的预测 blob：Fα 角色使用对应阈值层节点，Li 使用本地 Li blob，CLG 使用最老来源节点，Selected 使用被选中的来源节点。A 表保存完整受体原子表中同时落入当前 80³ 核心并位于该预测 blob 体素集合 10 Å 包络内的原子。`A_feat_L0` 已直接持久化；`A_global_index` 仍保留原子身份追踪语义。
 
 Stage1-Find 前向计算仍可产生交叉注意力后的 `A_feat_L4` 与 `P_feat_L4`，但 centered 归档不保存这两组张量。Selector 只读取本节列出的 L3 及以前特征；A/P 分类概率仍使用 Stage1-Find 原有分类头结果。
 
 完全为空的 Find F1 或 CLG 归档无法从载荷确定 P/A 特征宽度时，P 组和 A 组可以同时整体缺席。Selected 归档至少有一个成功项产生相应模态时才保存整组字段；未成功项的 P/A offsets 段必须为空。
 
-## 9. 三类 centered 角色的权威成员语义
+## 9. centered 角色的权威成员语义
 
-本节只补充第 8 节共同结构无法表达的角色差异：每个归档项的 `voxel_index_local_zyx` 究竟对应哪一个体素集合。三种角色都重新执行当前 80³ BOX 的完整模型前向，因此 `centered_probability`、`voxel_final` 和适用的 P/A 表都来自本次 centered 前向；角色差异只在权威体素集合如何确定。
+本节只补充第 8 节共同结构无法表达的角色差异：每个归档项的 `voxel_index_local_zyx` 究竟对应哪一个体素集合。各角色都重新执行当前 80³ BOX 的完整模型前向，因此 `centered_probability`、`voxel_final` 和适用的 P/A 表都来自本次 centered 前向；角色差异只在权威体素集合如何确定。
 
-### 9.1 `centered/F1_centered.npz`
+### 9.1 七个 `centered/F_{alpha}_centered.npz`
 
-生产命令：`cal-produce-f1-clg`、`val-produce-prob-f1-clg` 或 `train-produce-prob-f1-clg`。
+alpha 等于 1 时由现有 F1 主线生成 `F1_centered.npz`；其余六个角色由 `produce-falpha --alpha <分数>` 单独补充。七个文件字段完全相同，且都只读取现有 forest：
 
-- 每个归档项对应 `t_F1` 层一个 `candidate_eligible == True` 的组件。
+- 每个归档项对应当前 alpha 冻结阈值层中一个 `candidate_eligible == True` 的组件。
 - 排序键依次是 `probability_mean` 降序、`tree_id` 升序、`node_id` 升序。
-- `voxel_index_local_zyx` 的权威成员集合，是由原始滑窗融合 `probability_map` 在 `t_F1` 上构建的来源 forest 组件；完整图成员由 `components/forest.npz` 的 `node_voxel_global_linear_index` 给出，再换算为当前 BOX 内 ZYX 坐标。
+- `voxel_index_local_zyx` 的权威成员集合，是由原始滑窗融合 `probability_map` 在当前 alpha 阈值上构建的来源 forest 组件；完整图成员由 `components/forest.npz` 的 `node_voxel_global_linear_index` 给出，再换算为当前 BOX 内 ZYX 坐标。
 - 这些坐标上的 `centered_probability` 和 `voxel_final` 来自当前 centered 重算，不复用滑窗融合概率或滑窗特征。
 - 文件只包含第 8 节的共同字段和适用模态字段，没有额外角色字段。
 - 没有合格组件时可以发布 `N_entry == 0` 的空归档；所有 offsets 仍保留唯一的 0。
@@ -755,6 +804,24 @@ Stage1-Find 前向计算仍可产生交叉注意力后的 `A_feat_L4` 与 `P_fea
 只有 `success` 项可以携带体素和 P/A 载荷。部分成功时，所有 `voxel_final` 值使用成功载荷的统一 `C_voxel`；未成功项的变长段为空。完全没有成功项时 `voxel_final.shape == (0,0)`。
 
 模型 forward、字段读取或精修实现异常不编码进 `refine_status`。此类异常会使当前 role 不发布 `_COMPLETE`，修复后由续跑流程重新生产。
+
+### 9.4 `centered/Li_centered.npz`
+
+Li 变体从每张已完成的 `probability_map.npz` 独立计算 Li 最小交叉熵阈值，再向上量化为 `ceil(t_raw * denominator) / denominator`。量化后的单层连通组件使用与主线相同的 26 邻域、`min_voxels=10`、最大体素数和 80³ BOX 约束，但不落盘 forest、CLG、`candidate_eligible` 或 Selector 产物。
+
+Li 产物放在与主线分离的输出根，例如 `/storage/penghongen/AdaLigand_stage1_LI_inference`。`source_tree_id` 固定为 0，`source_node_id` 是当前 PDB 内按概率均值稳定排序后的连续局部编号，只用于 Li 文件内部身份，不引用主线 forest。除第 8 节共同字段外，还保存：
+
+| 字段 | dtype 与形状 | 含义 |
+| --- | --- | --- |
+| `source_probability_mean` | `float32 (N_entry,)` | 每个 Li blob 在来源完整图上的平均概率 |
+| `li_threshold_raw` | `float32 (1,)` | 量化前的逐图 Li 阈值 |
+| `li_threshold_grid_index` | `int32 (1,)` | 向上量化后的整数网格编号 |
+| `li_threshold_applied` | `float32 (1,)` | 实际应用阈值，必须等于网格编号除以分母 |
+| `threshold_denominator` | `int32 (1,)` | 阈值整数网格分母 |
+| `gauss_score` | `float32 (N_entry,)`，可选 | Li 二阶段 Gauss scorer 的条目分数 |
+| `gauss_selected` | `bool (N_entry,)`，可选 | Li Gauss scorer 的保留决定 |
+
+Li 的两个 Gauss 字段必须同时出现或同时缺席；它们不会进入主线 forest，也不会成为 CLG 或 Selector 的过滤条件。
 
 ## 10. Selector 产物
 
@@ -909,7 +976,7 @@ python -m src.selector.inference selection --scores <scores.npz> --forest <fores
 
 1. 路径中的模型来源、数据划分和小写 `pdb_id` 与请求一致。
 2. 需要的 `status/{role}/_COMPLETE` 存在，且 JSON 中 `output_role` 与角色名一致。
-3. PDB 目录中不存在 `_RUNNING` 和 `_BLOB_EXCEED`。
+3. PDB 目录中不存在 `_RUNNING`；若当前消费者未显式允许超限产物，也不存在 `_BLOB_EXCEED`。
 4. 使用 `allow_pickle=False` 读取 NPZ。
 5. 校验精确字段集合、dtype、维度、固定形状和有限值要求。
 6. 对每个 offsets 校验：长度正确、首值为 0、单调不减、末值等于本文点名的全部值表长度。
