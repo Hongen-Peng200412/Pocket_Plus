@@ -34,17 +34,17 @@ from src.component_lineage.forest import (
 )
 from src.component_lineage.overlap import build_candidate_occurrence_overlap
 from src.component_lineage.structures import ComponentForest, clgs_from_arrays
-from src.datasets.stage1_requests import centered_start_from_centroid_zyx
-
 from .centered import (
     CenteredGeometry,
     CenteredRequest,
     produce_clg_centered_entries,
     produce_f1_centered_entries,
+    produce_threshold_centered_entries,
     produce_selected_refined_entries,
     publish_centered_entries,
 )
 from .full_map import infer_full_map, publish_full_map
+from .li_centered import build_li_nodes, publish_li_centered_entries
 
 
 @dataclass(frozen=True)
@@ -144,6 +144,13 @@ SelectionPathProvider = Callable[[ProductionTask, Stage1ArtifactPaths], Path]
 FullMapInputProvider = Callable[[ProductionTask], FullMapTaskInput]
 
 
+def _load_centered_start_resolver() -> Callable[..., tuple[int, int, int]]:
+    """在 checkpoint 源码激活后加载训练同源的居中 BOX 起点解析函数。"""
+    from src.datasets.stage1_requests import centered_start_from_centroid_zyx
+
+    return centered_start_from_centroid_zyx
+
+
 def make_probability_role_producer(
     input_provider: FullMapInputProvider,
 ) -> RoleProducer:
@@ -204,8 +211,21 @@ class ComponentRuntimeContract:
     denominator: int
     threshold_grid_indices_descending: tuple[int, ...]
     f1_threshold_grid_index: int
+    alpha_threshold_grid_indices: tuple[tuple[float, int], ...]
     min_voxels: int
     max_voxels: int
+
+    def threshold_grid_index_for_alpha(self, alpha: float) -> int:
+        """返回 calibration 中与给定 alpha 对应的唯一阈值网格编号。"""
+
+        matches = [
+            grid_index
+            for value, grid_index in self.alpha_threshold_grid_indices
+            if np.isclose(value, float(alpha), rtol=0.0, atol=1e-12)
+        ]
+        if len(matches) != 1:
+            raise ValueError(f"alpha={alpha!r} 不在冻结 alpha_values 中")
+        return int(matches[0])
 
 
 def load_component_runtime_contract(
@@ -287,6 +307,10 @@ def load_component_runtime_contract(
             sorted({int(value) for value in grid_indices}, reverse=True)
         ),
         f1_threshold_grid_index=f1_grid_index,
+        alpha_threshold_grid_indices=tuple(
+            (float(alpha), int(grid_index))
+            for alpha, grid_index in zip(alpha_values, grid_indices, strict=True)
+        ),
         min_voxels=min_voxels,
         max_voxels=max_voxels,
     )
@@ -296,6 +320,7 @@ def make_component_role_producer(
     occurrence_voxel_provider: OccurrenceVoxelProvider,
     clg_config: CLGEnumerationConfig,
     f1_eligible_limit: int = 200,
+    continue_on_blob_exceed: bool = False,
 ) -> RoleProducer:
     """
     构造可直接交给 `Stage1ProductionRunner` 的正式 components producer。
@@ -336,14 +361,16 @@ def make_component_role_producer(
             denominator=contract.denominator,
             min_voxels=contract.min_voxels,
             max_voxels=contract.max_voxels,
-            resolve_box_start=centered_start_from_centroid_zyx,
+            resolve_box_start=_load_centered_start_resolver(),
         )
         # int, t_F1 层满足体积与 bbox 约束的 component 数
         n_f1_eligible = count_f1_eligible(
             forest, contract.f1_threshold_grid_index
         )
         if n_f1_eligible > int(f1_eligible_limit):
-            raise BlobExceeded(n_f1_eligible, int(f1_eligible_limit))
+            if not continue_on_blob_exceed:
+                raise BlobExceeded(n_f1_eligible, int(f1_eligible_limit))
+            mark_blob_exceed(paths, n_f1_eligible, int(f1_eligible_limit))
         # CLGEnumerationResult, 当前 depth 配置下成功 CLG 与 cap 统计
         clg_result = enumerate_clgs(
             forest=forest,
@@ -415,7 +442,7 @@ def _load_centered_context(
 def make_f1_clg_centered_role_producers(
     wrapper_provider: CenteredWrapperProvider,
     batch_builder_provider: CenteredBatchBuilderProvider,
-    centered_batch_size: int = 12,
+    centered_batch_size: int = 10,
 ) -> dict[str, RoleProducer]:
     """
     构造 F1/CLG 两个居中 role 的正式 runner callbacks。
@@ -424,7 +451,7 @@ def make_f1_clg_centered_role_producers(
         - wrapper_provider: Callable，按 ProductionTask 返回已 strict 恢复且 eval 的同一
           producer 完整 wrapper；调用方可在 worker 内缓存，不能换用裸 backbone
         - batch_builder_provider: Callable，正式由 `Stage1RuntimeAssembly.centered_batch_builder` 提供；按 task 返回接收同一 producer/split/PDB/role 有序 `CenteredRequest` 序列的 Stage1Dataset/Collator batch builder。
-        - centered_batch_size: int, 单次完整 wrapper forward 的 BOX 数；尾批允许更短，CLI 正式默认 12，拆分后 entry 顺序不变。
+        - centered_batch_size: int, 单次完整 wrapper forward 的 BOX 数；尾批允许更短，CLI 正式默认 10，拆分后 entry 顺序不变。
 
     输出:
         - role_producers: dict[str, RoleProducer]，含 `F1_centered` 与
@@ -451,7 +478,7 @@ def make_f1_clg_centered_role_producers(
             stage1_model_name=task.stage1_model_name,
             split=task.split,
             pdb_id=task.pdb_id,
-            resolve_box_start=centered_start_from_centroid_zyx,
+            resolve_box_start=_load_centered_start_resolver(),
             wrapper=wrapper,
             batch_builder=batch_builder,
             centered_batch_size=centered_batch_size,
@@ -483,7 +510,7 @@ def make_f1_clg_centered_role_producers(
             stage1_model_name=task.stage1_model_name,
             split=task.split,
             pdb_id=task.pdb_id,
-            resolve_box_start=centered_start_from_centroid_zyx,
+            resolve_box_start=_load_centered_start_resolver(),
             wrapper=wrapper,
             batch_builder=batch_builder,
             centered_batch_size=centered_batch_size,
@@ -500,11 +527,122 @@ def make_f1_clg_centered_role_producers(
     }
 
 
+def make_falpha_centered_role_producer(
+    wrapper_provider: CenteredWrapperProvider,
+    batch_builder_provider: CenteredBatchBuilderProvider,
+    centered_role: str,
+    alpha: float,
+    centered_batch_size: int = 10,
+) -> RoleProducer:
+    """构造只补充一个冻结 F_alpha 阈值层 centered 产物的回调。"""
+
+    def produce(task: ProductionTask, paths: Stage1ArtifactPaths) -> None:
+        forest, geometry, contract, wrapper, batch_builder = _load_centered_context(
+            task,
+            paths,
+            wrapper_provider,
+            batch_builder_provider,
+        )
+        entries = produce_threshold_centered_entries(
+            nodes=forest.nodes,
+            threshold_grid_index=contract.threshold_grid_index_for_alpha(alpha),
+            centered_role=centered_role,
+            geometry=geometry,
+            stage1_model_name=task.stage1_model_name,
+            split=task.split,
+            pdb_id=task.pdb_id,
+            resolve_box_start=_load_centered_start_resolver(),
+            wrapper=wrapper,
+            batch_builder=batch_builder,
+            centered_batch_size=centered_batch_size,
+        )
+        publish_centered_entries(paths, centered_role, entries)
+
+    return produce
+
+
+def make_li_centered_role_producer(
+    probability_output_root: str | Path,
+    wrapper_provider: CenteredWrapperProvider,
+    batch_builder_provider: CenteredBatchBuilderProvider,
+    denominator: int,
+    min_voxels: int,
+    max_voxels: int,
+    eligible_limit: int,
+    continue_on_blob_exceed: bool,
+    centered_batch_size: int = 10,
+) -> RoleProducer:
+    """构造读取既有概率图、仅向独立根目录发布 Li-centered 的回调。"""
+
+    source_root = Path(probability_output_root)
+
+    def produce(task: ProductionTask, paths: Stage1ArtifactPaths) -> None:
+        source_paths = Stage1ArtifactPaths(
+            source_root,
+            task.stage1_model_name,
+            task.split,
+            task.pdb_id,
+        )
+        if not is_role_complete(source_paths, "probability"):
+            raise RuntimeError(f"Li-centered 前置 probability 尚未完成: {task}")
+        probability = np.asarray(
+            load_npz_strict(source_paths.probability_npz)["probability_map"],
+            dtype=np.float32,
+        )
+        with source_paths.probability_geometry_json.open("r", encoding="utf-8") as handle:
+            geometry_payload = json.load(handle)
+        geometry = CenteredGeometry(
+            full_shape_zyx=tuple(int(value) for value in geometry_payload["full_shape_zyx"]),
+            origin_xyz=np.asarray(geometry_payload["origin_xyz"], dtype=np.float32),
+            voxel_size_xyz=np.asarray(
+                geometry_payload["voxel_size_xyz"], dtype=np.float32
+            ),
+        )
+        nodes, raw_threshold, grid_index, applied_threshold = build_li_nodes(
+            probability_map=probability,
+            denominator=denominator,
+            min_voxels=min_voxels,
+            max_voxels=max_voxels,
+            resolve_box_start=_load_centered_start_resolver(),
+        )
+        if len(nodes) > int(eligible_limit):
+            mark_blob_exceed(paths, len(nodes), int(eligible_limit))
+            if not continue_on_blob_exceed:
+                raise BlobExceeded(len(nodes), int(eligible_limit))
+        entries = produce_threshold_centered_entries(
+            nodes=nodes,
+            threshold_grid_index=grid_index,
+            centered_role="Li_centered",
+            geometry=geometry,
+            stage1_model_name=task.stage1_model_name,
+            split=task.split,
+            pdb_id=task.pdb_id,
+            resolve_box_start=_load_centered_start_resolver(),
+            wrapper=wrapper_provider(task),
+            batch_builder=batch_builder_provider(task),
+            centered_batch_size=centered_batch_size,
+        )
+        for local_id, (entry, node) in enumerate(zip(entries, nodes, strict=True)):
+            entry["source_tree_id"] = 0
+            entry["source_node_id"] = local_id
+            entry["source_probability_mean"] = np.float32(node.probability_mean)
+        publish_li_centered_entries(
+            paths=paths,
+            entries=entries,
+            raw_threshold=raw_threshold,
+            grid_index=grid_index,
+            applied_threshold=applied_threshold,
+            denominator=denominator,
+        )
+
+    return produce
+
+
 # Selected_Refined_Centered: 暂时不看
 def make_selected_refined_role_producer(
     wrapper_provider: CenteredWrapperProvider,
     batch_builder_provider: CenteredBatchBuilderProvider,
-    centered_batch_size: int = 12,
+    centered_batch_size: int = 10,
     selection_path_provider: SelectionPathProvider | None = None,
 ) -> RoleProducer:
     """
@@ -513,7 +651,7 @@ def make_selected_refined_role_producer(
     输入参数:
         - wrapper_provider: Callable, 按 task 返回完整、strict 恢复且处于 eval 的 Stage1 wrapper
         - batch_builder_provider: Callable, 正式由 `Stage1RuntimeAssembly.centered_batch_builder` 提供；按 task 返回接收有序 `CenteredRequest` 序列的 Stage1Dataset/Collator batch builder。
-        - centered_batch_size: int, 单次完整 wrapper forward 的 BOX 数；尾批允许更短，CLI 正式默认 12，拆分后 Selected 来源顺序不变。
+        - centered_batch_size: int, 单次完整 wrapper forward 的 BOX 数；尾批允许更短，CLI 正式默认 10，拆分后 Selected 来源顺序不变。
         - selection_path_provider: Callable | None, 可选路径解析器; None 读取当前 PDB 正式目录中的 `selector/selection.npz`
 
     输出:
@@ -563,7 +701,7 @@ def make_selected_refined_role_producer(
             stage1_model_name=task.stage1_model_name,
             split=task.split,
             pdb_id=task.pdb_id,
-            resolve_box_start=centered_start_from_centroid_zyx,
+            resolve_box_start=_load_centered_start_resolver(),
             wrapper=wrapper,
             batch_builder=batch_builder,
             centered_batch_size=centered_batch_size,
@@ -593,6 +731,7 @@ class Stage1ProductionRunner:
         output_root: str,
         role_producers: Mapping[str, RoleProducer],
         owner_token: str,
+        continue_on_blob_exceed: bool = False,
     ) -> None:
         """
         校验 role producer 集合并保存当前 worker 的生产上下文。
@@ -608,12 +747,14 @@ class Stage1ProductionRunner:
         self.output_root = output_root
         self.role_producers = dict(role_producers)
         self.owner_token = str(owner_token)
+        self.continue_on_blob_exceed = bool(continue_on_blob_exceed)
 
     @classmethod
     def for_current_process(
         cls,
         output_root: str,
         role_producers: Mapping[str, RoleProducer],
+        continue_on_blob_exceed: bool = False,
     ) -> "Stage1ProductionRunner":
         """
         以 hostname/pid 组成当前本地 worker 的 owner_token。
@@ -629,6 +770,7 @@ class Stage1ProductionRunner:
             output_root=output_root,
             role_producers=role_producers,
             owner_token=f"{socket.gethostname()}:{os.getpid()}",
+            continue_on_blob_exceed=continue_on_blob_exceed,
         )
 
     def run_task(
@@ -659,7 +801,7 @@ class Stage1ProductionRunner:
             split=task.split,
             pdb_id=task.pdb_id,
         )
-        if paths.blob_exceed_path.is_file():
+        if paths.blob_exceed_path.is_file() and not self.continue_on_blob_exceed:
             return RunRecord(task, "blob_exceed", ())
         if all(is_role_complete(paths, role) for role in roles):
             return RunRecord(task, "skipped_complete", ())
@@ -671,7 +813,7 @@ class Stage1ProductionRunner:
         # list[str]，只记录当前进程本次新发布完成的产物角色。
         completed: list[str] = []
         with lease:
-            if paths.blob_exceed_path.is_file():
+            if paths.blob_exceed_path.is_file() and not self.continue_on_blob_exceed:
                 return RunRecord(task, "blob_exceed", ())
             for role in roles:
                 if is_role_complete(paths, role):
@@ -741,6 +883,21 @@ class Stage1ProductionRunner:
         输出:
             - records: tuple[RunRecord,...], 与输入固定顺序一致的续跑结果
         """
+        return self._run_calibration_f1(tasks, include_clg=True)
+
+    def run_cal_produce_f1(
+        self,
+        tasks: Sequence[ProductionTask],
+    ) -> tuple[RunRecord, ...]:
+        """为已有 calibration probability 只补齐 components 与 F1-centered。"""
+        return self._run_calibration_f1(tasks, include_clg=False)
+
+    def _run_calibration_f1(
+        self,
+        tasks: Sequence[ProductionTask],
+        include_clg: bool,
+    ) -> tuple[RunRecord, ...]:
+        """执行 calibration 共用前置检查，并按需包含 CLG-centered。"""
         task_tuple = tuple(tasks)
         self._require_calibration_frozen(task_tuple)
         for task in task_tuple:
@@ -752,10 +909,19 @@ class Stage1ProductionRunner:
             )
             if not is_role_complete(paths, "probability"):
                 raise RuntimeError(
-                    f"cal-produce-F1-CLG 要求既有 probability `_COMPLETE`: {task}"
+                    f"cal-produce-F1 要求既有 probability `_COMPLETE`: {task}"
                 )
-        roles = ("components", "F1_centered", "CLG_centered")
+        roles = ("components", "F1_centered")
+        if include_clg:
+            roles = (*roles, "CLG_centered")
         return tuple(self.run_task(task, roles) for task in task_tuple)
+
+    def run_val_produce_prob_f1(
+        self,
+        tasks: Sequence[ProductionTask],
+    ) -> tuple[RunRecord, ...]:
+        """为 validation 依次补齐 probability、components 与 F1-centered。"""
+        return self._run_probability_f1(tasks, include_clg=False)
 
     def run_val_produce_prob_f1_clg(
         self,
@@ -770,7 +936,14 @@ class Stage1ProductionRunner:
         输出:
             - records: tuple[RunRecord,...], 与输入固定顺序一致的续跑结果
         """
-        return self._run_probability_f1_clg(tasks)
+        return self._run_probability_f1(tasks, include_clg=True)
+
+    def run_train_produce_prob_f1(
+        self,
+        tasks: Sequence[ProductionTask],
+    ) -> tuple[RunRecord, ...]:
+        """为 train 依次补齐 probability、components 与 F1-centered。"""
+        return self._run_probability_f1(tasks, include_clg=False)
 
     def run_train_produce_prob_f1_clg(
         self,
@@ -785,11 +958,12 @@ class Stage1ProductionRunner:
         输出:
             - records: tuple[RunRecord,...], 与输入固定顺序一致的续跑结果
         """
-        return self._run_probability_f1_clg(tasks)
+        return self._run_probability_f1(tasks, include_clg=True)
 
-    def _run_probability_f1_clg(
+    def _run_probability_f1(
         self,
         tasks: Sequence[ProductionTask],
+        include_clg: bool,
     ) -> tuple[RunRecord, ...]:
         """
         为 validation/train 共用正式 role 顺序与阈值前置检查。
@@ -802,12 +976,9 @@ class Stage1ProductionRunner:
         """
         task_tuple = tuple(tasks)
         self._require_calibration_frozen(task_tuple)
-        roles = (
-            "probability",
-            "components",
-            "F1_centered",
-            "CLG_centered",
-        )
+        roles = ("probability", "components", "F1_centered")
+        if include_clg:
+            roles = (*roles, "CLG_centered")
         return tuple(self.run_task(task, roles) for task in task_tuple)
 
     def _require_calibration_frozen(

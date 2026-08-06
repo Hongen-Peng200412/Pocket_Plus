@@ -20,14 +20,9 @@ from typing import Any, Callable, Mapping, Sequence
 import numpy as np
 
 from src.stage1_producers import FIND_MODEL_NAMES, STAGE1_MODEL_NAMES
+from .paths import CENTERED_ROLES
 
 
-# 三类 centered 聚合归档；顺序与 `OUTPUT_ROLES` 的 centered 子序列一致。
-CENTERED_ROLES: tuple[str, ...] = (
-    "F1_centered",
-    "CLG_centered",
-    "Selected_Refined_Centered",
-)
 # Selected entry 的 uint8 状态编码；只有 `success=0` 允许携带模型特征和非空 refined voxel payload。
 REFINE_STATUS_TO_CODE: dict[str, int] = {
     "success": 0,
@@ -283,6 +278,7 @@ def pack_centered_entries(
     entries: Sequence[Mapping[str, Any]],
     centered_role: str,
     stage1_model_name: str | None = None,
+    role_metadata: Mapping[str, Any] | None = None,
 ) -> dict[str, np.ndarray]:
     """
     把一个 PDB 的同类 centered entry 聚合为单个数值归档。
@@ -350,6 +346,8 @@ def pack_centered_entries(
         raise ValueError(f"未知 centered_role={centered_role!r}")
     if len(entries) == 0:
         arrays = _empty_centered_archive(centered_role)
+        if centered_role == "Li_centered":
+            _add_li_metadata(arrays, role_metadata)
         validate_centered_archive(arrays, centered_role, stage1_model_name=stage1_model_name)
         return arrays
 
@@ -412,9 +410,46 @@ def pack_centered_entries(
         statuses = [str(entry["refine_status"]) for entry in entries]
         arrays["refine_status"] = np.asarray([REFINE_STATUS_TO_CODE[status] for status in statuses], dtype=np.uint8)
         arrays["refine_status_names"] = np.asarray(tuple(REFINE_STATUS_TO_CODE), dtype="U10")
+    if centered_role == "Li_centered":
+        arrays["source_probability_mean"] = _stack_entry_field(
+            entries, "source_probability_mean", np.dtype(np.float32)
+        )
+        _add_li_metadata(arrays, role_metadata)
 
     validate_centered_archive(arrays, centered_role, stage1_model_name=stage1_model_name)
     return arrays
+
+
+def _add_li_metadata(
+    arrays: dict[str, np.ndarray],
+    role_metadata: Mapping[str, Any] | None,
+) -> None:
+    """把一张图共用的 Li 原始阈值与整数网格身份加入归档。"""
+
+    required = {
+        "li_threshold_raw",
+        "li_threshold_grid_index",
+        "li_threshold_applied",
+        "threshold_denominator",
+    }
+    if role_metadata is None or not required.issubset(role_metadata):
+        raise KeyError(f"Li_centered role_metadata 缺少字段: {sorted(required)}")
+    arrays.update(
+        {
+            "li_threshold_raw": np.asarray(
+                [role_metadata["li_threshold_raw"]], dtype=np.float32
+            ),
+            "li_threshold_grid_index": np.asarray(
+                [role_metadata["li_threshold_grid_index"]], dtype=np.int32
+            ),
+            "li_threshold_applied": np.asarray(
+                [role_metadata["li_threshold_applied"]], dtype=np.float32
+            ),
+            "threshold_denominator": np.asarray(
+                [role_metadata["threshold_denominator"]], dtype=np.int32
+            ),
+        }
+    )
 
 def _pack_nested_membership(
     rows: Sequence[np.ndarray],
@@ -501,6 +536,8 @@ def _empty_centered_archive(centered_role: str) -> dict[str, np.ndarray]:
     if centered_role == "Selected_Refined_Centered":
         arrays["refine_status"] = np.empty(0, dtype=np.uint8)
         arrays["refine_status_names"] = np.asarray(tuple(REFINE_STATUS_TO_CODE), dtype="U10")
+    if centered_role == "Li_centered":
+        arrays["source_probability_mean"] = np.empty(0, dtype=np.float32)
     return arrays
 
 
@@ -589,6 +626,13 @@ def validate_centered_archive(
         "A_feat_L2": np.float16,
         "A_feat_L3": np.float16,
         "refine_status": np.uint8,
+        "source_probability_mean": np.float32,
+        "gauss_score": np.float32,
+        "gauss_selected": np.bool_,
+        "li_threshold_raw": np.float32,
+        "li_threshold_grid_index": np.int32,
+        "li_threshold_applied": np.float32,
+        "threshold_denominator": np.int32,
     }
     for field, dtype in expected_dtypes.items():
         if field in arrays and np.asarray(arrays[field]).dtype != np.dtype(dtype):
@@ -609,6 +653,37 @@ def validate_centered_archive(
     for field, shape in expected_entry_shapes.items():
         if np.asarray(arrays[field]).shape != shape:
             raise ValueError(f"{field}.shape 必须为 {shape}")
+    if centered_role == "Li_centered":
+        if "source_probability_mean" not in arrays:
+            raise KeyError("Li_centered 缺少 source_probability_mean")
+        if np.asarray(arrays["source_probability_mean"]).shape != (n_entry,):
+            raise ValueError("Li_centered 的 source_probability_mean 必须为 [N_entry]")
+        for field in (
+            "li_threshold_raw",
+            "li_threshold_grid_index",
+            "li_threshold_applied",
+            "threshold_denominator",
+        ):
+            if field not in arrays or np.asarray(arrays[field]).shape != (1,):
+                raise ValueError(f"Li_centered 的 {field} 必须为 [1]")
+        denominator = int(np.asarray(arrays["threshold_denominator"])[0])
+        grid_index = int(np.asarray(arrays["li_threshold_grid_index"])[0])
+        applied = float(np.asarray(arrays["li_threshold_applied"])[0])
+        if denominator <= 0 or not 0 <= grid_index <= denominator:
+            raise ValueError("Li_centered 的阈值网格身份不合法")
+        if not np.isclose(applied, grid_index / denominator, rtol=0.0, atol=1e-7):
+            raise ValueError("Li_centered 的应用阈值必须等于 j/denominator")
+        has_gauss_score = "gauss_score" in arrays
+        has_gauss_selected = "gauss_selected" in arrays
+        if has_gauss_score != has_gauss_selected:
+            raise KeyError("Li_centered 的 gauss_score 与 gauss_selected 必须同时存在或缺席")
+        if has_gauss_score:
+            if np.asarray(arrays["gauss_score"]).shape != (n_entry,):
+                raise ValueError("Li_centered 的 gauss_score 必须为 [N_entry]")
+            if np.asarray(arrays["gauss_selected"]).shape != (n_entry,):
+                raise ValueError("Li_centered 的 gauss_selected 必须为 [N_entry]")
+            if not bool(np.all(np.isfinite(np.asarray(arrays["gauss_score"])))):
+                raise ValueError("Li_centered 的 gauss_score 必须全部有限")
     if not bool(np.all(np.asarray(arrays["box_shape_zyx"]) == 80)):
         raise ValueError("全部 centered BOX 的 box_shape_zyx 必须为 [80,80,80]")
 
@@ -776,10 +851,10 @@ def validate_centered_archive(
         elif stage1_model_name in FIND_MODEL_NAMES and n_entry > 0:
             raise KeyError("Find CLG_centered 缺少 candidate_A_offsets/candidate_A_index")
 
-    if centered_role == "F1_centered":
+    if centered_role in (*CENTERED_ROLES[:-2],):
         forbidden = ("CLG_id", "candidate_offsets", "refine_status")
         if any(field in arrays for field in forbidden):
-            raise ValueError("F1_centered 不得伪造 CLG、candidate 或 refine 字段")
+            raise ValueError("阈值 centered 产物不得伪造 CLG、candidate 或 refine 字段")
     if centered_role == "Selected_Refined_Centered":
         if "refine_status" not in arrays or np.asarray(arrays["refine_status"]).shape != (n_entry,):
             raise ValueError("Selected_Refined_Centered 必须有 [N_entry] refine_status")

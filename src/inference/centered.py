@@ -1,4 +1,4 @@
-"""从完整 Stage1 forward 生成并发布三类 centered BOX 归档。
+"""从完整 Stage1 forward 生成并发布各类 centered BOX 归档。
 
 本模块保留两段可直接阅读的结构：分隔线之前是 NumPy/torch 转换、空间包络、entry 组装和单个 forward batch 拆分等冷读工具；
 分隔线之后是完整 forward、F1、CLG、Selected 和 NPZ 发布的业务演进顺序。Dataset、Collator、wrapper 和 centered_batch_size 都在主流程的真实调用位置出现，不通过额外 callback 隐藏。
@@ -151,7 +151,7 @@ def _base_entry(
     box_start_zyx: np.ndarray,
     geometry: CenteredGeometry,
 ) -> dict[str, Any]:
-    """对 source 构造三个 centered role 共用纯身份(source_tree_id / source_node_id / source_threshold_grid_index / source_threshold_value)与 BOX 几何字段。"""
+    """对 source 构造各 centered role 共用的来源身份与 BOX 几何字段。"""
 
     box_start_xyz = box_start_zyx[[2, 1, 0]]
     box_origin_world = geometry.origin_xyz + box_start_xyz * geometry.voxel_size_xyz
@@ -456,7 +456,7 @@ def iter_model_centered_payloads(
         - requests: Sequence[CenteredRequest]，同一 producer、split、PDB 和 role 的有序请求。
         - wrapper: 完整 Stage1 wrapper；输入是 Dataset/Collator 生成的目标设备 batch。
         - batch_builder: 接收连续请求切片，返回训练同源 Collator 生成的 dense/ragged batch。
-        - centered_batch_size: int，每次 GPU forward 的 BOX 数，正式默认值为 12，尾批可以更短。
+        - centered_batch_size: int，每次 GPU forward 的 BOX 数，正式默认值为 10，尾批可以更短。
 
     输出:
         - payloads: Iterator[dict[str, np.ndarray]]，与 requests 严格同序；每项是一个已去除 batch 维的 BOX payload。
@@ -475,9 +475,10 @@ def iter_model_centered_payloads(
             )
 
 
-def produce_f1_centered_entries(
+def produce_threshold_centered_entries(
     nodes: Sequence[ComponentNode],
-    f1_threshold_grid_index: int,
+    threshold_grid_index: int,
+    centered_role: str,
     geometry: CenteredGeometry,
     stage1_model_name: str,
     split: str,
@@ -487,7 +488,7 @@ def produce_f1_centered_entries(
     batch_builder: CenteredBatchBuilder,
     centered_batch_size: int,
 ) -> list[dict[str, Any]]:
-    """为 t_F1 层 eligible component 生成 F1_centered entries。
+    """为指定冻结阈值层的 eligible component 生成同构 centered entries。
     处理顺序是筛选并排序来源 component、构造 CenteredRequest、按显式 batch size 运行完整 forward、对每个权威 voxel 抽取 V 概率/特征，并在 Find 模型下追加完整  P 表和 core BOX 与来源 blob 10 Å 包络交集内的 A 表。
 
     每个返回 entry 的字段(详见 def _payload_from_forward ):
@@ -503,7 +504,7 @@ def produce_f1_centered_entries(
         node
         for node in nodes
         if node.candidate_eligible
-        and node.threshold_grid_index == int(f1_threshold_grid_index)
+        and node.threshold_grid_index == int(threshold_grid_index)
     ]
     sources.sort(key=lambda node: (-node.probability_mean, node.tree_id, node.node_id))
 
@@ -512,7 +513,7 @@ def produce_f1_centered_entries(
     for centered_box_index, source in enumerate(sources):
         base = _base_entry(
             source,
-            "F1_centered",
+            centered_role,
             centered_box_index,
             np.asarray(resolve_box_start(source.centroid_zyx, geometry.full_shape_zyx), dtype=np.int64),
             geometry,
@@ -523,7 +524,7 @@ def produce_f1_centered_entries(
                 stage1_model_name=str(stage1_model_name),
                 split=str(split),
                 pdb_id=str(pdb_id),
-                centered_role="F1_centered",
+                centered_role=str(centered_role),
                 centered_box_index=int(base["centered_box_index"]),
                 box_start_zyx=tuple(int(value) for value in base["box_start_zyx"]),
                 source_tree_id=int(base["source_tree_id"]),
@@ -554,6 +555,35 @@ def produce_f1_centered_entries(
             )
         )
     return entries
+
+
+def produce_f1_centered_entries(
+    nodes: Sequence[ComponentNode],
+    f1_threshold_grid_index: int,
+    geometry: CenteredGeometry,
+    stage1_model_name: str,
+    split: str,
+    pdb_id: str,
+    resolve_box_start: StartResolver,
+    wrapper: Any,
+    batch_builder: CenteredBatchBuilder,
+    centered_batch_size: int,
+) -> list[dict[str, Any]]:
+    """保持历史入口，使用 alpha=1 的冻结阈值生成 `F1_centered`。"""
+
+    return produce_threshold_centered_entries(
+        nodes=nodes,
+        threshold_grid_index=f1_threshold_grid_index,
+        centered_role="F1_centered",
+        geometry=geometry,
+        stage1_model_name=stage1_model_name,
+        split=split,
+        pdb_id=pdb_id,
+        resolve_box_start=resolve_box_start,
+        wrapper=wrapper,
+        batch_builder=batch_builder,
+        centered_batch_size=centered_batch_size,
+    )
 
 
 def produce_clg_centered_entries(
@@ -982,6 +1012,7 @@ __all__ = [
     "iter_stage1_centered_batch_payloads",
     "produce_clg_centered_entries",
     "produce_f1_centered_entries",
+    "produce_threshold_centered_entries",
     "produce_selected_refined_entries",
     "publish_centered_entries",
 ]

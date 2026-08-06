@@ -369,6 +369,7 @@ def calibrate_published_full_maps_and_freeze_thresholds(
     max_voxels: int,
     denominator: int = 32768,
     split: str = "calibration",
+    evaluate_on_blob_exceed: bool = False,
 ) -> tuple[ThresholdCalibrationResult, dict[str, object]]:
     """
     从已发布 calibration probability 端到端冻结阈值并发布完整 fitted 报告。
@@ -378,7 +379,7 @@ def calibrate_published_full_maps_and_freeze_thresholds(
         - stage1_model_name: str, 当前冻结阈值所属的正式 producer。
         - calibration_pdb_ids: Sequence[str], 非空且唯一的固定 calibration PDB 顺序；两遍读取都严格复用该顺序。
         - occurrence_voxel_loader: OccurrenceVoxelLoader, 真实标注（ground truth，GT）配体 occurrence 的体素读取器；接收 `(pdb_id, full_shape_zyx)`，返回 `occurrence_id -> int64 (K_occ,)` 完整图 C-order 线性体素索引，每个索引必须非负、唯一且不越界。
-        - min_voxels: int, 正式候选组件最小 voxel 数，当前为 32。
+        - min_voxels: int, 正式候选组件最小 voxel 数，当前为 10。
         - max_voxels: int, 已在本函数外冻结的真实 occurrence 体积 Q95×3.0 上限。
         - denominator: int, 概率阈值整数分母 D_threshold，正式值为 32768。
         - split: str, calibration probability 所在数据划分，正式值为 `calibration`。
@@ -455,6 +456,7 @@ def calibrate_published_full_maps_and_freeze_thresholds(
         result=result,
         min_voxels=int(min_voxels),
         max_voxels=int(max_voxels),
+        evaluate_on_blob_exceed=bool(evaluate_on_blob_exceed),
     )
     calibration_paths = Stage1ArtifactPaths(
         output_root=Path(output_root),
@@ -550,6 +552,7 @@ def _evaluate_frozen_calibration(
     result: ThresholdCalibrationResult,
     min_voxels: int,
     max_voxels: int,
+    evaluate_on_blob_exceed: bool = False,
 ) -> dict[str, object]:
     """
     在冻结 `t_F1` 上(不是其它阈值！)汇总 calibration fitted voxel 与 instance 指标。
@@ -569,14 +572,15 @@ def _evaluate_frozen_calibration(
             - `voxel_average_precision_macro`: float, 有效 PDB 的完整图 voxel AP 等权平均值。
             - `n_valid_voxel_ap_pdb`: int, 参与 voxel AP 等权平均的有效 PDB 数。
             - `n_total_pdb`: int, calibration PDB 总数。
-            - `semantic_dice_micro_t_F1`: float, 先汇总全部 calibration PDB 的 TP/FP/FN，再计算的 micro Dice。
-            - `semantic_dice_macro_t_F1`: float, 每个 calibration PDB 分别计算 Dice 后的等权均值。
-            - `semantic_tp_t_F1`: int, 全部 calibration voxel 在 `t_F1` 下的真阳性数(micro)。
-            - `semantic_fp_t_F1`: int, 全部 calibration voxel 在 `t_F1` 下的假阳性数(micro)。
-            - `semantic_fn_t_F1`: int, 全部 calibration voxel 在 `t_F1` 下的假阴性数(micro)。
-            - `n_blob_exceed_pdb`: int, `t_F1` 下 eligible 预测组件数超过 200 的 PDB 数。
-            - `n_pred_instances`: int, 全部 PDB 的 eligible 预测组件总数。
-            - `n_gt_instances`: int, 全部 PDB 的真实 occurrence 总数。
+            - `n_evaluated_pdb`: int, 按 `evaluate_on_blob_exceed` 决定后实际进入全部拟合指标的 PDB 数。
+            - `semantic_dice_micro_t_F1`: float, 先汇总全部纳入 PDB 的 TP/FP/FN，再计算的 micro Dice。
+            - `semantic_dice_macro_t_F1`: float, 每个纳入 PDB 分别计算 Dice 后的等权均值。
+            - `semantic_tp_t_F1`: int, 全部纳入 calibration voxel 在 `t_F1` 下的真阳性数(micro)。
+            - `semantic_fp_t_F1`: int, 全部纳入 calibration voxel 在 `t_F1` 下的假阳性数(micro)。
+            - `semantic_fn_t_F1`: int, 全部纳入 calibration voxel 在 `t_F1` 下的假阴性数(micro)。
+            - `n_blob_exceed_pdb`: int, `t_F1` 下 eligible 预测组件数超过 200 的 PDB 数；是否纳入评估由独立开关决定。
+            - `n_pred_instances`: int, 全部纳入 PDB 的 eligible 预测组件总数。
+            - `n_gt_instances`: int, 全部纳入 PDB 的真实 occurrence 总数。
             - `coverage_precision_{tag}`: float, `tag ∈ {0p3, 0p5}`，对应双向 coverage 阈值下的预测组件 precision。
             - `coverage_recall_{tag}`: float, `tag ∈ {0p3, 0p5}`，对应双向 coverage 阈值下的真实 occurrence recall。
             - `coverage_f1_{tag}`: float, `tag ∈ {0p3, 0p5}`，对应双向 coverage precision 与 recall 的 F1。
@@ -595,14 +599,18 @@ def _evaluate_frozen_calibration(
     f1_threshold = float(f1_grid_index) / float(result.denominator)
     # list[float], 仅保存至少含一个真实正 voxel 的 PDB AP，用于等权 macro 平均。
     ap_values: list[float] = []
-    # list[float], 与 pdb_ids 逐项对齐的单 PDB semantic Dice；包括分母为 0 且按契约记为 0.0 的 PDB。
+    # list[float], 本次纳入 PDB 的单 PDB semantic Dice；包括分母为 0 且按契约记为 0.0 的 PDB。
     semantic_dice_values: list[float] = []
-    # list[InstanceCounts], 与 `pdb_ids` 逐 PDB 对齐的实例计数(见 src\evaluation\instance_metrics.py )，循环后按分子和分母求和。
+    # list[InstanceCounts], 本次纳入 PDB 的实例计数(见 src\evaluation\instance_metrics.py)，循环后按分子和分母求和。
     instance_counts = []
     # dict[str, int], 跨 PDB 累加的 top-K eligible 分母和各 K/coverage 成功计数。
     topk_totals: dict[str, int] = {}
     # int, 在冻结 `t_F1` 下产生超过 200 个 eligible 预测组件的 PDB 数。
     blob_exceed_count = 0
+    # 三个 int, 只累计按 `evaluate_on_blob_exceed` 决定后纳入的 PDB，用于冻结阈值后的 semantic micro Dice。
+    semantic_tp = 0
+    semantic_fp = 0
+    semantic_fn = 0
 
     # 第二遍按固定顺序逐 PDB 重读预测概率与 GT occurrence，在冻结 `t_F1` 上计算拟合后指标；本循环不发布组件产物。
     for pdb_id in pdb_ids:
@@ -613,15 +621,6 @@ def _evaluate_frozen_calibration(
             split=split,
             pdb_id=pdb_id,
             occurrence_voxel_loader=occurrence_voxel_loader,
-        )
-        # bool, (D,H,W), 当前 PDB 全部真实配体 occurrence 的体素并集；与 `probability` 逐体素对齐。
-        target = _union_mask(probability.shape, occurrence_voxels)
-        # float | None, 当前完整图的连续概率 AP；没有任何真实正体素时为 None，不进入 macro 平均。
-        ap = average_precision_full_grid(probability, target)
-        if ap is not None:
-            ap_values.append(float(ap))
-        semantic_dice_values.append(
-            float(semantic_dice(probability, target, f1_threshold)["dice"])
         )
         # ComponentForest, 仅在冻结 `t_F1` 层从预测概率构建的 26 邻域组件森林；节点同时记录体积与 80³ BOX eligibility。
         forest, _ = build_component_forest(
@@ -639,9 +638,23 @@ def _evaluate_frozen_calibration(
             if node.candidate_eligible
             and node.threshold_grid_index == f1_grid_index
         ]
-        # 只统计超出 200 个 eligible 预测组件的 PDB 数；组件仍继续参与当前函数的指标计算。
+        # `_BLOB_EXCEED` 只记录组件数超限；独立评估开关决定已有产物是否进入指标。
         if len(predictions) > 200:
             blob_exceed_count += 1
+            if not evaluate_on_blob_exceed:
+                continue
+        # bool, (D,H,W), 当前 PDB 全部真实配体 occurrence 的体素并集；与 `probability` 逐体素对齐。
+        target = _union_mask(probability.shape, occurrence_voxels)
+        # float | None, 当前完整图的连续概率 AP；没有任何真实正体素时为 None，不进入 macro 平均。
+        ap = average_precision_full_grid(probability, target)
+        if ap is not None:
+            ap_values.append(float(ap))
+        # dict[str, float | int], 当前 PDB 的 semantic Dice 与 TP/FP/FN；只累计本次纳入的 PDB。
+        semantic = semantic_dice(probability, target, f1_threshold)
+        semantic_dice_values.append(float(semantic["dice"]))
+        semantic_tp += int(semantic["tp"])
+        semantic_fp += int(semantic["fp"])
+        semantic_fn += int(semantic["fn"])
         # tuple[int64 array, ...], 按 occurrence_id 排序的真实配体 voxel 集，与交集矩阵第二维对齐。
         occurrence_rows = tuple(occurrence_voxels.values())
         # int64, (N_pred, N_gt), 每个 eligible `t_F1` 组件与真实 occurrence 的交集 voxel 数。
@@ -690,14 +703,12 @@ def _evaluate_frozen_calibration(
         for field, value in topk.items():
             topk_totals[field] = topk_totals.get(field, 0) + int(value)
 
-    # InstanceCounts, 将全部 PDB 的预测数、GT 数和各阈值命中数求和，供 global/micro precision、recall 与 F1 计算。
+    if not instance_counts:
+        raise ValueError("当前设置下没有可评估的 calibration PDB")
+    # InstanceCounts, 将全部纳入 PDB 的预测数、GT 数和各阈值命中数求和，供 global/micro precision、recall 与 F1 计算。
     total_instance = aggregate_instance_counts(instance_counts)
-    # 三个 int, 第一遍阈值扫描已汇总的全 calibration 体素 TP、FP、FN；用同一个 `f1_grid_index` 读取，属于 semantic micro 计数。
-    tp = int(result.tp[f1_grid_index])
-    fp = int(result.fp[f1_grid_index])
-    fn = int(result.fn[f1_grid_index])
-    # int, semantic Dice 的分母 `2*TP+FP+FN`；全空时最终 Dice 定义为 0.0。
-    dice_denominator = 2 * tp + fp + fn
+    # int, 全部纳入 PDB 的 semantic Dice 分母 `2*TP+FP+FN`；全空时最终 Dice 定义为 0.0。
+    dice_denominator = 2 * semantic_tp + semantic_fp + semantic_fn
     # int, 至少含一个真实 occurrence 的 PDB 数；从累计字典移出后作为全部 top-K 成功比例的共同分母。
     topk_denominator = int(topk_totals.pop("n_topk_eligible_pdb", 0))
     # dict[str, object], 将包含 top-K eligible PDB 分母、成功计数及对应成功比例。
@@ -711,14 +722,16 @@ def _evaluate_frozen_calibration(
         "voxel_average_precision_macro": (float(np.mean(ap_values)) if ap_values else float("nan")),
         "n_valid_voxel_ap_pdb": len(ap_values),
         "n_total_pdb": len(pdb_ids),
-        "semantic_dice_micro_t_F1": (float(2 * tp) / float(dice_denominator) if dice_denominator else 0.0),
+        "n_evaluated_pdb": len(instance_counts),
+        "semantic_dice_micro_t_F1": (float(2 * semantic_tp) / float(dice_denominator) if dice_denominator else 0.0),
         "semantic_dice_macro_t_F1": (
             float(np.mean(semantic_dice_values)) if semantic_dice_values else 0.0
         ),
-        "semantic_tp_t_F1": tp,
-        "semantic_fp_t_F1": fp,
-        "semantic_fn_t_F1": fn,
+        "semantic_tp_t_F1": semantic_tp,
+        "semantic_fp_t_F1": semantic_fp,
+        "semantic_fn_t_F1": semantic_fn,
         "n_blob_exceed_pdb": int(blob_exceed_count),
+        "evaluate_on_blob_exceed": bool(evaluate_on_blob_exceed),
         **total_instance.metrics(),
         **topk_metrics,
     }
