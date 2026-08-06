@@ -3,15 +3,25 @@
 from .scorer import (
     GaussScorerParameters,
     add_gauss_fields,
+    compute_centered_gauss_terms,
     compute_f1_centered_gauss_terms,
+    compute_li_centered_gauss_terms,
     publish_gauss_fields,
+    publish_li_gauss_fields,
+    score_centered_nodes,
     score_f1_centered_nodes,
+    score_li_centered_entries,
 )
 
 __all__ = [
     "GaussScorerParameters",
     "add_gauss_fields",
+    "compute_centered_gauss_terms",
     "compute_f1_centered_gauss_terms",
+    "compute_li_centered_gauss_terms",
     "publish_gauss_fields",
+    "publish_li_gauss_fields",
+    "score_centered_nodes",
     "score_f1_centered_nodes",
+    "score_li_centered_entries",
 ]

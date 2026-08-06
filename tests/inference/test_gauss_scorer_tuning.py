@@ -1,6 +1,12 @@
 import numpy as np
+import pytest
 
-from ops.Gauss_Scorer.tune import PdbFacts, enumerate_configs, evaluate_config
+from ops.Gauss_Scorer.tune import (
+    PdbFacts,
+    build_refinement_grid,
+    enumerate_configs,
+    evaluate_config,
+)
 
 
 def test_enumerate_configs_adds_exactly_one_baseline() -> None:
@@ -15,6 +21,28 @@ def test_enumerate_configs_adds_exactly_one_baseline() -> None:
     assert len(configs) == 17
     assert configs[0] == {"config_index": 0, "kind": "baseline"}
     assert [item["config_index"] for item in configs] == list(range(17))
+
+
+def test_refinement_grid_has_exactly_375_positive_configs_without_baseline() -> None:
+    grid = build_refinement_grid(
+        {
+            "lambda_positive": 0.1,
+            "lambda_negative": 0.001,
+            "tau_angstrom": 1.0,
+            "gauss_score_min": 1.0,
+            "distance_cutoff_angstrom": 5.0,
+        }
+    )
+    configs = enumerate_configs(grid)
+    assert len(configs) == 375
+    assert all(item["kind"] == "gauss" for item in configs)
+    assert grid["lambda_positive"] == pytest.approx([0.08, 0.09, 0.1, 0.11, 0.12])
+    assert grid["lambda_negative"] == pytest.approx(
+        [0.0008, 0.0009, 0.001, 0.0011, 0.0012]
+    )
+    assert grid["gauss_score_min"] == pytest.approx(
+        [0.3 + 0.1 * index for index in range(15)]
+    )
 
 
 def test_evaluate_config_uses_selected_node_union_and_reports_objective() -> None:

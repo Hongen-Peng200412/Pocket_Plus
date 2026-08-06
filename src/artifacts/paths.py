@@ -1,7 +1,7 @@
 """从 `producer/split/pdb_id` 身份解析 AdaLigand Stage1 正式产物路径。
 
 主要入口:
-    - `Stage1ArtifactPaths`: 统一生成完整图概率、组件谱系、三类 centered 归档、完成标记和 producer 级 calibration 文件路径。
+    - `Stage1ArtifactPaths`: 统一生成完整图概率、组件谱系、各类 centered 归档、完成标记和 producer 级 calibration 文件路径。
 
 本模块只计算 `Path`，不创建目录、不读取文件也不发布产物。PDB 级文件位于 `<output_root>/<producer>/<split>/<pdb_id>/`，calibration 文件位于 `<output_root>/<producer>/calibration/`。
 """
@@ -14,13 +14,33 @@ from pathlib import Path
 from src.stage1_producers import STAGE1_MODEL_NAMES
 
 
-# 五个可独立发布完成标记的 PDB 级产物角色；列表顺序表达生产依赖，最后一个角色在 Selector 选择结果冻结后独立补跑。
+# calibration 固定的七个 F_alpha 层与文件角色。alpha=1 继续使用历史角色
+# `F1_centered`；其余名称使用有理数标签，避免浮点字符串进入路径契约。
+F_ALPHA_CENTERED_ROLE_BY_FRACTION: dict[tuple[int, int], str] = {
+    (1, 2): "F_1_2_centered",
+    (2, 3): "F_2_3_centered",
+    (4, 5): "F_4_5_centered",
+    (1, 1): "F1_centered",
+    (5, 4): "F_5_4_centered",
+    (3, 2): "F_3_2_centered",
+    (2, 1): "F_2_centered",
+}
+F_ALPHA_CENTERED_ROLES: tuple[str, ...] = tuple(
+    F_ALPHA_CENTERED_ROLE_BY_FRACTION.values()
+)
+CENTERED_ROLES: tuple[str, ...] = (
+    *F_ALPHA_CENTERED_ROLES,
+    "Li_centered",
+    "CLG_centered",
+    "Selected_Refined_Centered",
+)
+
+# 可独立发布完成标记的 PDB 级产物角色；顺序表达主线生产依赖，新增
+# F_alpha/Li 角色是按需补充的 centered 产物，不改变历史角色路径。
 OUTPUT_ROLES: tuple[str, ...] = (
     "probability",
     "components",
-    "F1_centered",
-    "CLG_centered",
-    "Selected_Refined_Centered",
+    *CENTERED_ROLES,
 )
 
 
@@ -181,7 +201,7 @@ class Stage1ArtifactPaths:
         输出:
             - path: Path, `pdb_root/centered/{centered_role}.npz`，一个 PDB 的单个 role 级聚合文件。
         """
-        if centered_role not in OUTPUT_ROLES[2:]:
+        if centered_role not in CENTERED_ROLES:
             raise ValueError(f"未知 centered_role={centered_role!r}")
         return self.pdb_root / "centered" / f"{centered_role}.npz"
 

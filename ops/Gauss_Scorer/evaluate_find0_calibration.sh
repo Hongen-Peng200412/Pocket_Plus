@@ -2,7 +2,8 @@
 set -euo pipefail
 
 # 本脚本只扫描 Find_0 calibration 的 Gauss scorer 参数，不修改 forest.npz 或 GPU 主线产物。
-# 推荐提交为 8 项 CPU 数组；每项读取同一批 86 个可评估 PDB，并按配置编号取模承接约 10 组参数。
+# 推荐提交为 8 项 CPU 数组；每项读取同一批 calibration 产物，并按配置编号取模承接参数组合。
+# GAUSS_CENTERED_ROLE 可选择七个 F_alpha-centered 或 Li_centered；Li 还必须设置 GAUSS_PROBABILITY_OUTPUT_ROOT。
 # 中间结果只写入 /storage/penghongen/tmp/find0_gauss_scorer_job<父数组JobID>/parts/。
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 PROJECT_ROOT="${TASK_PROJECT_ROOT:-$(cd "${SCRIPT_DIR}/../.." && pwd -P)}"
@@ -27,12 +28,19 @@ data_root="/storage/penghongen/AdaLigand/Ori_Data"
 inference_root="/storage/penghongen/AdaLigand_stage1_inference"
 formal_root="${inference_root}/Find_0-CPC1-ligand_PRAUC_0.675477"
 pdb_list="${inference_root}/calibration_pdb_ids.json"
-output_root="${formal_root}/artifacts"
-grid_json="${PROJECT_ROOT}/ops/Gauss_Scorer/grid_find0_calibration.json"
+output_root="${GAUSS_OUTPUT_ROOT:-${formal_root}/artifacts}"
+probability_output_root="${GAUSS_PROBABILITY_OUTPUT_ROOT:-}"
+centered_role="${GAUSS_CENTERED_ROLE:-F1_centered}"
+grid_json="${GAUSS_GRID_JSON:-${PROJECT_ROOT}/ops/Gauss_Scorer/grid_find0_calibration.json}"
 result_root="${GAUSS_RESULT_ROOT:-/storage/penghongen/tmp/find0_gauss_scorer_job${array_job_id}}"
 
 [[ -f "${pdb_list}" && -f "${grid_json}" ]] || { echo "缺少 calibration 清单或 Gauss 参数网格" >&2; exit 2; }
 mkdir -p "${result_root}/parts"
+
+probability_arguments=()
+if [[ -n "${probability_output_root}" ]]; then
+    probability_arguments+=(--probability-output-root "${probability_output_root}")
+fi
 
 cd "${PROJECT_ROOT}"
 python -u -m ops.Gauss_Scorer.tune evaluate-shard \
@@ -40,7 +48,10 @@ python -u -m ops.Gauss_Scorer.tune evaluate-shard \
     --data-root "${data_root}" \
     --output-root "${output_root}" \
     --producer Find_0 \
+    --centered-role "${centered_role}" \
+    --evaluate-on-blob-exceed \
     --grid-json "${grid_json}" \
     --result-root "${result_root}" \
     --task-index "${task_index}" \
-    --task-count "${task_count}"
+    --task-count "${task_count}" \
+    "${probability_arguments[@]}"

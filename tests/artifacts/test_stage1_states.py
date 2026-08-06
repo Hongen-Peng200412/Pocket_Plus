@@ -78,6 +78,38 @@ def test_runner_resumes_by_role_and_stops_blob_exceed(tmp_path: Path) -> None:
     assert calls == ["3ghi:probability", "3ghi:components"]
 
 
+def test_runner_can_continue_after_blob_exceed_only_when_explicitly_enabled(
+    tmp_path: Path,
+) -> None:
+    """超限标记保留时，显式开关仍允许补充已有契约角色。"""
+
+    task = ProductionTask("Find_0", "calibration", "overflow")
+    paths = Stage1ArtifactPaths(tmp_path, "Find_0", "calibration", "overflow")
+    mark_blob_exceed(paths, n_f1_eligible=250, limit=200)
+
+    def components(current_task: ProductionTask, current_paths: Stage1ArtifactPaths) -> None:
+        assert current_task == task
+        mark_role_complete(current_paths, "components")
+
+    blocked = Stage1ProductionRunner(
+        output_root=str(tmp_path),
+        role_producers={"components": components},
+        owner_token="blocked-worker",
+    )
+    assert blocked.run_task(task, ("components",)).status == "blob_exceed"
+
+    continued = Stage1ProductionRunner(
+        output_root=str(tmp_path),
+        role_producers={"components": components},
+        owner_token="continued-worker",
+        continue_on_blob_exceed=True,
+    )
+    record = continued.run_task(task, ("components",))
+    assert record.status == "completed"
+    assert paths.blob_exceed_path.is_file()
+    assert paths.role_complete_path("components").is_file()
+
+
 def test_two_phase_entries_require_frozen_thresholds_and_keep_role_order(tmp_path: Path) -> None:
     calls: list[str] = []
 

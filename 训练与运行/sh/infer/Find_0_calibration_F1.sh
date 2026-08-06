@@ -69,4 +69,5 @@ python -u -m src.inference.cli cal-produce-f1 \
     --max-merge-events "${max_merge_events}" \
     --max-nodes-per-clg "${max_nodes_per_clg}" \
     --f1-eligible-limit "${f1_eligible_limit}" \
+    --continue-on-blob-exceed \
     --output-root "${output_root}"

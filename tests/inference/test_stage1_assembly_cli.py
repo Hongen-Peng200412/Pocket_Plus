@@ -346,6 +346,51 @@ def test_cli_calibration_then_cal_centered_is_resumable(
     assert not is_role_complete(paths, "CLG_centered")
     assert not paths.centered_npz("CLG_centered").exists()
 
+    f1_bytes = paths.centered_npz("F1_centered").read_bytes()
+    assert main(
+        [
+            *_common_cli_arguments(
+                "produce-falpha",
+                data_root,
+                output_root,
+                checkpoint,
+                config,
+                pdb_list,
+            ),
+            "--split",
+            "calibration",
+            "--alpha",
+            "2/3",
+        ]
+    ) == 0
+    assert is_role_complete(paths, "F_2_3_centered")
+    assert paths.centered_npz("F1_centered").read_bytes() == f1_bytes
+
+    li_output_root = tmp_path / "li_outputs"
+    assert main(
+        [
+            *_common_cli_arguments(
+                "produce-li-centered",
+                data_root,
+                li_output_root,
+                checkpoint,
+                config,
+                pdb_list,
+            ),
+            "--split",
+            "calibration",
+            "--probability-output-root",
+            str(output_root),
+            "--min-voxels",
+            "10",
+        ]
+    ) == 0
+    li_paths = Stage1ArtifactPaths(
+        li_output_root, "Find_0", "calibration", "1abc"
+    )
+    assert is_role_complete(li_paths, "Li_centered")
+    assert not li_paths.forest_npz.exists()
+
     preserved = (
         paths.probability_npz,
         paths.probability_geometry_json,
@@ -488,6 +533,50 @@ def test_inference_cli_default_cache_allows_five_hundred_gibibytes() -> None:
     )
 
     assert arguments.cache_max_bytes == 500 * 1024**3
+
+
+def test_new_cli_switches_are_explicit_and_default_to_compatibility() -> None:
+    """生产续跑开关默认关闭，评估超限样本开关默认关闭。"""
+
+    freeze = build_parser().parse_args(
+        [
+            "freeze-thresholds",
+            "--producer",
+            "Find_0",
+            "--pdb-list",
+            "ids.json",
+            "--data-root",
+            "ag",
+            "--output-root",
+            "out",
+            "--evaluate-on-blob-exceed",
+        ]
+    )
+    falpha = build_parser().parse_args(
+        [
+            "produce-falpha",
+            "--split",
+            "calibration",
+            "--producer",
+            "Find_0",
+            "--pdb-list",
+            "ids.json",
+            "--data-root",
+            "ag",
+            "--checkpoint",
+            "BEST.ckpt",
+            "--device",
+            "cpu",
+            "--output-root",
+            "out",
+            "--alpha",
+            "2/3",
+        ]
+    )
+
+    assert freeze.evaluate_on_blob_exceed is True
+    assert falpha.continue_on_blob_exceed is False
+    assert falpha.alpha == "2/3"
 
 
 def test_component_producer_activates_checkpoint_source_before_dataset_import(

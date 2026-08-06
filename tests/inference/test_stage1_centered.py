@@ -1,4 +1,4 @@
-"""三类 centered 的批量 forward、权威 voxel、membership 与 Selected 状态测试。"""
+"""Stage1 centered 产物的批量前向、权威体素、成员关系与 Selected 状态测试。"""
 
 from __future__ import annotations
 

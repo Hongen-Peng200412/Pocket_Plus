@@ -44,4 +44,5 @@ python -u -m src.inference.cli freeze-thresholds \
     --output-root "${output_root}" \
     --min-voxels "${min_voxels}" \
     --max-voxels "${max_voxels}" \
-    --denominator "${denominator}"
+    --denominator "${denominator}" \
+    --evaluate-on-blob-exceed

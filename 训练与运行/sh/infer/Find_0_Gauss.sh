@@ -4,7 +4,7 @@ set -euo pipefail
 # 为已经完成且当前没有生产者的 Find_0 F1-centered 产物回填 Gauss scorer 字段。
 # 任务只读取现有概率图、组件、F1-centered 和冻结参数，不重新运行模型，也不需要 GPU。
 # 尚未完成前置产物或正被 GPU 持有的 PDB 会被记录并跳过；以后用同一参数再次运行即可补齐。
-# 已经具有相同 `gauss_score` 与 `gauss_selected` 的 forest 会通过幂等校验，旧字段不会改动。
+# 默认用当前 calibration 参数强制刷新 `gauss_score` 与 `gauss_selected`；其他 forest 字段不变。
 #
 # 在 Pocket_Plus 服务器项目根目录提交一个 calibration CPU16 任务：
 #
@@ -33,9 +33,20 @@ export MKL_NUM_THREADS="${SLURM_CPUS_PER_TASK:-16}"
 export OPENBLAS_NUM_THREADS="${SLURM_CPUS_PER_TASK:-16}"
 
 inference_root="/storage/penghongen/AdaLigand_stage1_inference"
-formal_root="${inference_root}/Find_0-CPC1-ligand_PRAUC_0.675477"
-output_root="${formal_root}/artifacts"                                # Find_0 三个数据划分的正式产物根目录。
-calibration_json="${output_root}/Find_0/gauss_scorer/calibration.json" # calibration 集合冻结的唯一 Gauss 参数文件。
+li_inference_root="/storage/penghongen/AdaLigand_stage1_LI_inference"
+run_name="Find_0-CPC1-ligand_PRAUC_0.675477"
+centered_role="F1_centered"                 # 七个 F_alpha-centered 角色之一，或独立的 Li_centered。
+
+if [[ "${centered_role}" == "Li_centered" ]]; then
+    output_root="${li_inference_root}/${run_name}/artifacts"          # Li 不写入主线 forest，只回填自身 centered 文件。
+else
+    output_root="${inference_root}/${run_name}/artifacts"             # F_alpha 共用主线 forest；最后一次正式回填决定两个 Gauss 字段。
+fi
+if [[ "${centered_role}" == "F1_centered" ]]; then
+    calibration_json="${output_root}/Find_0/gauss_scorer/calibration.json" # 历史 F1 正式参数路径保持不变。
+else
+    calibration_json="${output_root}/Find_0/gauss_scorer/${centered_role}/calibration.json" # 新策略按角色隔离参数。
+fi
 
 target_split="calibration"                   # 可选 calibration、validation 或 train；每次提交只处理一个数据划分。
 global_shard_count=1                          # 所有分片编号合起来覆盖目标清单；train 可使用较大的固定分片数。
@@ -63,5 +74,8 @@ python -u -m src.inference.Gauss_Scorer.cli \
     --producer Find_0 \
     --split "${target_split}" \
     --calibration-json "${calibration_json}" \
+    --centered-role "${centered_role}" \
+    --evaluate-on-blob-exceed \
+    --force-overwrite \
     --shard-index "${shard_index}" \
     --shard-count "${global_shard_count}"

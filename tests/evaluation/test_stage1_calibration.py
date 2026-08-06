@@ -173,3 +173,18 @@ def test_fitted_metrics_exclude_blob_exceed_pdb_from_every_metric(tmp_path) -> N
     assert metrics["one_to_one_f1_0p3"] == 1.0
     assert metrics["n_topk_eligible_pdb"] == 1
     assert metrics["top3_success_ratio_0p3"] == 1.0
+
+    _, inclusive_metrics = calibrate_published_full_maps_and_freeze_thresholds(
+        output_root=tmp_path,
+        stage1_model_name="Find_0",
+        calibration_pdb_ids=("normal", "exceed"),
+        occurrence_voxel_loader=lambda pdb_id, shape_zyx: occurrence_indices[pdb_id],
+        min_voxels=1,
+        max_voxels=1,
+        denominator=8,
+        evaluate_on_blob_exceed=True,
+    )
+    assert inclusive_metrics["evaluate_on_blob_exceed"] is True
+    assert inclusive_metrics["n_blob_exceed_pdb"] == 1
+    assert inclusive_metrics["n_evaluated_pdb"] == 2
+    assert inclusive_metrics["n_valid_voxel_ap_pdb"] == 2

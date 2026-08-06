@@ -39,10 +39,12 @@ from .centered import (
     CenteredRequest,
     produce_clg_centered_entries,
     produce_f1_centered_entries,
+    produce_threshold_centered_entries,
     produce_selected_refined_entries,
     publish_centered_entries,
 )
 from .full_map import infer_full_map, publish_full_map
+from .li_centered import build_li_nodes, publish_li_centered_entries
 
 
 @dataclass(frozen=True)
@@ -209,8 +211,21 @@ class ComponentRuntimeContract:
     denominator: int
     threshold_grid_indices_descending: tuple[int, ...]
     f1_threshold_grid_index: int
+    alpha_threshold_grid_indices: tuple[tuple[float, int], ...]
     min_voxels: int
     max_voxels: int
+
+    def threshold_grid_index_for_alpha(self, alpha: float) -> int:
+        """返回 calibration 中与给定 alpha 对应的唯一阈值网格编号。"""
+
+        matches = [
+            grid_index
+            for value, grid_index in self.alpha_threshold_grid_indices
+            if np.isclose(value, float(alpha), rtol=0.0, atol=1e-12)
+        ]
+        if len(matches) != 1:
+            raise ValueError(f"alpha={alpha!r} 不在冻结 alpha_values 中")
+        return int(matches[0])
 
 
 def load_component_runtime_contract(
@@ -292,6 +307,10 @@ def load_component_runtime_contract(
             sorted({int(value) for value in grid_indices}, reverse=True)
         ),
         f1_threshold_grid_index=f1_grid_index,
+        alpha_threshold_grid_indices=tuple(
+            (float(alpha), int(grid_index))
+            for alpha, grid_index in zip(alpha_values, grid_indices, strict=True)
+        ),
         min_voxels=min_voxels,
         max_voxels=max_voxels,
     )
@@ -301,6 +320,7 @@ def make_component_role_producer(
     occurrence_voxel_provider: OccurrenceVoxelProvider,
     clg_config: CLGEnumerationConfig,
     f1_eligible_limit: int = 200,
+    continue_on_blob_exceed: bool = False,
 ) -> RoleProducer:
     """
     构造可直接交给 `Stage1ProductionRunner` 的正式 components producer。
@@ -348,7 +368,9 @@ def make_component_role_producer(
             forest, contract.f1_threshold_grid_index
         )
         if n_f1_eligible > int(f1_eligible_limit):
-            raise BlobExceeded(n_f1_eligible, int(f1_eligible_limit))
+            if not continue_on_blob_exceed:
+                raise BlobExceeded(n_f1_eligible, int(f1_eligible_limit))
+            mark_blob_exceed(paths, n_f1_eligible, int(f1_eligible_limit))
         # CLGEnumerationResult, 当前 depth 配置下成功 CLG 与 cap 统计
         clg_result = enumerate_clgs(
             forest=forest,
@@ -505,6 +527,117 @@ def make_f1_clg_centered_role_producers(
     }
 
 
+def make_falpha_centered_role_producer(
+    wrapper_provider: CenteredWrapperProvider,
+    batch_builder_provider: CenteredBatchBuilderProvider,
+    centered_role: str,
+    alpha: float,
+    centered_batch_size: int = 10,
+) -> RoleProducer:
+    """构造只补充一个冻结 F_alpha 阈值层 centered 产物的回调。"""
+
+    def produce(task: ProductionTask, paths: Stage1ArtifactPaths) -> None:
+        forest, geometry, contract, wrapper, batch_builder = _load_centered_context(
+            task,
+            paths,
+            wrapper_provider,
+            batch_builder_provider,
+        )
+        entries = produce_threshold_centered_entries(
+            nodes=forest.nodes,
+            threshold_grid_index=contract.threshold_grid_index_for_alpha(alpha),
+            centered_role=centered_role,
+            geometry=geometry,
+            stage1_model_name=task.stage1_model_name,
+            split=task.split,
+            pdb_id=task.pdb_id,
+            resolve_box_start=_load_centered_start_resolver(),
+            wrapper=wrapper,
+            batch_builder=batch_builder,
+            centered_batch_size=centered_batch_size,
+        )
+        publish_centered_entries(paths, centered_role, entries)
+
+    return produce
+
+
+def make_li_centered_role_producer(
+    probability_output_root: str | Path,
+    wrapper_provider: CenteredWrapperProvider,
+    batch_builder_provider: CenteredBatchBuilderProvider,
+    denominator: int,
+    min_voxels: int,
+    max_voxels: int,
+    eligible_limit: int,
+    continue_on_blob_exceed: bool,
+    centered_batch_size: int = 10,
+) -> RoleProducer:
+    """构造读取既有概率图、仅向独立根目录发布 Li-centered 的回调。"""
+
+    source_root = Path(probability_output_root)
+
+    def produce(task: ProductionTask, paths: Stage1ArtifactPaths) -> None:
+        source_paths = Stage1ArtifactPaths(
+            source_root,
+            task.stage1_model_name,
+            task.split,
+            task.pdb_id,
+        )
+        if not is_role_complete(source_paths, "probability"):
+            raise RuntimeError(f"Li-centered 前置 probability 尚未完成: {task}")
+        probability = np.asarray(
+            load_npz_strict(source_paths.probability_npz)["probability_map"],
+            dtype=np.float32,
+        )
+        with source_paths.probability_geometry_json.open("r", encoding="utf-8") as handle:
+            geometry_payload = json.load(handle)
+        geometry = CenteredGeometry(
+            full_shape_zyx=tuple(int(value) for value in geometry_payload["full_shape_zyx"]),
+            origin_xyz=np.asarray(geometry_payload["origin_xyz"], dtype=np.float32),
+            voxel_size_xyz=np.asarray(
+                geometry_payload["voxel_size_xyz"], dtype=np.float32
+            ),
+        )
+        nodes, raw_threshold, grid_index, applied_threshold = build_li_nodes(
+            probability_map=probability,
+            denominator=denominator,
+            min_voxels=min_voxels,
+            max_voxels=max_voxels,
+            resolve_box_start=_load_centered_start_resolver(),
+        )
+        if len(nodes) > int(eligible_limit):
+            mark_blob_exceed(paths, len(nodes), int(eligible_limit))
+            if not continue_on_blob_exceed:
+                raise BlobExceeded(len(nodes), int(eligible_limit))
+        entries = produce_threshold_centered_entries(
+            nodes=nodes,
+            threshold_grid_index=grid_index,
+            centered_role="Li_centered",
+            geometry=geometry,
+            stage1_model_name=task.stage1_model_name,
+            split=task.split,
+            pdb_id=task.pdb_id,
+            resolve_box_start=_load_centered_start_resolver(),
+            wrapper=wrapper_provider(task),
+            batch_builder=batch_builder_provider(task),
+            centered_batch_size=centered_batch_size,
+        )
+        for local_id, (entry, node) in enumerate(zip(entries, nodes, strict=True)):
+            entry["source_tree_id"] = 0
+            entry["source_node_id"] = local_id
+            entry["source_probability_mean"] = np.float32(node.probability_mean)
+        publish_li_centered_entries(
+            paths=paths,
+            entries=entries,
+            raw_threshold=raw_threshold,
+            grid_index=grid_index,
+            applied_threshold=applied_threshold,
+            denominator=denominator,
+        )
+
+    return produce
+
+
 # Selected_Refined_Centered: 暂时不看
 def make_selected_refined_role_producer(
     wrapper_provider: CenteredWrapperProvider,
@@ -598,6 +731,7 @@ class Stage1ProductionRunner:
         output_root: str,
         role_producers: Mapping[str, RoleProducer],
         owner_token: str,
+        continue_on_blob_exceed: bool = False,
     ) -> None:
         """
         校验 role producer 集合并保存当前 worker 的生产上下文。
@@ -613,12 +747,14 @@ class Stage1ProductionRunner:
         self.output_root = output_root
         self.role_producers = dict(role_producers)
         self.owner_token = str(owner_token)
+        self.continue_on_blob_exceed = bool(continue_on_blob_exceed)
 
     @classmethod
     def for_current_process(
         cls,
         output_root: str,
         role_producers: Mapping[str, RoleProducer],
+        continue_on_blob_exceed: bool = False,
     ) -> "Stage1ProductionRunner":
         """
         以 hostname/pid 组成当前本地 worker 的 owner_token。
@@ -634,6 +770,7 @@ class Stage1ProductionRunner:
             output_root=output_root,
             role_producers=role_producers,
             owner_token=f"{socket.gethostname()}:{os.getpid()}",
+            continue_on_blob_exceed=continue_on_blob_exceed,
         )
 
     def run_task(
@@ -664,7 +801,7 @@ class Stage1ProductionRunner:
             split=task.split,
             pdb_id=task.pdb_id,
         )
-        if paths.blob_exceed_path.is_file():
+        if paths.blob_exceed_path.is_file() and not self.continue_on_blob_exceed:
             return RunRecord(task, "blob_exceed", ())
         if all(is_role_complete(paths, role) for role in roles):
             return RunRecord(task, "skipped_complete", ())
@@ -676,7 +813,7 @@ class Stage1ProductionRunner:
         # list[str]，只记录当前进程本次新发布完成的产物角色。
         completed: list[str] = []
         with lease:
-            if paths.blob_exceed_path.is_file():
+            if paths.blob_exceed_path.is_file() and not self.continue_on_blob_exceed:
                 return RunRecord(task, "blob_exceed", ())
             for role in roles:
                 if is_role_complete(paths, role):

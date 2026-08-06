@@ -2,7 +2,7 @@
 """AdaLigand Stage1 完整图、阈值校准、居中特征与最终精修产物的命令行入口。
 
 主要入口:
-    - `build_parser`: 声明九个互斥子命令及其显式参数。
+    - `build_parser`: 声明十一个互斥子命令及其显式参数。
     - `main`: 把命令行参数转换为运行时对象和固定 PDB 任务，再调用阶段编排器。
 
 本模块只负责选择明确阶段、装配回调函数和输出任务摘要。数据读取与模型恢复由
@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from src.component_lineage.clg import CLGEnumerationConfig
+from src.artifacts.paths import F_ALPHA_CENTERED_ROLE_BY_FRACTION
 from src.stage1_producers import STAGE1_MODEL_NAMES
 
 from .assembly import (
@@ -31,7 +32,9 @@ from .runner import (
     RunRecord,
     Stage1ProductionRunner,
     make_component_role_producer,
+    make_falpha_centered_role_producer,
     make_f1_clg_centered_role_producers,
+    make_li_centered_role_producer,
     make_probability_role_producer,
     make_selected_refined_role_producer,
 )
@@ -40,6 +43,11 @@ from .runner import (
 # int，冻结阈值命令使用的 candidate 体素数上限；该默认值来自正式 occurrence
 # 体素数分布的 Q95 放大结果，仍允许调用方通过 `--max-voxels` 显式覆盖。
 DEFAULT_MAX_VOXELS = 2046
+
+F_ALPHA_ARGUMENT_TO_FRACTION: dict[str, tuple[int, int]] = {
+    f"{numerator}/{denominator}": (numerator, denominator)
+    for numerator, denominator in F_ALPHA_CENTERED_ROLE_BY_FRACTION
+}
 
 
 def _add_identity_arguments(parser: argparse.ArgumentParser, split: str) -> None:
@@ -102,6 +110,11 @@ def _add_component_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--max-merge-events", type=int, default=1)
     parser.add_argument("--max-nodes-per-clg", type=int, default=32)
     parser.add_argument("--f1-eligible-limit", type=int, default=200)
+    parser.add_argument(
+        "--continue-on-blob-exceed",
+        action="store_true",
+        help="记录 _BLOB_EXCEED 后继续生产请求的完整产物；默认保持历史终止行为",
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -109,7 +122,7 @@ def build_parser() -> argparse.ArgumentParser:
     构造阈值冻结、F1 优先生产、F1/CLG 完整生产和 Selected 独立补跑入口。
 
     输出:
-        - parser: argparse.ArgumentParser, 含九个子命令及其参数契约的根解析器；
+        - parser: argparse.ArgumentParser, 含十一个子命令及其参数契约的根解析器；
           解析结果始终含唯一 `command`
     """
     parser = argparse.ArgumentParser(
@@ -140,6 +153,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="正式默认 2046，来自 673364 occurrence 的 Q95=682×3.0",
     )
     freeze.add_argument("--denominator", type=int, default=32768)
+    freeze.add_argument(
+        "--evaluate-on-blob-exceed",
+        action="store_true",
+        help="组件数超过统计上限时仍纳入 calibration fitted 指标",
+    )
 
     for command, split, help_text in (
         (
@@ -196,6 +214,46 @@ def build_parser() -> argparse.ArgumentParser:
         help="外置时固定布局为 ROOT/producer/split/pdb_id/selection.npz；缺省读取 PDB 正式目录/selector/selection.npz",
     )
     _add_runtime_arguments(selected)
+
+    falpha = subparsers.add_parser(
+        "produce-falpha",
+        help="在已有 probability/components 上添油式补充一个 F_alpha-centered 角色",
+    )
+    falpha.add_argument(
+        "--split", required=True, choices=("calibration", "validation", "train")
+    )
+    falpha.add_argument("--producer", required=True, choices=STAGE1_MODEL_NAMES)
+    falpha.add_argument("--pdb-list", required=True)
+    falpha.add_argument("--shard-index", type=int, default=0)
+    falpha.add_argument("--shard-count", type=int, default=1)
+    falpha.add_argument("--output-root", required=True)
+    falpha.add_argument("--alpha", required=True, choices=tuple(F_ALPHA_ARGUMENT_TO_FRACTION))
+    falpha.add_argument(
+        "--continue-on-blob-exceed",
+        action="store_true",
+        help="已有 _BLOB_EXCEED 标记时仍补充请求的 F_alpha-centered 产物",
+    )
+    _add_runtime_arguments(falpha)
+
+    li_centered = subparsers.add_parser(
+        "produce-li-centered",
+        help="读取既有完整图概率，并在独立输出根生成 Li-centered",
+    )
+    li_centered.add_argument(
+        "--split", required=True, choices=("calibration", "validation", "train")
+    )
+    li_centered.add_argument("--producer", required=True, choices=STAGE1_MODEL_NAMES)
+    li_centered.add_argument("--pdb-list", required=True)
+    li_centered.add_argument("--shard-index", type=int, default=0)
+    li_centered.add_argument("--shard-count", type=int, default=1)
+    li_centered.add_argument("--probability-output-root", required=True)
+    li_centered.add_argument("--output-root", required=True)
+    li_centered.add_argument("--min-voxels", type=int, default=10)
+    li_centered.add_argument("--max-voxels", type=int, default=DEFAULT_MAX_VOXELS)
+    li_centered.add_argument("--denominator", type=int, default=32768)
+    li_centered.add_argument("--eligible-limit", type=int, default=200)
+    li_centered.add_argument("--continue-on-blob-exceed", action="store_true")
+    _add_runtime_arguments(li_centered)
     return parser
 
 
@@ -296,6 +354,9 @@ def _standard_role_producers(
         occurrence_voxel_provider=runtime.occurrence_voxels,
         clg_config=_clg_config(arguments),
         f1_eligible_limit=arguments.f1_eligible_limit,
+        continue_on_blob_exceed=bool(
+            getattr(arguments, "continue_on_blob_exceed", False)
+        ),
     )
 
     def produce_components(task, paths) -> None:
@@ -387,6 +448,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             max_voxels=arguments.max_voxels,
             denominator=arguments.denominator,
             split="calibration",
+            evaluate_on_blob_exceed=arguments.evaluate_on_blob_exceed,
         )
         print(
             json.dumps(
@@ -405,7 +467,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         return 0
 
-    # 其余八个命令均需要模型或数据访问；运行时对象按需加载并在当前进程复用。
+    # 其余十个命令均需要模型或数据访问；运行时对象按需加载并在当前进程复用。
     runtime = _build_runtime(arguments)
     tasks = _tasks(arguments)
     if arguments.command == "cal-probability":
@@ -436,6 +498,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 include_probability=include_probability,
                 include_clg=include_clg,
             ),
+            continue_on_blob_exceed=arguments.continue_on_blob_exceed,
         )
         if arguments.command == "cal-produce-f1":
             records = runner.run_cal_produce_f1(tasks)
@@ -449,6 +512,40 @@ def main(argv: Sequence[str] | None = None) -> int:
             records = runner.run_train_produce_prob_f1(tasks)
         else:
             records = runner.run_train_produce_prob_f1_clg(tasks)
+    elif arguments.command == "produce-falpha":
+        numerator, denominator = F_ALPHA_ARGUMENT_TO_FRACTION[arguments.alpha]
+        centered_role = F_ALPHA_CENTERED_ROLE_BY_FRACTION[(numerator, denominator)]
+        producer = make_falpha_centered_role_producer(
+            wrapper_provider=runtime.wrapper_provider,
+            batch_builder_provider=runtime.centered_batch_builder,
+            centered_role=centered_role,
+            alpha=float(numerator) / float(denominator),
+            centered_batch_size=runtime.centered_batch_size,
+        )
+        runner = Stage1ProductionRunner.for_current_process(
+            output_root=arguments.output_root,
+            role_producers={centered_role: producer},
+            continue_on_blob_exceed=arguments.continue_on_blob_exceed,
+        )
+        records = tuple(runner.run_task(task, (centered_role,)) for task in tasks)
+    elif arguments.command == "produce-li-centered":
+        producer = make_li_centered_role_producer(
+            probability_output_root=arguments.probability_output_root,
+            wrapper_provider=runtime.wrapper_provider,
+            batch_builder_provider=runtime.centered_batch_builder,
+            denominator=arguments.denominator,
+            min_voxels=arguments.min_voxels,
+            max_voxels=arguments.max_voxels,
+            eligible_limit=arguments.eligible_limit,
+            continue_on_blob_exceed=arguments.continue_on_blob_exceed,
+            centered_batch_size=runtime.centered_batch_size,
+        )
+        runner = Stage1ProductionRunner.for_current_process(
+            output_root=arguments.output_root,
+            role_producers={"Li_centered": producer},
+            continue_on_blob_exceed=arguments.continue_on_blob_exceed,
+        )
+        records = tuple(runner.run_task(task, ("Li_centered",)) for task in tasks)
     elif arguments.command == "selected-refined":
         selection_root = (
             None if arguments.selection_root is None else Path(arguments.selection_root)

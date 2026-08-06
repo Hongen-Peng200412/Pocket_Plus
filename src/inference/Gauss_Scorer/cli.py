@@ -10,10 +10,18 @@ from pathlib import Path
 from typing import Sequence
 
 from src.artifacts import Stage1ArtifactPaths, load_npz_strict
+from src.artifacts.paths import F_ALPHA_CENTERED_ROLES
 from src.artifacts.states import PdbRunningLease, is_role_complete
 from src.inference.assembly import load_pdb_id_list
 
-from .scorer import GaussScorerParameters, publish_gauss_fields, score_f1_centered_nodes
+from .scorer import (
+    GaussScorerParameters,
+    publish_gauss_fields,
+    publish_li_gauss_fields,
+    score_centered_nodes,
+    score_f1_centered_nodes,
+    score_li_centered_entries,
+)
 
 
 def _load_parameters(path: str | Path) -> GaussScorerParameters:
@@ -44,6 +52,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--calibration-json", required=True)
     parser.add_argument("--shard-index", type=int, default=0)
     parser.add_argument("--shard-count", type=int, default=1)
+    parser.add_argument(
+        "--centered-role",
+        default="F1_centered",
+        choices=(*F_ALPHA_CENTERED_ROLES, "Li_centered"),
+    )
+    parser.add_argument("--evaluate-on-blob-exceed", action="store_true")
+    overwrite = parser.add_mutually_exclusive_group()
+    overwrite.add_argument("--force-overwrite", dest="force_overwrite", action="store_true")
+    overwrite.add_argument(
+        "--no-force-overwrite", dest="force_overwrite", action="store_false"
+    )
+    parser.set_defaults(force_overwrite=True)
     return parser
 
 
@@ -74,8 +94,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         if paths.blob_exceed_path.is_file():
             blob_exceed.append(pdb_id)
-            continue
-        required_roles = ("probability", "components", "F1_centered")
+            if not arguments.evaluate_on_blob_exceed:
+                continue
+        required_roles = (
+            ("Li_centered",)
+            if arguments.centered_role == "Li_centered"
+            else ("probability", "components", arguments.centered_role)
+        )
         missing_roles = [role for role in required_roles if not is_role_complete(paths, role)]
         if missing_roles:
             pending.append({"pdb_id": pdb_id, "missing_roles": missing_roles})
@@ -86,19 +111,48 @@ def main(argv: Sequence[str] | None = None) -> int:
             skipped_running.append(pdb_id)
             continue
         with lease:
+            if arguments.centered_role == "Li_centered":
+                centered_path = paths.centered_npz("Li_centered")
+                centered_arrays = load_npz_strict(centered_path)
+                score, selected = score_li_centered_entries(
+                    centered_arrays,
+                    parameters,
+                )
+                publish_li_gauss_fields(
+                    centered_path,
+                    score,
+                    selected,
+                    force_overwrite=arguments.force_overwrite,
+                )
+                completed.append(pdb_id)
+                continue
             forest_arrays = load_npz_strict(paths.forest_npz)
-            centered_arrays = load_npz_strict(paths.centered_npz("F1_centered"))
+            centered_arrays = load_npz_strict(paths.centered_npz(arguments.centered_role))
             probability_arrays = load_npz_strict(paths.probability_npz)
             full_shape_zyx = tuple(
                 int(value) for value in probability_arrays["probability_map"].shape
             )
-            score, selected = score_f1_centered_nodes(
-                forest_arrays=forest_arrays,
-                centered_arrays=centered_arrays,
-                full_shape_zyx=full_shape_zyx,
-                parameters=parameters,
+            if arguments.centered_role == "F1_centered":
+                score, selected = score_f1_centered_nodes(
+                    forest_arrays=forest_arrays,
+                    centered_arrays=centered_arrays,
+                    full_shape_zyx=full_shape_zyx,
+                    parameters=parameters,
+                )
+            else:
+                score, selected = score_centered_nodes(
+                    forest_arrays=forest_arrays,
+                    centered_arrays=centered_arrays,
+                    full_shape_zyx=full_shape_zyx,
+                    centered_role=arguments.centered_role,
+                    parameters=parameters,
+                )
+            publish_gauss_fields(
+                paths.forest_npz,
+                score,
+                selected,
+                force_overwrite=arguments.force_overwrite,
             )
-            publish_gauss_fields(paths.forest_npz, score, selected)
         completed.append(pdb_id)
 
     print(

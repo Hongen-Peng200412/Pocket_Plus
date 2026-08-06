@@ -20,6 +20,8 @@ checkpoint 的 `src_snapshot/src` 提供模型与 wrapper 定义；当前 releas
 4. `Find_0_calibration_F1.sh`：只补充 calibration 的组件和 `F1_centered`。
 5. `Find_0_validation_F1.sh` 与 `Find_0_train_F1.sh`：连续产生完整图概率、组件和 `F1_centered`，不计算 CLG。
 6. `Find_0_Gauss.sh`：使用 calibration 集合冻结的参数，为已经完成且静止的 forest 增量回填 `gauss_score` 与 `gauss_selected`；它不重新运行模型，也不影响 CLG 或 Selector 候选。
+7. `Find_0_Falpha.sh`：在现有 forest 上按需补充一个 `F_{alpha}_centered.npz`，不重建 forest 或 CLG。
+8. `Find_0_Li.sh`：从现有完整图概率生成独立根目录中的 `Li_centered.npz`，不生成 forest、CLG 或 Selector 输入。
 
 以后需要 CLG 时，在相同正式产物根目录运行三个 `*_CLG.sh`。这些脚本使用原有 `*-f1-clg` 命令；已经完成的 probability、components 和 `F1_centered` 会按完成标记跳过，只增加 `CLG_centered`。重复运行同一分片不会重写已经完成的文件。
 
@@ -42,7 +44,19 @@ bash /home/penghongen/My_Project/Pocket_Plus/训练与运行/submit_task.sh \
   --job-name find0_gauss
 ```
 
-`forest.npz` 只增加两个字段。已有两个字段与冻结参数重算结果完全相同时视为幂等完成；仅存在一个字段或已有结果不同会立即失败，不能自动覆盖。
+`forest.npz` 只增加两个字段。正式脚本显式使用 `--force-overwrite`，因此新冻结参数会替换旧的 `gauss_score` 与 `gauss_selected`，其他字段不变；调试时可改用 `--no-force-overwrite` 要求旧结果逐值一致。仅存在一个字段始终视为损坏并失败。
+
+`Find_0_Gauss.sh` 顶部的 `centered_role` 决定本次回填目标。历史 `F1_centered` 继续读取 `gauss_scorer/calibration.json`；其他 Fα 或 Li 角色读取 `gauss_scorer/{centered_role}/calibration.json`。Fα 写回主线 forest，Li 写回独立的 `Li_centered.npz`；同一主线 forest 只有一对 Gauss 字段，因此最后一次正式 Fα 回填代表当前选定策略。
+
+Gauss 参数采用两阶段搜索。第一阶段保留粗网格和无过滤基线；第二阶段固定第一阶段的 `tau_angstrom` 与 5 Å 截断，围绕最优 `lambda_positive`、`lambda_negative` 各取中心值的 0.8、0.9、1.0、1.1、1.2 倍，围绕 `gauss_score_min` 取 0.3 至 1.7 倍共 15 个值，形成 375 组正参数配置。`ops/Gauss_Scorer/build_refinement_grid_find0.sh` 只生成临时精修网格；数组评估和合并结果仍写入 `/storage/penghongen/tmp`，最终只把第二阶段最优参数冻结到正式 calibration JSON。
+
+## Fα 与 Li 入口
+
+`Find_0_Falpha.sh` 顶部的 `target_split`、`alpha` 和 `global_shard_count` 是需要人工核对的三个主要变量。alpha 等于 `1/1` 时对应已有 `F1_centered`；其余六个值只增加同字段的新 centered 文件，不改变 forest、CLG 或 Stage2/3 既有读取路径。
+
+`Find_0_Li.sh` 读取 `/storage/penghongen/AdaLigand_stage1_inference` 中已完成的概率图，把结果写入 `/storage/penghongen/AdaLigand_stage1_LI_inference`。它固定 `min_voxels=10`，并把逐图 Li 阈值向上量化到 32768 分母网格。Li 结果可独立执行两阶段 Gauss 调参与回填，但不会进入 Selector。
+
+新脚本只在 `target_split=calibration` 时开启 `continue_on_blob_exceed`，因此超限 PDB 保留标记并继续产出；validation 和 train 保持历史停止行为。阈值冻结与 Gauss 正式评估总是开启 `evaluate_on_blob_exceed`，只要所需产物完整就纳入指标。两个开关互不替代。
 
 ## 公共 PDB 清单与运行记录
 

@@ -127,13 +127,14 @@ def _gauss_terms_for_one_entry(
     return positive_sum, negative_sum
 
 
-def compute_f1_centered_gauss_terms(
+def compute_centered_gauss_terms(
     *,
     forest_arrays: Mapping[str, np.ndarray],
     centered_arrays: Mapping[str, np.ndarray],
     full_shape_zyx: tuple[int, int, int],
     tau_angstrom: float,
     distance_cutoff_angstrom: float = 5.0,
+    centered_role: str = "F1_centered",
 ) -> tuple[np.ndarray, np.ndarray]:
     """按 forest 主表顺序返回正、负 A 原子高斯加权和。
 
@@ -149,7 +150,7 @@ def compute_f1_centered_gauss_terms(
             raise ValueError(f"{name} 必须是有限正数")
 
     ComponentForest.from_arrays(forest_arrays)
-    validate_centered_archive(centered_arrays, "F1_centered", stage1_model_name="Find_0")
+    validate_centered_archive(centered_arrays, centered_role, stage1_model_name="Find_0")
     shape = tuple(int(value) for value in full_shape_zyx)
     if len(shape) != 3 or any(value <= 0 for value in shape):
         raise ValueError("full_shape_zyx 必须包含三个正整数")
@@ -207,6 +208,26 @@ def compute_f1_centered_gauss_terms(
     return positive_terms, negative_terms
 
 
+def compute_f1_centered_gauss_terms(
+    *,
+    forest_arrays: Mapping[str, np.ndarray],
+    centered_arrays: Mapping[str, np.ndarray],
+    full_shape_zyx: tuple[int, int, int],
+    tau_angstrom: float,
+    distance_cutoff_angstrom: float = 5.0,
+) -> tuple[np.ndarray, np.ndarray]:
+    """保持历史入口，计算 `F1_centered` 来源节点的正负高斯项。"""
+
+    return compute_centered_gauss_terms(
+        forest_arrays=forest_arrays,
+        centered_arrays=centered_arrays,
+        full_shape_zyx=full_shape_zyx,
+        tau_angstrom=tau_angstrom,
+        distance_cutoff_angstrom=distance_cutoff_angstrom,
+        centered_role="F1_centered",
+    )
+
+
 def score_f1_centered_nodes(
     *,
     forest_arrays: Mapping[str, np.ndarray],
@@ -239,10 +260,159 @@ def score_f1_centered_nodes(
     return scores, selected
 
 
+def score_centered_nodes(
+    *,
+    forest_arrays: Mapping[str, np.ndarray],
+    centered_arrays: Mapping[str, np.ndarray],
+    full_shape_zyx: tuple[int, int, int],
+    centered_role: str,
+    parameters: GaussScorerParameters,
+) -> tuple[np.ndarray, np.ndarray]:
+    """按 forest 主表返回指定 F_alpha-centered 角色的分数和选择决定。"""
+
+    positive_terms, negative_terms = compute_centered_gauss_terms(
+        forest_arrays=forest_arrays,
+        centered_arrays=centered_arrays,
+        full_shape_zyx=full_shape_zyx,
+        tau_angstrom=parameters.tau_angstrom,
+        distance_cutoff_angstrom=parameters.distance_cutoff_angstrom,
+        centered_role=centered_role,
+    )
+    probability_mean = np.asarray(forest_arrays["probability_mean"], dtype=np.float64)
+    finite = np.isfinite(positive_terms) & np.isfinite(negative_terms)
+    scores = np.full(probability_mean.shape, np.nan, dtype=np.float32)
+    scores[finite] = (
+        probability_mean[finite]
+        + parameters.lambda_positive * positive_terms[finite]
+        - parameters.lambda_negative * negative_terms[finite]
+    ).astype(np.float32)
+    return scores, finite & (scores >= np.float32(parameters.gauss_score_min))
+
+
+def score_li_centered_entries(
+    centered_arrays: Mapping[str, np.ndarray],
+    parameters: GaussScorerParameters,
+) -> tuple[np.ndarray, np.ndarray]:
+    """直接按 `Li_centered` 条目计算分数，不依赖持久化 forest。"""
+
+    validate_centered_archive(centered_arrays, "Li_centered", stage1_model_name="Find_0")
+    positive_terms, negative_terms = compute_li_centered_gauss_terms(
+        centered_arrays,
+        tau_angstrom=parameters.tau_angstrom,
+        distance_cutoff_angstrom=parameters.distance_cutoff_angstrom,
+    )
+    probability_mean = np.asarray(
+        centered_arrays["source_probability_mean"], dtype=np.float64
+    )
+    scores = (
+        probability_mean
+        + parameters.lambda_positive * positive_terms
+        - parameters.lambda_negative * negative_terms
+    ).astype(np.float32)
+    if not bool(np.all(np.isfinite(scores))):
+        raise ValueError("Li-centered Gauss scorer 产生非有限分数")
+    return scores, scores >= np.float32(parameters.gauss_score_min)
+
+
+def compute_li_centered_gauss_terms(
+    centered_arrays: Mapping[str, np.ndarray],
+    tau_angstrom: float,
+    distance_cutoff_angstrom: float = 5.0,
+) -> tuple[np.ndarray, np.ndarray]:
+    """按 Li-centered 条目顺序返回正、负 A 原子高斯加权和。"""
+
+    validate_centered_archive(centered_arrays, "Li_centered", stage1_model_name="Find_0")
+    n_entry = int(np.asarray(centered_arrays["centered_box_index"]).size)
+    if n_entry == 0:
+        empty = np.empty(0, dtype=np.float64)
+        return empty, empty.copy()
+    voxel_offsets = np.asarray(centered_arrays["voxel_offsets"], dtype=np.int64)
+    voxel_local_zyx = np.asarray(
+        centered_arrays["voxel_index_local_zyx"], dtype=np.float64
+    )
+    atom_offsets = np.asarray(centered_arrays["A_offsets"], dtype=np.int64)
+    atom_local_xyz = np.asarray(centered_arrays["A_coord_local_xyz"], dtype=np.float64)
+    atom_probability = np.asarray(centered_arrays["A_probability"], dtype=np.float64)
+    voxel_size = np.asarray(centered_arrays["voxel_size_world"], dtype=np.float64)
+    positive_terms = np.empty(n_entry, dtype=np.float64)
+    negative_terms = np.empty(n_entry, dtype=np.float64)
+    for entry_index in range(n_entry):
+        voxel_slice = slice(
+            int(voxel_offsets[entry_index]), int(voxel_offsets[entry_index + 1])
+        )
+        atom_slice = slice(
+            int(atom_offsets[entry_index]), int(atom_offsets[entry_index + 1])
+        )
+        blob_xyz = (
+            voxel_local_zyx[voxel_slice][:, [2, 1, 0]] + 0.5
+        ) * voxel_size[entry_index][None, :]
+        atoms_xyz = atom_local_xyz[atom_slice] * voxel_size[entry_index][None, :]
+        atom_values = atom_probability[atom_slice]
+        if atoms_xyz.shape[0] == 0:
+            positive_sum = negative_sum = 0.0
+        else:
+            nearest_distance, _ = cKDTree(blob_xyz).query(
+                atoms_xyz,
+                k=1,
+                distance_upper_bound=float(distance_cutoff_angstrom),
+            )
+            within = np.isfinite(nearest_distance)
+            weights = np.zeros(atom_values.shape, dtype=np.float64)
+            weights[within] = np.exp(
+                -(nearest_distance[within] ** 2)
+                / (2.0 * float(tau_angstrom) ** 2)
+            )
+            positive_sum = float(np.sum(weights * atom_values, dtype=np.float64))
+            negative_sum = float(
+                np.sum(weights * (1.0 - atom_values), dtype=np.float64)
+            )
+        positive_terms[entry_index] = positive_sum
+        negative_terms[entry_index] = negative_sum
+    return positive_terms, negative_terms
+
+
+def publish_li_gauss_fields(
+    centered_path: str | Path,
+    gauss_score: np.ndarray,
+    gauss_selected: np.ndarray,
+    force_overwrite: bool = False,
+) -> None:
+    """只增加或按授权覆盖 `Li_centered.npz` 的两个 Gauss 条目字段。"""
+
+    path = Path(centered_path)
+    arrays = load_npz_strict(path)
+    score = np.asarray(gauss_score, dtype=np.float32)
+    selected = np.asarray(gauss_selected, dtype=np.bool_)
+    has_score = "gauss_score" in arrays
+    has_selected = "gauss_selected" in arrays
+    if has_score != has_selected:
+        raise KeyError("Li_centered.npz 的 Gauss 字段只存在一项，拒绝覆盖")
+    has_existing = has_score and has_selected
+    if has_existing and not force_overwrite:
+        same = (
+            "gauss_score" in arrays
+            and "gauss_selected" in arrays
+            and np.array_equal(arrays["gauss_score"], score)
+            and np.array_equal(arrays["gauss_selected"], selected)
+        )
+        if not same:
+            raise FileExistsError("Li_centered.npz 已包含不同的 Gauss 结果")
+    arrays["gauss_score"] = score
+    arrays["gauss_selected"] = selected
+    atomic_savez_compressed(
+        path,
+        arrays,
+        validator=lambda value: validate_centered_archive(
+            value, "Li_centered", stage1_model_name="Find_0"
+        ),
+    )
+
+
 def add_gauss_fields(
     forest_arrays: Mapping[str, np.ndarray],
     gauss_score: np.ndarray,
     gauss_selected: np.ndarray,
+    force_overwrite: bool = False,
 ) -> dict[str, np.ndarray]:
     """保留 forest 全部原字段，并增加或幂等确认两个高斯字段。"""
 
@@ -255,7 +425,10 @@ def add_gauss_fields(
         if not np.array_equal(updated["gauss_score"], score, equal_nan=True) or not np.array_equal(
             updated["gauss_selected"], selected
         ):
-            raise FileExistsError("forest.npz 已包含不同的高斯打分结果，拒绝覆盖")
+            if not force_overwrite:
+                raise FileExistsError("forest.npz 已包含不同的高斯打分结果，拒绝覆盖")
+            updated["gauss_score"] = score
+            updated["gauss_selected"] = selected
         ComponentForest.from_arrays(updated)
         return updated
     updated["gauss_score"] = score
@@ -268,10 +441,16 @@ def publish_gauss_fields(
     forest_path: str | Path,
     gauss_score: np.ndarray,
     gauss_selected: np.ndarray,
+    force_overwrite: bool = False,
 ) -> None:
     """原子回填一个现有 forest，并在正式替换前后执行完整结构校验。"""
 
     path = Path(forest_path)
     original = load_npz_strict(path)
-    updated = add_gauss_fields(original, gauss_score, gauss_selected)
+    updated = add_gauss_fields(
+        original,
+        gauss_score,
+        gauss_selected,
+        force_overwrite=force_overwrite,
+    )
     atomic_savez_compressed(path, updated, validator=ComponentForest.from_arrays)
