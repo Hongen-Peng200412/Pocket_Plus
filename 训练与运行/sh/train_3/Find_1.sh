@@ -4,11 +4,12 @@
 # CPC1 从头训练；成功产生 BEST.ckpt 后，CPC2 从该 checkpoint 初始化。
 
 # bash /home/penghongen/My_Project/Pocket_Plus/训练与运行/submit_task.sh \
-#   --sh /home/penghongen/My_Project/Pocket_Plus/训练与运行/sh/train_2/Find_1.sh \
+#   --sh /home/penghongen/My_Project/Pocket_Plus/训练与运行/sh/train_3/Find_1.sh \
 #   --resource h200 \
 #   --qos cpu96 \
 #   --gpus 1 \
-#   --cpus 16 \
+#   --cpus 32 \
+#   --mem 1200G \
 #   --after_hold \
 #   --job-name find1_v2
 
@@ -16,7 +17,7 @@
 # ============================================== 一般可以跨任务的通用设置 ==============================================
 set -euo pipefail  # 任一命令失败立即退出；读取未定义变量时报错；管道中任一命令失败即判失败。
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"  # 得到“训练与运行/sh”的绝对位置，使脚本不依赖用户当前工作目录。
-PROJECT_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd -P)"  # 当前脚本向上两级是本次 release 的项目根；训练代码和配置均从这里读取。
+PROJECT_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd -P)"  # train_3 向上三级是本次 release 的项目根。
 PROJECT_NAME="$(basename "${PROJECT_ROOT}")"  # 项目目录名用于构造默认反馈根；标准 release 内为 Pocket_Plus。
 CONDA_BASE="${CONDA_BASE:-${HOME}/anaconda3}"  # Conda 根目录可由外部覆盖；默认使用当前用户主目录下的 anaconda3。
 CONDA_ENV_NAME="${POCKET_CONDA_ENV:-Pocket_Plus_centos7_cu121_allgpu}"  # Conda 环境名可由 POCKET_CONDA_ENV 覆盖；默认值是已验证的正式训练环境。
@@ -103,7 +104,7 @@ export ADALIGAND_DATA_ROOT="${ADALIGAND_DATA_ROOT:-/storage/penghongen/AdaLigand
 # → UnifiedDataModule.setup()
 # → Stage1Dataset.__init__() 的 build_request_source()（stage1_dataset.py:470–477）
 # → 训练请求按 epoch 选择 BOX，验证请求读取固定 selection。
-export ADALIGAND_STAGE1_PREPARATION_ROOT="${ADALIGAND_STAGE1_PREPARATION_ROOT:-/storage/penghongen/AdaLigand/Ori_Data/stage1_preparation}"
+export ADALIGAND_STAGE1_PREPARATION_ROOT="${ADALIGAND_STAGE1_PREPARATION_ROOT:-/storage/penghongen/AdaLigand/Ori_Data/stage1_preparation_box_pool_2}"
 
 #                                  -----------------------------------------------------------------------------------------------                                 #
 # --- 卡的申请/参数覆盖 ---
@@ -121,9 +122,9 @@ common_overrides=(
     "train.batch_size=8"                                  # 每张 GPU 每次前向处理 8 个 BOX。
     "train.strict_global_batch_size=true"                 # 全局批量必须严格整除实际并行批量。
     "train.enable_batch_size_tuning=false"                # 禁止自动改变已核定的单卡批量。
-    "train.num_workers=10"                                # 每个训练 DataLoader 使用 10 个读取进程。
+    "train.num_workers=32"                                # 每个训练 DataLoader 使用 32 个读取进程。
     "train.max_epochs=20"                                 # 每个阶段最多运行 20 个 epoch。
-    "train.val_per_epoch=30"                              # 每个 epoch 等间隔运行 30 次完整验证。
+    "train.val_per_epoch=3"                               # 每个 epoch 等间隔运行 3 次完整验证。
     "train.optimizer.lr=5.0e-5"                           # Find_1 最大学习率。
     "model.backbone.density_cube_cfg.chunk_size=4048"      # 伪原子密度 cube 每块最多处理 4048 个 anchor。
     "model.backbone.real_density_cube_cfg.chunk_size=8192" # 真实受体原子密度 cube 每块最多处理 8192 个原子。

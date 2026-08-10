@@ -26,6 +26,8 @@ from src.utils.slurm_utils import (
     log_distributed_launch_state as _log_distributed_launch_state,
 )
 from src.utils.module_freeze import set_fully_frozen_submodules_eval
+from src.datasets.stage1_batch_sampler import Stage1PdbBatchSampler
+from src.datasets.stage1_requests import Stage1TrainingRequestSet
 
 # 统一使用 slurm_utils 中的网卡推导逻辑, 避免本地旧实现与 sbatch helper 出现分叉. 
 _fix_gloo_socket_ifname()
@@ -827,7 +829,7 @@ class DatasetEpochController(Callback):
 
     @staticmethod
     def _set_epoch(trainer: pl.Trainer, epoch: int) -> None:
-        """同步 DataModule 持有的 Dataset 与当前 train DataLoader sampler. """
+        """同步 DataModule 持有的 Dataset 与当前训练 DataLoader 的采样器."""
 
         datamodule = getattr(trainer, "datamodule", None)
         train_dataset = getattr(datamodule, "train_ds", None)
@@ -835,10 +837,13 @@ class DatasetEpochController(Callback):
         if callable(set_dataset_epoch):
             set_dataset_epoch(int(epoch))
         train_loader = getattr(trainer, "train_dataloader", None)
-        sampler = getattr(train_loader, "sampler", None)
-        set_sampler_epoch = getattr(sampler, "set_epoch", None)
-        if callable(set_sampler_epoch):
-            set_sampler_epoch(int(epoch))
+        for sampler in (
+            getattr(train_loader, "batch_sampler", None),
+            getattr(train_loader, "sampler", None),
+        ):
+            set_sampler_epoch = getattr(sampler, "set_epoch", None)
+            if callable(set_sampler_epoch):
+                set_sampler_epoch(int(epoch))
 
     def on_train_epoch_start(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
         """在当前 epoch 消费前刷新; 普通 Dataset 无副作用. """
@@ -1003,6 +1008,20 @@ def main(cfg: DictConfig):
                 return SeededEpochRandomSampler(ds, seed=stage_seed)
             return None
 
+        def _build_stage1_batch_sampler(self, ds, stage: str):
+            # 只为动态 Stage1 训练请求建立逐 PDB 物理 batch 采样器。
+            request_source = getattr(ds, "request_source", None)
+            if stage != "train" or not isinstance(
+                request_source, Stage1TrainingRequestSet
+            ):
+                return None
+            return Stage1PdbBatchSampler(
+                request_source,
+                batch_size=int(self.train_cfg.batch_size),
+                num_replicas=int(getattr(self.trainer, "world_size", 1) or 1),
+                rank=int(getattr(self.trainer, "global_rank", 0) or 0),
+            )
+
         def _get_dataloader(self, ds, stage: str, shuffle: bool = False):
             """
             统一 DataLoader 的创建逻辑. 
@@ -1032,21 +1051,47 @@ def main(cfg: DictConfig):
             else:
                 loader_class = torch.utils.data.DataLoader
 
-            sampler = self._build_sampler(ds, stage=stage, shuffle=shuffle)
+            batch_sampler = self._build_stage1_batch_sampler(ds, stage=stage)
+            # Stage1 batch_sampler 已经同时决定顺序、物理 batch 边界和 DDP rank 分配，不能再叠加普通 sampler。
+            sampler = (
+                None
+                if batch_sampler is not None
+                else self._build_sampler(ds, stage=stage, shuffle=shuffle)
+            )
             generator = torch.Generator()
             generator.manual_seed(self._get_stage_seed(stage))
             collate_fn = None if use_pyg else getattr(ds, "collate_fn", None)
-                
+            num_workers = int(self.train_cfg.num_workers)
+            loader_kwargs = {
+                "num_workers": num_workers,
+                "pin_memory": self.train_cfg.get("pin_memory", True)
+                if sys.platform != "win32"
+                else False,
+                "collate_fn": collate_fn,
+                "worker_init_fn": _seed_worker,
+                "generator": generator,
+                "persistent_workers": bool(
+                    self.train_cfg.get("persistent_workers", False)
+                )
+                and num_workers > 0,
+            }
+            if num_workers > 0:
+                loader_kwargs["prefetch_factor"] = int(
+                    self.train_cfg.get("prefetch_factor", 2)
+                )
+            if batch_sampler is not None:
+                return loader_class(
+                    ds,
+                    batch_sampler=batch_sampler,
+                    **loader_kwargs,
+                )
+
             return loader_class(
                 ds,
                 batch_size=self.train_cfg.batch_size,
                 shuffle=bool(shuffle and sampler is None),
                 sampler=sampler,
-                num_workers=self.train_cfg.num_workers,
-                pin_memory=self.train_cfg.get("pin_memory", True) if sys.platform != "win32" else False,
-                collate_fn=collate_fn,
-                worker_init_fn=_seed_worker,
-                generator=generator,
+                **loader_kwargs,
             )
 
         def train_dataloader(self):
