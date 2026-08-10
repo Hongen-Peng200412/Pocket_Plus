@@ -84,7 +84,18 @@ def test_find_configs_encode_common_stage1_contract(experiment: str) -> None:
     assert cfg.model.backbone.real_density_cube_cfg.chunk_size == 4096
     assert cfg.train.global_batch_size == 64
     assert cfg.train.max_epochs == 20
-    assert cfg.train.val_per_epoch == 30
+    assert cfg.train.val_per_epoch == 3
+    assert cfg.train.num_workers == 32
+    assert cfg.train.prefetch_factor == 4
+    assert cfg.train.persistent_workers is False
+    assert cfg.dataset.occurrence_cap_per_pdb == 50
+    assert cfg.dataset.occurrence_ratio == pytest.approx(0.75)
+    assert cfg.dataset.cache_max_bytes == 32 * 1024**3
+    assert dict(cfg.dataset.entry_ratio) == {
+        "center": 0,
+        "bias": 1,
+        "context": 1,
+    }
     assert cfg.train.optimizer.lr == pytest.approx(5.0e-5)
     assert cfg.train.scheduler.threshold == 0.001
     assert cfg.model.voxel_aux_loss_weight in {0.0, 0.1}
@@ -203,7 +214,17 @@ def test_unet_c1_config_is_density_only_and_exports_final_v_feature() -> None:
     assert cfg.model.atom_loss is None
     assert cfg.model.ligand_pseudo_loss is None
     assert cfg.train.optimizer.lr == pytest.approx(1.0e-4)
-    assert cfg.dataset.box_sample_fraction == 1.0
+    assert cfg.dataset.occurrence_cap_per_pdb == 50
+    assert cfg.dataset.occurrence_ratio == pytest.approx(0.75)
+    assert cfg.dataset.cache_max_bytes == 32 * 1024**3
+    assert dict(cfg.dataset.entry_ratio) == {
+        "center": 0,
+        "bias": 1,
+        "context": 1,
+    }
     assert "excluded_pdb_ids" not in cfg.dataset
     assert "excluded_pdb_ids" not in find1.dataset
-    assert cfg.train.val_per_epoch == 30
+    assert cfg.train.val_per_epoch == 3
+    assert cfg.train.num_workers == 32
+    assert cfg.train.prefetch_factor == 4
+    assert cfg.train.persistent_workers is False
