@@ -241,6 +241,10 @@ python -m src.datasets.stage1_box_pool \
 
 蛋白和核酸类别只在受体原子局部坐标向下取整后所属的体素写入非背景编号，BOX 中其余体素是背景；损失在完整 `80³` 网格上计算。
 
-`box_sample_fraction` 默认是 `1.0`，此时训练请求仍随 epoch 重新选择，不生成额外文件。小于 `1.0` 时，目标总数取 `floor(完整请求数 × 比例)`；center、bias、context 按完整请求表中的实际组成使用最大余数法分配名额，再由 `request_seed` 分别无放回抽取。程序在 `box_pool/` 根目录保存 `train_selection_<比例>_seed<seed>.npz` 与相应 validation 文件。文件同时保存比例、随机种子、固定的 `selection_epoch=0`、来源摘要和契约版本；只有这些字段与当前来源完全一致时才复用，损坏或过期文件会明确报错。
+训练请求在每个训练周期按 `occurrence_cap_per_pdb → occurrence_ratio → entry_ratio` 重新生成。当前正式配置依次为 `50 → 0.75 → 0:1:1`：每个 PDB 先无放回选择至多 50 个 occurrence，再保留 `ceil(一级候选数 × 0.75)` 个 occurrence，并各取一个 bias BOX 与一个 context BOX。第二版训练池当前包含 13,710 个 PDB；该配置在丢弃 DDP 尾部前固定产生 162,681 个 occurrence，即 325,362 个 BOX 请求。训练请求只存在于内存，不向 BOX 池写入选择文件；验证始终完整读取已有的 `validation_selection.npz`。
+
+`Stage1PdbBatchSampler` 让同一 PDB 的请求在送入 DataLoader 的序列中连续，并按单 rank 的物理 `batch_size` 切分。设当前 PDB 在当前物理 batch 中占据 `s` 个槽位、还剩 `F_left` 个前景 BOX 和 `N_left` 个全部 BOX，本片段使用 `floor(s × F_left / N_left + 1/2)` 个前景 BOX；剩余计数跨物理 batch 和 DDP 物理步继续使用。最后不足一个完整 DDP 物理步的请求直接丢弃，不补齐、不重复，也不产生缩小的 batch。首版关闭持久 DataLoader worker，避免 worker 保留上一训练周期的请求副本。
+
+在 BOX 池、`request_seed`、训练周期、DDP 配置、物理 `batch_size`、worker 数和预取配置均相同时，请求身份与顺序可复现。修改物理 `batch_size` 或 worker 加载配置可能改变样本出现顺序。
 
 训练入口仍是仓库根 `src/train.py`。AdaLigand 配置位于 `configs/experiment/CPC1/Find_0.yaml`、`Find_1.yaml`、`Find_2.yaml`、`configs/experiment/unet_c1.yaml` 及对应 Dataset、损失和训练子配置。合法 producer 统一由 `src/stage1_producers.py` 的 `STAGE1_MODEL_NAMES` 维护，其中 `FIND_MODEL_NAMES` 共享完整 56D density 和原子表物化语义。Find_2 的实现、配置与短训练证据继续保留，但当前正式训练不再使用 Find_2。
