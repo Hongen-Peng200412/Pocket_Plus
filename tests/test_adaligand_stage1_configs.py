@@ -84,7 +84,7 @@ def test_find_configs_encode_common_stage1_contract(experiment: str) -> None:
     assert cfg.model.backbone.real_density_cube_cfg.chunk_size == 4096
     assert cfg.train.global_batch_size == 64
     assert cfg.train.max_epochs == 20
-    assert cfg.train.val_per_epoch == 3
+    assert cfg.train.val_per_epoch == 5
     assert cfg.train.num_workers == 32
     assert cfg.train.prefetch_factor == 4
     assert cfg.train.persistent_workers is False
@@ -224,7 +224,7 @@ def test_unet_c1_config_is_density_only_and_exports_final_v_feature() -> None:
     }
     assert "excluded_pdb_ids" not in cfg.dataset
     assert "excluded_pdb_ids" not in find1.dataset
-    assert cfg.train.val_per_epoch == 3
+    assert cfg.train.val_per_epoch == 5
     assert cfg.train.num_workers == 32
     assert cfg.train.prefetch_factor == 4
     assert cfg.train.persistent_workers is False
