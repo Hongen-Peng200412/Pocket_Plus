@@ -7,7 +7,7 @@ defaults:
 global_batch_size: 64               # 实际 preflight 若任一 Find 只能 batch=6，则五套配置整体切到 66。
 enable_batch_size_tuning: false
 batch_size: 8
-strict_global_batch_size: true
+strict_global_batch_size: false       # bool, 禁止全局批量对齐逻辑向下改写显式物理 batch_size。
 num_workers: 32                     # int, 单个 DataLoader 的 worker 进程数。
 prefetch_factor: 4                  # int, 每个 worker 提前准备的物理 batch 数。
 persistent_workers: false           # bool, false 表示每个训练周期重建 worker，使其读取当前请求表。

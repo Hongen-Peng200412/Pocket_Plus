@@ -30,7 +30,8 @@ import numpy as np
 STAGE1_BOX_SHAPE_ZYX = (80, 80, 80)
 # BOX pool 根目录中的唯一清单文件; 请求发现只消费清单列出的 PDB 文件. 
 BOX_POOL_MANIFEST_FILENAME = "manifest.json"
-# 请求角色的固定集合; 前三个角色可参与训练比例抽样, 后两个角色用于其他请求来源. 
+# 请求角色的固定集合。
+# center、bias、context 的训练数量由 entry_ratio 控制，后两个角色来自其他请求源。
 _VALID_ROLES = {"center", "bias", "context", "sliding", "centered"}
 
 
@@ -338,6 +339,10 @@ class Stage1TrainingRequestSet:
     ceil(capped_count * occurrence_ratio) 个 occurrence。每个最终
     occurrence 按 entry_ratio 展开已有 center、bias 和 context 起点。
 
+    entry_ratio 为 None 时先读取 BOX 池 config.json 的 entry_ratio；文件未提供时
+    回退到旧版 1:5:3。context 候选为空时不生成 context 请求；context 候选
+    数量不足时允许放回选择。
+
     本类只在内存中替换 requests，不写入或修改 BOX 池文件。
     """
 
@@ -598,7 +603,12 @@ def build_request_source(
     occurrence_ratio: float = 1.0,
     entry_ratio: Mapping[str, int] | None = None,
 ) -> Stage1TrainingRequestSet | list[ResolvedStage1Crop]:
-    """构造逐训练周期请求或读取现有的固定验证请求."""
+    """按输入类型构造训练请求源或完整读取固定验证请求。
+
+    训练 BOX 池目录返回 Stage1TrainingRequestSet，并消费 cap、ratio 和 entry
+    参数；validation_selection.npz 返回 list[ResolvedStage1Crop]，上述训练参数
+    不作用于验证请求的身份或顺序。
+    """
 
     mode = str(mode).lower()
     source = Path(split_file)
