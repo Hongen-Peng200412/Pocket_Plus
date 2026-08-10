@@ -366,7 +366,7 @@ def test_collator_exposes_b_plus_one_offsets_and_handles_empty_atoms() -> None:
     assert batch["atom_batch_index"].tolist() == [1, 1]
 
 
-def test_training_pool_rebuilds_fixed_1_5_3_ratio(tmp_path: Path) -> None:
+def test_training_pool_applies_cap_ratio_and_rebuilds_each_epoch(tmp_path: Path) -> None:
     pool_dir = tmp_path / "train"
     pool_dir.mkdir()
     occurrence = np.arange(55, dtype=np.int32)
@@ -406,26 +406,28 @@ def test_training_pool_rebuilds_fixed_1_5_3_ratio(tmp_path: Path) -> None:
     source_again.set_epoch(1)
     assert tuple(source_again.requests) == tuple(source.requests)
 
-    reduced = Stage1TrainingRequestSet(pool_dir, seed=7, box_sample_fraction=0.1)
-    frozen = tuple(reduced.requests)
-    assert len(frozen) == 45
-    assert sum(request.role == "center" for request in frozen) == 5
-    assert sum(request.role == "bias" for request in frozen) == 25
-    assert sum(request.role == "context" for request in frozen) == 15
-    assert (tmp_path / "train_selection_0.1_seed7.npz").is_file()
-    with np.load(tmp_path / "train_selection_0.1_seed7.npz", allow_pickle=False) as saved:
-        assert float(saved["box_sample_fraction"]) == pytest.approx(0.1)
-        assert int(saved["request_seed"]) == 7
-        assert int(saved["selection_epoch"]) == 0
-        assert int(saved["schema_version"]) == 1
-        assert len(str(saved["source_manifest_sha256"].item())) == 64
+    reduced = Stage1TrainingRequestSet(
+        pool_dir,
+        seed=7,
+        occurrence_cap_per_pdb=50,
+        occurrence_ratio=0.1,
+    )
+    epoch0_reduced = tuple(reduced.requests)
+    assert len(epoch0_reduced) == 45
+    assert sum(request.role == "center" for request in epoch0_reduced) == 5
+    assert sum(request.role == "bias" for request in epoch0_reduced) == 25
+    assert sum(request.role == "context" for request in epoch0_reduced) == 15
+
     reduced.set_epoch(9)
-    assert tuple(reduced.requests) == frozen
-    assert tuple(Stage1TrainingRequestSet(pool_dir, seed=7, box_sample_fraction=0.1).requests) == frozen
-    manifest_path = tmp_path / "manifest.json"
-    manifest_path.write_text(manifest_path.read_text(encoding="utf-8") + "\n", encoding="utf-8")
-    with pytest.raises(ValueError, match="元数据与当前来源不一致"):
-        Stage1TrainingRequestSet(pool_dir, seed=7, box_sample_fraction=0.1)
+    assert tuple(reduced.requests) != epoch0_reduced
+    reduced_again = Stage1TrainingRequestSet(
+        pool_dir,
+        seed=7,
+        occurrence_cap_per_pdb=50,
+        occurrence_ratio=0.1,
+    )
+    reduced_again.set_epoch(9)
+    assert tuple(reduced_again.requests) == tuple(reduced.requests)
 
 
 @pytest.mark.parametrize("context_count", (0, 1, 2))
@@ -645,24 +647,13 @@ def test_box_pool_one_click_entry_publishes_train_validation_and_selection(tmp_p
     assert [request.role for request in requests].count("center") == 1
     assert [request.role for request in requests].count("bias") == 5
     assert [request.role for request in requests].count("context") == 3
-    reduced_validation = build_request_source(
+    validation_from_source = build_request_source(
         split_file=output_root / "validation_selection.npz",
         mode="val",
         box_pool_root=output_root,
         seed=23,
-        box_sample_fraction=0.5,
     )
-    assert len(reduced_validation) == 4
-    assert [request.role for request in reduced_validation].count("center") == 1
-    assert [request.role for request in reduced_validation].count("bias") == 2
-    assert [request.role for request in reduced_validation].count("context") == 1
-    assert (output_root / "validation_selection_0.5_seed23.npz").is_file()
-    with np.load(
-        output_root / "validation_selection_0.5_seed23.npz",
-        allow_pickle=False,
-    ) as saved:
-        assert len(str(saved["source_manifest_sha256"].item())) == 64
-        assert len(str(saved["source_validation_sha256"].item())) == 64
+    assert validation_from_source == requests
 
 
 def test_box_pool_second_version_uses_frozen_zero_five_five_ratio(tmp_path: Path) -> None:
