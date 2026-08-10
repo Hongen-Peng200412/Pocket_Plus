@@ -1,31 +1,27 @@
 # -*- coding: utf-8 -*-
-"""管理 AdaLigand Stage1 的 80³ 请求对象、BOX 起点和冻结请求文件. 
+"""管理 AdaLigand Stage1 的 80³ 请求对象、BOX 起点和逐训练周期请求.
 
 阅读入口:
     1. :class:`ResolvedStage1Crop` 保存一个请求的 PDB 身份、ZYX 起点、角色和监督开关. 
     2. :func:`resolve_stage1_start` 把请求起点限制在完整密度图内, 保证 ``[start_zyx, start_zyx + box_shape_zyx)`` 不补零越界. 
-    3. :class:`Stage1TrainingRequestSet` 从 ``box_pool/train`` 的 PDB NPZ 和根 ``config.json`` 生成每个 epoch 的请求, 比例小于 1 时额外保存固定子集.
+    3. :class:`Stage1TrainingRequestSet` 从 ``box_pool/train`` 的 PDB NPZ 生成每个训练周期的请求.
     4. :func:`load_validation_selection` 从 ``validation_selection.npz`` 的索引恢复固定验证请求, 不重新抽样. 
     5. :func:`build_request_source` 选择训练 BOX pool 或固定验证表. 
 
 核心内存字段:
     - ResolvedStage1Crop: 一个已经完成边界解析的请求, 不包含密度、原子坐标或标签数组. 
-    - Stage1TrainingRequestSet.requests: 当前 epoch 的 ``tuple[ResolvedStage1Crop, ...]``, 顺序就是 Dataset 读取顺序. 
+    - Stage1TrainingRequestSet.requests: 当前训练周期的 ``tuple[ResolvedStage1Crop, ...]``, 同一 PDB 的请求连续保存.
 
-落盘文件:
-    - <box_pool_root>/<split>_selection_<fraction>_seed<seed>.npz: 冻结比例请求表; 字段 ``pdb_id``、``box_start_zyx``、``role``、``occurrence_id``、``candidate_index`` 和 ``require_targets`` 按请求下标对齐, 标量字段保存比例、seed、来源摘要和 schema 版本. 
-
-本模块只处理请求身份、BOX 起点、角色、抽样和来源摘要; 整图读取、80³ 裁剪和模型字段构造由 ``stage1_dataset.py`` 完成. 
+本模块只处理请求身份、BOX 起点、角色和抽样; 整图读取、80³ 裁剪和模型字段构造由 ``stage1_dataset.py`` 完成.
 """
 
 from __future__ import annotations
 
-import hashlib
 import json
-import os
+import math
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Sequence
+from typing import Mapping, Sequence
 
 import numpy as np
 
@@ -36,8 +32,6 @@ STAGE1_BOX_SHAPE_ZYX = (80, 80, 80)
 BOX_POOL_MANIFEST_FILENAME = "manifest.json"
 # 请求角色的固定集合; 前三个角色可参与训练比例抽样, 后两个角色用于其他请求来源. 
 _VALID_ROLES = {"center", "bias", "context", "sliding", "centered"}
-# 比例选择 NPZ 的字段契约版本; 读取时必须与此版本完全一致. 
-_FRACTION_SELECTION_SCHEMA_VERSION = 1
 
 
 
@@ -265,46 +259,6 @@ def _load_pdb_pool(path: Path, expected_pdb_id: str) -> _PdbPool:
 
 
 
-# =============================================================== fraction 划分小样本 ===============================================================
-# =============================================================================================================================================================================================
-# ----------------- 生成&保存 -----------------
-def _validate_box_sample_fraction(value: float) -> float:
-    """校验并返回 BOX 请求保留比例. 
-
-    输入参数:
-        - value: 可转换为 ``float`` 的比例. ``1.0`` 表示保留完整请求池; 小于 ``1.0`` 时, 调用方按完整请求池的总数计算固定子集. 
-
-    输出:
-        - float: 位于 ``(0, 1]`` 的比例; 不会改变请求池, 也不会创建选择文件. 
-
-    异常:
-        - ValueError: ``value`` 不在允许区间内. 
-    """
-    fraction = float(value)
-    if not 0.0 < fraction <= 1.0:
-        raise ValueError("box_sample_fraction 必须位于 (0,1]。")
-    return fraction
-
-
-def _fraction_filename(
-    split_name: str,
-    fraction: float,
-    seed: int,
-) -> str:
-    """生成"冻结比例请求"专用的文件名. 
-
-    输入参数:
-        - split_name: ``train`` 或 ``validation`` 等数据划分名称. 
-        - fraction: 请求保留比例; 格式化为最多 12 位有效数字. 
-        - seed: 产生固定请求子集的整数 seed. 
-
-    输出:
-        - str: 形如 ``<split>_selection_<fraction>_seed<seed>.npz`` 的文件名. 函数只生成名称, 不创建文件, 也不检查目标路径. 
-    """
-    token = format(float(fraction), ".12g")
-    return f"{split_name}_selection_{token}_seed{int(seed)}.npz"
-
-
 @dataclass(frozen=True)
 class ResolvedStage1Crop:
     """表示一个已完成边界解析的 Stage1 80³ 裁剪请求. 
@@ -347,262 +301,6 @@ class ResolvedStage1Crop:
         object.__setattr__(self, "role", role)
 
 
-def _select_request_fraction(
-    requests: Sequence[ResolvedStage1Crop],
-    fraction: float,
-    seed: int,
-) -> tuple[ResolvedStage1Crop, ...]:
-    """按完整请求池比例抽取固定的 center、bias、context 子集. 
-
-    输入参数:
-        - requests: 长度 ``N_req`` 的完整请求序列; 每个元素是一个已经完成起点解析的 :class:`ResolvedStage1Crop`. 
-        - fraction: 保留比例; 目标总数严格为 ``floor(N_req * fraction)``, 不是对某个 PDB 或某一种角色单独取比例. 
-        - seed: 固定选择结果的整数 seed; 同一完整请求序列、比例和 seed 必须得到相同的具体请求集合. 
-
-    处理规则:
-        - 只接受 ``center``、``bias``、``context`` 三种角色. 
-        - 三种角色按完整请求序列中的原有数量比例分配目标总数; 不能整除的名额使用最大余数法分配, 角色顺序固定为 center、bias、context. 
-        - 每个角色使用由 ``seed`` 和角色编号构成的独立 NumPy 随机流, 且不放回抽样. 
-        - 被选请求最后按它们在完整序列中的下标升序返回, 保证不会引入额外的 epoch 排序. 
-
-    输出:
-        - tuple[ResolvedStage1Crop, ...]: 长度为 ``floor(N_req * fraction)`` 的冻结请求子集. 
-    """
-    target_total = int(np.floor(len(requests) * float(fraction)))
-    if target_total == 0:
-        return ()
-    roles = ("center", "bias", "context")
-    # dict[str, np.ndarray[int64]]; 每个数组保存一种角色在 requests 中的原始下标, 例如 role_indices_by_name["bias"] 的值可以直接索引完整请求序列. 
-    role_indices_by_name = {
-        role: np.asarray(
-            [index for index, request in enumerate(requests) if request.role == role],
-            dtype=np.int64,
-        )
-        for role in roles
-    }
-    classified_total = sum(indices.size for indices in role_indices_by_name.values())
-    if classified_total != len(requests):
-        raise ValueError("比例抽样只接受 center、bias、context 请求。")
-    # dict[str, float]; 每种角色按完整请求池占比应得到的理想名额, 尚未取整. 
-    exact_counts = {
-        role: target_total * role_indices_by_name[role].size / len(requests)
-        for role in roles
-    }
-    # dict[str, int]; 先取每种角色的整数名额, 再把剩余名额交给最大余数法. 
-    target_counts = {role: int(np.floor(exact_counts[role])) for role in roles}
-    remaining = target_total - sum(target_counts.values())
-    remainder_order = sorted(
-        range(len(roles)),
-        key=lambda index: (
-            -(exact_counts[roles[index]] - target_counts[roles[index]]),
-            index,
-        ),
-    )
-    for role_index in remainder_order[:remaining]:
-        target_counts[roles[role_index]] += 1
-
-    # list[int]; 从完整 requests 中选出的原始下标, 最后排序以保留原请求顺序. 
-    selected_indices: list[int] = []
-    for role_index, role in enumerate(roles):
-        role_indices = role_indices_by_name[role]
-        selected_count = target_counts[role]
-        if selected_count == 0:
-            continue
-        # 每种角色独立的随机流; 不会因另一种角色的名额变化而消耗不同随机数. 
-        rng = np.random.default_rng(np.random.SeedSequence([int(seed), role_index]))
-        chosen = rng.choice(role_indices, size=selected_count, replace=False)     # 抽取的是原值, 不是下标. 
-        selected_indices.extend(int(index) for index in chosen.tolist())
-    selected_indices.sort()
-    return tuple(requests[index] for index in selected_indices)
-
-
-def _sha256_file(path: Path) -> str:
-    """分块计算来源文件的 SHA-256 摘要. 
-
-    输入参数:
-        - path: 已存在的来源文件路径; 文件内容按二进制读取. 
-
-    输出:
-        - str: 64 个十六进制字符的 SHA-256 摘要, 用于确认冻结选择文件仍对应同一份 manifest 或 validation selection. 
-    """
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def _save_request_selection(
-    path: Path,
-    requests: Sequence[ResolvedStage1Crop],
-    *,
-    fraction: float,
-    seed: int,
-    source_manifest_sha256: str,
-    source_validation_sha256: str | None = None,
-) -> None:
-    """纯粹保存函数: 原子发布一份可由 :func:`_load_request_selection` 读取的训练或验证冻结比例请求.npz. 
-
-    输入参数:
-        - path: 保存文件路径. 
-        - requests: 要保存的冻结请求序列, 长度记为 ``N_req``. 
-        - ``fraction``、``seed``: 产生该选择的比例和整数 seed. 
-        - source_manifest_sha256: 选择所依据的 BOX pool manifest 摘要. 
-        - source_validation_sha256: 可选的 validation 来源文件摘要. 
-
-    文件字段:
-        - pdb_id: 字符串数组 ``(N_req,)``; 第 i 个值是第 i 个请求的 PDB 身份. 
-        - box_start_zyx: int32 ``(N_req, 3)``; 第 i 个元素是第 i 个请求的完整图 ZYX BOX 起点. 
-        - role: 字符串数组 ``(N_req,)``; 第 i 个值是第 i 个请求的 center、bias 或 context 角色. 
-        - occurrence_id: int32 ``(N_req,)``; 第 i 个值是请求引用的 occurrence 编号, 缺失时为 ``-1``. 
-        - candidate_index: int32 ``(N_req,)``; 第 i 个值是请求引用的 bias/context 候选下标, 缺失时为 ``-1``. 
-        - require_targets: bool ``(N_req,)``; 第 i 个值表示 Dataset 是否构造监督字段. 
-        - box_sample_fraction: float64 标量; 完整请求池中保留的比例. 
-        - request_seed: int64 标量; 构造该冻结子集使用的 seed. 
-        - selection_epoch: int64 标量; 固定比例请求表写入 ``0``, 表示不随 epoch 改变. 
-        - source_manifest_sha256: 字符串标量; 生成请求表时使用的 BOX pool manifest 摘要. 
-        - source_validation_sha256: 可选字符串标量; 验证请求表的 ``validation_selection.npz`` 摘要. 
-        - schema_version: uint16 标量; 冻结比例请求表字段契约版本. 
-    """
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temp_path = path.with_name(f".{path.name}.{os.getpid()}.tmp.npz")
-    try:
-        np.savez_compressed(
-            temp_path,
-            pdb_id=np.asarray([request.pdb_id for request in requests]),
-            box_start_zyx=np.asarray(
-                [request.box_start_zyx for request in requests], dtype=np.int32
-            ).reshape(-1, 3),
-            role=np.asarray([request.role for request in requests]),
-            occurrence_id=np.asarray(
-                [
-                    -1 if request.occurrence_id is None else request.occurrence_id
-                    for request in requests
-                ],
-                dtype=np.int32,
-            ),
-            candidate_index=np.asarray(
-                [
-                    -1 if request.candidate_index is None else request.candidate_index
-                    for request in requests
-                ],
-                dtype=np.int32,
-            ),
-            require_targets=np.asarray(
-                [request.require_targets for request in requests], dtype=bool
-            ),
-            box_sample_fraction=np.asarray(float(fraction), dtype=np.float64),
-            request_seed=np.asarray(int(seed), dtype=np.int64),
-            selection_epoch=np.asarray(0, dtype=np.int64),
-            source_manifest_sha256=np.asarray(source_manifest_sha256),
-            schema_version=np.asarray(
-                _FRACTION_SELECTION_SCHEMA_VERSION, dtype=np.uint16
-            ),
-            **(
-                {"source_validation_sha256": np.asarray(source_validation_sha256)}
-                if source_validation_sha256 is not None
-                else {}
-            ),
-        )
-        os.replace(temp_path, path)
-    finally:
-        temp_path.unlink(missing_ok=True)
-
-
-
-
-# ----------------- 读取 -----------------
-def _load_request_selection(
-    path: Path,
-    *,
-    fraction: float,
-    seed: int,
-    source_manifest_sha256: str,
-    source_validation_sha256: str | None = None,
-    expected_count: int,
-) -> tuple[ResolvedStage1Crop, ...]:
-    """加载 :func:`_save_request_selection` 保存的训练或验证冻结比例请求npz. 除了path之外其余输入仅用于检查. 
-
-    输入参数:
-        - path: 已存在的冻结 ``.npz`` 选择文件. 
-        - ``fraction``、``seed``: 当前训练配置声明的比例和整数 seed. 
-        - source_manifest_sha256: 当前 BOX pool manifest 摘要. 
-        - source_validation_sha256: 当前 validation 来源摘要; 仅在验证选择需要绑定来源时提供. 
-        - expected_count: 当前完整请求池比例应产生的请求数量. 
-
-    输出:
-        - tuple[ResolvedStage1Crop, ...]: 从文件字段恢复的冻结请求序列, 长度必须等于 ``expected_count``, 顺序与文件中的数组下标一致. 
-
-    校验:
-        - 比例、seed、固定的 ``selection_epoch=0``、schema 版本和来源摘要必须全部与当前配置一致; 缺字段、摘要漂移或请求数量不符都会拒绝读取. 
-    """
-    with np.load(path, allow_pickle=False) as data:
-        required = {
-            "pdb_id",
-            "box_start_zyx",
-            "role",
-            "occurrence_id",
-            "candidate_index",
-            "require_targets",
-            "box_sample_fraction",
-            "request_seed",
-            "selection_epoch",
-            "source_manifest_sha256",
-            "schema_version",
-        }
-        if source_validation_sha256 is not None:
-            required.add("source_validation_sha256")
-        missing = sorted(required.difference(data.files))
-        if missing:
-            raise ValueError(f"{path}: 冻结请求表缺少字段 {missing}。")
-        # list[str], 长度 N_req, 冻结请求的规范化 PDB identity. 
-        pdb_ids = _string_array(data["pdb_id"])
-        # np.ndarray[int64], (N_req,3), 与 pdb_ids 使用同一请求下标的 ZYX BOX 起点. 
-        starts = np.asarray(data["box_start_zyx"], dtype=np.int64)
-        if starts.shape != (len(pdb_ids), 3):
-            raise ValueError(f"{path}: box_start_zyx 形状必须为 ({len(pdb_ids)},3)。")
-        roles = _string_array(data["role"])
-        # 一维数组均为 (N_req,), 与 pdb_ids 和 starts 使用相同的请求下标. 
-        occurrence = np.asarray(data["occurrence_id"], dtype=np.int64)
-        candidate = np.asarray(data["candidate_index"], dtype=np.int64)
-        targets = np.asarray(data["require_targets"], dtype=bool)
-        metadata_matches = (
-            np.asarray(data["box_sample_fraction"]).shape == ()
-            and float(data["box_sample_fraction"].item()) == float(fraction)
-            and np.asarray(data["request_seed"]).shape == ()
-            and int(data["request_seed"].item()) == int(seed)
-            and np.asarray(data["selection_epoch"]).shape == ()
-            and int(data["selection_epoch"].item()) == 0
-            and np.asarray(data["schema_version"]).shape == ()
-            and int(data["schema_version"].item())
-            == _FRACTION_SELECTION_SCHEMA_VERSION
-            and np.asarray(data["source_manifest_sha256"]).shape == ()
-            and str(data["source_manifest_sha256"].item()) == source_manifest_sha256
-        )
-        if source_validation_sha256 is not None:
-            metadata_matches = metadata_matches and (
-                np.asarray(data["source_validation_sha256"]).shape == ()
-                and str(data["source_validation_sha256"].item())
-                == source_validation_sha256
-            )
-    if not metadata_matches:
-        raise ValueError(f"{path}: 冻结请求表元数据与当前来源不一致。")
-    requests = tuple(
-        ResolvedStage1Crop(
-            pdb_id=pdb_id,
-            box_start_zyx=tuple(starts[index].tolist()),
-            require_targets=bool(targets[index]),
-            role=roles[index],
-            occurrence_id=None if int(occurrence[index]) < 0 else int(occurrence[index]),
-            candidate_index=None if int(candidate[index]) < 0 else int(candidate[index]),
-        )
-        for index, pdb_id in enumerate(pdb_ids)
-    )
-    if len(requests) != int(expected_count):
-        raise ValueError( f"{path}: 冻结请求数应为 {expected_count}，实际为 {len(requests)}。")
-    return requests
-
-
 def _string_array(values: np.ndarray) -> list[str]:
     """
     把 fixed-width bytes/unicode NPZ 字段规范化为小写字符串. 
@@ -633,38 +331,26 @@ def _string_array(values: np.ndarray) -> list[str]:
 # ================================================================== 最终的请求 ================================================================== 
 # ----------------- 训练时每个epoch 的请求 -----------------
 class Stage1TrainingRequestSet:
-    """按 epoch 从冻结 PDB BOX 池生成配置指定比例的请求表.
+    """按训练周期从 PDB BOX 池生成 cap-ratio-expand 请求表.
 
-    字段:
-        - pool_directory: ``str | Path``; 通常为 ``<box_pool_root>/train``, 其中每个 PDB NPZ 由根 ``manifest.json`` 列出. 
-        - seed: int; 与 epoch 一起决定 center、bias 和 context 的选择. 
-        - box_sample_fraction: float; ``1.0`` 时每个 epoch 重新选择完整请求池, 小于 ``1.0`` 时固定 epoch 0 的比例子集. 
-        - requests: ``tuple[ResolvedStage1Crop, ...]``; 当前 epoch 的请求, 按 PDB、occurrence 和配置指定的角色数量展开.
-        - epoch: int; ``1.0`` 模式下当前请求所属 epoch, 小于 ``1.0`` 时固定为 ``0``. 
+    每个训练周期先打乱 PDB；每个非空 PDB 先无放回选择至多
+    occurrence_cap_per_pdb 个一级候选，再保留其中
+    ceil(capped_count * occurrence_ratio) 个 occurrence。每个最终
+    occurrence 按 entry_ratio 展开已有 center、bias 和 context 起点。
 
-    文件副作用:
-        - <box_pool_root>/train_selection_<fraction>_seed<seed>.npz: 仅在 ``box_sample_fraction < 1.0`` 且文件不存在时创建, 字段级契约由 ``_save_request_selection`` 定义. 
-
-    根 ``config.json`` 缺失 ``entry_ratio`` 时兼容旧的 ``1:5:3``；第二版池明确写入 ``0:5:5``。重复起点不去重.
+    本类只在内存中替换 requests，不写入或修改 BOX 池文件。
     """
+
     def __init__(
         self,
         pool_directory: str | Path,
         seed: int,
-        box_sample_fraction: float = 1.0,
+        occurrence_cap_per_pdb: int = 50,
+        occurrence_ratio: float = 1.0,
+        entry_ratio: Mapping[str, int] | None = None,
     ) -> None:
-        """读取训练 BOX pool, 并建立完整动态请求或固定比例请求. 
+        """读取训练 BOX 池并生成训练周期 0 的请求."""
 
-        输入参数:
-            - pool_directory: ``str | Path``; 就是 ``<box_pool_root>/train``. 
-            - seed: int; 动态请求和固定比例请求使用的基准 seed. 
-            - box_sample_fraction: float; 必须位于 ``(0, 1]``, 比例小于 1 时从完整 epoch 0 请求池计算目标数量. 
-
-        文件副作用:
-            - <box_pool_root>/train_selection_<fraction>_seed<seed>.npz: 比例小于 1 且文件不存在时原子写入冻结请求字段. 
-
-        ``box_sample_fraction == 1.0`` 不创建比例请求文件, ``set_epoch`` 使用 ``seed`` 与 epoch 重新生成请求; 比例小于 1 时所有 epoch 复用同一份已核对来源 manifest 摘要的请求文件. 
-        """
         pool_dir = Path(pool_directory)
         manifest_entries = _load_manifest_pool_paths(pool_dir.parent, pool_dir.name)
         if not manifest_entries:
@@ -673,84 +359,74 @@ class Stage1TrainingRequestSet:
             _load_pdb_pool(path, expected_pdb_id=pdb_id)
             for pdb_id, path in manifest_entries
         )
-        config_path = pool_dir.parent / "config.json"
-        entry_ratio = {"center": 1, "bias": 5, "context": 3}
-        if config_path.is_file():
-            config_value = json.loads(config_path.read_text(encoding="utf-8"))
-            configured_ratio = config_value.get("entry_ratio") if isinstance(config_value, dict) else None
-            if configured_ratio is not None:
-                if not isinstance(configured_ratio, dict):
-                    raise TypeError(f"{config_path}: entry_ratio 必须为 object。")
-                entry_ratio = {
-                    role: int(configured_ratio.get(role, -1))
-                    for role in ("center", "bias", "context")
-                }
-        if entry_ratio["center"] not in (0, 1):
-            raise ValueError(f"{config_path}: entry_ratio.center 只允许 0 或 1。")
-        if not 0 <= entry_ratio["bias"] <= 30:
-            raise ValueError(f"{config_path}: entry_ratio.bias 必须位于 [0,30]。")
-        if entry_ratio["context"] < 0:
-            raise ValueError(f"{config_path}: entry_ratio.context 必须为非负整数。")
-        if sum(entry_ratio.values()) <= 0:
-            raise ValueError(f"{config_path}: entry_ratio 至少启用一种请求。")
-        self.entry_ratio = entry_ratio
+
+        configured_entry_ratio = entry_ratio
+        if configured_entry_ratio is None:
+            configured_entry_ratio = {"center": 1, "bias": 5, "context": 3}
+            config_path = pool_dir.parent / "config.json"
+            if config_path.is_file():
+                config_value = json.loads(config_path.read_text(encoding="utf-8"))
+                pool_entry_ratio = (
+                    config_value.get("entry_ratio")
+                    if isinstance(config_value, dict)
+                    else None
+                )
+                if pool_entry_ratio is not None:
+                    configured_entry_ratio = pool_entry_ratio
+        if not isinstance(configured_entry_ratio, Mapping):
+            raise TypeError("entry_ratio 必须为包含 center、bias、context 的对象。")
+        resolved_entry_ratio = {
+            role: int(configured_entry_ratio.get(role, -1))
+            for role in ("center", "bias", "context")
+        }
+        if resolved_entry_ratio["center"] not in (0, 1):
+            raise ValueError("entry_ratio.center 只允许 0 或 1。")
+        if not 0 <= resolved_entry_ratio["bias"] <= 30:
+            raise ValueError("entry_ratio.bias 必须位于 [0,30]。")
+        if resolved_entry_ratio["context"] < 0:
+            raise ValueError("entry_ratio.context 必须为非负整数。")
+        if sum(resolved_entry_ratio.values()) <= 0:
+            raise ValueError("entry_ratio 至少启用一种请求。")
+
+        cap = int(occurrence_cap_per_pdb)
+        if cap <= 0:
+            raise ValueError("occurrence_cap_per_pdb 必须为正整数。")
+        ratio = float(occurrence_ratio)
+        if not 0.0 < ratio <= 1.0:
+            raise ValueError("occurrence_ratio 必须位于 (0,1]。")
+
+        self.entry_ratio = resolved_entry_ratio
+        self.occurrence_cap_per_pdb = cap
+        self.occurrence_ratio = ratio
         self.seed = int(seed)
-        self.box_sample_fraction = _validate_box_sample_fraction(box_sample_fraction)
         self.epoch = -1
         self.requests: tuple[ResolvedStage1Crop, ...] = ()
-        if self.box_sample_fraction == 1.0:
-            self.set_epoch(0)
-        else:
-            complete_requests = self._build_epoch_requests(0)
-            expected_count = int(np.floor(len(complete_requests) * self.box_sample_fraction))
-            source_manifest_sha256 = _sha256_file(pool_dir.parent / BOX_POOL_MANIFEST_FILENAME)
-            selection_path = pool_dir.parent / _fraction_filename(
-                "train",
-                self.box_sample_fraction,
-                self.seed,
-            )
-            # 如果选择文件存在, 加载; 如果不存在则创建
-            if selection_path.is_file():
-                self.requests = _load_request_selection(
-                    selection_path,
-                    fraction=self.box_sample_fraction,
-                    seed=self.seed,
-                    source_manifest_sha256=source_manifest_sha256,
-                    expected_count=expected_count,
-                )
-            else:
-                self.requests = _select_request_fraction(complete_requests, self.box_sample_fraction, self.seed)
-                _save_request_selection(
-                    selection_path,
-                    self.requests,
-                    fraction=self.box_sample_fraction,
-                    seed=self.seed,
-                    source_manifest_sha256=source_manifest_sha256,
-                )
-            self.epoch = 0
+        self.set_epoch(0)
 
     def _build_epoch_requests(self, epoch: int) -> tuple[ResolvedStage1Crop, ...]:
-        """按 ``seed``、``epoch`` 与根配置构造完整请求表.
+        """按 seed 与训练周期生成 PDB 连续的请求身份."""
 
-        输出:
-            - tuple[ResolvedStage1Crop, ...]: 每个 PDB 最多选 50 个 occurrence；每个 occurrence 按 ``entry_ratio`` 追加请求，顺序保留 PDB 和随机选择顺序.
-        """
         rng = np.random.default_rng(np.random.SeedSequence([self.seed, int(epoch)]))
         requests: list[ResolvedStage1Crop] = []
-        for pool in self._pools:
-            n_occ = int(pool.occurrence_id.shape[0])
-            if n_occ == 0:
+        for pool_index in rng.permutation(len(self._pools)).tolist():
+            pool = self._pools[pool_index]
+            occurrence_count = int(pool.occurrence_id.shape[0])
+            if occurrence_count == 0:
                 continue
-            # int64, (N_selected_occurrence,), 数值索引 pool.occurrence_id、pool.center_start_zyx 和 pool.bias_start_zyx 的第 0 维. 
-            selected_occ_rows = rng.choice(n_occ, size=min(50, n_occ), replace=False)
+
+            capped_count = min(self.occurrence_cap_per_pdb, occurrence_count)
+            capped_rows = rng.permutation(occurrence_count)[:capped_count]
+            selected_count = math.ceil(capped_count * self.occurrence_ratio)
+            selected_rows = capped_rows[:selected_count]
             context_count = int(pool.context_start_zyx.shape[0])
-            for occ_row in selected_occ_rows.tolist():
-                occurrence_id = int(pool.occurrence_id[occ_row])
+
+            for occurrence_row in selected_rows.tolist():
+                occurrence_id = int(pool.occurrence_id[occurrence_row])
                 if self.entry_ratio["center"] == 1:
                     requests.append(
                         ResolvedStage1Crop(
                             pool.pdb_id,
-                            tuple(pool.center_start_zyx[occ_row].tolist()),
+                            tuple(pool.center_start_zyx[occurrence_row].tolist()),
                             True,
                             "center",
                             occurrence_id,
@@ -765,7 +441,11 @@ class Stage1TrainingRequestSet:
                     requests.append(
                         ResolvedStage1Crop(
                             pool.pdb_id,
-                            tuple(pool.bias_start_zyx[occ_row, candidate_index].tolist()),
+                            tuple(
+                                pool.bias_start_zyx[
+                                    occurrence_row, candidate_index
+                                ].tolist()
+                            ),
                             True,
                             "bias",
                             occurrence_id,
@@ -782,7 +462,11 @@ class Stage1TrainingRequestSet:
                         requests.append(
                             ResolvedStage1Crop(
                                 pool.pdb_id,
-                                tuple(pool.context_start_zyx[candidate_index].tolist()),
+                                tuple(
+                                    pool.context_start_zyx[
+                                        candidate_index
+                                    ].tolist()
+                                ),
                                 True,
                                 "context",
                                 occurrence_id,
@@ -792,44 +476,24 @@ class Stage1TrainingRequestSet:
         return tuple(requests)
 
     def set_epoch(self, epoch: int) -> None:
-        """
-        按 ``seed`` 与 ``epoch`` 的稳定随机流(随机数生成器)重建本 epoch 请求. 
+        """切换训练周期，并用稳定随机流重建请求身份."""
 
-        输入参数:
-            - epoch: int; 要切换到的 epoch 编号. 
-
-        状态变化:
-            - self.requests: ``box_sample_fraction == 1.0`` 时替换为目标 epoch 的请求序列, 比例小于 1 时保持固定子集. 
-            - self.epoch: 记录当前请求所属 epoch. 
-        """
         epoch = int(epoch)
         if epoch == self.epoch:
-            return
-        if self.box_sample_fraction < 1.0:
             return
         self.requests = self._build_epoch_requests(epoch)
         self.epoch = epoch
 
     def __len__(self) -> int:
-        """
-        返回当前 epoch 的冻结请求数. 
+        """返回当前训练周期的请求数."""
 
-        输出字段:
-            - int: ``self.requests`` 的长度. 
-        """
         return len(self.requests)
 
     def __getitem__(self, index: int) -> ResolvedStage1Crop:
-        """
-        按当前 epoch 的稳定顺序读取一个请求. 
+        """按请求下标返回不可变裁剪请求."""
 
-        输入参数:
-            - index: int; ``self.requests`` 中请求对象的位置编号, 从 0 开始. 
-
-        输出字段:
-            - ResolvedStage1Crop: 指定位置的不可变裁剪请求. 
-        """
         return self.requests[index]
+
 
 # ----------------- 固定的验证请求 -----------------
 def load_validation_selection(selection_path: str | Path, box_pool_root: str | Path) -> list[ResolvedStage1Crop]:
@@ -930,25 +594,11 @@ def build_request_source(
     mode: str,
     box_pool_root: str | Path | None,
     seed: int,
-    box_sample_fraction: float = 1.0,
+    occurrence_cap_per_pdb: int = 50,
+    occurrence_ratio: float = 1.0,
+    entry_ratio: Mapping[str, int] | None = None,
 ) -> Stage1TrainingRequestSet | list[ResolvedStage1Crop]:
-    """
-    根据模式构造训练动态请求或固定验证请求. 
-
-    输入参数:
-        - split_file: ``str | Path``; 训练 BOX pool 目录或 ``validation_selection.npz``. 
-        - mode: str; 取值为 ``train``、``val``、``validation``、``full_map`` 或 ``centered``. 
-        - box_pool_root: ``str | Path | None``; validation selection 回查 PDB pool 所需的根目录. 
-        - seed: int; train 动态请求集和比例选择使用的基准 seed. 
-        - box_sample_fraction: float; 请求保留比例, 默认 1.0. 
-
-    输出:
-        - Stage1TrainingRequestSet: ``mode == "train"`` 且 ``split_file`` 是 ``box_pool/train`` 目录时返回, 可按 epoch 重建或复用请求. 
-        - list[ResolvedStage1Crop]: validation selection 文件时返回, 顺序由文件固定. 
-
-    文件副作用:
-        - <box_pool_root>/validation_selection_<fraction>_seed<seed>.npz: validation 比例小于 1 且对应文件不存在时创建, 字段与 ``_save_request_selection`` 相同, 并额外保存 validation 来源摘要. 
-    """
+    """构造逐训练周期请求或读取现有的固定验证请求."""
 
     mode = str(mode).lower()
     source = Path(split_file)
@@ -958,7 +608,9 @@ def build_request_source(
         return Stage1TrainingRequestSet(
             source,
             seed=seed,
-            box_sample_fraction=box_sample_fraction,
+            occurrence_cap_per_pdb=occurrence_cap_per_pdb,
+            occurrence_ratio=occurrence_ratio,
+            entry_ratio=entry_ratio,
         )
     if source.name == "validation_selection.npz":
         if box_pool_root is None:
@@ -966,34 +618,5 @@ def build_request_source(
         requests = load_validation_selection(source, box_pool_root)
         if not requests:
             raise ValueError("验证请求文件不能为空。")
-        fraction = _validate_box_sample_fraction(box_sample_fraction)
-        if fraction == 1.0:
-            return requests
-
-        expected_count = int(np.floor(len(requests) * fraction))
-        source_manifest_sha256 = _sha256_file(Path(box_pool_root) / BOX_POOL_MANIFEST_FILENAME)
-        source_validation_sha256 = _sha256_file(source)
-        selection_path = Path(box_pool_root) / _fraction_filename("validation", fraction, seed)
-        if selection_path.is_file():
-            return list(
-                _load_request_selection(
-                    selection_path,
-                    fraction=fraction,
-                    seed=seed,
-                    source_manifest_sha256=source_manifest_sha256,
-                    source_validation_sha256=source_validation_sha256,
-                    expected_count=expected_count,
-                )
-            )
-
-        selected = _select_request_fraction(requests, fraction, seed)
-        _save_request_selection(
-            selection_path,
-            selected,
-            fraction=fraction,
-            seed=seed,
-            source_manifest_sha256=source_manifest_sha256,
-            source_validation_sha256=source_validation_sha256,
-        )
-        return list(selected)
+        return requests
     raise ValueError("Stage1 请求来源必须是训练 BOX pool 目录或 validation_selection.npz。")

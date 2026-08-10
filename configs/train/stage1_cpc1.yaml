@@ -8,7 +8,9 @@ global_batch_size: 64               # 实际 preflight 若任一 Find 只能 bat
 enable_batch_size_tuning: false
 batch_size: 8
 strict_global_batch_size: true
-num_workers: 20
+num_workers: 32                     # int, 单个 DataLoader 的 worker 进程数。
+prefetch_factor: 4                  # int, 每个 worker 提前准备的物理 batch 数。
+persistent_workers: false           # bool, false 表示每个训练周期重建 worker，使其读取当前请求表。
 dataloader_backend: torch
 data_fault_tolerance:
   enabled: false                    # 冻结 BOX pool 不允许训练时跳样本或替换样本。
@@ -20,8 +22,8 @@ data_fault_tolerance:
 max_epochs: 20
 precision: "bf16-mixed"
 gradient_clip_val: 0.5
-val_per_epoch: 30                    # int, 每个 epoch 等间隔执行 30 次完整 validation。
-                                     # -> src/train.py: 映射为 val_check_interval=1/30。
+val_per_epoch: 3                     # int, 每个 epoch 等间隔执行 3 次完整 validation。
+                                     # -> src/train.py: 映射为 val_check_interval=1/3。
 
 optimizer:
   _target_: torch.optim.AdamW
