@@ -162,7 +162,7 @@ stage1_preparation/
 | context_generator.min_core_receptor_heavy_atoms | int | BOX 核心区域要求包含的最少受体重原子数。 |
 | context_generator.ligand_filter | bool | 是否按配体位置过滤受体环境候选；当前为 false(不要求 context BOX 避开配体，也不要求它必须包含配体) |
 | occurrence_cap_per_pdb_per_epoch | int | 每个训练周期最多选择的候选配体实例数，正式值为 50。 |
-| entry_ratio | object[str,int] | center、bias、context 三类训练请求的数量关系，正式值为 1:5:3。 |
+| entry_ratio | object[str,int] | BOX 池生成时记录的 center、bias、context 数量关系；正式训练由 Dataset 配置显式覆盖。 |
 | train_random_rotation_90_degree | bool | 训练时是否允许对 BOX 做随机 90 度空间旋转。 |
 | seed | int | BOX 候选生成的固定随机种子。 |
 | seed_rule | str | 从基础随机种子、数据划分名称和 PDB 编号派生单 PDB 随机流的规则。 |
@@ -180,7 +180,7 @@ stage1_preparation/
 ```text
 box_pool/manifest.json
     → train/{pdb_id}.npz
-    → 每个训练周期按固定 seed 与 epoch 选择 1:5:3 BOX
+    → 每个训练周期按 Dataset 的 cap、occurrence 比例和 BOX 角色数量生成训练请求
 
 box_pool/validation_selection.npz
     → validation_pdb_id
@@ -190,40 +190,18 @@ box_pool/validation_selection.npz
 
 训练期间，Dataset 直接读取的是 `box_pool/manifest.json`、`validation_selection.npz` 和它们引用的单 PDB NPZ。下面的 `final_keep_list.jsonl` 与四份数据划分文件保存正式数据版本的候选配体身份、质量字段和划分来源，不在每个训练周期中直接读取。
 
-## 未来可能用到的冻结比例npz
+## 逐训练周期采样与固定验证
 
-当训练配置中的 `box_sample_fraction` 小于 `1.0` 时，训练代码会从完整训练请求和完整验证请求中分别选择固定比例的请求，并把选择结果保存在以下文件：
+训练 Dataset 使用以下显式字段生成请求：
 
-```text
-/storage/penghongen/AdaLigand/Ori_Data/stage1_preparation/box_pool/train_selection_{fraction}_seed{seed}.npz
-/storage/penghongen/AdaLigand/Ori_Data/stage1_preparation/box_pool/validation_selection_{fraction}_seed{seed}.npz
-```
+- `occurrence_cap_per_pdb`：每个 PDB 的一级 occurrence 候选上限，默认 50。
+- `occurrence_ratio`：每个 PDB 从一级候选中保留的比例；数量按 `ceil(capped_count × occurrence_ratio)` 计算。
+- `entry_ratio`：每个最终 occurrence 展开的 center、bias 和 context BOX 数量。
+- `request_seed`：与训练周期编号共同决定 PDB、occurrence 和 BOX 候选身份。
 
-例如，`box_sample_fraction=0.1`、`request_seed=42` 时，预期保存路径是：
+当前正式配置是 `50 / 0.75 / 0:1:1`。请求生成器每个训练周期只在内存中重建请求，不创建训练或验证比例选择文件，也不修改 BOX 池。Stage1 专用 BatchSampler 保持同一 PDB 的请求连续，并直接消费训练入口传入的物理 `batch_size`；最后不足一个完整 DDP 物理步的请求被丢弃，不补齐或重复。
 
-```text
-/storage/penghongen/AdaLigand/Ori_Data/stage1_preparation/box_pool/train_selection_0.1_seed42.npz
-/storage/penghongen/AdaLigand/Ori_Data/stage1_preparation/box_pool/validation_selection_0.1_seed42.npz
-```
-
-文件名中的 `{fraction}` 最多保留 12 位有效数字，`{seed}` 是训练配置中的整数 `request_seed`。`box_sample_fraction=1.0` 时不会创建这两种文件：训练请求继续随训练周期重新选择，验证直接使用 `validation_selection.npz` 中的全部固定请求。
-
-训练冻结比例文件以训练周期 0 生成的完整 `1:5:3` 请求为来源；验证冻结比例文件以 `validation_selection.npz` 恢复出的全部固定验证请求为来源。两种文件的请求数都等于 `floor(N_full × box_sample_fraction)`，其中 `N_full` 是对应完整请求序列的长度。选择过程分别保持 `center`、`bias` 和 `context` 在完整请求序列中的数量比例，并由 `request_seed` 固定具体选择结果。文件存在时，后续训练直接核对并复用同一份请求，不会在不同训练周期重新抽取。
-
-| 字段 | NumPy 数据类型 | 形状 | 含义与对齐关系 |
-| --- | --- | --- | --- |
-| pdb_id | Unicode | (N_req,) | 每个冻结请求对应的四位小写 PDB 编号；与本表其余长度为 N_req 的数组逐元素对齐。 |
-| box_start_zyx | int32 | (N_req,3) | 每个请求在完整密度图中的 BOX 起点，最后一维依次为 Z、Y、X；每个起点对应一个 `80×80×80` BOX。 |
-| role | Unicode | (N_req,) | 请求类别，取值为 `center`、`bias` 或 `context`。 |
-| occurrence_id | int32 | (N_req,) | `center` 和 `bias` 请求引用的候选配体实例编号；不适用时保存 `-1`。训练请求中的 `context` 会保留当前配体实例编号，验证请求中的 `context` 保存 `-1`。 |
-| candidate_index | int32 | (N_req,) | `bias` 请求保存 `bias_start_zyx` 第二维的编号，范围为 0..29；`context` 请求保存 `context_start_zyx` 第一维的编号；`center` 请求保存 `-1`。 |
-| require_targets | bool | (N_req,) | `True` 表示 Dataset 需要为该请求构造监督字段；当前训练和验证冻结比例文件中的值均为 `True`。 |
-| box_sample_fraction | float64 | () | 从完整请求序列保留的比例，必须与当前训练配置一致。 |
-| request_seed | int64 | () | 选择固定请求子集时使用的整数随机种子，必须与当前训练配置一致。 |
-| selection_epoch | int64 | () | 固定为 `0`；表示冻结比例文件基于训练周期 0 的选择且后续训练周期复用同一份请求。 |
-| source_manifest_sha256 | Unicode | () | 生成文件时使用的 `box_pool/manifest.json` 内容摘要；用于拒绝读取由另一份 BOX 池生成的冻结请求。 |
-| source_validation_sha256 | Unicode | () | 仅存在于验证冻结比例文件；保存 `box_pool/validation_selection.npz` 的内容摘要，用于确认验证请求来源没有变化。 |
-| schema_version | uint16 | () | 冻结比例 NPZ 的字段契约版本，当前固定为 `1`。 |
+验证 Dataset 始终读取现有 `box_pool/validation_selection.npz`，再按其中的 PDB、occurrence 和候选编号查回 `validation/{pdb_id}.npz` 中的固定 BOX 起点。训练采样字段不改变验证请求身份或顺序。
 
 ## 来源与划分清单
 

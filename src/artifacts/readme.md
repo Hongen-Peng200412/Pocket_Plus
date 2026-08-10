@@ -272,35 +272,11 @@ validation 使用冻结请求，不保存增强后的数组。train 的随机 90
 
 `_COMPLETE` 是零字节文件，在上述所有文件发布成功后最后创建。
 
-### 3.3 比例请求表
+### 3.3 训练请求不形成落盘产物
 
-当训练 Dataset 或验证入口第一次以 `box_sample_fraction < 1` 构造请求，而相应文件尚不存在时，请求层会原子创建：
+训练请求由 `Stage1TrainingRequestSet` 在每个训练周期根据 PDB BOX 池、`request_seed`、`occurrence_cap_per_pdb`、`occurrence_ratio` 和 `entry_ratio` 在内存中生成。请求层不发布训练比例表，也不在 BOX 池目录中写入派生请求文件。
 
-```text
-<BOX池目录>/train_selection_{fraction}_seed{seed}.npz
-<BOX池目录>/validation_selection_{fraction}_seed{seed}.npz
-```
-
-其中 `{fraction}` 使用有效数字格式 `.12g`。`stage1_box_pool` 命令本身不创建这两个文件；`box_sample_fraction == 1` 时也不创建。
-
-设完整请求数为 `N_full`。对 train，`N_full` 是当前 epoch 按完整清单和正式请求比例生成的 center、bias、context 请求总数；对 validation，`N_full` 是冻结 `validation_selection.npz` 展开的全部请求数。比例文件中的请求数满足 `N_req == floor(N_full * box_sample_fraction)`；抽样结果允许为空。
-
-| 字段 | dtype 与形状 | 含义 |
-| --- | --- | --- |
-| `pdb_id` | Unicode `(N_req,)` | 请求所属 PDB |
-| `box_start_zyx` | `int32 (N_req,3)` | 完整图离散 BOX 起点 |
-| `role` | Unicode `(N_req,)` | `center`、`bias` 或 `context` |
-| `occurrence_id` | `int32 (N_req,)` | occurrence 编号；不适用时为 `-1` |
-| `candidate_index` | `int32 (N_req,)` | bias 或 context 候选编号；不适用时为 `-1` |
-| `require_targets` | `bool (N_req,)` | `True` 表示 Dataset 必须构造监督字段，`False` 表示不构造 |
-| `box_sample_fraction` | `float64` 标量 | 完整请求池的保留比例 |
-| `request_seed` | `int64` 标量 | 抽样种子 |
-| `selection_epoch` | `int64` 标量 | 固定为 `0` |
-| `source_manifest_sha256` | Unicode 标量 | 生成时使用的 `manifest.json` 摘要 |
-| `source_validation_sha256` | Unicode 标量 | validation 请求表使用的 `validation_selection.npz` 摘要；train 文件中不存在 |
-| `schema_version` | `uint16` 标量 | 当前为 `1` |
-
-比例小于 1 时各 epoch 复用同一份冻结请求；比例等于 1 时 train 请求可以按 epoch 重新选择。
+`validation_selection.npz` 仍是主仓库验证请求的固定入口。训练采样字段不会缩减、替换或重写该文件及其引用的 validation PDB NPZ。
 
 ## 4. Stage1 正式输出目录与状态
 
