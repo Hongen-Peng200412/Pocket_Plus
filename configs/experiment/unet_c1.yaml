@@ -57,9 +57,6 @@ model:
   validation_diagnostics:
     enabled: false
 
-dataset:
-  box_sample_fraction: 1.0
-
 train:
   optimizer:
     lr: 1.0e-4

@@ -429,7 +429,9 @@ class Stage1Dataset(Dataset):
         - density_channel_config: ``Mapping[str, Any]``; 密度裁剪、拟合和启用通道的配置. 
         - atom_buffer_radius: float; 核心 BOX 外选择受体原子的世界坐标缓冲半径, 当前固定为 8.0 Å. 
         - request_seed: int; 训练请求层的基准 seed. 
-        - box_sample_fraction: float; 传给请求层的比例抽样值, 默认 1.0. 
+        - occurrence_cap_per_pdb: int; 每个 PDB 的一级 occurrence 候选上限。
+        - occurrence_ratio: float; 每个 PDB 从一级候选中保留的 occurrence 比例。
+        - entry_ratio: Mapping[str, int] | None; 每个 occurrence 展开的 center、bias 和 context 数量。
         - cache_max_bytes: int; 每个 DataLoader worker 的受体表、标签和完整图 LRU 缓存字节上限. 
         - enable_random_rotation: bool; 训练模式是否对密度、标签和原子坐标同步执行随机 90 度旋转. 
         - name: str; Dataset 的显示名称. 
@@ -455,7 +457,9 @@ class Stage1Dataset(Dataset):
         density_channel_config: Mapping[str, Any],
         atom_buffer_radius: float = 8.0,
         request_seed: int = 3407,
-        box_sample_fraction: float = 1.0,
+        occurrence_cap_per_pdb: int = 50,
+        occurrence_ratio: float = 1.0,
+        entry_ratio: Mapping[str, int] | None = None,
         cache_max_bytes: int = 536_870_912,
         enable_random_rotation: bool = True,
         name: str = "stage1",
@@ -473,7 +477,9 @@ class Stage1Dataset(Dataset):
             - density_channel_config: ``Mapping[str, Any]``; 密度裁剪、拟合和启用通道的配置. 
             - atom_buffer_radius: float; 核心 BOX 外选择受体原子的世界坐标缓冲半径, 当前固定为 8.0 Å. 
             - request_seed: int; 训练请求层的基准 seed. 
-            - box_sample_fraction: float; 传给请求层的比例抽样值, 默认 1.0. 
+            - occurrence_cap_per_pdb: int; 每个 PDB 的一级 occurrence 候选上限。
+            - occurrence_ratio: float; 每个 PDB 从一级候选中保留的 occurrence 比例。
+            - entry_ratio: Mapping[str, int] | None; 每个 occurrence 展开的三类 BOX 数量。
             - cache_max_bytes: int; 每个 DataLoader worker 的受体表、标签和完整图 LRU 缓存字节上限. 
             - enable_random_rotation: bool; 训练模式是否对密度、标签和原子坐标同步执行随机 90 度旋转. 
             - name: str; Dataset 的显示名称. 
@@ -483,7 +489,7 @@ class Stage1Dataset(Dataset):
 
         单样本输出字段由模块 Docstring 的同名字段清单定义; Find 与 ``unet_c1`` 共用体素物化路径, ``unet_c1`` 仍构造辅助监督但不返回逐原子输入表. 
 
-         ``request_seed`` 与 ``box_sample_fraction``: 只交给 ``build_request_source`` 决定读取哪些 BOX. 
+        ``request_seed``、``occurrence_cap_per_pdb``、``occurrence_ratio`` 和 ``entry_ratio`` 只交给请求层决定读取哪些训练 BOX。
         """
         super().__init__()
         del split_train, split_val
@@ -512,7 +518,9 @@ class Stage1Dataset(Dataset):
                 mode=self.mode,
                 box_pool_root=box_pool_root,
                 seed=int(request_seed),
-                box_sample_fraction=float(box_sample_fraction),
+                occurrence_cap_per_pdb=int(occurrence_cap_per_pdb),
+                occurrence_ratio=float(occurrence_ratio),
+                entry_ratio=entry_ratio,
             )
         # dict[str,Any], 从 Hydra dataset 配置解析出的密度通道构造契约. 
         channel_cfg = dict(density_channel_config)

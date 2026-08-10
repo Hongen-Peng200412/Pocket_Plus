@@ -15,9 +15,15 @@ stage1_model_name: unet_c1  # str, 选择单通道 density recipe 和无原子�
 class_names: [background, foreground]
 atom_buffer_radius: 8.0             # 只用于构造 hardmask/voxel_label；原子表不返回给模型。
 request_seed: 3407
-cache_max_bytes: 536870912
 enable_random_rotation: true
-box_sample_fraction: 1.0
+# 下列字段由 Stage1TrainingRequestSet 在每个训练周期重建 PDB 连续请求。
+occurrence_cap_per_pdb: 50  # int, 每个 PDB 无放回选择的 occurrence 一级候选上限。
+occurrence_ratio: 0.75      # float, 从每个 PDB 一级候选中保留的比例；数量向上取整。
+entry_ratio:                # 映射, 每个最终 occurrence 展开的三类 BOX 数量。
+  center: 0                 # int, 0 表示不使用唯一 center BOX；1 表示使用。
+  bias: 1                   # int, 从 30 个已有 bias BOX 中无放回选择 1 个。
+  context: 1                # int, 从当前 PDB 的已有 context BOX 中选择 1 个。
+cache_max_bytes: 34359738368  # int, 单个 DataLoader worker 的 PDB 资产缓存上限，单位为字节（32 GiB）。
 
 density_channel_config:
   clip_percentile: [0.001, 0.999]
