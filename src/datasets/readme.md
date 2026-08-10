@@ -190,6 +190,8 @@ box_pool/validation_selection.npz
 
 训练期间，Dataset 直接读取的是 `box_pool/manifest.json`、`validation_selection.npz` 和它们引用的单 PDB NPZ。下面的 `final_keep_list.jsonl` 与四份数据划分文件保存正式数据版本的候选配体身份、质量字段和划分来源，不在每个训练周期中直接读取。
 
+上文的 `stage1_preparation/box_pool` 记录首版冻结产物及字段。当前 `训练与运行/sh/train_3` 正式启动脚本默认读取第二版训练池 `/storage/penghongen/AdaLigand/Ori_Data/stage1_preparation_box_pool_2/box_pool`；下节的训练数量和采样参数均以该目录为准。
+
 ## 逐训练周期采样与固定验证
 
 训练 Dataset 使用以下显式字段生成请求：

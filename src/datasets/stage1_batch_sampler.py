@@ -66,7 +66,8 @@ class Stage1PdbBatchSampler(Sampler[list[int]]):
             while block_end < len(requests) and requests[block_end].pdb_id == pdb_id:
                 block_end += 1
 
-            # int64, (F,)，数值索引 requests；center 和 bias 是前景 BOX。
+            # 当前 PDB 共 N 个请求，其中 F 个 center 或 bias 请求是前景 BOX。
+            # int64, (F,)，数值索引 requests。
             foreground = np.asarray(
                 [
                     index
@@ -75,7 +76,7 @@ class Stage1PdbBatchSampler(Sampler[list[int]]):
                 ],
                 dtype=np.int64,
             )
-            # int64, (N-F,)，数值索引 requests；context 是背景 BOX。
+            # int64, (N-F,)，数值索引 requests；其余 context 请求是背景 BOX。
             background = np.asarray(
                 [
                     index

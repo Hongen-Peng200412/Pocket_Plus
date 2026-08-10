@@ -85,6 +85,7 @@ def test_find_configs_encode_common_stage1_contract(experiment: str) -> None:
     assert cfg.train.global_batch_size == 64
     assert cfg.train.max_epochs == 20
     assert cfg.train.val_per_epoch == 5
+    assert cfg.train.strict_global_batch_size is False
     assert cfg.train.num_workers == 32
     assert cfg.train.prefetch_factor == 4
     assert cfg.train.persistent_workers is False
@@ -225,6 +226,26 @@ def test_unet_c1_config_is_density_only_and_exports_final_v_feature() -> None:
     assert "excluded_pdb_ids" not in cfg.dataset
     assert "excluded_pdb_ids" not in find1.dataset
     assert cfg.train.val_per_epoch == 5
+    assert cfg.train.strict_global_batch_size is False
     assert cfg.train.num_workers == 32
     assert cfg.train.prefetch_factor == 4
     assert cfg.train.persistent_workers is False
+
+
+@pytest.mark.parametrize(
+    ("launcher_name", "physical_batch_size"),
+    (("Find_0.sh", 6), ("Find_1.sh", 8), ("unet_c1.sh", 8)),
+)
+def test_train3_launchers_preserve_physical_batch_and_loading_contract(
+    launcher_name: str,
+    physical_batch_size: int,
+) -> None:
+    """正式启动脚本不得按目标全局批量改写物理批量。"""
+
+    launcher_text = (
+        PROJECT_ROOT / "训练与运行" / "sh" / "train_3" / launcher_name
+    ).read_text(encoding="utf-8")
+    assert f'"train.batch_size={physical_batch_size}"' in launcher_text
+    assert '"train.strict_global_batch_size=false"' in launcher_text
+    assert '"train.num_workers=32"' in launcher_text
+    assert '"train.val_per_epoch=5"' in launcher_text
