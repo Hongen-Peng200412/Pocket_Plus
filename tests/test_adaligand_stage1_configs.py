@@ -233,19 +233,19 @@ def test_unet_c1_config_is_density_only_and_exports_final_v_feature() -> None:
 
 
 @pytest.mark.parametrize(
-    ("launcher_name", "physical_batch_size"),
+    ("launcher_name", "recommended_batch_size"),
     (("Find_0.sh", 6), ("Find_1.sh", 8), ("unet_c1.sh", 8)),
 )
-def test_train3_launchers_preserve_physical_batch_and_loading_contract(
+def test_train3_launchers_preserve_recommended_physical_batch_defaults(
     launcher_name: str,
-    physical_batch_size: int,
+    recommended_batch_size: int,
 ) -> None:
-    """正式启动脚本不得按目标全局批量改写物理批量。"""
+    """正式启动脚本的推荐物理批量默认值不得被全局批量静默改写。"""
 
     launcher_text = (
         PROJECT_ROOT / "训练与运行" / "sh" / "train_3" / launcher_name
     ).read_text(encoding="utf-8")
-    assert f'"train.batch_size={physical_batch_size}"' in launcher_text
+    assert f'"train.batch_size={recommended_batch_size}"' in launcher_text
     assert '"train.strict_global_batch_size=false"' in launcher_text
     assert '"train.num_workers=32"' in launcher_text
     assert '"train.val_per_epoch=5"' in launcher_text
