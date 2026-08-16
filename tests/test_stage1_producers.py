@@ -23,8 +23,8 @@ def test_stage1_producer_names_have_one_canonical_source() -> None:
     assert INFERENCE_FIND_MODEL_NAMES is FIND_MODEL_NAMES
 
 
-def test_find2_artifact_path_and_probability_use_find_semantics(tmp_path) -> None:
-    """验证 Find_2 可寻址正式产物, 并按 Find 规则清零 receptor home voxel. """
+def test_find2_artifact_path_and_probability_preserve_continuous_map(tmp_path) -> None:
+    """验证 Find_2 可寻址正式产物，且 hardmask 不再改写连续概率图。"""
     paths = Stage1ArtifactPaths(tmp_path, "Find_2", "validation", "1abc")
     assert paths.pdb_root == tmp_path / "Find_2" / "validation" / "1abc"
 
@@ -32,5 +32,5 @@ def test_find2_artifact_path_and_probability_use_find_semantics(tmp_path) -> Non
     hardmask = np.zeros((2, 2, 2), dtype=np.bool_)
     hardmask[1, 0, 1] = True
     processed = postprocess_ligand_probability(probability, "Find_2", hardmask)
-    assert processed[1, 0, 1] == 0.0
-    assert int(np.count_nonzero(processed)) == 7
+    np.testing.assert_array_equal(processed, probability)
+    assert processed is not probability

@@ -135,7 +135,12 @@ def _write_ag_fixture(root: Path, pdb_id: str = "1abc") -> None:
     )
     coords = np.asarray([[0.5, 0.5, 0.5]], dtype=np.float32)
     feat = np.zeros((1, 49), dtype=np.float32)
-    np.savez(parse_dir / "receptor_tokens.npz", coords=coords, feat=feat)
+    np.savez(
+        parse_dir / "receptor_tokens.npz",
+        coords=coords,
+        feat=feat,
+        is_backbone=np.asarray([True], dtype=np.bool_),
+    )
 
 
 def _write_config(path: Path, producer: str = "Find_0") -> None:
@@ -308,7 +313,7 @@ def test_cli_calibration_then_cal_centered_is_resumable(
     paths = Stage1ArtifactPaths(output_root, "Find_0", "calibration", "1abc")
     assert is_role_complete(paths, "probability")
     probability = load_npz_strict(paths.probability_npz)["probability_map"]
-    assert probability[0, 0, 0] == 0.0
+    assert probability[0, 0, 0] == pytest.approx(0.5)
     assert probability[5, 5, 5] == pytest.approx(0.5)
     # 同一命令再次运行只读现有 marker, 不重新 forward. 
     first_batch = wrapper.last_batch

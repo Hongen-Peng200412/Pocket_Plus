@@ -40,7 +40,7 @@ def test_gaussian_weight_matches_frozen_formula() -> None:
     assert float(weight[39, 39, 39]) > float(weight[0, 0, 0]) > 0.0
 
 
-def test_full_map_fusion_covers_edges_and_masks_only_find() -> None:
+def test_full_map_fusion_covers_edges_without_hardmasking_find() -> None:
     full_shape = (81, 82, 83)
     model = _NumpyVoxelModel()
 
@@ -63,7 +63,7 @@ def test_full_map_fusion_covers_edges_and_masks_only_find() -> None:
     assert find_result.probability_map.dtype == np.float32
     assert find_result.weight_sum.dtype == np.float32
     assert np.all(find_result.weight_sum > 0.0)
-    assert find_result.probability_map[0, 0, 0] == 0.0
+    assert find_result.probability_map[0, 0, 0] == 0.5
     assert find_result.probability_map[-1, -1, -1] > 0.5
 
     unet_result = infer_full_map(

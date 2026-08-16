@@ -457,6 +457,11 @@ def test_find1_voxel_only_matches_full_embed_voxel_branch() -> None:
 
     assert full.shape == short.shape == (1, 51, 16, 16, 16)
     torch.testing.assert_close(short, full, rtol=0.0, atol=0.0)
+    short.square().mean().backward()
+    assert head.voxel_input_proj is not None
+    assert any(parameter.grad is not None for parameter in head.voxel_input_proj.parameters())
+    assert head.point_input_proj is not None
+    assert all(parameter.grad is None for parameter in head.point_input_proj.parameters())
 
 
 def test_embed_gaussian_scatter_takes_priority_over_soft_scatter(

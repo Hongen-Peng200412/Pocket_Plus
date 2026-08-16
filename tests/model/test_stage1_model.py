@@ -199,6 +199,33 @@ class _EmbedHeadStub(nn.Module):
         }
 
 
+class _VoxelOnlyEmbedHeadStub(nn.Module):
+    """为 ligand-area-only Find 测试提供不产生点特征的原子到体素嵌入。"""
+
+    has_point_output = False
+    has_voxel_output = True
+    voxel_embed_as_tune = False
+
+    def forward(self, **batch: torch.Tensor) -> dict[str, Any]:
+        atom_feat = batch["atom_feat"]
+        batch_size = int(batch["box_shape_zyx"].shape[0])
+        voxel_grid = atom_feat.new_zeros((batch_size, 1, 2, 2, 2))
+        voxel_grid[:, :, 0, 0, 0] = atom_feat.sum()
+        return {
+            "voxel_pdb_embed_grid": voxel_grid,
+            "embed_point_feat": None,
+            "atom_feat": atom_feat,
+            "atom_coord_centered_world": batch["atom_coord_centered_world"],
+            "atom_batch_index": batch["atom_batch_index"],
+            "atom_offsets": batch["atom_offsets"],
+            "atom_coord_local_voxel": batch["atom_coord_local_voxel"],
+            "atom_is_in_core_box": batch["atom_is_in_core_box"],
+            "global_keep_mask": torch.ones(
+                atom_feat.shape[0], dtype=torch.bool, device=atom_feat.device
+            ),
+        }
+
+
 def _candidate_builder(
     class_ids: list[int],
     warmup_topc: list[int],
@@ -653,6 +680,26 @@ def test_unet_full_forward_publishes_only_five_v_features() -> None:
     assert not any(key.startswith("A_feat_") or key.startswith("P_feat_") for key in outputs)
 
 
+def test_find_voxel_only_training_skips_all_point_components() -> None:
+    """原子到体素路径可在没有点骨干和点监督时完成三次 recycle。"""
+
+    model = _make_model(
+        voxel_backbone=_InputSensitiveVoxelBackboneStub(),
+        point_backbone=None,
+        embed_head=_VoxelOnlyEmbedHeadStub(),
+        enable_atom_head=False,
+        max_recycles=3,
+    )
+    batch = _make_batch()
+    batch["density_input"] = batch.pop("voxel_grid")
+    outputs = model(batch)
+
+    assert outputs["recycle_passes_used"] == 3
+    assert outputs["embed_output"] is not None
+    assert "point_outputs" not in outputs
+    assert outputs["voxel_logits_ligand"].shape == (1, 3, 2, 2, 2)
+
+
 def test_find0_voxel_only_matches_eval_forward_and_skips_point_path() -> None:
     """验证 Find_0 最短入口逐元素等价、固定三次 recycle 且不运行 point backbone. """
 
@@ -791,9 +838,9 @@ def test_find1_voxel_only_matches_three_recycle_eval_forward_and_skips_point_pat
     model._run_voxel_backbone = counted_voxel  # type: ignore[method-assign]
     with torch.no_grad():
         full_logits = model(batch)["voxel_logits_ligand"]
-    # 完整训练 forward 每次 recycle 都重跑 embed/point 路; 最短入口才把
-    # producer-specific voxel 构造提到 recycle 外并彻底跳过 point blocks. 
-    assert embed_point_calls == 3
+    # embed head 在 recycle 外运行一次；独立的 voxel blocks 与 point blocks 各调用一次。
+    # 最短入口进一步跳过 point blocks，只保留非块式 voxel 构造。
+    assert embed_point_calls == 2
     assert point_backbone_calls == 3
     assert voxel_calls == 3
 

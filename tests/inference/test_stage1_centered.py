@@ -261,7 +261,7 @@ def test_selected_forward_error_propagates() -> None:
         )
 
 
-def test_find_centered_masks_probability_and_exports_only_10A_core_atoms() -> None:
+def test_find_centered_preserves_probability_and_exports_only_10a_core_atoms() -> None:
     oldest = _node(0, [(10, 10, 10), (10, 10, 11)])
     child = _node(1, [(10, 10, 10)], threshold=0.75)
     child.parent = oldest
@@ -308,7 +308,7 @@ def test_find_centered_masks_probability_and_exports_only_10A_core_atoms() -> No
     arrays = pack_centered_entries(entries, "CLG_centered")
     assert arrays["A_global_index"].tolist() == [5]
     assert arrays["candidate_A_offsets"].tolist() == [0, 1, 2]
-    assert arrays["centered_probability"].tolist() == pytest.approx([0.0, 0.8])
+    assert arrays["centered_probability"].tolist() == pytest.approx([0.8, 0.8])
     assert arrays["A_feat_L0"].dtype == np.float32
     np.testing.assert_array_equal(
         arrays["A_feat_L0"],

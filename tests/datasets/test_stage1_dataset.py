@@ -69,10 +69,12 @@ def _write_upstream(root: Path, pdb_id: str = "1abc", shape: tuple[int, int, int
         dtype=np.float32,
     )
     feat = np.arange(coords.shape[0] * 49, dtype=np.float32).reshape(coords.shape[0], 49)
+    is_backbone = np.asarray([True, True, True, False], dtype=np.bool_)
     np.savez(
         parse_dir / "receptor_tokens.npz",
         coords=coords,
         feat=feat,
+        is_backbone=is_backbone,
         res_type=np.asarray([0, 0, 20, 28], dtype=np.uint8),
         atom_name=np.asarray([b"CA", b"N", b"P", b"CB"], dtype="S4"),
     )
@@ -175,6 +177,8 @@ def test_find_dataset_materializes_direct_core8_and_union_target(tmp_path: Path,
     assert sample["density_input"].shape == (56, 80, 80, 80)
     assert sample["density_input"].dtype == torch.float32
     assert sample["atom_global_indices"].tolist() == [0, 1, 2]
+    assert sample["atom_feat"].shape == (3, 50)
+    assert sample["atom_feat"][:, -1].tolist() == [1.0, 1.0, 1.0]
     assert sample["atom_is_in_core_box"].tolist() == [True, True, False]
     assert sample["hardmask"].sum().item() == 2
     assert sample["voxel_label"].sum().item() == 1
@@ -343,14 +347,14 @@ def test_collator_exposes_b_plus_one_offsets_and_handles_empty_atoms() -> None:
     }
     atom_tail = {
         "atom_global_indices": torch.empty(0, dtype=torch.int64),
-        "atom_feat": torch.empty(0, 49),
+        "atom_feat": torch.empty(0, 50),
         "atom_coord_world": torch.empty(0, 3),
         "atom_coord_local_voxel": torch.empty(0, 3),
         "atom_coord_centered_world": torch.empty(0, 3),
         "atom_is_in_core_box": torch.empty(0, dtype=torch.bool),
     }
     sample0 = {**common, **atom_tail}
-    sample1 = {**common, **atom_tail, "atom_feat": torch.ones(2, 49)}
+    sample1 = {**common, **atom_tail, "atom_feat": torch.ones(2, 50)}
     sample1.update(
         {
             "atom_global_indices": torch.arange(2),
