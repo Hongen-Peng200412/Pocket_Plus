@@ -81,8 +81,8 @@ class VolumePointStage1Model(nn.Module):
 
     AdaLigand 的四个 producer 复用本类, 但通过配置关闭不同分支:
         - unet_c1: 只运行单通道 density 与 voxel backbone. 
-        - Find_0: 56D density 拼接 core receptor raw49 hard scatter. 
-        - Find_1: 56D density 拼接 embed head 生成的 49D value + 2D occupancy. 
+        - Find_0: 56D density 拼接 core receptor raw50 hard scatter.
+        - Find_1: 56D density 拼接 embed head 生成的 50D value + 2D occupancy.
         - Find_2: 56D density与 embed head 生成的 56D Gaussian tune 逐元素相加. 
 
     完整 :meth:`forward` 还会运行共同的 point 路径并发布 centered 所需特征; 
@@ -137,7 +137,7 @@ class VolumePointStage1Model(nn.Module):
         online_pdb_feature_sigma_voxel: float = 0.7,
         online_pdb_feature_add_occupancy: bool = False,
         online_pdb_feature_add_centroid: bool = False,
-        online_pdb_feature_dim: int = 49,
+        online_pdb_feature_dim: int = 50,
         typed_point_cfg: dict[str, Any] | TypedPointConfig | None = None,
         candidate_set_cfg: dict[str, Any] | nn.Module | None = None,
         anchor_sampler_cfg: dict[str, Any] | nn.Module | None = None,
@@ -299,7 +299,7 @@ class VolumePointStage1Model(nn.Module):
                 or bool(real_atom_density_cube)
             )
             if point_dependent:
-                raise ValueError("point_backbone=None 只允许 unet_c1 的纯 voxel 配置。")
+                raise ValueError("point_backbone=None 只允许不产生点输出的纯 voxel 配置。")
 
         # 关于 sparse refine head 的 detach
         self.detach_real_point_feat_into_atomhead = bool(detach_real_point_feat_into_atomhead)
@@ -1880,7 +1880,7 @@ class VolumePointStage1Model(nn.Module):
         # torch.Tensor, (B,C_density,80,80,80), Dataset 构造的 producer 密度通道. 
         density_input = canonical["voxel_grid"]
         if self.embed_head is not None and self.embed_head.has_voxel_output:
-            # torch.Tensor, (B,C_receptor,80,80,80), Find_1 的 49D+2D 网格或 Find_2 的 56D tune 网格. 
+            # torch.Tensor, (B,C_receptor,80,80,80), Find_1 的 50D+2D 网格或 Find_2 的 56D tune 网格.
             receptor_grid = self.embed_head.forward_voxel_only(
                 atom_feat=canonical["atom_feat"],
                 atom_coord_local_voxel=canonical["atom_coord_local_voxel"],
@@ -1900,7 +1900,7 @@ class VolumePointStage1Model(nn.Module):
             if self.online_pdb_feature_use_soft_splatting:
                 raise RuntimeError("Find_0 voxel-only 路径禁止 soft splatting。")
             core_keep = canonical["atom_is_in_core_box"].bool()
-            # torch.Tensor, (B,49,80,80,80), Find_0 core 原子 49D 特征的 hard-sum 网格. 
+            # torch.Tensor, (B,50,80,80,80), Find_0 core 原子 50D 特征的 hard-sum 网格.
             raw_grid = scatter_to_voxel_grid(
                 point_feat=canonical["atom_feat"][core_keep].detach(),
                 atom_coord_local_voxel=canonical["atom_coord_local_voxel"][core_keep],
@@ -1910,7 +1910,7 @@ class VolumePointStage1Model(nn.Module):
                 reduce="sum",
                 add_occupancy_channels=False,
             )
-            # torch.Tensor, (B,C_density+49,80,80,80), Find_0 voxel backbone 输入. 
+            # torch.Tensor, (B,C_density+50,80,80,80), Find_0 voxel backbone 输入.
             voxel_input = torch.cat([density_input, raw_grid], dim=1)
         elif self.embed_head is None and self.point_backbone is None:
             # unet_c1 没有原子支路, voxel 输入就是单一实验密度通道. 
@@ -1988,6 +1988,32 @@ class VolumePointStage1Model(nn.Module):
         A_feat_L1 = batch["atom_feat"] if embed_output is not None else None
         # torch.Tensor, (B, C_in, D, H, W), recycle 循环内复用的 voxel 输入
         voxel_input = self._build_voxel_input(batch, embed_output)
+        # Find 的 ligand-area-only 实验保留原子到体素路径，但完全关闭点骨干、点输出头和
+        # 点监督。该路径必须在构造 voxel 输入后立即分流，避免运行任何点分支组件。
+        if self.point_backbone is None:
+            voxel_recycle_in: torch.Tensor | None = None
+            voxel_output_dict: dict[str, Any] | None = None
+            for recycle_idx in range(recycle_steps):
+                voxel_output_dict = self._run_voxel_backbone(voxel_input, voxel_recycle_in)
+                if recycle_idx < recycle_steps - 1:
+                    voxel_recycle_in = voxel_output_dict["voxel_recycle_out"]
+                    if voxel_recycle_in is not None and self.detach_recycle_states:
+                        voxel_recycle_in = voxel_recycle_in.detach()
+            if voxel_output_dict is None:
+                raise RuntimeError("Find 纯 voxel forward 未执行。")
+            outputs = {
+                "voxel_logits_aux": voxel_output_dict["voxel_logits_aux"],
+                "voxel_logits_ligand": voxel_output_dict.get("voxel_logits_ligand"),
+                "voxel_logits_protein": voxel_output_dict.get("voxel_logits_protein"),
+                "voxel_logits_nucleic": voxel_output_dict.get("voxel_logits_nucleic"),
+                "voxel_logits_distance": voxel_output_dict.get("voxel_logits_distance"),
+                "voxel_outputs": voxel_output_dict,
+                "embed_output": embed_output,
+                "voxel_recycle_out": voxel_output_dict["voxel_recycle_out"],
+                "recycle_passes_used": recycle_steps,
+            }
+            self._publish_stage1_feature_hooks(outputs, voxel_output_dict, None, None)
+            return outputs
         # 第 3 点: 真实原子 density cube 叠加到 atom_feat(point 分支初始特征); 放在 voxel_input 之后避免污染 voxel 输入, recycle 前算一次
         batch = self._apply_real_atom_density_to_atom_feat(batch)
         # torch.Tensor | None, (N_A,C_A2), 实际送入 point backbone 的 density-modulated A. 

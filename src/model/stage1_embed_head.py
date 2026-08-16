@@ -668,7 +668,7 @@ class Stage1EmbedHead(nn.Module):
         作为过滤器: 输出裁剪后的原子字段 + 全局 keep_mask, 下游模块使用裁剪后的数据. 
 
         输入参数:
-            - atom_feature_dim: int, 原子原始特征维度, 建议值 49
+            - atom_feature_dim: int, 原子原始特征维度, 当前正式值 50
             - embed_hidden_dim: int, 共享 trunk 的隐藏通道数, 建议值 64
             - embed_voxel_out_channels: int, 聚合到体素网格的输出通道数, 建议值 16, 0 表示输出None或空的张量, 即不通过 embed head 向体素分支注入受体原子信息
             - embed_point_out_channels: int, 输出给点分支的 per-atom 特征通道数, 0 表示不输出
@@ -770,6 +770,11 @@ class Stage1EmbedHead(nn.Module):
         self.use_gaussian_splatting = bool(use_gaussian_splatting)
         if self.use_centroid_encoding and not self.has_voxel_output:
             raise ValueError("use_centroid_encoding=True 要求 embed_voxel_out_channels > 0")
+        if self.num_trunk_blocks != 0:
+            raise ValueError(
+                "Stage1EmbedHead 的点分支与体素分支必须使用独立输入投影；"
+                "共享 trunk 已停用，请把 num_trunk_blocks 设为 0。"
+            )
 
         # type, 激活函数类
         act_cls = resolve_act_layer(str(act_layer_name))
@@ -834,25 +839,21 @@ class Stage1EmbedHead(nn.Module):
             drop_path=float(drop_path),
         )
 
-        # --- 输入投影 ---
-        # nn.Sequential, (sumN, atom_feature_dim) -> (sumN, embed_hidden_dim), 原子特征到隐藏维度的投影
+        # 点分支与体素分支分别学习输入投影，避免任一分支的损失通过共享投影改变另一分支。
         input_proj_hidden = max(int(embed_hidden_dim), int(atom_feature_dim))
-        self.input_proj = nn.Sequential(
-            nn.Linear(int(atom_feature_dim), input_proj_hidden),
-            nn.LayerNorm(input_proj_hidden),
-            act_cls(),
-            nn.Linear(input_proj_hidden, self.embed_hidden_dim),
-        )
-
-        # ------------------ 共享 Trunk blocks ------------------
-        self.trunk_blocks = nn.ModuleList()
-        for block_idx in range(self.num_trunk_blocks):
-            self.trunk_blocks.append(
-                Block(
-                    order_index=int(block_idx % len(self.serialization_orders)),
-                    **_block_kwargs,
-                )
+        def make_input_projection() -> nn.Sequential:
+            return nn.Sequential(
+                nn.Linear(int(atom_feature_dim), input_proj_hidden),
+                nn.LayerNorm(input_proj_hidden),
+                act_cls(),
+                nn.Linear(input_proj_hidden, self.embed_hidden_dim),
             )
+
+        self.voxel_input_proj = make_input_projection() if self.has_voxel_output else None
+        self.point_input_proj = make_input_projection() if self.has_point_output else None
+
+        # 共享 trunk 仅保留空容器以兼容模块结构；非零配置已在上方拒绝。
+        self.trunk_blocks = nn.ModuleList()
 
         # ------------------ 体素专用 blocks ------------------
         if self.has_voxel_output:
@@ -1025,14 +1026,14 @@ class Stage1EmbedHead(nn.Module):
         只执行 Find_1/Find_2 所需的非块式 voxel MLP/centroid/scatter. 
 
         输入参数:
-            - atom_feat: torch.Tensor, (N,49), float, Dataset 直接加载的 core+8 Å real atom 特征
+            - atom_feat: torch.Tensor, (N,50), float, Dataset 直接加载的 core+8 Å real atom 特征
             - atom_coord_local_voxel: torch.Tensor, (N,3), BOX-local 连续 voxel 坐标 XYZ, corner 语义
             - atom_batch_index: torch.Tensor, (N,), long, 每个 real atom 所属 BOX 的 batch 索引
             - box_shape_zyx: torch.Tensor, (B,3), long, BOX 离散 voxel 网格尺寸 ZYX; 当前 Stage1 固定为 `(80,80,80)`
             - atom_is_in_core_box: torch.Tensor, (N,), bool, voxel scatter 的唯一 atom 筛选
 
         输出:
-            - voxel_grid: torch.Tensor, (B,51,80,80,80), float, 49D value 与 2D occupancy 组成的 BOX-local ZYX voxel 网格; 本入口不构造 PTV3 `Point` 或调用 Transformer blocks
+            - voxel_grid: torch.Tensor, (B,52,80,80,80), float, 50D value 与 2D occupancy 组成的 BOX-local ZYX voxel 网格; 本入口不构造 PTV3 `Point` 或调用 Transformer blocks
         """
 
         if not self.has_voxel_output:
@@ -1051,7 +1052,9 @@ class Stage1EmbedHead(nn.Module):
         # 再截取 core. 若先截取后投影, BLAS 会因矩阵行数不同选择另一 kernel, 
         # 在服务器上可产生约 1e-7 的舍入差, 破坏逐元素等价契约. 
         # torch.Tensor, (N_core,C_hidden), 先对 N_A 全表投影、再按 core_keep 截取. 
-        hidden = self.input_proj(atom_feat)[core_keep]
+        if self.voxel_input_proj is None:
+            raise RuntimeError("forward_voxel_only 需要独立的 voxel_input_proj。")
+        hidden = self.voxel_input_proj(atom_feat)[core_keep]
 
         if hidden.shape[0] == 0:
             voxel_value = hidden.new_zeros((0, self.embed_voxel_out_channels))
@@ -1157,7 +1160,7 @@ class Stage1EmbedHead(nn.Module):
         对 real atom 做共享编码并分叉输出体素嵌入、可选点特征和裁剪后字段. 
 
         输入参数:
-            - atom_feat: torch.Tensor, (sumN, F_atom), batch 内全部原子的原始特征(49)
+            - atom_feat: torch.Tensor, (sumN, F_atom), batch 内全部原子的 50 维原始特征
             - atom_coord_centered_world: torch.Tensor, (sumN, 3), 以 BOX 中心为原点的连续世界坐标 XYZ, 单位 Å
             - atom_batch_index: torch.Tensor, (sumN,), 每个原子所属 batch 索引
             - atom_offsets: torch.Tensor, (B,), PTV3 风格结束偏移
@@ -1211,49 +1214,30 @@ class Stage1EmbedHead(nn.Module):
             }
 
 
-        # --- 输入投影 ---
-        # torch.Tensor, (sumN, embed_hidden_dim), 投影后的原子特征
-        hidden = self.input_proj(atom_feat)
-        # --- 构建 Point 对象 ---
-        point = self._make_point_and_serialize(
-            feat=hidden,
-            coord=atom_coord_centered_world,
-            batch=atom_batch_index.long(),
-            offset=atom_offsets.long(),
+        # 两条路径从原始 50 维原子特征分别投影；这里没有共享 trunk。
+        voxel_hidden = (
+            self.voxel_input_proj(atom_feat)
+            if self.voxel_input_proj is not None
+            else None
         )
-        # --- 初始化全局掩码: 追踪从原始 sumN 到最终裁剪后的映射 ---
-        # torch.Tensor, (sumN,), bool, 初始全 True
+        point_hidden = (
+            self.point_input_proj(atom_feat)
+            if self.point_input_proj is not None
+            else None
+        )
+        # torch.Tensor, (sumN,), bool, 两条路径开始时均保留全部原子。
         global_keep_mask = torch.ones(total_n, dtype=torch.bool, device=atom_feat.device)
-        # 维护裁剪所需的辅助张量
         cur_batch = atom_batch_index.long()
         cur_offset = atom_offsets.long()
         cur_core = atom_is_in_core_box
         cur_local_voxel = atom_coord_local_voxel
         cur_coord = atom_coord_centered_world
 
-
-
-        # ------------------------------------------------------ 共享 Trunk ------------------------------------------------------
-        point, cur_coord, cur_batch, cur_offset, cur_core, cur_local_voxel, global_keep_mask = \
-            self._run_blocks_with_trim(
-                point=point,
-                blocks=self.trunk_blocks,
-                buffer_radii=self.trunk_buffer_radii,
-                cur_coord=cur_coord,
-                cur_batch=cur_batch,
-                cur_offset=cur_offset,
-                cur_core=cur_core,
-                cur_local_voxel=cur_local_voxel,
-                box_shape_zyx=box_shape_zyx,
-                voxel_size_world=voxel_size_world,
-                global_keep_mask=global_keep_mask,
-            )
-        # 分叉: 保存 trunk 后的状态用于点分支
+        # 点分支从自己的投影开始，元数据初始视图与体素分支相同。
         if self.has_point_output:
-            if point is None:
-                trunk_feat_for_point = hidden.new_zeros((0, self.embed_hidden_dim))
-            else:
-                trunk_feat_for_point = point.feat.clone()
+            if point_hidden is None:
+                raise RuntimeError("has_point_output=True 时必须构造 point_input_proj。")
+            trunk_feat_for_point = point_hidden
             trunk_batch_for_point = cur_batch.clone()
             trunk_offset_for_point = cur_offset.clone()
             trunk_core_for_point = cur_core.clone()
@@ -1266,7 +1250,14 @@ class Stage1EmbedHead(nn.Module):
 
         # ------------------------------------------------------ 体素专用 blocks ------------------------------------------------------
         if self.has_voxel_output:
-            voxel_point = point
+            if voxel_hidden is None:
+                raise RuntimeError("has_voxel_output=True 时必须构造 voxel_input_proj。")
+            voxel_point = self._make_point_and_serialize(
+                feat=voxel_hidden,
+                coord=atom_coord_centered_world,
+                batch=atom_batch_index.long(),
+                offset=atom_offsets.long(),
+            )
             v_batch = cur_batch
             v_offset = cur_offset
             v_core = cur_core
@@ -1302,13 +1293,13 @@ class Stage1EmbedHead(nn.Module):
                 v_coord = v_coord[core_keep]
                 v_core = v_core[core_keep]
             elif voxel_point is None:
-                voxel_point_feat = hidden.new_zeros((0, self.embed_hidden_dim))
+                voxel_point_feat = atom_feat.new_zeros((0, self.embed_hidden_dim))
             else:
                 voxel_point_feat = voxel_point.feat
 
             # 体素输出投影 + scatter
             if voxel_point_feat.shape[0] == 0:
-                voxel_feat_per_atom = hidden.new_zeros((0, self.embed_voxel_out_channels))
+                voxel_feat_per_atom = atom_feat.new_zeros((0, self.embed_voxel_out_channels))
             elif self.use_centroid_encoding:
                 # 计算体素质心和偏移编码
                 voxel_centroids = compute_voxel_centroids(
@@ -1399,7 +1390,7 @@ class Stage1EmbedHead(nn.Module):
             # 点输出投影
             # torch.Tensor, (N_point, embed_point_out_channels), 投影后的点特征
             if p_point is None:
-                embed_point_feat = hidden.new_zeros((0, self.embed_point_out_channels))
+                embed_point_feat = atom_feat.new_zeros((0, self.embed_point_out_channels))
             else:
                 embed_point_feat = self.point_out_proj(p_point.feat)
 
@@ -1470,7 +1461,7 @@ class Stage1EmbedHead(nn.Module):
             "voxel_coord_local_voxel": v_local_voxel,     # voxel 路径的局部体素坐标
 
             "embed_point_feat": embed_point_feat,         # 残差融合后的点特征
-            "atom_feat": final_atom_feat,                  # 64 维(残差启用+点分支) 或 49 维
+            "atom_feat": final_atom_feat,                  # 64 维(残差启用+点分支) 或 50 维
             "atom_coord_centered_world": final_coord,
             "atom_batch_index": final_batch,
             "atom_offsets": final_offset,

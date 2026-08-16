@@ -1,10 +1,11 @@
-"""把 Stage1 ligand logits 转为概率，并应用模型来源专属 receptor hardmask。
+"""把 Stage1 ligand logits 转为连续概率图。
 
 主要入口:
     - `logits_to_probability`: 接受 PyTorch 或 NumPy 的单通道 voxel logits，使用数值稳定 sigmoid 返回 CPU float32 概率。
-    - `postprocess_ligand_probability`: 对 Find 模型来源清零 receptor home voxel，对 `unet_c1` 保留原概率。
+    - `postprocess_ligand_probability`: 校验模型来源并返回独立的连续概率数组。
 
-该后处理同时服务完整图融合与居中推理。模型始终输出 logits；hardmask 只作用于 sigmoid 概率，不改变模型特征或输入批次。
+该后处理同时服务完整图融合与居中推理。`receptor_hardmask` 仅为兼容既有调用
+签名而保留，不再乘入概率图。
 """
 
 from __future__ import annotations
@@ -64,15 +65,15 @@ def postprocess_ligand_probability(
     receptor_hardmask: np.ndarray | None,
 ) -> np.ndarray:
     """
-    若 receptor_hardmask 不为None: processed *= np.logical_not(hardmask).astype(np.float32)
+    校验并复制连续概率；不使用 receptor hardmask 清零受体原子所在体素。
 
     输入参数:
         - probability: numeric, `(..., D, H, W)`，完整图或 BOX-local ZYX voxel 网格上的连续概率。
         - stage1_model_name: str, `STAGE1_MODEL_NAMES` 中的模型来源身份。
-        - receptor_hardmask: np.ndarray | None, `(D, H, W)`，与概率最后三维对齐的 receptor home-voxel 布尔 mask；Find 必须提供，True 表示最终概率清零，unet_c1 不读取。
+        - receptor_hardmask: np.ndarray | None, 兼容既有调用方的保留参数；当前不参与计算。
 
     输出:
-        - processed: float32, (..., D, H, W), 与输入 shape 相同且与输入内存解耦的概率；Find hardmask 位置严格为 0。
+        - processed: float32, (..., D, H, W), 与输入 shape 相同且与输入内存解耦的连续概率。
     """
     if stage1_model_name not in STAGE1_MODEL_NAMES:
         raise ValueError(f"未知 stage1_model_name={stage1_model_name!r}")
@@ -80,13 +81,4 @@ def postprocess_ligand_probability(
     processed = np.asarray(probability, dtype=np.float32).copy()
     if not bool(np.all(np.isfinite(processed))):
         raise ValueError("probability 含非有限值")
-    if stage1_model_name in FIND_MODEL_NAMES:
-        if receptor_hardmask is None:
-            raise ValueError("Find producer 的 probability 后处理必须显式提供 receptor_hardmask")
-        # bool，(D, H, W)，完整图或当前居中 BOX 的 receptor home voxel；
-        # 赋值时广播到概率数组的全部前导维。
-        hardmask = np.asarray(receptor_hardmask, dtype=np.bool_)
-        if hardmask.shape != processed.shape[-3:]:
-            raise ValueError("receptor_hardmask 必须与 probability 最后三维同 shape")
-        processed *= np.logical_not(hardmask).astype(np.float32)
     return processed

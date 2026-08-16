@@ -4,9 +4,9 @@ model:
   backbone:
     embed_head:
       _target_: src.model.stage1_embed_head.Stage1EmbedHead
-      atom_feature_dim: 49
+      atom_feature_dim: 50
       embed_hidden_dim: 128
-      embed_voxel_out_channels: 49  # int, tune 开关打开后由 Stage1EmbedHead 固定为有效 56D。
+      embed_voxel_out_channels: 50  # int, tune 开关打开后由 Stage1EmbedHead 固定为有效 56D。
       embed_point_out_channels: 64
       num_trunk_blocks: 0
       num_voxel_blocks: 0
@@ -53,6 +53,6 @@ model:
     online_pdb_feature_sigma_voxel: 0.7
     online_pdb_feature_add_occupancy: false
     online_pdb_feature_add_centroid: false
-    online_pdb_feature_dim: 49
+    online_pdb_feature_dim: 50
     point_backbone:
       atom_feature_dim: 64

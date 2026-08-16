@@ -23,7 +23,7 @@
     - nucleic_mainchain_target: int64 ``(80, 80, 80)``; 核酸主链背景/P/O5'/C5'/C4'/C3'/O3' 类别编号. 
     - ligand_inverse_distance_target: float32 ``(80, 80, 80)``; 由最近配体原子距离按 ``1/(1+distance_Å)`` 转换的回归目标. 
     - atom_global_indices: int64 ``(N_A,)``; Find 选择的受体原子在完整受体数组中的编号. 
-    - atom_feat: float32 ``(N_A, 49)``; 与 atom_global_indices 第 0 维逐原子对齐的基础特征. 
+    - atom_feat: float32 ``(N_A, 50)``; 49 维基础特征与主链原子标记拼接后的特征.
     - atom_coord_world: float32 ``(N_A, 3)``; 逐原子世界 XYZ 坐标, 单位 Å. 
     - atom_coord_local_voxel: float32 ``(N_A, 3)``; 逐原子 BOX-local 连续 voxel XYZ 坐标. 
     - atom_coord_centered_world: float32 ``(N_A, 3)``; 逐原子相对 BOX 中心的世界 XYZ 坐标, 单位 Å. 
@@ -578,7 +578,7 @@ class Stage1Dataset(Dataset):
 
     def _load_structure(self, pdb_id: str, require_targets: bool) -> dict[str, np.ndarray]:
         """
-        读取并缓存 receptor 49D 基础表及可选 binding label. 
+        读取并缓存 receptor 50D 原子特征及可选 binding label.
 
         输入参数:
             - pdb_id: str; 当前 PDB 身份. 
@@ -586,13 +586,13 @@ class Stage1Dataset(Dataset):
 
         输出字段:
             - coords: float32 ``(N_receptor, 3)``; 受体原子的世界 XYZ 坐标, 单位 Å. 
-            - feat: float32 ``(N_receptor, 49)``; 与 coords 第 0 维逐原子对齐的基础原子特征. 
+            - feat: float32 ``(N_receptor, 50)``; 49 维基础特征与主链原子标记拼接后的特征.
             - binding_atom: bool ``(N_receptor,)``; 与 coords 第 0 维逐原子对齐的结合区域标签, 仅 ``require_targets=True`` 时读取. 
             - res_type: uint8 ``(N_receptor,)``; 辅助监督使用的残基类别编号, 仅辅助监督模型且 ``require_targets=True`` 时读取. 
             - atom_name: 字符串数组 ``(N_receptor,)``; 辅助监督使用的原子名, 仅辅助监督模型且 ``require_targets=True`` 时读取. 
 
         文件读取:
-            - parse/<pdb_id>/receptor_tokens.npz: 提供 coords、feat、res_type 和 atom_name. 
+            - parse/<pdb_id>/receptor_tokens.npz: 提供 coords、feat、is_backbone、res_type 和 atom_name.
             - labels/<pdb_id>/atom_labels.npz: 提供 binding_atom. 
         """
         cache_key = f"{pdb_id}|targets={int(require_targets)}"
@@ -604,9 +604,20 @@ class Stage1Dataset(Dataset):
             # np.ndarray[float32], (N_receptor,3), receptor 原子的世界 XYZ 坐标. 
             coords = np.asarray(data["coords"], dtype=np.float32)
             # float32, (N_receptor, 49), 与 coords 第 0 维逐受体原子对齐的基础特征. 
-            feat = np.asarray(data["feat"], dtype=np.float32)
-        if coords.ndim != 2 or coords.shape[1] != 3 or feat.shape != (coords.shape[0], 49):
-            raise ValueError(f"{receptor_path}: coords/feat 必须为 [N,3]/[N,49]。")
+            feat_base = np.asarray(data["feat"], dtype=np.float32)
+            # float32, (N_receptor, 1), 1 表示蛋白质或核酸主链原子。
+            is_backbone = np.asarray(data["is_backbone"], dtype=np.float32).reshape(-1, 1)
+        if (
+            coords.ndim != 2
+            or coords.shape[1] != 3
+            or feat_base.shape != (coords.shape[0], 49)
+            or is_backbone.shape != (coords.shape[0], 1)
+        ):
+            raise ValueError(
+                f"{receptor_path}: coords/feat/is_backbone 必须为 [N,3]/[N,49]/[N]。"
+            )
+        # float32, (N_receptor, 50), 运行时拼接主链标记，不改写 receptor_tokens.npz。
+        feat = np.concatenate([feat_base, is_backbone], axis=1).astype(np.float32, copy=False)
         if not np.isfinite(coords).all() or not np.isfinite(feat).all():
             raise ValueError(f"{receptor_path}: coords/feat 包含 NaN/Inf。")
         structure = {"coords": coords, "feat": feat}
@@ -794,7 +805,7 @@ class Stage1Dataset(Dataset):
             - nucleic_mainchain_target: int64 ``(80, 80, 80)`` tensor; 核酸背景/P/O5'/C5'/C4'/C3'/O3' 类别编号. 
             - ligand_inverse_distance_target: float32 ``(80, 80, 80)`` tensor; 有限距离按 ``1/(1+distance_Å)`` 转换, 无配体的正无穷距离转换为 0. 
             - atom_global_indices: int64 ``(N_A,)`` tensor; 被选择受体原子在完整受体数组中的编号. 
-            - atom_feat: float32 ``(N_A, 49)`` tensor; 与 atom_global_indices 第 0 维逐原子对齐的特征. 
+            - atom_feat: float32 ``(N_A, 50)`` tensor; 与 atom_global_indices 第 0 维逐原子对齐的特征.
             - atom_coord_world: float32 ``(N_A, 3)`` tensor; 被选择受体原子的世界 XYZ 坐标, 单位 Å. 
             - atom_coord_local_voxel: float32 ``(N_A, 3)`` tensor; 被选择受体原子的 BOX-local 连续 voxel XYZ 坐标. 
             - atom_coord_centered_world: float32 ``(N_A, 3)`` tensor; 相对 BOX 几何中心的世界 XYZ 坐标, 单位 Å. 

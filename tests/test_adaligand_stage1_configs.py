@@ -114,9 +114,9 @@ def test_find_models_only_change_voxel_receptor_construction() -> None:
     assert find0.model.backbone.online_pdb_feature is True
     assert find0.model.backbone.voxel_backbone.enable_structure_heads is False
     assert find0.model.backbone.embed_head.embed_voxel_out_channels == 0
-    assert find0.model.backbone.online_pdb_feature_dim == 49
+    assert find0.model.backbone.online_pdb_feature_dim == 50
     assert find1.model.backbone.online_pdb_feature is False
-    assert find1.model.backbone.embed_head.embed_voxel_out_channels == 49
+    assert find1.model.backbone.embed_head.embed_voxel_out_channels == 50
     assert find1.model.backbone.embed_head.use_centroid_encoding is True
     assert find1.model.backbone.embed_head.use_gaussian_splatting is True
     assert find1.model.backbone.embed_head.use_soft_splatting is True
@@ -124,7 +124,7 @@ def test_find_models_only_change_voxel_receptor_construction() -> None:
     assert find1.model.backbone.embed_head.embed_residual_enabled is True
     assert find1.model.backbone.embed_head.voxel_embed_as_tune is False
     assert find2.model.backbone.online_pdb_feature is False
-    assert find2.model.backbone.embed_head.embed_voxel_out_channels == 49
+    assert find2.model.backbone.embed_head.embed_voxel_out_channels == 50
     assert find2.model.backbone.embed_head.embed_point_out_channels == 64
     assert find2.model.backbone.embed_head.use_gaussian_splatting is True
     assert find2.model.backbone.embed_head.voxel_embed_as_tune is True
