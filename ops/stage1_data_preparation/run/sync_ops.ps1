@@ -48,7 +48,7 @@ $RsyncExecutable = Join-Path $MsysBin "rsync.exe"
 $CygpathExecutable = Join-Path $MsysBin "cygpath.exe"
 $SourcePosix = (& $CygpathExecutable -u $SourceDirectory).Trim()
 $PasswordPosix = (& $CygpathExecutable -u $PasswordFile).Trim()
-$RemoteShell = "sshpass -f $PasswordPosix ssh -p 10022 -o StrictHostKeyChecking=yes -o PreferredAuthentications=password -o PubkeyAuthentication=no -o NumberOfPasswordPrompts=1"
+$RemoteShell = "/usr/bin/sshpass -f $PasswordPosix /usr/bin/ssh -p 10022 -o StrictHostKeyChecking=yes -o PreferredAuthentications=password -o PubkeyAuthentication=no -o NumberOfPasswordPrompts=1"
 
 $env:MSYS2_ARG_CONV_EXCL = "*"
 & $RsyncExecutable -av `
