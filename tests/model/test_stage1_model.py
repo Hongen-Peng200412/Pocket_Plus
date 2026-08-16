@@ -680,26 +680,6 @@ def test_unet_full_forward_publishes_only_five_v_features() -> None:
     assert not any(key.startswith("A_feat_") or key.startswith("P_feat_") for key in outputs)
 
 
-def test_find_voxel_only_training_skips_all_point_components() -> None:
-    """原子到体素路径可在没有点骨干和点监督时完成三次 recycle。"""
-
-    model = _make_model(
-        voxel_backbone=_InputSensitiveVoxelBackboneStub(),
-        point_backbone=None,
-        embed_head=_VoxelOnlyEmbedHeadStub(),
-        enable_atom_head=False,
-        max_recycles=3,
-    )
-    batch = _make_batch()
-    batch["density_input"] = batch.pop("voxel_grid")
-    outputs = model(batch)
-
-    assert outputs["recycle_passes_used"] == 3
-    assert outputs["embed_output"] is not None
-    assert "point_outputs" not in outputs
-    assert outputs["voxel_logits_ligand"].shape == (1, 3, 2, 2, 2)
-
-
 def test_find0_voxel_only_matches_eval_forward_and_skips_point_path() -> None:
     """验证 Find_0 最短入口逐元素等价、固定三次 recycle 且不运行 point backbone. """
 
