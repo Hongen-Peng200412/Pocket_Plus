@@ -13,7 +13,7 @@ stage1_preparation_box_pool_3/box_pool/manifest.json
     → Find_0、Find_1 或 unet_c1
 ```
 
-训练请求固定为 `0:5:5`：每个 epoch、每个 PDB 至多选择 50 个 occurrence，每个 occurrence 选择 5 个 bias 与 5 个 context。验证使用已经冻结的同口径请求。旧版 `1:5:3`、`box_sample_fraction`、`src/datasets/ops/stage1_split.py` 与 `stage1_box_pool.py` 均已退出活动代码，只能从 Git 历史阅读。
+训练请求固定为 `0:5:5`：每个 epoch、每个 PDB 至多选择 50 个 occurrence，每个 occurrence 选择 5 个 bias 与 5 个 context。验证对相同上限内的冻结 occurrence 使用 `0:1:1`，即每个 occurrence 各选择 1 个 bias 与 1 个 context。旧版 `1:5:3`、`box_sample_fraction`、`src/datasets/ops/stage1_split.py` 与 `stage1_box_pool.py` 均已退出活动代码，只能从 Git 历史阅读。
 
 ## 阅读顺序
 

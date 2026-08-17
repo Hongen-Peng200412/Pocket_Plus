@@ -6,7 +6,7 @@
 
 - 完整体数组改从 `exp.npy`、`sim.npy`、`union_mask.npy` 和 `ligand_dist.npy` 内存映射，NPZ 只保留小型元数据和稀疏字段。
 - Dataset 返回 49 维受体基础特征与独立 `is_backbone`；模型边界在需要 50 维时拼接。
-- 训练请求固定为 `center:bias:context = 0:5:5`，不保留 fraction 参数或比例请求文件。
+- 训练请求固定为 `center:bias:context = 0:5:5`，冻结验证请求固定为 `0:1:1`；不保留 fraction 参数或比例请求文件。
 - 单卡使用 16 CPU/16 workers；双卡总计 32 CPU，每个 DDP rank 16 workers。
 - DataLoader 使用 `prefetch_factor=4` 和 `persistent_workers=false`。
 - U-Net 主链版保留三类结构头和 0.05/0.05/0.3 损失；无主链版保留结构头，把前两项权重设为 0，双卡使用 unused-parameter 检查兼容配置。

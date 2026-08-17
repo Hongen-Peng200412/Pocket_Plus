@@ -1,6 +1,6 @@
 # Stage1 v3 数据准备工具
 
-本目录提供三类可复用运维工具：把四个完整体数组从压缩 NPZ 迁移到同目录 NPY；按 EMDB 首次发布时间、质量和资产契约冻结 Stage1 v3 划分；从迁移后元数据生成 0:5:5 BOX pool。工具不修改 `src/`、模型、Dataset 或第二版 BOX pool。
+本目录提供三类可复用运维工具：把四个完整体数组从压缩 NPZ 迁移到同目录 NPY；按 EMDB 首次发布时间、质量和资产契约冻结 Stage1 v3 划分；从迁移后元数据生成训练 `0:5:5`、验证 `0:1:1` BOX pool。工具不修改 `src/`、模型、Dataset 或第二版 BOX pool。
 
 ## 目录与稳定入口
 
@@ -89,7 +89,7 @@ BOX pool 根目录为 `/storage/penghongen/AdaLigand/Ori_Data/stage1_preparation
 - `bias_start_zyx`：`int32 (N_occ,30,3)`，经验体积半径与额外 0–3 Å 独立扰动生成的候选起点。
 - `context_start_zyx`：`int32 (N_context,3)`，完整图逐轴合法范围内均匀采样的共享起点，最多 500 个，不设置核心受体原子数量门槛。
 
-根目录还包含 `manifest.json`、`validation_selection.npz`、`config.json`、`summary.json` 和最后发布的 `_COMPLETE`。训练请求比例固定为 center:bias:context=`0:5:5`；每个 PDB 每轮最多选择 50 个 occurrence 的运行规则不由本目录修改。
+根目录还包含 `manifest.json`、`validation_selection.npz`、`config.json`、`summary.json` 和最后发布的 `_COMPLETE`。训练请求比例固定为 center:bias:context=`0:5:5`；冻结验证请求固定为 `0:1:1`。两者都在每个 PDB 至多选择 50 个 occurrence。
 
 ## 2026-08-17 正式运行结果
 
@@ -123,4 +123,4 @@ python -m pytest -q ops/stage1_data_preparation/tests
 
 ## 训练消费状态
 
-第三版产物现在由唯一的 `src/datasets/stage1_dataset.py::Stage1Dataset` 直接消费。四个完整体 NPY 以只读 mmap 延迟打开，训练请求固定为 `0:5:5`；数据准备函数不进入 Dataset 的生产依赖方向。`utils/box_pool.py` 只供本目录的 V3 构建入口复用，集中 occurrence mask、确定性 PDB seed、bias/context 起点和 validation selection 冻结逻辑。
+第三版产物现在由唯一的 `src/datasets/stage1_dataset.py::Stage1Dataset` 直接消费。四个完整体 NPY 以只读 mmap 延迟打开，训练请求固定为 `0:5:5`，冻结验证请求固定为 `0:1:1`；数据准备函数不进入 Dataset 的生产依赖方向。`utils/box_pool.py` 只供本目录的 V3 构建入口复用，集中 occurrence mask、确定性 PDB seed、bias/context 起点和 validation selection 冻结逻辑。
