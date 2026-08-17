@@ -76,14 +76,14 @@
 
 | 路径 | 当前用途 |
 | --- | --- |
-| `density/{pdb_id}/exp.npz` | 所有 Stage1 模型来源使用的实验密度和完整图几何 |
-| `density/{pdb_id}/sim.npz` | 三个 Find 模型来源额外使用的模拟密度；几何必须与实验密度一致 |
-| `density/{pdb_id}/ligand_area.npz` | 配体区域并集、逐 occurrence 稀疏掩码、校准真值和候选组件交集真值 |
-| `density/{pdb_id}/ligand_dist.npz` | 训练时转换为 `1 / (1 + distance_Å)` 的最近配体原子距离 |
-| `parse/{pdb_id}/receptor_tokens.npz` | 受体原子世界坐标、49 维基础特征、残基类别和原子名 |
+| `density/{pdb_id}/exp.npy` 与 `exp.npz` | 实验密度完整数组；NPZ 只保存完整图几何与 schema |
+| `density/{pdb_id}/sim.npy` 与 `sim.npz` | Find 使用的模拟密度完整数组；几何必须与实验密度一致 |
+| `density/{pdb_id}/union_mask.npy` 与 `ligand_area.npz` | 配体区域并集；NPZ 保存逐 occurrence 稀疏掩码和空间元数据 |
+| `density/{pdb_id}/ligand_dist.npy` 与 `ligand_dist.npz` | 最近配体原子距离完整数组；NPZ 保存空间元数据和单位 |
+| `parse/{pdb_id}/receptor_tokens.npz` | 受体原子世界坐标、49 维基础特征、主链标志、残基类别和原子名 |
 | `labels/{pdb_id}/atom_labels.npz` | 与完整受体原子表对齐的 `binding_atom` 标签 |
 
-`exp.npz` 与 `sim.npz` 的 `grid` 是 `float32 (1,D,H,W)`，`voxel_size` 和 `origin` 都是 `float32 (3,)` XYZ 数组。`ligand_area.npz` 的 `union_mask` 是 `bool (1,D,H,W)`；`True` 表示至少一个真实配体实例占据该体素。每个 `mask_{occurrence_id}` 是按 ZYX 字典序排列且不重复的整数 `(K_occ,3)` 稀疏坐标表。`ligand_dist.npz` 的 `distance` 是 `float16 (1,D,H,W)`。`receptor_tokens.npz` 的 `coords` 是 `float32 (N_receptor,3)` 世界 XYZ 坐标，`feat` 是 `float32 (N_receptor,49)`；`binding_atom` 是与它们第一维对齐的 `bool (N_receptor,)`。
+`exp.npy` 与 `sim.npy` 是 `float32 (1,D,H,W)`，`union_mask.npy` 是 `bool (1,D,H,W)`，`ligand_dist.npy` 是 `float16 (1,D,H,W)`；四者空间轴均为 ZYX。小型 NPZ 保存 `voxel_size`、`origin`、完整图形状和 schema。每个 `mask_{occurrence_id}` 是按 ZYX 字典序排列且不重复的整数 `(K_occ,3)` 稀疏坐标表。`receptor_tokens.npz` 的 `coords` 是 `float32 (N_receptor,3)` 世界 XYZ 坐标，`feat` 是 `float32 (N_receptor,49)`，`is_backbone` 是 `bool (N_receptor,)`；`binding_atom` 位于 `atom_labels.npz`，并与同一原子表第一维对齐。
 
 Find centered 产物中的 `A_global_index` 指回 `receptor_tokens.npz` 第一维，用于原子身份追踪；同一批被保留原子的 49 维原始特征另以 `A_feat_L0` 保存在 centered NPZ 中，Selector 不需要再次读取 `receptor_tokens.npz`。
 
@@ -100,8 +100,8 @@ BOX 池和 centered 几何都不保存实际密度裁剪。Dataset 或推理运�
 
 | 产物 | 生产命令 |
 | --- | --- |
-| 冻结数据划分 | `python -m src.datasets.ops.stage1_split` |
-| 训练预定位 BOX 池 | `python -m src.datasets.ops.stage1_box_pool` |
+| V3 数据划分 | 已冻结在 `stage1_preparation_box_pool_3/split`；构建入口见 `ops/stage1_data_preparation/freeze_split.py` |
+| V3 训练预定位 BOX 池 | 已冻结在 `stage1_preparation_box_pool_3/box_pool`；构建入口见 `ops/stage1_data_preparation/build_box_pool_3.py` |
 | calibration 完整图概率 | `python -m src.inference.cli cal-probability` |
 | 模型来源级阈值和校准指标 | `python -m src.inference.cli freeze-thresholds` |
 | calibration 组件与 F1 centered | `python -m src.inference.cli cal-produce-f1` |
@@ -120,187 +120,82 @@ BOX 池和 centered 几何都不保存实际密度裁剪。Dataset 或推理运�
 
 ## 3. 冻结数据准备产物
 
-数据准备产物位于调用方传给 `--output-root` 的目录，不属于 `stage1_outputs`。
+第三版数据准备产物位于：
+
+```text
+/storage/penghongen/AdaLigand/Ori_Data/stage1_preparation_box_pool_3/
+├── split/
+│   ├── train.json
+│   ├── validation.json
+│   ├── calibration.json
+│   ├── held_out.json
+│   ├── quarantine_missing_release.json
+│   ├── config.json
+│   ├── summary.json
+│   └── _COMPLETE
+└── box_pool/
+    ├── train/{pdb_id}.npz
+    ├── validation/{pdb_id}.npz
+    ├── manifest.json
+    ├── validation_selection.npz
+    ├── config.json
+    ├── summary.json
+    └── _COMPLETE
+```
+
+这些产物由 `ops/stage1_data_preparation/freeze_split.py` 与
+`build_box_pool_3.py` 一次性构建并验收。训练和推理只消费已经发布的文件，
+不会在启动时重建 split 或 BOX pool。完整构建规则、运行命令与正式计数见
+`ops/stage1_data_preparation/README.md` 和 `EXECUTION.md`。
 
 ### 3.1 冻结数据划分
 
-生产命令：
+一个 PDB 对应多个 EMDB 时，首次发布时间取最早的非空 map release。只有首次
+发布时间严格早于 2026-01-01、至少一条候选记录同时满足
+`map_resolution < 4.0` 与 `cc_contour > 0.65`，并通过迁移后资产与 80³
+形状门禁的 PDB 才进入 train、validation 或 calibration。稳定排名后的前 200
+个 PDB 属于 validation，随后 100 个属于 calibration，其余全部属于 train。
+等于或晚于日期界线的 PDB 进入 `held_out.json`，缺日期者进入
+`quarantine_missing_release.json`。
 
-```text
-python -m src.datasets.ops.stage1_split --keep-list <keep_list.jsonl> --data-root <数据根目录> --output-root <数据划分目录> --seed <整数>
-```
+正式计数为 train 13,717 PDB、validation 200 PDB、calibration 100 PDB、
+held-out 2,497 PDB和缺日期隔离 357 PDB。
 
-输出目录：
+### 3.2 训练预定位 BOX pool
 
-```text
-<数据划分目录>/
-├── train.json
-├── validation.json
-├── calibration.json
-├── held_out_pool.json
-├── config.json
-├── summary.json
-└── _COMPLETE
-```
-
-`train.json`、`validation.json`、`calibration.json`、`held_out_pool.json` 都是 JSON 对象数组。每项原样保留输入 keep-list 中相应 PDB 的记录字段，并且至少包含字符串 `pdb_id`。同一个 PDB 不会跨数据划分。
-
-选择规则：
-
-- `validation` 和 `calibration` 只接收完整图 Z、Y、X 三轴都不小于 80 的 PDB。
-- 默认选择 300 个 validation PDB 和 100 个 calibration PDB。
-- 设输入中的唯一 PDB 总数为 `N`；train 从两个评估数据划分之外选择 `floor(0.75 * N)` 个 PDB，其余进入 `held_out_pool`。
-- train 数据划分不预先排除短图；后续 BOX 池不会为三轴任一长度小于 80 的 train PDB 发布 PDB 级 NPZ，并在 `summary.json` 的 `short_map_count` 中计数。
-- `held_out_pool` 不执行额外去重或形状过滤。
-- 当前实现不创建独立的 `eligibility` 目录、合格或排除 PDB 清单，也没有对应生产命令。短图计数只出现在普通 `summary.json` 中。
-
-命令参数 `--seed` 的默认值是 3407。`config.json`：
-
-| 字段 | 类型与值 |
-| --- | --- |
-| `schema_version` | `int`，当前为 `1` |
-| `seed` | `int`，实际使用的排名种子 |
-| `train_fraction` | `float`，当前为 `0.75` |
-| `validation_pdb_count` | `int`，请求的 validation PDB 数 |
-| `calibration_pdb_count` | `int`，请求的 calibration PDB 数 |
-| `minimum_validation_calibration_shape_zyx` | 长度 3 的 `int` 数组，当前为 `[80,80,80]` |
-| `assignment` | `str`，当前为 `"sha256(seed|purpose|pdb_id) ascending"` |
-| `keep_list_path` | `str`，调用方传入的 keep-list 路径 |
-| `keep_list_sha256` | `str`，输入文件的 64 个十六进制字符 SHA-256 文本 |
-| `held_out_deduplication` | `bool`，当前为 `false` |
-
-`summary.json`：
-
-| 字段 | 类型与含义 |
-| --- | --- |
-| `seed` | `int`，实际使用的排名种子 |
-| `source_pdb_count` | `int`，输入中的唯一 PDB 数 |
-| `source_row_count` | `int`，输入 keep-list 的原始记录数 |
-| `validation_calibration_shape_checked_pdb_count` | `int`，评估数据划分选择期间检查过形状的 PDB 数 |
-| `short_map_encountered_while_selecting_eval_count` | `int`，评估数据划分选择期间遇到的短图 PDB 数 |
-| `splits` | JSON 对象，键为四个数据划分名 |
-| `splits[name].pdb_count` | `int`，相应数据划分的唯一 PDB 数 |
-| `splits[name].row_count` | `int`，相应数据划分保留的原始记录数 |
-
-`_COMPLETE` 是零字节文件，在上述所有文件发布成功后最后创建。
-
-### 3.2 训练预定位 BOX 池
-
-生产命令：
-
-```text
-python -m src.datasets.ops.stage1_box_pool --data-root <数据根目录> --train-split <train.json> --validation-split <validation.json> --output-root <BOX池目录> --seed <整数>
-```
-
-输出目录：
-
-```text
-<BOX池目录>/
-├── train/{pdb_id}.npz
-├── validation/{pdb_id}.npz
-├── manifest.json
-├── validation_selection.npz
-├── config.json
-├── summary.json
-└── _COMPLETE
-```
-
-每个 `train/{pdb_id}.npz` 或 `validation/{pdb_id}.npz`：
+每个 `train/{pdb_id}.npz` 或 `validation/{pdb_id}.npz` 保存：
 
 | 字段 | dtype 与形状 | 含义 |
 | --- | --- | --- |
-| `pdb_id` | Unicode 标量 | 当前文件的 PDB 身份 |
-| `occurrence_id` | `int32 (N_occ,)` | 当前 PDB 的正式 occurrence 编号 |
-| `center_start_zyx` | `int32 (N_occ,3)` | 与 `occurrence_id` 同序的居中正样本 BOX 起点 |
-| `bias_start_zyx` | `int32 (N_occ,30,3)` | 每个 occurrence 的 30 个偏置正样本 BOX 起点 |
-| `context_start_zyx` | `int32 (N_context,3)` | 与 occurrence 无关的受体上下文 BOX 起点 |
+| `pdb_id` | Unicode 标量 | 当前 PDB 身份 |
+| `occurrence_id` | `int32 (O,)` | 真实配体 occurrence 身份 |
+| `center_start_zyx` | `int32 (O,3)` | 兼容保留的中心起点；V3 请求数为 0 |
+| `bias_start_zyx` | `int32 (O,30,3)` | 每个 occurrence 的 30 个 bias 起点 |
+| `context_start_zyx` | `int32 (C,3)` | PDB 级 context 起点 |
 
-上下文 BOX 从逐轴合法的整数起点均匀采样。80³ 核心中至少包含 1000 个受体重原子才保留；生成器不按配体位置过滤。每个 PDB 最多保留 500 个上下文 BOX，最多尝试 3000 次，因此 `N_context` 可以是 0 到 500。
+全部起点都是完整图内 80³ BOX 的零基 ZYX corner index。`manifest.json`
+是 Dataset 发现 PDB pool 的唯一清单；`_COMPLETE` 是发布门槛。
 
-不同 bias 随机样本解析到同一合法整数 BOX 起点时，重复起点原样保留。
+`validation_selection.npz` 使用 `validation_pdb_id`、
+`center_pdb_index/center_occurrence_id`、
+`bias_pdb_index/bias_occurrence_id/bias_candidate_index` 和
+`context_pdb_index/context_candidate_index` 引用单 PDB pool，不复制 BOX
+数组。当前冻结选择包含 0 个 center、16,525 个 bias 和 16,525 个 context。
 
-`manifest.json`：
+训练每个 epoch、每个 PDB 至多选择 50 个 occurrence；每个 occurrence 选择 5
+个 bias 和 5 个 context，请求比例固定为 `0:5:5`。活动代码没有请求比例截断
+参数，也不创建额外比例请求文件。
 
-- `schema_version`：`int`，当前为 `1`。
-- `splits`：JSON 对象，只含 `train` 和 `validation`。
-- `splits[name]`：对象数组；每项只有 `pdb_id: str` 与 `path: str`。
-- `path`：相对于 BOX 池根目录的 POSIX 风格路径，例如 `train/1abc.npz`。
+### 3.3 运行时物化
 
-`validation_selection.npz` 冻结一次 `center:bias:context = 1:5:3` 的验证请求：
+Dataset 使用 mmap 打开四个完整体 NPY，只复制实际 80³ 裁块；小型 NPZ 提供
+schema、完整图形状、体素尺寸、世界坐标原点和逐 occurrence 稀疏字段。
+`receptor_tokens.npz:feat` 保持 49 维，`is_backbone` 单独进入 batch，
+只有期望 50 维的模型才在输入边界拼接。
 
-| 字段 | dtype 与形状 | 索引目标 |
-| --- | --- | --- |
-| `validation_pdb_id` | 固定宽度 bytes `(N_pdb,)` | validation PDB 身份表 |
-| `center_pdb_index` | `int32 (N_center,)` | 索引 `validation_pdb_id` 第一维 |
-| `center_occurrence_id` | `int32 (N_center,)` | 在相应 PDB 的 `occurrence_id` 中查找同值 |
-| `bias_pdb_index` | `int32 (N_bias,)` | 索引 `validation_pdb_id` 第一维 |
-| `bias_occurrence_id` | `int32 (N_bias,)` | 在相应 PDB 的 `occurrence_id` 中查找同值 |
-| `bias_candidate_index` | `int16 (N_bias,)` | 索引相应 occurrence 的 `bias_start_zyx` 第二维，范围 `0..29` |
-| `context_pdb_index` | `int32 (N_context_selected,)` | 索引 `validation_pdb_id` 第一维 |
-| `context_candidate_index` | `int32 (N_context_selected,)` | 索引相应 PDB 的 `context_start_zyx` 第一维 |
-
-每个 PDB 每次最多选择 50 个 occurrence。上下文池有 1 或 2 项时允许放回采样至 3 项；上下文池为空时不伪造上下文请求。
-
-validation 使用冻结请求，不保存增强后的数组。train 的随机 90° 旋转会同步旋转密度、监督图和 Find 原子坐标；奇数次四分之一转交换空间轴时，还会交换 `voxel_size_world` 的对应 XYZ 尺度，并重新计算 BOX 中心和原子世界坐标，不能用“体素尺寸近似 1 Å”代替几何变换。
-
-命令参数 `--seed` 的默认值是 3407。`config.json`：
-
-| 字段 | 类型与值 |
-| --- | --- |
-| `box_shape_zyx` | 长度 3 的 `int` 数组，当前为 `[80,80,80]` |
-| `bias_candidates_per_occurrence` | `int`，当前为 `30` |
-| `bias_radius_formula` | `str`，当前为 `"R=(3*K_occ/(4*pi))**(1/3)"` |
-| `bias_selected_per_epoch` | `int`，当前为 `5` |
-| `context_generator.sampling` | `str`，当前为 `"uniform_integer_legal_start_per_axis"` |
-| `context_generator.target_count` | `int`，当前为 `500` |
-| `context_generator.max_attempts` | `int`，当前为 `3000` |
-| `context_generator.min_core_receptor_heavy_atoms` | `int`，当前为 `1000` |
-| `context_generator.ligand_filter` | `bool`，当前为 `false` |
-| `occurrence_cap_per_pdb_per_epoch` | `int`，当前为 `50` |
-| `entry_ratio` | 对象，当前为 `{"center":1,"bias":5,"context":3}` |
-| `train_random_rotation_90_degree` | `bool`，当前为 `true` |
-| `seed` | `int`，BOX 池基准种子 |
-| `seed_rule` | `str`，当前为 `"sha256(base_seed|split_name|pdb_id) first_uint64"` |
-
-`summary.json`：
-
-- 根字段 `seed` 是 `int`。
-- `train` 包含 `requested_pdb`、`published_pdb`、`short_map_count`、`zero_context_pdb_count`、`underfilled_context_pdb_count`，全部为 `int`。
-- `validation` 包含 `requested_pdb`、`published_pdb`、`zero_context_pdb_count`、`underfilled_context_pdb_count`，全部为 `int`。
-- `validation_selection` 包含 `pdb_count`、`center_count`、`bias_count`、`context_count`，全部为 `int`。
-- `manifest` 包含 `train` 和 `validation` 两个 `int` 文件计数。
-
-`_COMPLETE` 是零字节文件，在上述所有文件发布成功后最后创建。
-
-### 3.3 比例请求表
-
-当训练 Dataset 或验证入口第一次以 `box_sample_fraction < 1` 构造请求，而相应文件尚不存在时，请求层会原子创建：
-
-```text
-<BOX池目录>/train_selection_{fraction}_seed{seed}.npz
-<BOX池目录>/validation_selection_{fraction}_seed{seed}.npz
-```
-
-其中 `{fraction}` 使用有效数字格式 `.12g`。`stage1_box_pool` 命令本身不创建这两个文件；`box_sample_fraction == 1` 时也不创建。
-
-设完整请求数为 `N_full`。对 train，`N_full` 是当前 epoch 按完整清单和正式请求比例生成的 center、bias、context 请求总数；对 validation，`N_full` 是冻结 `validation_selection.npz` 展开的全部请求数。比例文件中的请求数满足 `N_req == floor(N_full * box_sample_fraction)`；抽样结果允许为空。
-
-| 字段 | dtype 与形状 | 含义 |
-| --- | --- | --- |
-| `pdb_id` | Unicode `(N_req,)` | 请求所属 PDB |
-| `box_start_zyx` | `int32 (N_req,3)` | 完整图离散 BOX 起点 |
-| `role` | Unicode `(N_req,)` | `center`、`bias` 或 `context` |
-| `occurrence_id` | `int32 (N_req,)` | occurrence 编号；不适用时为 `-1` |
-| `candidate_index` | `int32 (N_req,)` | bias 或 context 候选编号；不适用时为 `-1` |
-| `require_targets` | `bool (N_req,)` | `True` 表示 Dataset 必须构造监督字段，`False` 表示不构造 |
-| `box_sample_fraction` | `float64` 标量 | 完整请求池的保留比例 |
-| `request_seed` | `int64` 标量 | 抽样种子 |
-| `selection_epoch` | `int64` 标量 | 固定为 `0` |
-| `source_manifest_sha256` | Unicode 标量 | 生成时使用的 `manifest.json` 摘要 |
-| `source_validation_sha256` | Unicode 标量 | validation 请求表使用的 `validation_selection.npz` 摘要；train 文件中不存在 |
-| `schema_version` | `uint16` 标量 | 当前为 `1` |
-
-比例小于 1 时各 epoch 复用同一份冻结请求；比例等于 1 时 train 请求可以按 epoch 重新选择。
+DataLoader 使用 `prefetch_factor=4`、`pin_memory=true` 和
+`persistent_workers=false`。单卡使用 16 workers；双卡 DDP 每个 rank 使用
+16 workers，总计 32 workers。
 
 ## 4. Stage1 正式输出目录与状态
 

@@ -16,7 +16,7 @@ FIND_EXPERIMENTS = (
     "CPC2/Find_2",
 )
 FORMAL_STAGE1_PREPARATION_ROOT = (
-    "/storage/penghongen/AdaLigand/Ori_Data/stage1_preparation"
+    "/storage/penghongen/AdaLigand/Ori_Data/stage1_preparation_box_pool_3"
 )
 LIGAND_PRAUC_MONITORED_EXPERIMENTS = (
     "CPC1/Find_0",
@@ -59,6 +59,29 @@ def test_stage1_training_defaults_to_formal_preparation(
         "}"
     )
     assert expected_default in launcher_text
+
+
+def test_training_launchers_use_v3_worker_and_scope_contracts() -> None:
+    """一键入口使用每个 rank 16 workers，Find 只执行 CPC1。"""
+
+    shell_root = PROJECT_ROOT / "训练与运行" / "sh"
+    for launcher_name in ("Find_0.sh", "Find_1.sh", "unet_c1.sh"):
+        launcher_text = (shell_root / launcher_name).read_text(encoding="utf-8")
+        assert '"train.num_workers=16"' in launcher_text
+        assert '"train.prefetch_factor=4"' in launcher_text
+    for launcher_name in ("Find_0.sh", "Find_1.sh"):
+        launcher_text = (shell_root / launcher_name).read_text(encoding="utf-8")
+        assert "+experiment=CPC1/" in launcher_text
+        assert "+experiment=CPC2/" not in launcher_text
+
+    unet_text = (shell_root / "unet_c1.sh").read_text(encoding="utf-8")
+    no_mainchain_text = (shell_root / "unet_c1_no_mainchain.sh").read_text(
+        encoding="utf-8"
+    )
+    assert 'protein_mainchain_weight="0.0"' in unet_text
+    assert 'nucleic_mainchain_weight="0.0"' in unet_text
+    assert "UNET_C1_VARIANT=no_mainchain" in no_mainchain_text
+    assert 'TASK_GPUS="${TASK_GPUS:-2}"' in no_mainchain_text
 
 
 @pytest.mark.parametrize("experiment", FIND_EXPERIMENTS)
@@ -203,7 +226,9 @@ def test_unet_c1_config_is_density_only_and_exports_final_v_feature() -> None:
     assert cfg.model.atom_loss is None
     assert cfg.model.ligand_pseudo_loss is None
     assert cfg.train.optimizer.lr == pytest.approx(1.0e-4)
-    assert cfg.dataset.box_sample_fraction == 1.0
+    assert "box_sample_fraction" not in cfg.dataset
+    assert cfg.train.num_workers == 16
+    assert cfg.train.prefetch_factor == 4
     assert "excluded_pdb_ids" not in cfg.dataset
     assert "excluded_pdb_ids" not in find1.dataset
     assert cfg.train.val_per_epoch == 30

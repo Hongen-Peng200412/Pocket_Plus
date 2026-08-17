@@ -323,6 +323,53 @@ def _make_batch() -> dict[str, torch.Tensor]:
     }
 
 
+def test_model_boundary_appends_backbone_flag_for_50d_embed_input() -> None:
+    """Dataset 保持 49 维资产，模型输入边界按既有配置形成第 50 维。"""
+
+    embed_head = _EmbedHeadStub()
+    embed_head.atom_feature_dim = 50
+    model = _make_model(embed_head=embed_head)
+    batch = {
+        "density_input": torch.zeros(1, 1, 2, 2, 2),
+        "atom_feat": torch.zeros(2, 49),
+        "atom_is_backbone": torch.tensor([True, False]),
+        "atom_offsets": torch.tensor([0, 2], dtype=torch.long),
+    }
+
+    canonical = model._canonicalize_stage1_batch(batch)
+
+    assert canonical["atom_feat"].shape == (2, 50)
+    assert canonical["atom_feat"][:, -1].tolist() == [1.0, 0.0]
+    assert canonical["atom_offsets"].tolist() == [2]
+    assert "atom_is_backbone" not in canonical
+
+
+@pytest.mark.parametrize("feature_source", ["point_backbone", "online_pdb_feature_dim"])
+def test_model_boundary_uses_documented_feature_dimension_fallbacks(
+    feature_source: str,
+) -> None:
+    """embed head 缺席时依次采用 point backbone 与在线特征维数。"""
+
+    model = _make_model(embed_head=None)
+    if feature_source == "point_backbone":
+        model.point_backbone.atom_feature_dim = 49
+    else:
+        model.point_backbone = None
+        model.online_pdb_feature_dim = 49
+    batch = {
+        "density_input": torch.zeros(1, 1, 2, 2, 2),
+        "atom_feat": torch.zeros(2, 49),
+        "atom_is_backbone": torch.tensor([True, False]),
+        "atom_offsets": torch.tensor([0, 2], dtype=torch.long),
+    }
+
+    canonical = model._canonicalize_stage1_batch(batch)
+
+    assert canonical["atom_feat"].shape == (2, 49)
+    assert canonical["atom_offsets"].tolist() == [2]
+    assert "atom_is_backbone" not in canonical
+
+
 def test_stage1_model_holds_single_atom_head_member() -> None:
     """
     验证主模型只持有 self.atom_head, 不再暴露旧 atom head 成员. 

@@ -10,6 +10,9 @@ ops/stage1_data_preparation/
 ├── migrate_density_arrays.py
 ├── freeze_split.py
 ├── build_box_pool_3.py
+├── utils/
+│   ├── __init__.py
+│   └── box_pool.py
 ├── run/
 │   ├── migrate_density_array.sh
 │   ├── finalize_density_migration.sh
@@ -117,3 +120,7 @@ python -m pytest -q ops/stage1_data_preparation/tests
 ```
 
 测试覆盖迁移逐值一致、剩余字段不变、幂等重试、冲突 NPY 拒绝覆盖、缺失 NPY 硬失败、日期与质量严格边界、200/100/剩余划分无交叉，以及 `exp.npz` 已无 `grid` 时 BOX pool 仍可确定性构造。
+
+## 训练消费状态
+
+第三版产物现在由唯一的 `src/datasets/stage1_dataset.py::Stage1Dataset` 直接消费。四个完整体 NPY 以只读 mmap 延迟打开，训练请求固定为 `0:5:5`；数据准备函数不进入 Dataset 的生产依赖方向。`utils/box_pool.py` 只供本目录的 V3 构建入口复用，集中 occurrence mask、确定性 PDB seed、bias/context 起点和 validation selection 冻结逻辑。

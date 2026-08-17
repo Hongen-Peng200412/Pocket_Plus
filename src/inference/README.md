@@ -26,8 +26,8 @@
 
 | 相对路径 | 推理用途 |
 | --- | --- |
-| `density/{pdb_id}/exp.npz` | 实验密度、完整图形状、世界坐标原点和体素尺寸 |
-| `density/{pdb_id}/sim.npz` | Find 模型使用的模拟密度 |
+| `density/{pdb_id}/exp.npy` 与 `exp.npz` | 实验密度完整数组，以及完整图形状、世界坐标原点和体素尺寸 |
+| `density/{pdb_id}/sim.npy` 与 `sim.npz` | Find 模型使用的模拟密度完整数组及其几何元数据 |
 | `density/{pdb_id}/ligand_area.npz` | calibration 真值及候选组件与真实配体实例的交集 |
 | `parse/{pdb_id}/receptor_tokens.npz` | 受体坐标和 Find 原子输入 |
 
