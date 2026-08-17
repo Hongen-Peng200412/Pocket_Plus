@@ -88,6 +88,14 @@ BOX pool 根目录为 `/storage/penghongen/AdaLigand/Ori_Data/stage1_preparation
 
 根目录还包含 `manifest.json`、`validation_selection.npz`、`config.json`、`summary.json` 和最后发布的 `_COMPLETE`。训练请求比例固定为 center:bias:context=`0:5:5`；每个 PDB 每轮最多选择 50 个 occurrence 的运行规则不由本目录修改。
 
+## 2026-08-17 正式运行结果
+
+- 数组迁移：22,381 个密度目录，89,524 个目标位置；89,442 个来源字段成功迁移，82 个目标位置没有来源文件。新发布 NPY 共 13,813,200,929,408 字节。
+- 冻结划分：train 13,717 PDB，validation 200 PDB，calibration 100 PDB，日期留出 2,497 PDB，缺日期隔离 357 PDB。
+- BOX pool：train 和 validation 分别发布 13,717 与 200 个 PDB NPZ；两者均无零 context PDB。固定验证选择包含 16,525 个 bias 与 16,525 个 context，center 为 0。
+- Slurm 证据：迁移数组/复核为 Job `343572`/`343835`，划分为 Job `345237`，BOX pool 数组/复核为 Job `346035`/`346063`；全部以退出码 `0:0` 完成。
+- 第二版 `stage1_preparation_box_pool_2` 没有被读取或改写。详细计数、路径和审查结论见同目录 `EXECUTION.md`。
+
 ## 108 核运行顺序
 
 迁移和 BOX pool 分别使用 12 个 Slurm 数组元素，每个元素申请 9 核，最大同时占用 108 核：
