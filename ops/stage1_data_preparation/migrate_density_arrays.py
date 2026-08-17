@@ -92,7 +92,9 @@ def replace_npz_without_migrated_key(
     migrated_key: str,
     remaining: dict[str, np.ndarray],
 ) -> None:
-    """先完整核对同目录临时 NPZ，再用它原子替换原 NPZ。"""
+    """ 用移除了 ``migrated_key`` 的压缩 NPZ 原子(已保存的 temporary_path)替换原文件，并核对字段顺序和数值。 
+    source_keys 为原本完整的key; remaining 为除迁出字段外的全部 NPZ 字段。
+    除了检验外, 唯一操作是 os.replace(temporary_path, npz_path) """
 
     descriptor, temporary_name = tempfile.mkstemp(
         prefix=f".{npz_path.name}.", suffix=".tmp", dir=npz_path.parent
@@ -342,3 +344,6 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
+# FIXME: 此文件明显过度防御, 为了很多几乎不会发生的情况写 if 判断。 在我心的规划里，如果这个文件超过 150 行, 将被判定为错误文件。本文件消耗了我远超原本预算的人类理解预算。如果再次出现这样的10个文件，整个项目将有崩盘的危险！

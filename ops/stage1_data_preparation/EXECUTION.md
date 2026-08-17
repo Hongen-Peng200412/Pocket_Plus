@@ -6,6 +6,9 @@
 
 - 实现共同基点：`Learn/CUMULATIVE@f2216171f8279dcee4bb09cba168540e340d67f4`。
 - 实现分支：`codex/stage1-v3-data-preparation`。
+- 实现端点：`bbaebe008d42e89923375eeaad98d055b43e030f`。
+- 学习分支：`Learn/stage1-v3-data-preparation`，端点为 `da659b999eaa70aac26a9ead221a129e4434dd04`。
+- 用户验收后的累计端点：`Learn/CUMULATIVE@186bfd05b90f6cbe3fe165e16068ac4bcdc39c7f`。该提交只补充用户对代码复杂度和可读性的批注，没有重新生产或改变服务器数据。
 - 独立工作树：`C:\Users\15919\.codex\worktrees\stage1-v3-data-preparation\Pocket_Plus`。
 - 目录边界：新增实现、测试、运行入口和文档全部位于 `ops/stage1_data_preparation/`；没有修改 `src/`、配置、模型或现有 `ops/box_pool_2/`。
 
@@ -33,3 +36,7 @@
 - 中性差异：EMDB 发布时间先写入可续传 JSONL，再冻结 split；这不改变日期口径。
 - 有害差异：尚未发现。
 - 未完成范围：Dataset、模型、训练和推理程序均不在本轮数据准备范围内；训练启动由后续任务负责。
+
+## 接续位置
+
+后续训练 I/O 适配不得重复构造 split 或 BOX pool，也不得重新写入迁移后的 NPZ。当前第三版产物和下一轮实施停点记录在 AdaLigand 的 `文档/exec_plan/Stage1第三版训练IO与入口实施.md`；完整接手信息记录在 `CLAUDE/memory/handoffs/2026-08-17-stage1-v3数据准备完成与训练IO接续.md`。

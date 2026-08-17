@@ -177,7 +177,7 @@ def fetch_release_dates(arguments: argparse.Namespace) -> None:
 def stable_eval_rank(seed: int, pdb_id: str) -> bytes:
     """生成与候选遍历顺序无关的 PDB 评估集排名键。"""
 
-    return hashlib.sha256(f"{seed}|eval|{pdb_id}".encode("utf-8")).digest()
+    return hashlib.sha256(f"{seed}|eval|{pdb_id}".encode("utf-8")).digest()   # FIXME：这是毒瘤
 
 
 def inspect_training_assets(data_root: Path, pdb_id: str) -> dict[str, Any]:
@@ -406,3 +406,5 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+# FIXME: 此文件明显过度防御, 为了很多几乎不会发生的情况写 if 判断。 在我心的规划里，如果这个文件超过 150 行, 将被判定为错误文件。本文件消耗了我远超原本预算的人类理解预算。如果再次出现这样的9个文件，整个项目将有崩盘的危险！
