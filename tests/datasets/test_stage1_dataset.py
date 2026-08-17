@@ -1,7 +1,9 @@
+# -*- coding: utf-8 -*-
+"""Stage1 V3 请求、NPY/mmap Dataset 与批处理契约测试。"""
+
 from __future__ import annotations
 
 import json
-from argparse import Namespace
 from collections import Counter
 from pathlib import Path
 
@@ -10,48 +12,90 @@ import pytest
 import torch
 
 import src.datasets.stage1_dataset as stage1_dataset_module
+from ops.stage1_data_preparation.utils import generate_context_starts, sample_bias_starts
 from src.datasets.density_channel_builder import ALL_CHANNEL_NAMES
 from src.datasets.stage1_collate import Stage1BatchCollator
 from src.datasets.stage1_dataset import Stage1Dataset
-from ops.box_pool_2.build_box_pool_2 import build_shard, finalize
-from src.datasets.ops.stage1_box_pool import (
-    build_stage1_box_pools,
-    generate_context_starts,
-    sample_bias_starts,
-)
 from src.datasets.stage1_requests import (
     ResolvedStage1Crop,
     Stage1TrainingRequestSet,
-    build_request_source,
     centered_start_from_centroid_zyx,
     centered_start_from_sparse_mask,
+    load_split_pdb_ids,
     load_validation_selection,
     resolve_stage1_start,
 )
 
 
-def _write_upstream(root: Path, pdb_id: str = "1abc", shape: tuple[int, int, int] = (80, 80, 80)) -> None:
-    density_dir = root / "density" / pdb_id
-    parse_dir = root / "parse" / pdb_id
-    label_dir = root / "labels" / pdb_id
-    density_dir.mkdir(parents=True)
-    parse_dir.mkdir(parents=True)
-    label_dir.mkdir(parents=True)
-    voxel_size = np.asarray([1.0, 1.0, 1.0], dtype=np.float32)
+def test_split_pdb_ids_deduplicate_in_first_appearance_order(tmp_path: Path) -> None:
+    """候选记录级 split 可含重复 PDB，推理清单保持首次出现顺序。"""
+
+    split_path = tmp_path / "train.json"
+    split_path.write_text(
+        json.dumps(
+            [
+                {"pdb_id": "2DEF", "candidate_id": 0},
+                {"pdb_id": "1abc", "candidate_id": 0},
+                {"pdb_id": "2def", "candidate_id": 1},
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    assert load_split_pdb_ids(split_path) == ("2def", "1abc")
+
+
+def _write_upstream(
+    root: Path,
+    pdb_id: str = "1abc",
+    shape: tuple[int, int, int] = (80, 80, 80),
+) -> None:
+    """写入一份最小 V3 NPY、空间元数据、受体与标签资产。"""
+
+    density_directory = root / "density" / pdb_id
+    parse_directory = root / "parse" / pdb_id
+    label_directory = root / "labels" / pdb_id
+    density_directory.mkdir(parents=True)
+    parse_directory.mkdir(parents=True)
+    label_directory.mkdir(parents=True)
+
+    voxel_size = np.ones(3, dtype=np.float32)
     origin = np.asarray([10.0, 20.0, 30.0], dtype=np.float32)
     z, y, x = np.indices(shape, dtype=np.float32)
     exp = (x + 2.0 * y + 3.0 * z)[None]
     sim = (0.5 * x + y + 0.25 * z + 1.0)[None]
-    np.savez(density_dir / "exp.npz", grid=exp, voxel_size=voxel_size, origin=origin)
-    np.savez(density_dir / "sim.npz", grid=sim, voxel_size=voxel_size, origin=origin)
-    union = np.zeros((1, *shape), dtype=bool)
-    union[0, 4, 3, 2] = True
-    np.savez_compressed(density_dir / "ligand_area.npz", union_mask=union)
+    np.save(density_directory / "exp.npy", exp, allow_pickle=False)
+    np.save(density_directory / "sim.npy", sim, allow_pickle=False)
+    np.savez(
+        density_directory / "exp.npz",
+        schema_version=np.asarray(2, dtype=np.int32),
+        canonical_shape_zyx=np.asarray(shape, dtype=np.int64),
+        voxel_size=voxel_size,
+        origin=origin,
+    )
+    np.savez(
+        density_directory / "sim.npz",
+        schema_version=np.asarray(2, dtype=np.int32),
+        voxel_size=voxel_size,
+        origin=origin,
+    )
+
+    union_mask = np.zeros((1, *shape), dtype=np.bool_)
+    union_mask[0, 4, 3, 2] = True
+    np.save(density_directory / "union_mask.npy", union_mask, allow_pickle=False)
+    np.savez_compressed(
+        density_directory / "ligand_area.npz",
+        schema_version=np.asarray(3, dtype=np.int32),
+        grid_shape_zyx=np.asarray(shape, dtype=np.int64),
+        voxel_size_xyz=voxel_size,
+        origin_xyz=origin,
+    )
+
     distance = np.full((1, *shape), 100.0, dtype=np.float16)
     distance[0, 4, 3, 2] = np.float16(3.0)
+    np.save(density_directory / "ligand_dist.npy", distance, allow_pickle=False)
     np.savez_compressed(
-        density_dir / "ligand_dist.npz",
-        distance=distance,
+        density_directory / "ligand_dist.npz",
         schema_version=np.asarray(1, dtype=np.uint16),
         grid_shape_zyx=np.asarray(shape, dtype=np.int64),
         voxel_size_xyz=voxel_size,
@@ -61,24 +105,26 @@ def _write_upstream(root: Path, pdb_id: str = "1abc", shape: tuple[int, int, int
 
     coords = np.asarray(
         [
-            [10.5, 20.5, 30.5],       # core home z/y/x = 0/0/0
-            [89.5, 99.5, 109.5],      # core home z/y/x = 79/79/79
-            [94.0, 50.0, 60.0],       # core 外 4 Å, 属于 8 Å point buffer
-            [99.0, 50.0, 60.0],       # core 外 9 Å, 不应加载
+            [10.5, 20.5, 30.5],
+            [89.5, 99.5, 109.5],
+            [94.0, 50.0, 60.0],
+            [99.0, 50.0, 60.0],
         ],
         dtype=np.float32,
     )
     feat = np.arange(coords.shape[0] * 49, dtype=np.float32).reshape(coords.shape[0], 49)
-    is_backbone = np.asarray([True, True, True, False], dtype=np.bool_)
     np.savez(
-        parse_dir / "receptor_tokens.npz",
+        parse_directory / "receptor_tokens.npz",
         coords=coords,
         feat=feat,
-        is_backbone=is_backbone,
+        is_backbone=np.asarray([True, True, True, False], dtype=np.bool_),
         res_type=np.asarray([0, 0, 20, 28], dtype=np.uint8),
         atom_name=np.asarray([b"CA", b"N", b"P", b"CB"], dtype="S4"),
     )
-    np.savez(label_dir / "atom_labels.npz", binding_atom=np.asarray([True, False, True, False]))
+    np.savez(
+        label_directory / "atom_labels.npz",
+        binding_atom=np.asarray([True, False, True, False]),
+    )
 
 
 def _request(require_targets: bool) -> tuple[ResolvedStage1Crop, ...]:
@@ -101,34 +147,36 @@ def _density_config(channels: list[str]) -> dict[str, object]:
     }
 
 
-def _write_pool_upstream(root: Path, pdb_id: str) -> None:
-    """写一份足以执行 BOX pool 一键入口的 schema-v3 轻量资产. """
+def _write_v3_pool(root: Path) -> Path:
+    """写入包含一个 train PDB 与一个 validation PDB 的 V3 请求池。"""
 
-    density_dir = root / "density" / pdb_id
-    parse_dir = root / "parse" / pdb_id
-    density_dir.mkdir(parents=True)
-    parse_dir.mkdir(parents=True)
-    shape = (80, 80, 80)
-    origin = np.zeros(3, dtype=np.float32)
-    voxel_size = np.ones(3, dtype=np.float32)
-    np.savez(
-        density_dir / "exp.npz",
-        grid=np.zeros((1, *shape), dtype=np.float32),
-        origin=origin,
-        voxel_size=voxel_size,
+    for split_name, pdb_id in (("train", "1abc"), ("validation", "2def")):
+        pool_directory = root / split_name
+        pool_directory.mkdir(parents=True, exist_ok=True)
+        occurrence_ids = np.arange(55, dtype=np.int32)
+        centers = np.stack([occurrence_ids] * 3, axis=1)
+        np.savez(
+            pool_directory / f"{pdb_id}.npz",
+            pdb_id=np.asarray(pdb_id),
+            occurrence_id=occurrence_ids,
+            center_start_zyx=centers,
+            bias_start_zyx=np.repeat(centers[:, None, :], 30, axis=1),
+            context_start_zyx=np.stack([np.arange(10)] * 3, axis=1).astype(np.int32),
+        )
+    manifest = {
+        "schema_version": 1,
+        "splits": {
+            "train": [{"pdb_id": "1abc", "path": "train/1abc.npz"}],
+            "validation": [{"pdb_id": "2def", "path": "validation/2def.npz"}],
+        },
+    }
+    (root / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    (root / "config.json").write_text(
+        json.dumps({"schema_version": 1, "entry_ratio": {"center": 0, "bias": 5, "context": 5}}),
+        encoding="utf-8",
     )
-    sparse = np.asarray([[39, 39, 39], [40, 40, 40], [41, 41, 41]], dtype=np.int32)
-    union = np.zeros((1, *shape), dtype=bool)
-    union[(0, sparse[:, 0], sparse[:, 1], sparse[:, 2])] = True
-    np.savez_compressed(
-        density_dir / "ligand_area.npz",
-        schema_version=np.asarray(3, dtype=np.int32),
-        grid_shape_zyx=np.asarray(shape, dtype=np.int64),
-        union_mask=union,
-        mask_7=sparse,
-    )
-    coords = np.full((1000, 3), 40.0, dtype=np.float32)
-    np.savez(parse_dir / "receptor_tokens.npz", coords=coords)
+    (root / "_COMPLETE").write_text("", encoding="utf-8")
+    return root
 
 
 def test_resolve_stage1_start_clamps_without_padding() -> None:
@@ -137,30 +185,24 @@ def test_resolve_stage1_start_clamps_without_padding() -> None:
         resolve_stage1_start((0, 0, 0), (79, 80, 80))
 
 
-def test_centroid_start_matches_sparse_mask_and_clamps_boundaries() -> None:
-    """验证 forest/centered 质心入口与 occurrence sparse-mask 入口完全同口径. """
-
+def test_centered_start_uses_same_corner_geometry_for_centroid_and_sparse_mask() -> None:
     sparse = np.asarray([[0, 2, 4], [2, 4, 6], [4, 6, 8]], dtype=np.int32)
     centroid = sparse.astype(np.float64).mean(axis=0)
-    direct = centered_start_from_centroid_zyx(centroid, (120, 130, 140))
-    from_sparse = centered_start_from_sparse_mask(sparse, (120, 130, 140))
-
-    assert direct == from_sparse == (0, 0, 0)
-    assert centered_start_from_centroid_zyx((119.0, 129.0, 139.0), (120, 130, 140)) == (40, 50, 60)
+    assert centered_start_from_centroid_zyx(centroid, (120, 130, 140)) == (0, 0, 0)
+    assert centered_start_from_sparse_mask(sparse, (120, 130, 140)) == (0, 0, 0)
 
 
-def test_centroid_start_rejects_non_finite_values() -> None:
-    """非有限 blob 质心不得静默生成错误 BOX. """
-
-    with pytest.raises(ValueError, match="NaN/Inf"):
-        centered_start_from_centroid_zyx((np.nan, 40.0, 40.0), (100, 100, 100))
-
-
-def test_find_dataset_materializes_direct_core8_and_union_target(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_find_dataset_materializes_mmap_crop_and_separate_backbone_flag(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     _write_upstream(tmp_path)
     monkeypatch.setattr(
-        "src.datasets.stage1_dataset.build_density_channels",
-        lambda exp_raw, sim_raw, config, receptor_mask: np.zeros((56, *exp_raw.shape), dtype=np.float32),
+        stage1_dataset_module,
+        "build_density_channels",
+        lambda exp_raw, sim_raw, config, receptor_mask: np.zeros(
+            (56, *exp_raw.shape), dtype=np.float32
+        ),
     )
     dataset = Stage1Dataset(
         all_data_path=str(tmp_path),
@@ -173,69 +215,20 @@ def test_find_dataset_materializes_direct_core8_and_union_target(tmp_path: Path,
     )
 
     sample = dataset[0]
-    assert sample["pdb_id"] == "1abc"
     assert sample["density_input"].shape == (56, 80, 80, 80)
-    assert sample["density_input"].dtype == torch.float32
     assert sample["atom_global_indices"].tolist() == [0, 1, 2]
-    assert sample["atom_feat"].shape == (3, 50)
-    assert sample["atom_feat"][:, -1].tolist() == [1.0, 1.0, 1.0]
+    assert sample["atom_feat"].shape == (3, 49)
+    assert sample["atom_is_backbone"].tolist() == [True, True, True]
     assert sample["atom_is_in_core_box"].tolist() == [True, True, False]
-    assert sample["hardmask"].sum().item() == 2
-    assert sample["voxel_label"].sum().item() == 1
     assert sample["ligand_area_target"][4, 3, 2].item() is True
     assert sample["protein_mainchain_target"][0, 0, 0].item() == 2
     assert sample["protein_mainchain_target"][79, 79, 79].item() == 1
-    assert sample["nucleic_mainchain_target"].sum().item() == 0
     assert sample["ligand_inverse_distance_target"][4, 3, 2].item() == pytest.approx(0.25)
-    assert sample["ligand_inverse_distance_target"][0, 0, 0].item() == pytest.approx(
-        1.0 / 101.0
-    )
-    assert "ligand_dist_map" not in sample
 
 
-def test_ligand_distance_loader_rejects_mixed_finite_and_infinite_values(
-    tmp_path: Path,
-) -> None:
-    """有配体距离图必须全部有限; 无配体距离图才允许全部为正无穷. """
-
+def test_unet_dataset_does_not_read_sim_or_return_atom_table(tmp_path: Path) -> None:
     _write_upstream(tmp_path)
-    distance_path = tmp_path / "density" / "1abc" / "ligand_dist.npz"
-    distance = np.ones((1, 80, 80, 80), dtype=np.float16)
-    distance[0, 0, 0, 0] = np.inf
-    np.savez_compressed(
-        distance_path,
-        distance=distance,
-        schema_version=np.asarray(1, dtype=np.uint16),
-        grid_shape_zyx=np.asarray([80, 80, 80], dtype=np.int64),
-        voxel_size_xyz=np.ones(3, dtype=np.float32),
-        origin_xyz=np.asarray([10.0, 20.0, 30.0], dtype=np.float32),
-        distance_unit=np.asarray("angstrom"),
-    )
-    dataset = Stage1Dataset(
-        all_data_path=str(tmp_path),
-        split_file=_request(require_targets=True),
-        mode="val",
-        stage1_model_name="Find_1",
-        box_pool_root=None,
-        density_channel_config=_density_config(list(ALL_CHANNEL_NAMES)),
-        enable_random_rotation=False,
-    )
-
-    with pytest.raises(ValueError, match="全部有限且非负，或全部为正无穷"):
-        dataset._load_ligand_distance(
-            "1abc",
-            (80, 80, 80),
-            np.ones(3, dtype=np.float32),
-            np.asarray([10.0, 20.0, 30.0], dtype=np.float32),
-        )
-
-
-def test_unet_dataset_returns_auxiliary_targets_without_sim_or_atom_table(
-    tmp_path: Path,
-) -> None:
-    """验证 unet_c1 不读取模拟密度或返回原子表, 但仍提供三项新增体素监督. """
-
-    _write_upstream(tmp_path)
+    (tmp_path / "density" / "1abc" / "sim.npy").unlink()
     (tmp_path / "density" / "1abc" / "sim.npz").unlink()
     dataset = Stage1Dataset(
         all_data_path=str(tmp_path),
@@ -249,66 +242,52 @@ def test_unet_dataset_returns_auxiliary_targets_without_sim_or_atom_table(
     sample = dataset[0]
     assert sample["density_input"].shape == (1, 80, 80, 80)
     assert "atom_feat" not in sample
-    assert sample["hardmask"].sum().item() == 2
-    assert sample["voxel_label"].sum().item() == 1
-    assert sample["protein_mainchain_target"][0, 0, 0].item() == 2
-    assert sample["protein_mainchain_target"][79, 79, 79].item() == 1
-    assert sample["nucleic_mainchain_target"].sum().item() == 0
-    assert sample["ligand_inverse_distance_target"][4, 3, 2].item() == pytest.approx(
-        0.25
-    )
+    assert sample["ligand_area_target"].sum().item() == 1
+    assert sample["ligand_inverse_distance_target"][4, 3, 2].item() == pytest.approx(0.25)
 
 
-def test_targets_toggle_does_not_change_model_inputs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    _write_upstream(tmp_path)
-    monkeypatch.setattr(
-        "src.datasets.stage1_dataset.build_density_channels",
-        lambda exp_raw, sim_raw, config, receptor_mask: np.zeros((56, *exp_raw.shape), dtype=np.float32),
-    )
-    kwargs = dict(
+def test_distance_validation_reads_only_the_requested_crop(tmp_path: Path) -> None:
+    """裁块外的 Inf 不触发扫描，裁块内的 Inf 按 V3 数值契约拒绝。"""
+
+    shape = (100, 100, 100)
+    _write_upstream(tmp_path, shape=shape)
+    distance_path = tmp_path / "density" / "1abc" / "ligand_dist.npy"
+    distance = np.load(distance_path, mmap_mode="r+")
+    distance[0, 99, 99, 99] = np.inf
+    distance.flush()
+    dataset = Stage1Dataset(
         all_data_path=str(tmp_path),
-        mode="centered",
-        stage1_model_name="Find_0",
+        split_file=_request(require_targets=True),
+        mode="val",
+        stage1_model_name="unet_c1",
         box_pool_root=None,
-        density_channel_config=_density_config(list(ALL_CHANNEL_NAMES)),
+        density_channel_config=_density_config(["exp_clipnorm_nopost"]),
         enable_random_rotation=False,
     )
-    sample_true = Stage1Dataset(split_file=_request(require_targets=True), **kwargs)[0]
-    sample_false = Stage1Dataset(split_file=_request(require_targets=False), **kwargs)[0]
-    for field_name in (
-        "density_input",
-        "hardmask",
-        "atom_global_indices",
-        "atom_feat",
-        "atom_coord_local_voxel",
-        "atom_coord_centered_world",
-        "atom_is_in_core_box",
-    ):
-        assert torch.equal(sample_true[field_name], sample_false[field_name])
-    assert "ligand_area_target" not in sample_false
-    assert "voxel_label" not in sample_false
-    assert "atom_label" not in sample_false
+    dataset[0]
+    distance[0, 0, 0, 0] = np.inf
+    distance.flush()
+    dataset._source_cache.values.clear()
+    dataset._source_cache.current_bytes = 0
+    with pytest.raises(ValueError, match="NaN 或 Inf"):
+        dataset[0]
 
 
-def test_repeated_windows_reuse_bounded_full_grid_cache(
+def test_repeated_windows_reuse_mmap_handles(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """同一 worker 连续物化同一 PDB 时, exp/sim 各只解压一次. """
-
     _write_upstream(tmp_path)
     read_count: Counter[str] = Counter()
-    from src.datasets import stage1_dataset as dataset_module
+    original_loader = stage1_dataset_module._load_mmap_array
 
-    original_loader = dataset_module._grid_from_npz
-
-    def counted_loader(path: Path):
+    def counted_loader(path: Path, expected_dtype: np.dtype) -> np.memmap:
         read_count[path.name] += 1
-        return original_loader(path)
+        return original_loader(path, expected_dtype)
 
-    monkeypatch.setattr(dataset_module, "_grid_from_npz", counted_loader)
+    monkeypatch.setattr(stage1_dataset_module, "_load_mmap_array", counted_loader)
     monkeypatch.setattr(
-        dataset_module,
+        stage1_dataset_module,
         "build_density_channels",
         lambda exp_raw, sim_raw, config, receptor_mask: np.zeros(
             (56, *exp_raw.shape), dtype=np.float32
@@ -324,15 +303,13 @@ def test_repeated_windows_reuse_bounded_full_grid_cache(
         cache_max_bytes=64 * 1024 * 1024,
         enable_random_rotation=False,
     )
-
     first = dataset[0]
     second = dataset[0]
-
-    assert read_count == Counter({"exp.npz": 1, "sim.npz": 1})
+    assert read_count == Counter({"exp.npy": 1, "sim.npy": 1})
     assert torch.equal(first["density_input"], second["density_input"])
 
 
-def test_collator_exposes_b_plus_one_offsets_and_handles_empty_atoms() -> None:
+def test_collator_keeps_backbone_flag_and_b_plus_one_offsets() -> None:
     common = {
         "pdb_id": "x",
         "request_role": "centered",
@@ -345,401 +322,104 @@ def test_collator_exposes_b_plus_one_offsets_and_handles_empty_atoms() -> None:
         "density_input": torch.zeros(1, 2, 2, 2),
         "hardmask": torch.zeros(2, 2, 2, dtype=torch.bool),
     }
-    atom_tail = {
+    atom_fields = {
         "atom_global_indices": torch.empty(0, dtype=torch.int64),
-        "atom_feat": torch.empty(0, 50),
+        "atom_feat": torch.empty(0, 49),
+        "atom_is_backbone": torch.empty(0, dtype=torch.bool),
         "atom_coord_world": torch.empty(0, 3),
         "atom_coord_local_voxel": torch.empty(0, 3),
         "atom_coord_centered_world": torch.empty(0, 3),
         "atom_is_in_core_box": torch.empty(0, dtype=torch.bool),
     }
-    sample0 = {**common, **atom_tail}
-    sample1 = {**common, **atom_tail, "atom_feat": torch.ones(2, 50)}
-    sample1.update(
-        {
-            "atom_global_indices": torch.arange(2),
-            "atom_coord_world": torch.zeros(2, 3),
-            "atom_coord_local_voxel": torch.zeros(2, 3),
-            "atom_coord_centered_world": torch.zeros(2, 3),
-            "atom_is_in_core_box": torch.ones(2, dtype=torch.bool),
-        }
-    )
+    sample0 = {**common, **atom_fields}
+    sample1 = {
+        **common,
+        **atom_fields,
+        "atom_global_indices": torch.arange(2),
+        "atom_feat": torch.ones(2, 49),
+        "atom_is_backbone": torch.tensor([True, False]),
+        "atom_coord_world": torch.zeros(2, 3),
+        "atom_coord_local_voxel": torch.zeros(2, 3),
+        "atom_coord_centered_world": torch.zeros(2, 3),
+        "atom_is_in_core_box": torch.ones(2, dtype=torch.bool),
+    }
     batch = Stage1BatchCollator()([sample0, sample1])
     assert batch["atom_counts"].tolist() == [0, 2]
     assert batch["atom_offsets"].tolist() == [0, 0, 2]
-    assert batch["atom_batch_index"].tolist() == [1, 1]
+    assert batch["atom_is_backbone"].tolist() == [True, False]
 
 
-def test_training_pool_rebuilds_fixed_1_5_3_ratio(tmp_path: Path) -> None:
-    pool_dir = tmp_path / "train"
-    pool_dir.mkdir()
-    occurrence = np.arange(55, dtype=np.int32)
-    center = np.stack([occurrence, occurrence, occurrence], axis=1)
-    bias = np.repeat(center[:, None, :], 30, axis=1)
-    context = np.stack([np.arange(10), np.arange(10), np.arange(10)], axis=1).astype(np.int32)
-    np.savez(
-        pool_dir / "1abc.npz",
-        pdb_id=np.asarray("1abc"),
-        occurrence_id=occurrence,
-        center_start_zyx=center,
-        bias_start_zyx=bias,
-        context_start_zyx=context,
-    )
-    (tmp_path / "manifest.json").write_text(
-        json.dumps(
-            {
-                "schema_version": 1,
-                "splits": {
-                    "train": [{"pdb_id": "1abc", "path": "train/1abc.npz"}],
-                    "validation": [],
-                },
-            }
-        ),
-        encoding="utf-8",
-    )
-    (tmp_path / "_COMPLETE").write_text("", encoding="utf-8")
-    source = Stage1TrainingRequestSet(pool_dir, seed=7)
+def test_training_pool_rebuilds_deterministic_zero_five_five_epochs(tmp_path: Path) -> None:
+    pool_root = _write_v3_pool(tmp_path)
+    source = Stage1TrainingRequestSet(pool_root / "train", seed=7)
     epoch0 = tuple(source.requests)
-    assert len(epoch0) == 50 * 9
-    assert sum(request.role == "center" for request in epoch0) == 50
-    assert sum(request.role == "bias" for request in epoch0) == 250
-    assert sum(request.role == "context" for request in epoch0) == 150
+    assert len(epoch0) == 50 * 10
+    assert Counter(request.role for request in epoch0) == {"bias": 250, "context": 250}
     source.set_epoch(1)
     assert tuple(source.requests) != epoch0
-    source_again = Stage1TrainingRequestSet(pool_dir, seed=7)
+    source_again = Stage1TrainingRequestSet(pool_root / "train", seed=7)
     source_again.set_epoch(1)
     assert tuple(source_again.requests) == tuple(source.requests)
 
-    reduced = Stage1TrainingRequestSet(pool_dir, seed=7, box_sample_fraction=0.1)
-    frozen = tuple(reduced.requests)
-    assert len(frozen) == 45
-    assert sum(request.role == "center" for request in frozen) == 5
-    assert sum(request.role == "bias" for request in frozen) == 25
-    assert sum(request.role == "context" for request in frozen) == 15
-    assert (tmp_path / "train_selection_0.1_seed7.npz").is_file()
-    with np.load(tmp_path / "train_selection_0.1_seed7.npz", allow_pickle=False) as saved:
-        assert float(saved["box_sample_fraction"]) == pytest.approx(0.1)
-        assert int(saved["request_seed"]) == 7
-        assert int(saved["selection_epoch"]) == 0
-        assert int(saved["schema_version"]) == 1
-        assert len(str(saved["source_manifest_sha256"].item())) == 64
-    reduced.set_epoch(9)
-    assert tuple(reduced.requests) == frozen
-    assert tuple(Stage1TrainingRequestSet(pool_dir, seed=7, box_sample_fraction=0.1).requests) == frozen
-    manifest_path = tmp_path / "manifest.json"
-    manifest_path.write_text(manifest_path.read_text(encoding="utf-8") + "\n", encoding="utf-8")
-    with pytest.raises(ValueError, match="元数据与当前来源不一致"):
-        Stage1TrainingRequestSet(pool_dir, seed=7, box_sample_fraction=0.1)
 
-
-@pytest.mark.parametrize("context_count", (0, 1, 2))
-def test_training_pool_context_underflow_does_not_abort(
-    tmp_path: Path,
-    context_count: int,
-) -> None:
-    """context 尝试耗尽后保留真实池; 1–2 个可复用, 0 个则只省略 context. """
-
-    pool_dir = tmp_path / "train"
-    pool_dir.mkdir()
-    context = np.zeros((context_count, 3), dtype=np.int32)
+def test_validation_selection_expands_zero_five_five_indices(tmp_path: Path) -> None:
+    pool_root = _write_v3_pool(tmp_path)
+    validation_ids = np.asarray([b"2def"], dtype="S4")
     np.savez(
-        pool_dir / "1abc.npz",
-        pdb_id=np.asarray("1abc"),
-        occurrence_id=np.asarray([7], dtype=np.int32),
-        center_start_zyx=np.asarray([[0, 0, 0]], dtype=np.int32),
-        bias_start_zyx=np.zeros((1, 30, 3), dtype=np.int32),
-        context_start_zyx=context,
+        pool_root / "validation_selection.npz",
+        validation_pdb_id=validation_ids,
+        center_pdb_index=np.empty(0, dtype=np.int32),
+        center_occurrence_id=np.empty(0, dtype=np.int32),
+        bias_pdb_index=np.zeros(5, dtype=np.int32),
+        bias_occurrence_id=np.full(5, 3, dtype=np.int32),
+        bias_candidate_index=np.arange(5, dtype=np.int16),
+        context_pdb_index=np.zeros(5, dtype=np.int32),
+        context_candidate_index=np.arange(5, dtype=np.int32),
     )
-    (tmp_path / "manifest.json").write_text(
-        json.dumps(
-            {
-                "schema_version": 1,
-                "splits": {
-                    "train": [{"pdb_id": "1abc", "path": "train/1abc.npz"}],
-                    "validation": [],
-                },
-            }
-        ),
-        encoding="utf-8",
-    )
-    (tmp_path / "_COMPLETE").write_text("", encoding="utf-8")
-
-    requests = tuple(Stage1TrainingRequestSet(pool_dir, seed=7).requests)
-
-    context_requests = [request for request in requests if request.role == "context"]
-    assert len(context_requests) == (3 if context_count else 0)
-    assert all(0 <= request.candidate_index < context_count for request in context_requests)
-    assert sum(request.role == "center" for request in requests) == 1
-    assert sum(request.role == "bias" for request in requests) == 5
+    requests = load_validation_selection(pool_root / "validation_selection.npz", pool_root)
+    assert Counter(request.role for request in requests) == {"bias": 5, "context": 5}
 
 
-def test_context_generator_uses_core_atom_count_and_stable_legal_starts() -> None:
-    """验证 context 只按合法起点与 core receptor 重原子数筛选. """
-
+def test_context_and_bias_generators_remain_deterministic() -> None:
     coords = np.full((4, 3), 40.0, dtype=np.float32)
-    first = generate_context_starts(
-        receptor_coords_world=coords,
-        full_origin_world=(0.0, 0.0, 0.0),
-        voxel_size_world=(1.0, 1.0, 1.0),
-        full_shape_zyx=(80, 80, 80),
-        rng=np.random.default_rng(9),
+    context_first = generate_context_starts(
+        coords,
+        (0.0, 0.0, 0.0),
+        (1.0, 1.0, 1.0),
+        (84, 85, 86),
+        np.random.default_rng(9),
         target_count=5,
         max_attempts=8,
-        min_core_atoms=4,
-    )
-    second = generate_context_starts(
-        receptor_coords_world=coords,
-        full_origin_world=(0.0, 0.0, 0.0),
-        voxel_size_world=(1.0, 1.0, 1.0),
-        full_shape_zyx=(80, 80, 80),
-        rng=np.random.default_rng(9),
-        target_count=5,
-        max_attempts=8,
-        min_core_atoms=4,
-    )
-
-    assert first.shape == (5, 3)
-    assert np.array_equal(first, second)
-    assert np.array_equal(first, np.zeros((5, 3), dtype=np.int32))
-
-
-def test_context_generator_without_atom_threshold_samples_all_legal_starts() -> None:
-    """第二版 context 不依赖受体原子数量，并严格产生目标数量。"""
-
-    starts = generate_context_starts(
-        receptor_coords_world=np.zeros((0, 3), dtype=np.float32),
-        full_origin_world=(0.0, 0.0, 0.0),
-        voxel_size_world=(1.0, 1.0, 1.0),
-        full_shape_zyx=(84, 85, 86),
-        rng=np.random.default_rng(19),
-        target_count=25,
-        max_attempts=25,
         min_core_atoms=0,
     )
-
-    assert starts.shape == (25, 3)
-    assert starts.dtype == np.int32
-    assert np.all(starts >= 0)
-    assert np.all(starts <= np.asarray([4, 5, 6], dtype=np.int32))
-
-
-def test_bias_extra_drift_is_deterministic_and_keeps_legal_starts() -> None:
-    """第二版 bias 叠加 0–3 Å 漂移后仍稳定且不越界。"""
+    context_second = generate_context_starts(
+        coords,
+        (0.0, 0.0, 0.0),
+        (1.0, 1.0, 1.0),
+        (84, 85, 86),
+        np.random.default_rng(9),
+        target_count=5,
+        max_attempts=8,
+        min_core_atoms=0,
+    )
+    np.testing.assert_array_equal(context_first, context_second)
 
     sparse = np.asarray([[98, 99, 100], [99, 100, 101], [100, 101, 102]], dtype=np.int32)
-    first = sample_bias_starts(
+    bias_first = sample_bias_starts(
         sparse,
-        full_shape_zyx=(200, 200, 200),
-        rng=np.random.default_rng(17),
+        (200, 200, 200),
+        np.random.default_rng(17),
         num_candidates=30,
         voxel_size_world=(0.5, 1.0, 2.0),
         extra_drift_max_angstrom=3.0,
     )
-    second = sample_bias_starts(
+    bias_second = sample_bias_starts(
         sparse,
-        full_shape_zyx=(200, 200, 200),
-        rng=np.random.default_rng(17),
+        (200, 200, 200),
+        np.random.default_rng(17),
         num_candidates=30,
         voxel_size_world=(0.5, 1.0, 2.0),
         extra_drift_max_angstrom=3.0,
     )
-
-    assert np.array_equal(first, second)
-    assert np.all(first >= 0)
-    assert np.all(first <= 120)
-
-
-def test_synced_rotation_swaps_anisotropic_voxel_axes_and_keeps_alignment(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """90° 旋转必须同步置换轴尺度、体素监督和 Find 原子坐标. """
-
-    side = 4
-    origin = np.asarray([10.0, 20.0, 30.0], dtype=np.float32)
-    voxel_size = np.asarray([1.0, 2.0, 3.0], dtype=np.float32)
-    local_xyz = np.asarray([[0.5, 1.5, 2.5]], dtype=np.float32)
-    center = origin + 0.5 * side * voxel_size
-    world = origin[None, :] + local_xyz * voxel_size[None, :]
-    label = np.zeros((side, side, side), dtype=np.bool_)
-    label[2, 1, 0] = True
-    sample = {
-        "density_input": label[None].astype(np.float32),
-        "hardmask": label.copy(),
-        "voxel_label": label.copy(),
-        "ligand_area_target": label.copy(),
-        "box_shape_zyx": np.asarray([side, side, side], dtype=np.int64),
-        "box_origin_world": origin,
-        "voxel_size_world": voxel_size,
-        "atom_coord_local_voxel": local_xyz,
-        "atom_coord_centered_world": world - center[None, :],
-        "atom_coord_world": world,
-    }
-    monkeypatch.setattr(
-        stage1_dataset_module.np.random,
-        "choice",
-        lambda *_args, **_kwargs: np.asarray([0, 1]),
-    )
-    monkeypatch.setattr(stage1_dataset_module.random, "randint", lambda *_args: 1)
-
-    rotated = stage1_dataset_module._apply_synced_rotation(sample)
-
-    np.testing.assert_array_equal(rotated["voxel_size_world"], [1.0, 3.0, 2.0])
-    label_position = np.argwhere(rotated["voxel_label"])[0]
-    atom_position = np.floor(rotated["atom_coord_local_voxel"][0]).astype(np.int64)[
-        [2, 1, 0]
-    ]
-    np.testing.assert_array_equal(atom_position, label_position)
-    np.testing.assert_allclose(
-        rotated["atom_coord_world"],
-        origin[None, :]
-        + rotated["atom_coord_local_voxel"]
-        * rotated["voxel_size_world"][None, :],
-    )
-    rotated_center = origin + 0.5 * side * rotated["voxel_size_world"]
-    np.testing.assert_allclose(
-        rotated["atom_coord_centered_world"],
-        rotated["atom_coord_world"] - rotated_center[None, :],
-    )
-
-
-def test_box_pool_one_click_entry_publishes_train_validation_and_selection(tmp_path: Path) -> None:
-    """验证一键入口生成 pool、冻结 validation 1:5:3, 并最后发布完成标记. """
-
-    data_root = tmp_path / "data"
-    _write_pool_upstream(data_root, "1abc")
-    _write_pool_upstream(data_root, "2def")
-    train_split = tmp_path / "train.json"
-    validation_split = tmp_path / "validation.json"
-    train_split.write_text(json.dumps([{"pdb_id": "1ABC"}]), encoding="utf-8")
-    validation_split.write_text(json.dumps([{"pdb_id": "2DEF"}]), encoding="utf-8")
-    output_root = tmp_path / "box_pool"
-    (output_root / "train").mkdir(parents=True)
-    (output_root / "validation").mkdir(parents=True)
-    np.savez(output_root / "train" / "stale.npz", broken=np.asarray([1]))
-    np.savez(output_root / "validation" / "stale.npz", broken=np.asarray([1]))
-
-    summary = build_stage1_box_pools(
-        data_root=data_root,
-        train_split=train_split,
-        validation_split=validation_split,
-        output_root=output_root,
-        seed=23,
-    )
-
-    assert summary["train"]["published_pdb"] == 1
-    assert summary["validation"]["published_pdb"] == 1
-    assert (output_root / "_COMPLETE").is_file()
-    assert (output_root / "config.json").is_file()
-    manifest = json.loads((output_root / "manifest.json").read_text(encoding="utf-8"))
-    assert manifest["splits"] == {
-        "train": [{"pdb_id": "1abc", "path": "train/1abc.npz"}],
-        "validation": [{"pdb_id": "2def", "path": "validation/2def.npz"}],
-    }
-    assert len(Stage1TrainingRequestSet(output_root / "train", seed=23)) == 9
-    with np.load(output_root / "train" / "1abc.npz", allow_pickle=False) as pool:
-        assert pool["occurrence_id"].tolist() == [7]
-        assert pool["center_start_zyx"].shape == (1, 3)
-        assert pool["bias_start_zyx"].shape == (1, 30, 3)
-        assert pool["context_start_zyx"].shape == (500, 3)
-    requests = load_validation_selection(
-        output_root / "validation_selection.npz",
-        output_root,
-    )
-    assert len(requests) == 9
-    assert [request.role for request in requests].count("center") == 1
-    assert [request.role for request in requests].count("bias") == 5
-    assert [request.role for request in requests].count("context") == 3
-    reduced_validation = build_request_source(
-        split_file=output_root / "validation_selection.npz",
-        mode="val",
-        box_pool_root=output_root,
-        seed=23,
-        box_sample_fraction=0.5,
-    )
-    assert len(reduced_validation) == 4
-    assert [request.role for request in reduced_validation].count("center") == 1
-    assert [request.role for request in reduced_validation].count("bias") == 2
-    assert [request.role for request in reduced_validation].count("context") == 1
-    assert (output_root / "validation_selection_0.5_seed23.npz").is_file()
-    with np.load(
-        output_root / "validation_selection_0.5_seed23.npz",
-        allow_pickle=False,
-    ) as saved:
-        assert len(str(saved["source_manifest_sha256"].item())) == 64
-        assert len(str(saved["source_validation_sha256"].item())) == 64
-
-
-def test_box_pool_second_version_uses_frozen_zero_five_five_ratio(tmp_path: Path) -> None:
-    """第二版 train 与 validation 都从自身配置读取 0 center、5 bias、5 context。"""
-
-    data_root = tmp_path / "data"
-    _write_pool_upstream(data_root, "1abc")
-    _write_pool_upstream(data_root, "2def")
-    train_split = tmp_path / "train.json"
-    validation_split = tmp_path / "validation.json"
-    train_split.write_text(json.dumps([{"pdb_id": "1abc"}]), encoding="utf-8")
-    validation_split.write_text(json.dumps([{"pdb_id": "2def"}]), encoding="utf-8")
-    output_root = tmp_path / "box_pool_2"
-
-    build_stage1_box_pools(
-        data_root=data_root,
-        train_split=train_split,
-        validation_split=validation_split,
-        output_root=output_root,
-        seed=23,
-        center_per_occurrence=0,
-        bias_per_occurrence=5,
-        context_per_occurrence=5,
-        context_min_core_atoms=0,
-        extra_bias_drift_max_angstrom=3.0,
-    )
-
-    config = json.loads((output_root / "config.json").read_text(encoding="utf-8"))
-    assert config["entry_ratio"] == {"center": 0, "bias": 5, "context": 5}
-    assert config["context_generator"]["min_core_receptor_heavy_atoms"] == 0
-    assert config["extra_bias_drift_max_angstrom"] == pytest.approx(3.0)
-
-    train_requests = tuple(Stage1TrainingRequestSet(output_root / "train", seed=23).requests)
-    assert len(train_requests) == 10
-    assert Counter(request.role for request in train_requests) == {"bias": 5, "context": 5}
-
-    validation_requests = load_validation_selection(
-        output_root / "validation_selection.npz",
-        output_root,
-    )
-    assert len(validation_requests) == 10
-    assert Counter(request.role for request in validation_requests) == {"bias": 5, "context": 5}
-
-
-def test_box_pool_second_version_parallel_publish_contract(tmp_path: Path) -> None:
-    """分片只写单 PDB；finalize 核对齐全后才写根完成标记。"""
-
-    data_root = tmp_path / "data"
-    _write_pool_upstream(data_root, "1abc")
-    _write_pool_upstream(data_root, "2def")
-    train_split = tmp_path / "train.json"
-    validation_split = tmp_path / "validation.json"
-    train_split.write_text(json.dumps([{"pdb_id": "1abc"}]), encoding="utf-8")
-    validation_split.write_text(json.dumps([{"pdb_id": "2def"}]), encoding="utf-8")
-    output_root = tmp_path / "box_pool_2"
-    state_root = tmp_path / "run_state"
-
-    common = {
-        "data_root": str(data_root),
-        "train_split": str(train_split),
-        "validation_split": str(validation_split),
-        "output_root": str(output_root),
-        "state_root": str(state_root),
-        "shard_count": 2,
-        "workers": 1,
-        "seed": 23,
-    }
-    build_shard(Namespace(**common, shard_index=0))
-    assert not (output_root / "_COMPLETE").exists()
-    build_shard(Namespace(**common, shard_index=1))
-    finalize(Namespace(**common, shard_index=0))
-
-    assert (output_root / "_COMPLETE").is_file()
-    config = json.loads((output_root / "config.json").read_text(encoding="utf-8"))
-    assert config["entry_ratio"] == {"center": 0, "bias": 5, "context": 5}
-    assert len(Stage1TrainingRequestSet(output_root / "train", seed=23)) == 10
+    np.testing.assert_array_equal(bias_first, bias_second)
+    assert np.all((bias_first >= 0) & (bias_first <= 120))

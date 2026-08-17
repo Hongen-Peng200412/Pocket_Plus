@@ -120,8 +120,21 @@ def _write_ag_fixture(root: Path, pdb_id: str = "1abc") -> None:
     origin = np.zeros(3, dtype=np.float32)
     exp = np.zeros((1, *SHAPE), dtype=np.float32)
     sim = np.ones((1, *SHAPE), dtype=np.float32)
-    np.savez(density_dir / "exp.npz", grid=exp, voxel_size=voxel_size, origin=origin)
-    np.savez(density_dir / "sim.npz", grid=sim, voxel_size=voxel_size, origin=origin)
+    np.save(density_dir / "exp.npy", exp, allow_pickle=False)
+    np.save(density_dir / "sim.npy", sim, allow_pickle=False)
+    np.savez(
+        density_dir / "exp.npz",
+        schema_version=np.asarray(2, dtype=np.int32),
+        canonical_shape_zyx=np.asarray(SHAPE, dtype=np.int64),
+        voxel_size=voxel_size,
+        origin=origin,
+    )
+    np.savez(
+        density_dir / "sim.npz",
+        schema_version=np.asarray(2, dtype=np.int32),
+        voxel_size=voxel_size,
+        origin=origin,
+    )
 
     sparse = np.asarray([[5, 5, 5]], dtype=np.int32)
     union = np.zeros((1, *SHAPE), dtype=np.bool_)
@@ -130,9 +143,11 @@ def _write_ag_fixture(root: Path, pdb_id: str = "1abc") -> None:
         density_dir / "ligand_area.npz",
         schema_version=np.asarray(3, dtype=np.int32),
         grid_shape_zyx=np.asarray(SHAPE, dtype=np.int64),
-        union_mask=union,
+        voxel_size_xyz=voxel_size,
+        origin_xyz=origin,
         mask_7=sparse,
     )
+    np.save(density_dir / "union_mask.npy", union, allow_pickle=False)
     coords = np.asarray([[0.5, 0.5, 0.5]], dtype=np.float32)
     feat = np.zeros((1, 49), dtype=np.float32)
     np.savez(
@@ -216,14 +231,14 @@ def test_runtime_assembly_uses_in_memory_dataset_and_find_full_hardmask(
     wrapper = _ProbabilityWrapper()
     from src.datasets import stage1_dataset as stage1_dataset_module
 
-    original_grid_loader = stage1_dataset_module._grid_from_npz
+    original_grid_loader = stage1_dataset_module._load_mmap_array
     grid_loads: list[str] = []
 
-    def record_grid_load(path):
+    def record_grid_load(path, expected_dtype):
         grid_loads.append(Path(path).name)
-        return original_grid_loader(path)
+        return original_grid_loader(path, expected_dtype)
 
-    monkeypatch.setattr(stage1_dataset_module, "_grid_from_npz", record_grid_load)
+    monkeypatch.setattr(stage1_dataset_module, "_load_mmap_array", record_grid_load)
     monkeypatch.setattr(
         "src.datasets.stage1_dataset.build_density_channels",
         lambda exp_raw, sim_raw, config, receptor_mask: np.zeros(
@@ -269,8 +284,8 @@ def test_runtime_assembly_uses_in_memory_dataset_and_find_full_hardmask(
     assert centered_batch["atom_label"].dtype == torch.bool
     assert centered_batch["atom_label"].tolist() == [False]
     assert bool(inputs.receptor_hardmask_full[0, 0, 0])
-    assert grid_loads.count("exp.npz") == 1
-    assert grid_loads.count("sim.npz") == 1
+    assert grid_loads.count("exp.npy") == 1
+    assert grid_loads.count("sim.npy") == 1
     occurrences = runtime.occurrence_voxels(task, SHAPE)
     assert occurrences[7].tolist() == [np.ravel_multi_index((5, 5, 5), SHAPE)]
 
@@ -714,10 +729,7 @@ def test_selected_role_loads_selection_reruns_and_publishes(tmp_path: Path) -> N
 def test_occurrence_loader_rejects_union_drift(tmp_path: Path) -> None:
     """occurrence 稀疏 mask 与 union 不一致时必须 fail-fast. """
     _write_ag_fixture(tmp_path)
-    path = tmp_path / "density" / "1abc" / "ligand_area.npz"
-    with np.load(path, allow_pickle=False) as data:
-        arrays = {key: np.asarray(data[key]) for key in data.files}
-    arrays["union_mask"] = np.zeros((1, *SHAPE), dtype=np.bool_)
-    np.savez_compressed(path, **arrays)
+    union_path = tmp_path / "density" / "1abc" / "union_mask.npy"
+    np.save(union_path, np.zeros((1, *SHAPE), dtype=np.bool_), allow_pickle=False)
     with pytest.raises(ValueError, match="并集"):
         AGOccurrenceVoxelLoader(tmp_path)("1abc", SHAPE)
