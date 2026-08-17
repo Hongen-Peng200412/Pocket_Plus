@@ -14,7 +14,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from processedPDB_EMDB_binder.utils.mrc_tools import load_map
+from utils.mrc_tools import load_map
 
 DEFAULT_SIM_MAP_KEYS = ("sim_map_path", "sim_map_path_cryoatom")
 
