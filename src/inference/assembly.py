@@ -436,18 +436,6 @@ class _TaskDatasetMaterializer:
         失败语义:
             - 起点越界、完整图不足 80³ 或 Dataset 资产契约失败时直接抛出异常，不进行 padding。
         """
-        把一组 centered 请求物化为一次目标设备 Stage1 batch。
-
-        调用方前提：
-            - requests 中每个 ``pdb_id`` 必须等于当前 materializer 绑定的 ``self.task.pdb_id``，且请求的 producer/split 身份应由上层任务管理；本方法只把 PDB 写入 ``ResolvedStage1Crop``，不额外校验这些身份。
-
-        参数与返回：
-            - requests：Sequence[CenteredRequest]；同一 producer、split、PDB 的有序 centered 请求，每项提供完整图 ZYX BOX 起点及来源身份。
-            - batch：dict[str, Any]；第 0 维为请求数 B，dense 字段按 B 堆叠，Find 原子字段按原子轴拼接，契约与训练 ``Stage1BatchCollator`` 一致。
-
-        兼容字段：
-            - 推理不需要逐原子 label，但旧版 Find 伪原子注入读取其 bool dtype；若 collator 产出 Find 原子表而无 ``atom_label``，本方法补全 False tensor，不表示真实监督。
-        """
         from src.datasets.stage1_requests import ResolvedStage1Crop
 
         # list[dict[str, Any]]；长度 B_window；每项由正式 Dataset 以 role=sliding 物化一个不含补零区域的真实 BOX。
