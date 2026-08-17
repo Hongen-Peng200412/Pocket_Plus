@@ -33,9 +33,12 @@ from src.datasets.stage1_requests import (
 )
 
 
-CENTER_PER_OCCURRENCE = 0
-BIAS_PER_OCCURRENCE = 5
-CONTEXT_PER_OCCURRENCE = 5
+TRAIN_CENTER_PER_OCCURRENCE = 0
+TRAIN_BIAS_PER_OCCURRENCE = 5
+TRAIN_CONTEXT_PER_OCCURRENCE = 5
+VALIDATION_CENTER_PER_OCCURRENCE = 0
+VALIDATION_BIAS_PER_OCCURRENCE = 1
+VALIDATION_CONTEXT_PER_OCCURRENCE = 1
 CONTEXT_MIN_CORE_ATOMS = 0
 EXTRA_BIAS_DRIFT_MAX_ANGSTROM = 3.0
 BIAS_CANDIDATES_PER_OCCURRENCE = 30
@@ -291,9 +294,9 @@ def finalize_box_pool(arguments: argparse.Namespace) -> None:
         validation_pool_directory=output_root / "validation",
         output_path=output_root / "validation_selection.npz",
         seed=int(arguments.seed),
-        center_per_occurrence=CENTER_PER_OCCURRENCE,
-        bias_per_occurrence=BIAS_PER_OCCURRENCE,
-        context_per_occurrence=CONTEXT_PER_OCCURRENCE,
+        center_per_occurrence=VALIDATION_CENTER_PER_OCCURRENCE,
+        bias_per_occurrence=VALIDATION_BIAS_PER_OCCURRENCE,
+        context_per_occurrence=VALIDATION_CONTEXT_PER_OCCURRENCE,
     )
     summary["validation_selection"] = selection_summary
     summary["manifest"] = {name: len(records) for name, records in manifest_entries.items()}
@@ -313,9 +316,14 @@ def finalize_box_pool(arguments: argparse.Namespace) -> None:
         },
         "occurrence_cap_per_pdb_per_epoch": 50,
         "entry_ratio": {
-            "center": CENTER_PER_OCCURRENCE,
-            "bias": BIAS_PER_OCCURRENCE,
-            "context": CONTEXT_PER_OCCURRENCE,
+            "center": TRAIN_CENTER_PER_OCCURRENCE,
+            "bias": TRAIN_BIAS_PER_OCCURRENCE,
+            "context": TRAIN_CONTEXT_PER_OCCURRENCE,
+        },
+        "validation_entry_ratio": {
+            "center": VALIDATION_CENTER_PER_OCCURRENCE,
+            "bias": VALIDATION_BIAS_PER_OCCURRENCE,
+            "context": VALIDATION_CONTEXT_PER_OCCURRENCE,
         },
         "seed": int(arguments.seed),
         "seed_rule": "sha256(base_seed|split_name|pdb_id) first_uint64",
@@ -338,7 +346,9 @@ def main() -> None:
         - None；成功时由子命令写入产物并打印 JSON 摘要，失败时保留异常供 Slurm 任务报告。
     """
 
-    parser = argparse.ArgumentParser(description="生成 Stage1 v3 0:5:5 BOX pool。")
+    parser = argparse.ArgumentParser(
+        description="生成 Stage1 v3 训练 0:5:5、冻结验证 0:1:1 BOX pool。"
+    )
     subparsers = parser.add_subparsers(dest="command", required=True)
     shard_parser = subparsers.add_parser("build-shard")
     finalize_parser = subparsers.add_parser("finalize")

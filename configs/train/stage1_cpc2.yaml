@@ -13,7 +13,7 @@ scheduler:
   mode: ${model.monitor_mode}
   factor: 0.3
   patience: 1
-  threshold: 0.001
+  threshold: 0.003  # 绝对改善量不超过 0.003 时，不重置平台期累计轮数。
   threshold_mode: abs
   cooldown: 0
   min_lr: 0.0
