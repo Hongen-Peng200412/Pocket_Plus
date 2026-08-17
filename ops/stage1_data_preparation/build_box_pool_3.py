@@ -17,12 +17,12 @@ from typing import Any
 import numpy as np
 
 from ops.stage1_data_preparation.atomic_io import atomic_save_npz, atomic_write_json, atomic_write_text
-from src.datasets.ops.stage1_box_pool import (
-    _load_occurrence_masks,
-    _pdb_seed,
+from ops.stage1_data_preparation.utils import (
     build_occurrence_pool_rows,
+    derive_pdb_seed,
     freeze_validation_selection,
     generate_context_starts,
+    load_occurrence_masks,
 )
 from src.datasets.stage1_requests import (
     BOX_POOL_MANIFEST_FILENAME,
@@ -80,20 +80,21 @@ def build_migrated_pdb_box_pool(
         origin_xyz = np.asarray(exp_meta["origin"], dtype=np.float32)
     resolve_stage1_start((0, 0, 0), grid_shape_zyx)
     # dict[int,np.ndarray[int32]]，occurrence 编号到完整图非空 ZYX 体素索引的映射。
-    occurrence_masks = _load_occurrence_masks(
+    occurrence_masks = load_occurrence_masks(
         density_directory / "ligand_area.npz", grid_shape_zyx
     )
     if not occurrence_masks:
         raise ValueError(f"{pdb_id}: ligand_area.npz 不含 occurrence mask。")
     with np.load(data_root / "parse" / pdb_id / "receptor_tokens.npz", allow_pickle=False) as receptor:
         receptor_coords_xyz = np.asarray(receptor["coords"], dtype=np.float32)
-    random_generator = np.random.default_rng(_pdb_seed(seed, split_name, pdb_id))
+    random_generator = np.random.default_rng(derive_pdb_seed(seed, split_name, pdb_id))
     occurrence_rows = build_occurrence_pool_rows(
         occurrence_masks,
         grid_shape_zyx,
         random_generator,
         voxel_size_world=voxel_size_xyz,
         extra_bias_drift_max_angstrom=EXTRA_BIAS_DRIFT_MAX_ANGSTROM,
+        bias_candidates_per_occurrence=BIAS_CANDIDATES_PER_OCCURRENCE,
     )
     context_start_zyx = generate_context_starts(
         receptor_coords_world=receptor_coords_xyz,
