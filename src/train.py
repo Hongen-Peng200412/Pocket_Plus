@@ -1050,7 +1050,7 @@ def main(cfg: DictConfig):
             }
             if int(self.train_cfg.num_workers) > 0:
                 loader_arguments["prefetch_factor"] = int(self.train_cfg.get("prefetch_factor", 4))
-                # Dataset 请求会随训练周期切换；常驻 worker 无法接收主进程中的新请求表。
+                # bool；Stage1 动态请求源由主进程在每个 epoch 更新，常驻 worker 不会看到新请求表，因此显式关闭常驻 worker。
                 loader_arguments["persistent_workers"] = False
             return loader_class(**loader_arguments)
 

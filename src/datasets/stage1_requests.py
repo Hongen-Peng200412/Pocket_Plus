@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
-"""解析 Stage1 V3 的 80³ BOX 请求和冻结验证选择。
+"""定义并展开 Stage1 V3 的 80³ BOX 请求。
 
-主要入口是 :class:`Stage1TrainingRequestSet`、:func:`load_validation_selection`
-与 :func:`build_request_source`。本模块只解释 V3 ``box_pool`` 中的 PDB 身份、
-请求角色和完整图 ZYX 起点；密度、原子与监督数组由 ``stage1_dataset.py`` 读取。
+主要入口是 :class:`Stage1TrainingRequestSet`、:func:`load_validation_selection` 和 :func:`build_request_source`；本模块只读取 V3 ``box_pool`` 的 manifest、PDB pool 与冻结选择索引，返回带有完整图 ZYX 起点的请求，不读取密度、受体原子或监督数组。
+
+V3 pool 的顶层文件是 ``manifest.json``、``_COMPLETE`` 和 ``config.json``；每个 split 目录保存一个 PDB 一个 NPZ，NPZ 字段由 :class:`_PdbPool` 说明，验证选择文件由 :func:`load_validation_selection` 说明。
 """
 
 from __future__ import annotations
@@ -26,7 +26,19 @@ def resolve_stage1_start(
     full_shape_zyx: Sequence[int],
     box_shape_zyx: Sequence[int] = STAGE1_BOX_SHAPE_ZYX,
 ) -> tuple[int, int, int]:
-    """把请求起点限制到完整图内，使 BOX 不需要补零。"""
+    """把任意请求起点解析为完整图内合法的 BOX corner index。
+
+    输入参数:
+        - requested_start_zyx: Sequence[int | float]；有限候选 BOX 起点，三个分量按完整图离散体素的 ZYX 轴顺序排列，浮点值按 ``numpy.rint`` 语义取整；本函数不负责把非有限输入转换为业务错误。
+        - full_shape_zyx: Sequence[int], 完整图的 ZYX 体素形状；三个轴都必须不小于 ``box_shape_zyx``。
+        - box_shape_zyx: Sequence[int], BOX 的 ZYX 体素形状；默认值是 Stage1 固定的 ``(80, 80, 80)``。
+
+    返回值:
+        - start_zyx: tuple[int, int, int], 将候选起点按每个轴裁剪到 ``0`` 至 ``full_shape_zyx - box_shape_zyx`` 后的完整图零基 ZYX 起点；该起点对应的 BOX 不需要补零。
+
+    失败语义:
+        - 输入形状不是 ``(3,)`` 或完整图小于 BOX 时立即抛出 ``ValueError``，不返回隐式回退起点；非有限起点不属于本函数的有效输入契约。
+    """
 
     requested = np.rint(np.asarray(requested_start_zyx, dtype=np.float64)).astype(np.int64)
     full_shape = np.asarray(full_shape_zyx, dtype=np.int64)
@@ -43,7 +55,16 @@ def centered_start_from_sparse_mask(
     full_shape_zyx: Sequence[int],
     box_shape_zyx: Sequence[int] = STAGE1_BOX_SHAPE_ZYX,
 ) -> tuple[int, int, int]:
-    """以 occurrence 非空体素的几何中心计算合法 BOX 起点。"""
+    """根据 occurrence 非空体素的几何中心计算合法 BOX 起点。
+
+    输入参数:
+        - sparse_voxel_zyx: np.ndarray, ``(K_occ, 3)`` 的完整图零基 ZYX 体素索引；每一行代表 occurrence 的一个非空体素，``K_occ`` 必须大于零。
+        - full_shape_zyx: Sequence[int], 完整图 ZYX 体素形状，传给 :func:`centered_start_from_centroid_zyx` 做边界裁剪。
+        - box_shape_zyx: Sequence[int], BOX 的 ZYX 体素形状；默认值是 ``(80, 80, 80)``。
+
+    返回值:
+        - start_zyx: tuple[int, int, int], 将稀疏体素均值置于 BOX 中心后得到的完整图零基 ZYX 起点。
+    """
 
     sparse = np.asarray(sparse_voxel_zyx, dtype=np.int64)
     if sparse.ndim != 2 or sparse.shape[1] != 3 or sparse.shape[0] == 0:
@@ -60,7 +81,16 @@ def centered_start_from_centroid_zyx(
     full_shape_zyx: Sequence[int],
     box_shape_zyx: Sequence[int] = STAGE1_BOX_SHAPE_ZYX,
 ) -> tuple[int, int, int]:
-    """把 voxel-index 质心放到 BOX 中心，并返回完整图 ZYX corner 起点。"""
+    """把完整图 ZYX 体素质心放到 BOX 中心并解析边界。
+
+    输入参数:
+        - centroid_zyx: Sequence[int | float], 完整图连续 ZYX 体素坐标的质心；体素中心语义由调用者提供，函数只按同一坐标约定计算 BOX corner。
+        - full_shape_zyx: Sequence[int], 完整图 ZYX 体素形状。
+        - box_shape_zyx: Sequence[int], BOX 的 ZYX 体素形状；默认值是 ``(80, 80, 80)``。
+
+    返回值:
+        - start_zyx: tuple[int, int, int], 质心减去半个 BOX 形状并经 :func:`resolve_stage1_start` 裁剪后的完整图零基 ZYX 起点。
+    """
 
     centroid = np.asarray(centroid_zyx, dtype=np.float64)
     box_shape = np.asarray(box_shape_zyx, dtype=np.int64)
@@ -69,7 +99,14 @@ def centered_start_from_centroid_zyx(
 
 
 def _string_array(values: np.ndarray) -> list[str]:
-    """把 NPZ bytes 或 Unicode 字段转换为小写字符串列表。"""
+    """把 NPZ 字符串字段规范化为小写 Python 字符串列表。
+
+    输入参数:
+        - values: np.ndarray, 任意可展平的 bytes 或 Unicode 字段；每个元素表示一个 PDB identity。
+
+    返回值:
+        - strings: list[str], 按输入展平顺序解码、去除首尾空白并转为小写的字符串；不负责去重或验证 identity 是否存在。
+    """
 
     result: list[str] = []
     for value in np.asarray(values).reshape(-1).tolist():
@@ -83,12 +120,17 @@ def _load_manifest_pool_paths(
     box_pool_root: str | Path,
     split_name: str,
 ) -> tuple[tuple[str, Path], ...]:
-    """读取完成发布的 V3 manifest，并返回指定数据划分的 PDB NPZ 清单。
+    """读取已发布的 V3 manifest 并返回指定 split 的 PDB NPZ 路径。
 
-    ``box_pool_root`` 必须同时包含 ``_COMPLETE`` 与 ``manifest.json``。
-    ``manifest.json:splits[split_name]`` 中每项提供小写化后的 ``pdb_id`` 和
-    相对于根目录的 ``path``；返回值保持 manifest 顺序，不去重。绝对路径、
-    含 ``..`` 的路径或空数据划分会被拒绝。
+    输入参数:
+        - box_pool_root: str | Path, V3 pool 根目录；必须同时包含 ``_COMPLETE`` 和 ``manifest.json``，``manifest.json`` 的 ``splits[split_name]`` 保存 split 清单。
+        - split_name: str, split 名称；函数按小写名称读取 ``train`` 或 ``validation`` 等 manifest split，不改变清单内顺序。
+
+    返回值:
+        - entries: tuple[tuple[str, Path], ...], 每项为 ``(pdb_id, pool_path)``；``pdb_id`` 是小写身份，``pool_path`` 是根目录下由 manifest ``path`` 字段解析出的 NPZ 路径，返回顺序与 manifest 一致。
+
+    manifest 约束:
+        - 每项必须提供非空 ``pdb_id`` 和相对 ``path``；绝对路径、包含 ``..`` 的路径和空 split 直接失败，不扫描 manifest 未列出的文件。
     """
 
     root = Path(box_pool_root)
@@ -111,12 +153,14 @@ def _load_manifest_pool_paths(
 
 @dataclass(frozen=True)
 class _PdbPool:
-    """保存一个 PDB 的 occurrence 与完整图 ZYX BOX 起点。
+    """保存一个 PDB pool 的 occurrence 身份和完整图 BOX 起点。
 
-    ``occurrence_id`` 为 int32 ``(O,)``；``center_start_zyx`` 为 int32
-    ``(O,3)``；``bias_start_zyx`` 为 int32 ``(O,30,3)``；
-    ``context_start_zyx`` 为 int32 ``(C,3)``。前三个数组按 occurrence 位置
-    对齐，context 是 PDB 级候选池。
+    字段:
+        - pdb_id: str, manifest 中的小写 PDB identity。
+        - occurrence_id: int32, ``(O,)``，该 PDB 的 occurrence 编号；与 ``center_start_zyx`` 和 ``bias_start_zyx`` 的第一维按位置对齐。
+        - center_start_zyx: int32, ``(O, 3)``，每个 occurrence 的完整图零基 ZYX BOX corner index。
+        - bias_start_zyx: int32, ``(O, 30, 3)``，每个 occurrence 的 30 个 bias 候选起点；第二维是候选编号，最后一维是 ZYX。
+        - context_start_zyx: int32, ``(C, 3)``，该 PDB 级 context 候选池的起点；第一维不与 occurrence 数量对齐。
     """
 
     pdb_id: str
@@ -127,12 +171,24 @@ class _PdbPool:
 
 
 def _load_pdb_pool(path: Path, expected_pdb_id: str) -> _PdbPool:
-    """读取一个 V3 PDB pool，并核对 PDB 身份和四个数组。
+    """读取并校验一个 PDB 的 V3 pool NPZ。
 
-    文件字段为字符串标量 ``pdb_id``、int32 ``occurrence_id (O,)``、int32
-    ``center_start_zyx (O,3)``、int32 ``bias_start_zyx (O,30,3)`` 与 int32
-    ``context_start_zyx (C,3)``。后三个字段是完整图内 80³ BOX 的零基 ZYX
-    corner index；前三个数组按 occurrence 位置对齐。
+    输入参数:
+        - path: Path, manifest 声明的 PDB pool NPZ 路径；函数只读取该文件，不搜索同目录的其他文件。
+        - expected_pdb_id: str, manifest 记录的小写 PDB identity；必须与文件内 ``pdb_id`` 相等。
+
+    文件字段:
+        - ``pdb_id``: 标量 bytes 或 Unicode 字符串；当前 NPZ 所属的 PDB identity。
+        - ``occurrence_id``: int32, ``(O,)``；occurrence 编号。
+        - ``center_start_zyx``: int32, ``(O, 3)``；与 ``occurrence_id`` 第一维逐 occurrence 对齐的完整图零基 ZYX BOX 起点。
+        - ``bias_start_zyx``: int32, ``(O, 30, 3)``；与 ``occurrence_id`` 第一维对齐的 30 个 bias 起点，第二维是候选编号，最后一维是 ZYX。
+        - ``context_start_zyx``: int32, ``(C, 3)``；当前 PDB 的 context 候选起点，最后一维是 ZYX。
+
+    返回值:
+        - pool: _PdbPool, 把上述五个字段保存在内存中；函数不复制密度、受体原子或监督数组。
+
+    校验语义:
+        - occurrence 对齐维度、bias 候选数和 context 的二维形状不符合契约，或文件 identity 与 manifest 不一致时失败。
     """
 
     with np.load(path, allow_pickle=False) as data:
@@ -162,13 +218,15 @@ def _load_pdb_pool(path: Path, expected_pdb_id: str) -> _PdbPool:
 
 @dataclass(frozen=True)
 class ResolvedStage1Crop:
-    """保存一个已经解析到完整图位置的 Stage1 BOX 请求。
+    """描述一个已经解析到完整图位置的 Stage1 BOX 请求。
 
-    ``pdb_id`` 是小写 PDB 身份；``box_start_zyx`` 是完整图内 80³ BOX 的
-    零基 ZYX corner index；``require_targets`` 决定 Dataset 是否构造监督；
-    ``role`` 是 center、bias、context、sliding 或 centered；
-    ``occurrence_id`` 是可选真实配体身份；``candidate_index`` 是可选 bias 或
-    context 候选位置。
+    字段:
+        - pdb_id: str, 小写 PDB identity；Dataset 用它定位该 PDB 的四类密度、受体与标签文件。
+        - box_start_zyx: tuple[int, int, int], 完整图零基 ZYX BOX corner index；三个分量依次为 Z、Y、X，BOX 形状固定为 ``(80, 80, 80)``。
+        - require_targets: bool, 是否要求 Dataset 返回训练/验证监督字段；推理滑窗请求可设为 False。
+        - role: str, 请求角色；允许值为 ``center``、``bias``、``context``、``sliding`` 或 ``centered``。
+        - occurrence_id: int | None, 请求对应的 occurrence 编号；context、sliding 和 centered 请求可以没有该编号。
+        - candidate_index: int | None, bias 或 context 候选池中的下标；center、sliding 和 centered 请求通常没有该下标。
     """
 
     pdb_id: str
@@ -190,18 +248,34 @@ class ResolvedStage1Crop:
 
 
 class Stage1TrainingRequestSet:
-    """按训练周期从 V3 train pool 生成全量 0:5:5 BOX 请求。
+    """按训练周期从 V3 train pool 生成确定性的 0:5:5 BOX 请求。
 
-    ``pool_directory`` 是 ``stage1_preparation_box_pool_3/train``，其父目录
-    提供已完成标记、manifest 与 config；``seed`` 与 epoch 共同固定选择结果。
-    每个 epoch、每个 PDB 至多无放回选择 50 个 occurrence；每个 occurrence
-    无放回选择 5 个 bias 候选，并从 PDB 级 context 池选择 5 个候选，候选
-    少于 5 个时有放回采样。请求顺序为 manifest PDB 顺序、随机 occurrence
-    顺序、5 个 bias、5 个 context；不生成 center 请求。``set_epoch`` 在 epoch
-    变化时重建请求，要求 DataLoader worker 不常驻。
+    构造参数:
+        - pool_directory: str | Path, ``stage1_preparation_box_pool_3/train`` 目录；其父目录提供 ``_COMPLETE``、``manifest.json`` 和 ``config.json``。
+        - seed: int, 与 epoch 一起传入 ``numpy.random.SeedSequence`` 的训练抽样种子；相同 seed、epoch 和 manifest 顺序得到相同请求。
+
+    生成规则:
+        - 每个 PDB 最多无放回选择 50 个 occurrence；每个选中的 occurrence 无放回选择 5 个 bias 候选，并从该 PDB 的 context 池选择 5 个候选。context 池必须至少有 1 个候选；有 1–4 个候选时允许有放回选择。
+        - ``config.json`` 的 ``entry_ratio`` 必须为 ``center:bias:context = 0:5:5``；请求顺序保持 manifest PDB 顺序、抽样 occurrence 顺序、每个 occurrence 的 bias 再 context。
+
+    生命周期:
+        - ``set_epoch`` 只在 epoch 改变时重建 ``requests``；训练 DataLoader 不应使用常驻 worker，否则主进程更新的 epoch 请求不会同步到旧 Dataset 副本。
+
+    公开属性:
+        - requests: tuple[ResolvedStage1Crop, ...], 当前 epoch 的不可变请求序列。
+        - entry_ratio: dict[str, int], 从 ``config.json`` 读取并锁定的 center、bias、context 比例。
     """
 
     def __init__(self, pool_directory: str | Path, seed: int) -> None:
+        """读取 train pool 与比例配置，并立即生成 epoch 0 请求。
+
+        参数：
+            - pool_directory：str | Path；已发布的 V3 train split 目录，父目录必须包含 ``_COMPLETE``、``manifest.json`` 和 ``config.json``。
+            - seed：int；训练抽样的稳定种子，保存为 Python ``int`` 并与 epoch 共同决定请求序列。
+
+        状态变化：
+            - 读取每个 PDB 的 occurrence、bias 和 context 起点数组，验证固定的 ``0:5:5`` 比例，并调用 :meth:`set_epoch(0)` 初始化 ``requests``。
+        """
         pool_directory = Path(pool_directory)
         self._pools = tuple(
             _load_pdb_pool(path, expected_pdb_id=pdb_id)
@@ -220,6 +294,17 @@ class Stage1TrainingRequestSet:
         self.set_epoch(0)
 
     def _build_epoch_requests(self, epoch: int) -> tuple[ResolvedStage1Crop, ...]:
+        """按固定 seed 和 epoch 展开一个训练周期的不可变请求序列。
+
+        参数：
+            - epoch：int；传入 ``SeedSequence([self.seed, epoch])``，相同 seed、epoch 和 pool 顺序必须得到相同结果。
+
+        返回：
+            - tuple[ResolvedStage1Crop, ...]；按 manifest PDB 顺序、抽中 occurrence 顺序、bias 后 context 顺序排列的 0:5:5 请求；每个请求均要求监督目标。
+
+        失败语义：
+            - context 候选池为空时由 ``numpy.random.Generator.choice`` 抛出错误；函数不静默补造候选或改变比例。
+        """
         rng = np.random.default_rng(np.random.SeedSequence([self.seed, int(epoch)]))
         requests: list[ResolvedStage1Crop] = []
         for pool in self._pools:
@@ -261,6 +346,15 @@ class Stage1TrainingRequestSet:
         return tuple(requests)
 
     def set_epoch(self, epoch: int) -> None:
+        """切换训练 epoch，并在 epoch 变化时重建请求源。
+
+        参数：
+            - epoch：int；会先转换为 Python ``int``，用于确定性训练抽样。
+
+        状态变化：
+            - 新 epoch 调用 :meth:`_build_epoch_requests` 并替换 ``requests``；重复设置相同 epoch 不重新抽样。
+            - Dataset/DataLoader 调用方应确保 worker 不持有过期的常驻 Dataset 副本，否则主进程更新不会传播。
+        """
         epoch = int(epoch)
         if epoch != self.epoch:
             self.requests = self._build_epoch_requests(epoch)
@@ -277,17 +371,23 @@ def load_validation_selection(
     selection_path: str | Path,
     box_pool_root: str | Path,
 ) -> list[ResolvedStage1Crop]:
-    """把 V3 ``validation_selection.npz`` 的索引展开为固定 BOX 请求。
+    """把冻结的 validation selection NPZ 展开为固定 BOX 请求。
 
-    selection 读取定宽 bytes 或 Unicode ``validation_pdb_id (P,)``；int32
-    ``center_pdb_index/center_occurrence_id (N_center,)``；int32
-    ``bias_pdb_index/bias_occurrence_id (N_bias,)``；int16
-    ``bias_candidate_index (N_bias,)``；以及 int32
-    ``context_pdb_index/context_candidate_index (N_context,)``。PDB index 指向
-    身份表；occurrence_id 在对应 pool 的 ``occurrence_id (O,)`` 中按值定位；
-    candidate index 再索引 bias 的 30 候选轴或 context 的 ``(C,3)`` 数组。
-    返回顺序固定为全部 center、全部 bias、全部 context，元素均为
-    ``ResolvedStage1Crop``，不会在读取时重新随机选择。
+    输入参数:
+        - selection_path: str | Path, ``validation_selection.npz`` 路径；该文件只保存 PDB/occurrence/candidate 索引，不复制 BOX 起点数组。
+        - box_pool_root: str | Path, V3 pool 根目录；函数从其 validation manifest 找到每个 PDB 的 pool NPZ。
+
+    selection 文件字段:
+        - ``validation_pdb_id``: 定宽 bytes 或 Unicode, ``(P,)``；PDB identity 表，其他 ``*_pdb_index`` 数组按第一维索引它。
+        - ``center_pdb_index`` 和 ``center_occurrence_id``：int32，``(N_center,)``；联合定位每个 occurrence 的 center 起点。
+        - ``bias_pdb_index``、``bias_occurrence_id`` 和 ``bias_candidate_index``：int32/int16，三者均为 ``(N_bias,)``；联合定位 occurrence 的 30 个 bias 起点中的一个候选。
+        - ``context_pdb_index`` 和 ``context_candidate_index``：int32，二者均为 ``(N_context,)``；定位 PDB 级 context 起点。
+
+    长度与边界契约：
+        - 每组字段的第一维必须完全相等，且索引分别落在 ``validation_pdb_id``、对应 PDB occurrence 和候选池范围内；这些条件由冻结 selection 产物保证，本函数不修正或截断不一致数组。
+
+    返回值:
+        - requests: list[ResolvedStage1Crop], 按全部 center、全部 bias、全部 context 的固定顺序展开；函数只按已冻结索引查找，不重新随机抽样，也不读取密度或受体数组。
     """
 
     source = Path(selection_path)
@@ -370,10 +470,13 @@ def load_validation_selection(
 
 
 def load_split_pdb_ids(path: str | Path) -> tuple[str, ...]:
-    """读取 V3 split JSON，并按首次出现顺序返回去重的小写 PDB 身份。
+    """读取 split JSON 并按首次出现顺序提取唯一 PDB identity。
 
-    split JSON 以候选配体记录为单位，同一 PDB 可以连续或分散出现多次；推理
-    清单只需要 PDB 身份，因此这里保留每个身份的第一次出现。
+    输入参数:
+        - path: str | Path, JSON split 文件；顶层必须是候选记录列表，每条记录提供 ``pdb_id`` 字段。
+
+    返回值:
+        - pdb_ids: tuple[str, ...], 逐记录读取、去除首尾空白、转为小写并按首次出现顺序去重的 PDB identity；不排序，也不检查 PDB 资产是否存在。
     """
 
     records = json.loads(Path(path).read_text(encoding="utf-8"))
@@ -388,12 +491,19 @@ def build_request_source(
     box_pool_root: str | Path | None,
     seed: int,
 ) -> Stage1TrainingRequestSet | list[ResolvedStage1Crop]:
-    """根据请求来源创建 V3 动态训练请求集或固定验证请求列表。
+    """根据路径形态创建 V3 动态训练请求集或固定 validation 请求列表。
 
-    ``split_file`` 是目录时只允许 ``mode=train``，并用 ``seed`` 创建
-    ``Stage1TrainingRequestSet``；文件名为 ``validation_selection.npz`` 时要求
-    ``box_pool_root`` 非空，并按该根目录的 validation manifest 展开固定请求。
-    其他路径形态不做兼容回退。
+    输入参数:
+        - split_file: str | Path, V3 ``train`` 目录或名为 ``validation_selection.npz`` 的冻结选择文件。
+        - mode: str, 请求模式；目录来源只允许 ``train``，冻结 validation 文件不依赖该模式重新抽样。
+        - box_pool_root: str | Path | None, validation selection 所属的 V3 pool 根目录；读取冻结文件时必须提供。
+        - seed: int, 传给 :class:`Stage1TrainingRequestSet` 的训练抽样种子。
+
+    返回值:
+        - source: Stage1TrainingRequestSet | list[ResolvedStage1Crop], 目录来源返回按 epoch 更新的训练请求集，冻结文件来源返回固定请求列表。
+
+    路径分支:
+        - 仅接受 V3 train 目录和 ``validation_selection.npz``；其他路径不执行旧版 split、fraction 或隐式搜索回退。
     """
 
     source = Path(split_file)

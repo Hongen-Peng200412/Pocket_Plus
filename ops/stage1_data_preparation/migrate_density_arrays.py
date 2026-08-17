@@ -1,12 +1,8 @@
-"""把 Stage1 四类完整体数组从 NPZ 原子迁移到同目录 NPY。
+"""把 Stage1 四类完整体数组从 NPZ 迁移到同目录 NPY。
 
-主要入口是 :func:`migrate_density_directory`、:func:`run_shard` 与
-:func:`finalize_migration`。每个数组先写入并完整核对同目录临时 NPY，再原子发布
-NPY，最后原子替换移除了大数组字段的原 NPZ。若进程在两次替换之间退出，目录会
-暂时同时保留有效 NPY 和仍含原字段的 NPZ；再次执行会核对并完成剩余步骤。
+命令入口是 ``migrate-shard`` 和 ``finalize``；函数入口分别为 :func:`run_shard`、:func:`finalize_migration` 和 :func:`migrate_npz_array`。每个数组先写入同目录临时 NPY 并逐块核对，再原子发布 NPY，最后原子替换移除大数组字段的原 NPZ。若进程在两次替换之间退出，下一次执行会识别已有 NPY 和仍含来源字段的 NPZ，继续完成剩余步骤。
 
-本模块会修改 ``<data_root>/density/<pdb_id>`` 中的正式文件。它不删除 PDB 目录，
-不改写 NPZ 的其他字段，也不负责修改 Dataset 读取代码。
+本模块会修改 ``<data_root>/density/<pdb_id>`` 中的正式文件；不删除 PDB 目录，不改写 NPZ 的其他字段，不负责修改 Dataset 读取代码。
 """
 
 from __future__ import annotations
@@ -31,7 +27,14 @@ from ops.stage1_data_preparation.atomic_io import (
 
 @dataclass(frozen=True)
 class ArrayMigrationSpec:
-    """描述一类 NPZ 大数组及其目标 NPY 的稳定文件契约。"""
+    """描述一类从 NPZ 迁移到 NPY 的稳定文件契约。
+
+    字段:
+        - npz_name: str；来源 NPZ 文件名。
+        - npz_key: str；来源 NPZ 中要迁出的完整体数组字段名。
+        - npy_name: str；同目录目标 NPY 文件名。
+        - dtype: np.dtype；来源和目标数组必须使用的 dtype。
+    """
 
     npz_name: str
     npz_key: str
@@ -49,11 +52,19 @@ COMPARE_CHUNK_ELEMENTS = 16 * 1024 * 1024
 
 
 def arrays_equal(left: np.ndarray, right: np.ndarray) -> bool:
-    """以有限内存逐块比较两个形状和数据类型完全相同的 NumPy 数组。"""
+    """以有限临时内存逐块比较两个 NumPy 数组。
+
+    输入参数:
+        - left: np.ndarray；来源数组。
+        - right: np.ndarray；目标数组。
+
+    返回值:
+        - equal: bool；形状和 dtype 不同直接为假；相同后按 C 顺序分块比较，浮点/复数允许对应 NaN 相等。
+    """
 
     if left.shape != right.shape or left.dtype != right.dtype:
         return False
-    # (N_value,), C 顺序展平后的完整数组；每次比较最多分配约 16 MiB 布尔数组。
+    # np.ndarray (N_value,)；C 顺序展平视图；每次比较只为当前块分配有限大小的临时数组。
     left_flat = np.asarray(left).reshape(-1)
     right_flat = np.asarray(right).reshape(-1)
     for start in range(0, left_flat.size, COMPARE_CHUNK_ELEMENTS):
@@ -74,7 +85,16 @@ def validate_migrated_array(
     spec: ArrayMigrationSpec,
     expected_shape: tuple[int, ...] | None,
 ) -> np.memmap:
-    """以内存映射打开目标 NPY，并核对数据类型、四维结构和可选完整形状。"""
+    """以内存映射打开目标 NPY，并核对 dtype、单通道四维形状和可选完整形状。
+
+    输入参数:
+        - npy_path: Path；目标 NPY 文件。
+        - spec: ArrayMigrationSpec；该数组的目标 dtype 和文件契约。
+        - expected_shape: tuple[int, ...] | None；来源数组形状；为 ``None`` 时只检查 ``(1, D, H, W)`` 结构。
+
+    返回值:
+        - migrated: np.memmap；只读目标数组；调用方只用于验证，不原地改写。
+    """
 
     migrated = np.load(npy_path, mmap_mode="r", allow_pickle=False)
     if migrated.dtype != spec.dtype:
@@ -92,9 +112,17 @@ def replace_npz_without_migrated_key(
     migrated_key: str,
     remaining: dict[str, np.ndarray],
 ) -> None:
-    """ 用移除了 ``migrated_key`` 的压缩 NPZ 原子(已保存的 temporary_path)替换原文件，并核对字段顺序和数值。 
-    source_keys 为原本完整的key; remaining 为除迁出字段外的全部 NPZ 字段。
-    除了检验外, 唯一操作是 os.replace(temporary_path, npz_path) """
+    """用移除大数组字段后的 NPZ 原子替换来源文件。
+
+    输入参数:
+        - npz_path: Path；要替换的正式来源 NPZ。
+        - source_keys: tuple[str, ...]；来源 NPZ 原字段顺序。
+        - migrated_key: str；已经迁移到 NPY、必须从 NPZ 移除的字段。
+        - remaining: dict[str, np.ndarray]；除迁出字段外的字段副本，必须逐值保持不变。
+
+    状态变化:
+        - 在来源同目录写压缩临时 NPZ，核对字段集合、顺序和值后用 ``os.replace`` 替换原文件并同步目录；替换前失败会保留旧来源文件并清理临时文件，替换后的同步或复核异常不保证回滚。
+    """
 
     descriptor, temporary_name = tempfile.mkstemp(
         prefix=f".{npz_path.name}.", suffix=".tmp", dir=npz_path.parent
@@ -119,18 +147,22 @@ def replace_npz_without_migrated_key(
 
 
 def migrate_npz_array(density_directory: Path, spec: ArrayMigrationSpec) -> dict[str, Any]:
-    """迁移一个 NPZ 字段，并返回可写入分片状态的文件级审计字段。
+    """迁移一个 NPZ 大数组并返回文件级审计报告。
 
-    返回字段：
-        - ``npz_name``: str，原 NPZ 文件名。
-        - ``npy_name``: str，目标 NPY 文件名。
-        - ``status``: str，``source_absent``、``already_migrated`` 或 ``migrated``。
-        - ``shape``: list[int]，存在目标数组时的 ``(1,D,H,W)`` 形状。
-        - ``dtype``: str，存在目标数组时的数据类型名称。
-        - ``npy_size_bytes``: int，存在目标数组时的文件字节数。
+    输入参数:
+        - density_directory: Path；单个 PDB 的 ``density/<pdb_id>`` 目录。
+        - spec: ArrayMigrationSpec；来源 NPZ 字段、目标 NPY 文件和 dtype 契约。
 
-    副作用只限于当前 ``density_directory``：原子发布 NPY，并用移除了
-    ``spec.npz_key`` 的压缩 NPZ 原子替换原文件；其他 NPZ 字段逐值保持不变。
+    返回字段:
+        - ``npz_name``：str；来源 NPZ 文件名。
+        - ``npy_name``：str；目标 NPY 文件名。
+        - ``status``：str；``source_absent``、``already_migrated`` 或 ``migrated``。
+        - ``shape``：list[int]；目标存在时的 ``(1, D, H, W)`` 形状。
+        - ``dtype``：str；目标存在时的 dtype 名称。
+        - ``npy_size_bytes``：int；目标存在时的文件字节数。
+
+    状态变化:
+        - 只修改当前 density 目录：原子发布 NPY，并原子替换移除 ``spec.npz_key`` 的压缩 NPZ；其他 NPZ 字段逐值保持不变。
     """
 
     npz_path = density_directory / spec.npz_name
@@ -156,7 +188,7 @@ def migrate_npz_array(density_directory: Path, spec: ArrayMigrationSpec) -> dict
                 "dtype": migrated.dtype.name,
                 "npy_size_bytes": npy_path.stat().st_size,
             }
-        # np.ndarray, (1,D,H,W)，从压缩 NPZ 解出的权威完整体数组；后续精确写入 NPY。
+        # np.ndarray (1, D, H, W)；从压缩 NPZ 解出的权威完整体数组，后续逐值写入 NPY。
         source_array = np.array(source[spec.npz_key], copy=True)
         if source_array.dtype != spec.dtype:
             raise TypeError(
@@ -166,7 +198,7 @@ def migrate_npz_array(density_directory: Path, spec: ArrayMigrationSpec) -> dict
             raise ValueError(
                 f"{npz_path}:{spec.npz_key} 必须为 (1,D,H,W)，实际 {source_array.shape}。"
             )
-        # dict[str,np.ndarray]，除迁出大字段外的全部 NPZ 字段；每个值在关闭 source 前独立复制。
+        # dict[str, np.ndarray]；除迁出字段外的 NPZ 字段副本，在关闭 source 前独立复制。
         remaining = {
             key: np.array(source[key], copy=True) for key in source_keys if key != spec.npz_key
         }
@@ -214,7 +246,14 @@ def migrate_npz_array(density_directory: Path, spec: ArrayMigrationSpec) -> dict
 
 
 def migrate_density_directory(argument: tuple[str, str]) -> dict[str, Any]:
-    """迁移一个 PDB 密度目录中的四类目标数组，并返回 PDB 级审计字段。"""
+    """迁移一个 PDB density 目录中的四类数组并返回 PDB 级审计报告。
+
+    输入参数:
+        - argument: tuple[str, str]；依次为 A-G 数据根目录和小写 PDB identity。
+
+    返回值:
+        - report: dict[str, Any]；包含 ``pdb_id`` 和四个 ``MIGRATION_SPECS`` 文件报告。
+    """
 
     data_root, pdb_id = argument
     density_directory = Path(data_root) / "density" / pdb_id
@@ -223,7 +262,17 @@ def migrate_density_directory(argument: tuple[str, str]) -> dict[str, Any]:
 
 
 def run_shard(arguments: argparse.Namespace) -> None:
-    """让一个 Slurm 数组元素以多进程迁移稳定分配给它的 PDB 目录。"""
+    """让一个 Slurm 数组元素以多进程迁移其稳定分配的 PDB 目录。
+
+    输入参数:
+        - arguments: argparse.Namespace；包含 data-root、run-root、shard-count、shard-index 和 workers。
+
+    状态变化:
+        - 按 density 子目录名字典序和分片切片确定 PDB 集合；最多启动 ``workers`` 个进程；在 ``run_root/shards`` 原子写入分片状态 JSON。
+
+    失败语义:
+        - 参数无效或 run root 已有 ``_COMPLETE`` 时拒绝修改共享资产；空分片只写空报告。
+    """
 
     data_root = Path(arguments.data_root).resolve()
     run_root = Path(arguments.run_root).resolve()
@@ -235,7 +284,7 @@ def run_shard(arguments: argparse.Namespace) -> None:
     if (run_root / "_COMPLETE").exists():
         raise FileExistsError(f"迁移已完成，不允许再次修改共享资产：{run_root}")
     density_root = data_root / "density"
-    # list[str]，按 PDB identity 字典序冻结的全部 density 子目录；切片后每个 PDB 只属于一个分片。
+    # list[str]；按 PDB identity 字典序冻结的全部 density 子目录，切片后每个 PDB 只属于一个分片。
     all_pdb_ids = sorted(path.name.lower() for path in density_root.iterdir() if path.is_dir())
     assigned_pdb_ids = all_pdb_ids[shard_index::shard_count]
     process_count = min(workers, len(assigned_pdb_ids))
@@ -263,7 +312,17 @@ def run_shard(arguments: argparse.Namespace) -> None:
 
 
 def finalize_migration(arguments: argparse.Namespace) -> None:
-    """合并全部分片状态，复查正式目录，并最后发布迁移完成标记。"""
+    """合并全部分片状态，复查正式目录并发布迁移完成标记。
+
+    输入参数:
+        - arguments: argparse.Namespace；包含 data-root、run-root 和 shard-count。
+
+    状态变化:
+        - 核对全部 PDB 是否恰由一个分片报告；逐文件确认来源 NPZ 已移除迁出字段且目标 NPY 可 mmap；最后写入 summary 和 ``_COMPLETE``。
+
+    失败语义:
+        - 分片缺失、重复、PDB 集合不一致或任一来源字段仍存在时不发布完成标记。
+    """
 
     data_root = Path(arguments.data_root).resolve()
     run_root = Path(arguments.run_root).resolve()
@@ -321,7 +380,11 @@ def finalize_migration(arguments: argparse.Namespace) -> None:
 
 
 def main() -> None:
-    """解析迁移分片或最终验收命令，并调用对应正式入口。"""
+    """解析 ``migrate-shard`` 或 ``finalize`` 子命令并调用正式入口。
+
+    返回值:
+        - None；成功时写入迁移报告，失败时保留异常供任务系统报告。
+    """
 
     parser = argparse.ArgumentParser(description="原子迁移 Stage1 完整体数组。")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -344,6 +407,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
-
-# FIXME: 此文件明显过度防御, 为了很多几乎不会发生的情况写 if 判断。 在我心的规划里，如果这个文件超过 150 行, 将被判定为错误文件。本文件消耗了我远超原本预算的人类理解预算。如果再次出现这样的10个文件，整个项目将有崩盘的危险！

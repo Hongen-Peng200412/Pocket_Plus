@@ -1,12 +1,8 @@
-"""按 EMDB 首次发布时间、质量与资产契约冻结 Stage1 v3 PDB 划分。
+"""按 EMDB 首次发布时间、质量阈值和资产契约冻结 Stage1 V3 PDB split。
 
-主要入口是 :func:`fetch_release_dates` 与 :func:`freeze_split`。前者从 EMDB 官方
-``entry/admin`` 接口建立可续传的 EMDB 发布时间日志；后者把 Stage G 候选记录按
-PDB 聚合，先隔离 2026-01-01 及以后首次发布的 PDB，再对更早的 PDB 应用严格
-``map_resolution < 4``、``cc_contour > 0.65`` 和完整训练资产检查。
+命令入口是 ``fetch-release-dates`` 和 ``freeze``；函数入口分别为 :func:`fetch_release_dates` 与 :func:`freeze_split`。前者从 EMDB 官方 ``entry/admin`` 接口建立可续传的 ``map_release`` 日志；后者把 Stage G 候选按 PDB 聚合，先隔离 2026-01-01 及以后首次发布的 PDB，再对更早 PDB 应用 ``map_resolution < 4``、``cc_contour > 0.65``、完整图至少 80³ 和迁移资产契约。
 
-本模块只在 ``output_root`` 写 split、审计、配置、摘要和完成标记，不修改 A—G
-正式资产，也不构造 BOX 起点。
+本模块只在 ``output_root`` 写 split JSON、审计 JSONL、配置、摘要和 ``_COMPLETE``，不修改 A—G 正式资产，也不构造 BOX 起点。split JSON 的顶层是候选记录列表；审计 JSONL 每行是一个 PDB 审计对象；``config.json`` 保存阈值、日期和 seed；``summary.json`` 保存各状态计数与 split 数量。
 """
 
 from __future__ import annotations
@@ -41,7 +37,17 @@ MIN_GRID_SHAPE_ZYX = (80, 80, 80)
 
 
 def read_jsonl(path: Path) -> list[dict[str, Any]]:
-    """读取非空 JSONL 记录，并为非法顶层类型报告精确文件行号。"""
+    """读取非空 JSONL 记录，并在顶层类型错误时报告文件行号。
+
+    输入参数:
+        - path: Path；UTF-8 JSONL 文件；空白行跳过，其余每行必须是 JSON object。
+
+    返回值:
+        - records: list[dict[str, Any]]；按文件顺序保存的对象记录，不重排、不去重。
+
+    失败语义:
+        - JSON 语法错误或某行顶层不是 object 时抛出异常；错误消息包含具体路径和行号。
+    """
 
     records: list[dict[str, Any]] = []
     with path.open("r", encoding="utf-8") as handle:
@@ -57,7 +63,17 @@ def read_jsonl(path: Path) -> list[dict[str, Any]]:
 
 
 def normalize_emdb_id(value: Any) -> str:
-    """把 ``21605``、``EMD_21605`` 等写法规范为 ``EMD-21605``。"""
+    """把数字或带前缀的 EMDB identity 规范为 ``EMD-<整数>``。
+
+    输入参数:
+        - value: Any；允许 ``21605``、``EMD_21605``、``EMD-21605`` 或 ``EMD21605`` 等可转字符串写法。
+
+    返回值:
+        - emdb_id: str；大写的 ``EMD-`` 前缀和无前导零整数编号。
+
+    失败语义:
+        - 去除空白、下划线和可选前缀后仍不是纯数字时抛出 ``ValueError``。
+    """
 
     text = str(value).strip().upper().replace("_", "-")
     if text.startswith("EMD-"):
@@ -75,7 +91,19 @@ def candidate_pdb_to_emdb_ids(
     candidates_path: Path,
     pair_list_path: Path,
 ) -> tuple[dict[str, list[dict[str, Any]]], dict[str, tuple[str, ...]]]:
-    """读取候选与 PDB–EMDB 对照，返回候选分组和每个候选 PDB 的 EMDB 集合。"""
+    """读取候选与 PDB–EMDB 对照并建立 PDB 级分组。
+
+    输入参数:
+        - candidates_path: Path；候选 JSONL；每条记录必须有非空 ``pdb_id``。
+        - pair_list_path: Path；PDB–EMDB 对照 JSONL；``emdb_id`` 通过 :func:`normalize_emdb_id` 规范化。
+
+    返回值:
+        - candidate_groups: dict[str, list[dict[str, Any]]]；小写 PDB identity 到原候选记录（保持文件顺序）的映射。
+        - pdb_to_emdb_ids: dict[str, tuple[str, ...]]；每个候选 PDB 对应的去重、排序 EMDB identity 集合。
+
+    失败语义:
+        - 候选记录缺少 PDB identity，或候选 PDB 没有任何对照 EMDB 时抛出异常。
+    """
 
     candidate_groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for record in read_jsonl(candidates_path):
@@ -97,7 +125,17 @@ def candidate_pdb_to_emdb_ids(
 
 
 def fetch_one_release_date(argument: tuple[str, float, int]) -> dict[str, Any]:
-    """请求一个 EMDB admin 记录，并返回可追加到续传日志的标准字段。"""
+    """请求一个 EMDB admin 记录并返回可追加到续传日志的标准字段。
+
+    输入参数:
+        - argument: tuple[str, float, int]；依次为 EMDB identity、单次请求超时秒数和最大尝试次数。
+
+    返回值:
+        - record: dict[str, Any]；包含 ``emdb_id``、``map_release``（ISO 日期或 None）、``status`` 和请求 URL。
+
+    网络语义:
+        - HTTP 404 返回 ``not_found``；空日期返回 ``missing_map_release``；可重试的 URL、JSON、字段和日期错误在达到次数后抛出原异常。
+    """
 
     emdb_id, timeout_seconds, retry_count = argument
     request = urllib.request.Request(
@@ -135,7 +173,17 @@ def fetch_one_release_date(argument: tuple[str, float, int]) -> dict[str, Any]:
 
 
 def fetch_release_dates(arguments: argparse.Namespace) -> None:
-    """并发补齐 EMDB 发布时间日志；已有成功记录会被读取并跳过。"""
+    """并发补齐 EMDB 发布时间日志，并跳过已有 identity。
+
+    输入参数:
+        - arguments: argparse.Namespace；包含 candidates、pair-list、output、workers、timeout-seconds、retry-count 和 fsync-interval。
+
+    状态变化:
+        - 读取已有 JSONL 作为续传缓存，只追加尚未出现的 EMDB identity；定期 fsync，全部完成后原子写入 ``<output>.complete``。
+
+    返回值:
+        - None；成功时打印 required/fetched 摘要，缺少任何必需 EMDB 日期时抛出异常。
+    """
 
     candidates_path = Path(arguments.candidates)
     pair_list_path = Path(arguments.pair_list)
@@ -175,18 +223,36 @@ def fetch_release_dates(arguments: argparse.Namespace) -> None:
 
 
 def stable_eval_rank(seed: int, pdb_id: str) -> bytes:
-    """生成与候选遍历顺序无关的 PDB 评估集排名键。"""
+    """生成与候选遍历顺序无关的 PDB 评估集排序键。
 
-    return hashlib.sha256(f"{seed}|eval|{pdb_id}".encode("utf-8")).digest()   # FIXME：这是毒瘤
+    输入参数:
+        - seed: int；split 选择的全局 seed。
+        - pdb_id: str；已经规范化的小写 PDB identity。
+
+    返回值:
+        - rank_key: bytes；``sha256(seed|eval|pdb_id)`` 的完整摘要，供字典序稳定排序。
+    """
+
+    return hashlib.sha256(f"{seed}|eval|{pdb_id}".encode("utf-8")).digest()
 
 
 def inspect_training_assets(data_root: Path, pdb_id: str) -> dict[str, Any]:
-    """核对一个 PDB 的迁移后 Stage1 训练资产、几何和最小完整图形状。
+    """核对一个 PDB 的迁移资产、几何一致性和完整图最小形状。
 
-    返回字段：
-        - ``status``: str，``eligible``、``short_map``、``missing_file`` 或 ``invalid``。
-        - ``shape_zyx``: list[int] 或 None，实验完整图的 ZYX 形状。
-        - ``detail``: str，失败时的具体文件或契约原因，成功时为空字符串。
+    输入参数:
+        - data_root: Path；A-G 正式资产根目录。
+        - pdb_id: str；小写 PDB identity；检查 ``density``、``parse`` 和 ``labels`` 下的约定文件。
+
+    返回字段:
+        - ``status``: str；``eligible``、``short_map``、``missing_file`` 或 ``invalid``。
+        - ``shape_zyx``: list[int] | None；exp 完整图的 ZYX 形状；缺失或无效时为 ``None``。
+        - ``detail``: str；失败时的具体路径或契约原因，合格或短图时为空字符串。
+
+    检查边界:
+        - ``exp.npz`` 读取并核对 ``canonical_shape_zyx``、``voxel_size`` 和 ``origin``；``exp.npy``、``sim.npy``、``ligand_dist.npy``、``union_mask.npy`` 均必须是 ``(1,D,H,W)``，分别为 float32、float32、float16、bool。
+        - ``sim.npz`` 只核对 ``voxel_size`` 和 ``origin`` 与 exp 元数据一致；本入口不核对 sim NPZ 的 schema 或 canonical shape 字段。
+        - ``ligand_dist.npz`` 与 ``ligand_area.npz`` 读取 ``grid_shape_zyx``、``voxel_size_xyz``、``origin_xyz``，要求与 exp 的形状和几何一致；受体 ``coords`` 的第一维必须等于标签 ``binding_atom`` 的长度。
+        - 只检查文件存在、上述 dtype/形状/元数据、受体标签长度和完整图至少 80³；不扫描完整图数值，也不构造 BOX。
     """
 
     density_directory = data_root / "density" / pdb_id
@@ -250,7 +316,17 @@ def inspect_training_assets(data_root: Path, pdb_id: str) -> dict[str, Any]:
 
 
 def freeze_split(arguments: argparse.Namespace) -> None:
-    """冻结日期隔离、质量过滤、资产检查和 200/100/剩余划分。"""
+    """冻结日期隔离、质量过滤、资产检查以及 validation/calibration/train split。
+
+    输入参数:
+        - arguments: argparse.Namespace；包含候选 JSONL、PDB–EMDB 对照、发布时间缓存、数据根目录、输出根目录和 seed。
+
+    选择顺序:
+        - 首次 EMDB 发布时间不早于 ``RELEASE_CUTOFF`` 的 PDB 进入 ``held_out``；更早 PDB 依次通过分辨率、cc_contour 和资产审计，再按稳定 hash 排序抽取 200 个 validation、100 个 calibration，剩余进入 train。
+
+    输出产物:
+        - ``train.json``、``validation.json``、``calibration.json``、``held_out.json`` 和 ``quarantine_missing_release.json`` 保存候选记录；``pdb_audit.jsonl``、``config.json``、``summary.json`` 和 ``_COMPLETE`` 记录审计与冻结结果。
+    """
 
     candidates_path = Path(arguments.candidates).resolve()
     pair_list_path = Path(arguments.pair_list).resolve()
@@ -378,7 +454,11 @@ def freeze_split(arguments: argparse.Namespace) -> None:
 
 
 def main() -> None:
-    """解析 EMDB 发布时间抓取或 split 冻结命令。"""
+    """解析 ``fetch-release-dates`` 或 ``freeze`` 子命令并调用对应入口。
+
+    返回值:
+        - None；成功时写入续传日志或冻结 split 产物，失败时保留异常供任务系统报告。
+    """
 
     parser = argparse.ArgumentParser(description="冻结 Stage1 v3 日期质量划分。")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -406,5 +486,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
-# FIXME: 此文件明显过度防御, 为了很多几乎不会发生的情况写 if 判断。 在我心的规划里，如果这个文件超过 150 行, 将被判定为错误文件。本文件消耗了我远超原本预算的人类理解预算。如果再次出现这样的9个文件，整个项目将有崩盘的危险！

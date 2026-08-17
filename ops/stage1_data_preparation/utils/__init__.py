@@ -1,4 +1,4 @@
-"""Stage1 数据准备脚本共用的确定性 BOX pool 工具。"""
+"""Stage1 数据准备脚本共用的确定性 BOX 起点与 validation 选择工具。"""
 
 from ops.stage1_data_preparation.utils.box_pool import (
     build_occurrence_pool_rows,

@@ -1,8 +1,7 @@
 # -*- coding: utf-8 -*-
-"""为 Stage1 V3 数据准备提供确定性 BOX 起点生成与验证集冻结。
+"""为 Stage1 V3 一次性数据准备提供确定性 BOX 起点和验证选择工具。
 
-这些函数只服务于一次性数据准备脚本，不属于训练时 Dataset。训练代码读取已经
-发布的 ``box_pool``，不会反向依赖 ``ops``。
+本模块只被 ``ops/stage1_data_preparation`` 下的构建脚本调用，不属于训练时 Dataset。输入是迁移后正式资产中的 occurrence 稀疏 mask、受体世界坐标和 V3 pool；输出是完整图内的 80³ ZYX corner 起点或冻结 validation 索引。训练代码只读取已发布的 pool，不反向导入本模块。
 """
 
 from __future__ import annotations
@@ -24,7 +23,16 @@ from src.datasets.stage1_requests import (
 
 
 def derive_pdb_seed(base_seed: int, split_name: str, pdb_id: str) -> int:
-    """派生不受 worker 数和遍历顺序影响的单 PDB 随机种子。"""
+    """从全局 seed、split 和 PDB identity 派生稳定的单 PDB 随机种子。
+
+    输入参数:
+        - base_seed: int；数据准备任务的全局基准 seed。
+        - split_name: str；``train`` 或 ``validation`` 等 split 名称，规范化为小写后参与哈希。
+        - pdb_id: str；PDB identity，规范化为小写后参与哈希。
+
+    返回值:
+        - seed: int；SHA-256 前 8 字节按 little-endian 无符号解释的非负整数；不依赖 worker 数、遍历顺序或 Python hash 随机化。
+    """
 
     payload = f"{int(base_seed)}|{split_name.lower()}|{pdb_id.lower()}".encode("utf-8")
     return int.from_bytes(hashlib.sha256(payload).digest()[:8], "little", signed=False)
@@ -34,12 +42,21 @@ def load_occurrence_masks(
     path: Path,
     expected_shape_zyx: Sequence[int],
 ) -> dict[int, np.ndarray]:
-    """读取 ``ligand_area.npz`` 中按 occurrence 保存的稀疏体素坐标。
+    """读取并验证 ``ligand_area.npz`` 中每个 occurrence 的稀疏 ZYX 坐标。
 
-    ``expected_shape_zyx`` 是完整图的三轴体素数。返回字典以整数
-    ``occurrence_id`` 为键；每个值是 int32 ``(K_occ,3)`` 数组，列顺序为
-    ZYX，坐标是完整图内的零基 voxel index。函数拒绝空 mask、越界坐标、
-    非 ``(K_occ,3)`` 数组以及不匹配的 schema 或完整图形状。
+    输入参数:
+        - path: Path；一个 PDB 的 ``ligand_area.npz``，必须是 schema 3 并包含 ``mask_<occurrence_id>`` 字段。
+        - expected_shape_zyx: Sequence[int] ``(3,)``；对应完整密度图的 ``(D_full, H_full, W_full)`` 体素形状。
+
+    返回值:
+        - masks: dict[int, np.ndarray]；键是 occurrence 的整数 identity，值是读取后转换为 int32 的 ``(K_occ,3)`` 完整图零基 ZYX voxel index；``K_occ`` 必须大于零。
+
+    字段语义:
+        - ``grid_shape_zyx``：NPZ 中声明的完整图 ZYX 形状，必须逐项等于 ``expected_shape_zyx``。
+        - ``mask_<id>``：每行一个 occurrence 非空体素，列顺序固定为 Z、Y、X；函数不转换为密集 mask。
+
+    失败语义:
+        - schema、完整图形状、数组维度、空 mask 或体素边界不符合契约时抛出 ``ValueError``；本函数不额外验证稀疏坐标的原始 dtype、排序或去重状态。
     """
 
     expected_shape = np.asarray(expected_shape_zyx, dtype=np.int64)
@@ -77,13 +94,23 @@ def generate_context_starts(
     max_attempts: int,
     min_core_atoms: int,
 ) -> np.ndarray:
-    """在合法范围内生成满足受体原子数条件的 context BOX 起点。
+    """随机生成满足核心受体原子数条件的 context BOX 起点。
 
-    ``receptor_coords_world`` 是 float ``(N,3)`` 世界 XYZ 坐标，origin 与
-    voxel size 也是世界 XYZ 量；``full_shape_zyx`` 与输出均采用完整图 ZYX
-    体素顺序。每次尝试在各轴合法整数起点上均匀采样，80³ BOX 内至少包含
-    ``min_core_atoms`` 个受体原子时才接收。返回 int32 ``(K,3)``，其中
-    ``K <= target_count``；达到 ``max_attempts`` 时保留已经找到的起点。
+    输入参数:
+        - receptor_coords_world: np.ndarray float ``(N_receptor, 3)``；完整受体表的世界 XYZ 坐标，单位为 Å。
+        - full_origin_world: Sequence[float] ``(3,)``；完整图 voxel-grid corner 的世界 XYZ 原点，单位为 Å。
+        - voxel_size_world: Sequence[float] ``(3,)``；世界 XYZ 体素尺寸，单位为 Å。
+        - full_shape_zyx: Sequence[int] ``(3,)``；完整图 ZYX 体素形状。
+        - rng: np.random.Generator；已由调用方按 PDB 派生 seed 初始化的随机源。
+        - target_count: int；最多接受的 context 起点数。
+        - max_attempts: int；最多尝试的随机起点数。
+        - min_core_atoms: int；一个 BOX 至少包含的核心受体原子数；零表示不筛选原子数。
+
+    返回值:
+        - starts_zyx: np.ndarray int32 ``(K, 3)``；完整图内 80³ BOX 的 ZYX corner index，``K <= target_count``；尝试耗尽时保留已接受起点。
+
+    坐标约定:
+        - 受体输入是世界 XYZ，函数先换为完整图连续 ZYX voxel 坐标；随机起点始终是完整图离散 ZYX index，不产生补零 BOX。
     """
 
     coords_xyz = np.asarray(receptor_coords_world, dtype=np.float64)
@@ -125,14 +152,21 @@ def sample_bias_starts(
     voxel_size_world: Sequence[float],
     extra_drift_max_angstrom: float,
 ) -> np.ndarray:
-    """按 occurrence 体积和额外世界距离漂移生成 bias BOX 起点。
+    """围绕 occurrence 质心生成带体积偏移和世界距离漂移的 bias 起点。
 
-    ``sparse_voxel_zyx`` 是完整图内整数 ``(K_occ,3)`` ZYX voxel index；
-    ``voxel_size_world`` 是世界 XYZ 的 Å/voxel。函数以体素中心计算质心，
-    在等体积球内均匀采样偏移，再叠加不超过
-    ``extra_drift_max_angstrom`` Å 的世界 XYZ 漂移。BOX 起点使用
-    ``numpy.rint`` 取整并夹入合法范围，返回 int32 ``(num_candidates,3)``
-    完整图 ZYX corner index。
+    输入参数:
+        - sparse_voxel_zyx: np.ndarray int ``(K_occ, 3)``；完整图内非空体素的零基 ZYX index。
+        - full_shape_zyx: Sequence[int] ``(3,)``；完整图 ZYX 体素形状。
+        - rng: np.random.Generator；按 PDB 和 split 派生的确定性随机源。
+        - num_candidates: int；每个 occurrence 生成的候选数。
+        - voxel_size_world: Sequence[float] ``(3,)``；世界 XYZ 体素尺寸，单位为 Å。
+        - extra_drift_max_angstrom: float；在 occurrence 体积偏移之外叠加的最大世界距离，单位为 Å。
+
+    返回值:
+        - starts_zyx: np.ndarray int32 ``(num_candidates, 3)``；经 ``numpy.rint`` 取整并裁剪到合法完整图范围的 ZYX BOX corner index。
+
+    采样语义:
+        - occurrence 质心使用体素中心坐标；体积半径在等体积球内按体积均匀采样；额外漂移先在世界 XYZ 中采样，再换为 ZYX voxel 单位。
     """
 
     sparse = np.asarray(sparse_voxel_zyx, dtype=np.int64)
@@ -177,14 +211,23 @@ def build_occurrence_pool_rows(
     extra_bias_drift_max_angstrom: float,
     bias_candidates_per_occurrence: int,
 ) -> dict[str, np.ndarray]:
-    """为一个 PDB 的全部 occurrence 生成中心与偏移候选数组。
+    """为一个 PDB 的全部 occurrence 构造中心起点和 bias 候选数组。
 
-    输入字典以整数 occurrence_id 为键，值为完整图内 int ``(K_occ,3)``
-    ZYX voxel index。返回三个相互按第一维对齐的数组：
-    ``occurrence_id`` 为 int32 ``(O,)``；``center_start_zyx`` 为 int32
-    ``(O,3)``；``bias_start_zyx`` 为 int32
-    ``(O,bias_candidates_per_occurrence,3)``。所有起点都是完整图内 80³ BOX
-    的 ZYX corner index。
+    输入参数:
+        - occurrence_masks_zyx: dict[int, np.ndarray]；occurrence identity 到 int ``(K_occ, 3)`` 完整图 ZYX voxel index 的映射。
+        - full_shape_zyx: Sequence[int] ``(3,)``；完整图 ZYX 体素形状。
+        - rng: np.random.Generator；该 PDB 的确定性随机源。
+        - voxel_size_world: Sequence[float] ``(3,)``；世界 XYZ 体素尺寸，单位为 Å。
+        - extra_bias_drift_max_angstrom: float；bias 候选的最大额外世界距离漂移，单位为 Å。
+        - bias_candidates_per_occurrence: int；每个 occurrence 的 bias 候选数量。
+
+    返回值:
+        - occurrence_id: np.ndarray int32 ``(O,)``；按 occurrence identity 升序排列。
+        - center_start_zyx: np.ndarray int32 ``(O, 3)``；每个 occurrence 的质心居中 BOX 起点，与 ``occurrence_id`` 第 0 维对齐。
+        - bias_start_zyx: np.ndarray int32 ``(O, B, 3)``；每个 occurrence 的 ``B`` 个 bias 起点，与 ``occurrence_id`` 第 0 维对齐。
+
+    坐标约定:
+        - 所有起点都是完整图内真实 80³ BOX 的零基 ZYX corner index；不产生补零坐标。
     """
 
     occurrence_ids = np.asarray(sorted(occurrence_masks_zyx), dtype=np.int32)
@@ -215,13 +258,20 @@ def build_occurrence_pool_rows(
 
 
 def _load_validation_pool(pool_path: Path, expected_pdb_id: str) -> dict[str, np.ndarray]:
-    """读取一个验证 PDB 的冻结起点数组。
+    """读取一个 validation PDB pool 的冻结起点数组。
 
-    返回 ``occurrence_id: int32 (O,)``、``center_start_zyx: int32 (O,3)``、
-    ``bias_start_zyx: int32 (O,30,3)`` 与
-    ``context_start_zyx: int32 (C,3)``。后三个起点数组均使用完整图内 80³
-    BOX 的零基 ZYX corner index；前三个数组按 occurrence 位置对齐。文件内
-    ``pdb_id`` 与 ``expected_pdb_id`` 不一致时失败。
+    输入参数:
+        - pool_path: Path；manifest 列出的 validation PDB NPZ。
+        - expected_pdb_id: str；manifest 期望的 PDB identity，比较前规范化为小写。
+
+    返回字段:
+        - occurrence_id: np.ndarray int32 ``(O,)``；occurrence identity，作为中心和 bias 数组的第 0 维索引。
+        - center_start_zyx: np.ndarray int32 ``(O, 3)``；逐 occurrence 的完整图 ZYX BOX corner index。
+        - bias_start_zyx: np.ndarray int32 ``(O, B, 3)``；逐 occurrence 的 ``B`` 个 bias BOX corner index。
+        - context_start_zyx: np.ndarray int32 ``(C, 3)``；完整图内的 context BOX corner index。
+
+    文件契约:
+        - ``pdb_id`` 标量必须与 ``expected_pdb_id`` 一致；起点数组仍采用完整图内 80³ BOX 的零基 ZYX corner 约定。
     """
 
     with np.load(pool_path, allow_pickle=False) as data:
@@ -247,22 +297,31 @@ def freeze_validation_selection(
     bias_per_occurrence: int,
     context_per_occurrence: int,
 ) -> dict[str, int]:
-    """冻结 validation 请求索引，不复制 BOX 起点数组。
+    """按 validation manifest 顺序冻结请求索引，不复制 BOX 起点数组。
 
-    函数按 manifest 顺序读取 validation PDB，每个 PDB 无放回选择至多 50 个
-    occurrence，再按参数选择 center、bias 与 context。context 候选少于请求数
-    时允许有放回采样。输出 NPZ 字段如下：
+    输入参数:
+        - validation_pool_directory: Path；已发布 pool 的 validation split 目录；其父目录必须有 manifest。
+        - output_path: Path；要原子发布的非压缩 NPZ 路径。
+        - seed: int；validation 选择的确定性基准 seed。
+        - center_per_occurrence: int；只支持 0 或 1；当前实现仅在值等于 1 时为每个抽中 occurrence 写入一个 center 请求，值为 0 或其他值都不会写入 center。
+        - bias_per_occurrence: int；每个抽中 occurrence 无放回选择的 bias 候选数。
+        - context_per_occurrence: int；每个抽中 occurrence 选择的 context 候选数；候选不足时允许有放回。
 
-    - ``validation_pdb_id``：定宽 bytes ``(P,)``；其他 PDB index 均索引该数组。
-    - ``center_pdb_index``、``center_occurrence_id``：int32 ``(N_center,)``。
-    - ``bias_pdb_index``、``bias_occurrence_id``：int32 ``(N_bias,)``。
-    - ``bias_candidate_index``：int16 ``(N_bias,)``；索引对应 PDB pool 的候选轴。
-    - ``context_pdb_index``：int32 ``(N_context,)``；索引 PDB 身份数组。
-    - ``context_candidate_index``：int32 ``(N_context,)``；索引对应 context 数组。
+    输出 NPZ 字段:
+        - ``validation_pdb_id``：定宽 bytes ``(P,)``；PDB identity 表，所有 ``*_pdb_index`` 字段索引它。
+        - ``center_pdb_index``：int32 ``(N_center,)``；center 请求的 PDB 表索引。
+        - ``center_occurrence_id``：int32 ``(N_center,)``；center 请求引用的 occurrence identity。
+        - ``bias_pdb_index``：int32 ``(N_bias,)``；bias 请求的 PDB 表索引。
+        - ``bias_occurrence_id``：int32 ``(N_bias,)``；bias 请求引用的 occurrence identity。
+        - ``bias_candidate_index``：int16 ``(N_bias,)``；对应 PDB pool 的 bias 候选轴下标。
+        - ``context_pdb_index``：int32 ``(N_context,)``；context 请求的 PDB 表索引。
+        - ``context_candidate_index``：int32 ``(N_context,)``；对应 PDB pool 的 context 候选轴下标。
 
-    文件以非压缩 NPZ 原子发布。返回字典的 ``pdb_count`` 是验证 PDB 数，
-    ``center_count``、``bias_count`` 与 ``context_count`` 分别是三类冻结请求数。
-    manifest、pool 字段缺失或请求数超过可无放回选择的 bias 候选时直接失败。
+    返回值:
+        - counts: dict[str, int]；``pdb_count`` 是 manifest validation PDB 数，``center_count``、``bias_count`` 和 ``context_count`` 分别是三类冻结请求数；这些计数反映实际写入的 NPZ 数组长度。
+
+    选择语义:
+        - 每个 PDB 最多无放回抽取 50 个 occurrence；center 和 bias 沿抽中 occurrence 写入，context 候选不足时才允许有放回；NPZ 通过 ``atomic_save_npz`` 原子发布。
     """
 
     pool_directory = Path(validation_pool_directory)

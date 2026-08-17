@@ -1,12 +1,14 @@
 # -*- coding: utf-8 -*-
-"""把 AdaLigand Stage A 至 Stage G 产物、冻结配置和 checkpoint 装配成 Stage1 推理输入。
+"""把 Stage A—G 正式资产、冻结配置和 checkpoint 装配为 Stage1 推理输入。
 
-主要入口:
-    - `load_pdb_id_list`、`shard_pdb_ids`、`build_production_tasks`: 冷读冻结 PDB 清单，并按原始行号取模生成稳定、互斥、完备的 worker 任务。
-    - `AGOccurrenceVoxelLoader`: 读取 Stage E3 schema-v3 `ligand_area.npz`，恢复 occurrence 的完整图 C-order voxel 索引。
-    - `Stage1RuntimeAssembly`: 严格恢复完整模型包装器，复用单 PDB `Stage1Dataset` 缓存，并提供完整图滑窗、居中批次和 occurrence 输入。
+公开入口:
+    - :func:`load_pdb_id_list`、:func:`shard_pdb_ids` 和 :func:`build_production_tasks`：读取冻结 PDB 清单，按清单位置索引取模生成互斥、完备的 worker 任务。
+    - :class:`AGOccurrenceVoxelLoader`：读取 Stage E3 schema 3 的 ``ligand_area.npz``，将 occurrence 稀疏 ZYX 坐标恢复为完整图 C-order 线性索引。
+    - :class:`Stage1RuntimeAssembly`：恢复 checkpoint wrapper，复用一个 PDB 的 ``Stage1Dataset`` cache，提供 full-map 滑窗、centered batch 和 occurrence 输入。
 
-本模块不重新实现 Dataset、模型 forward、概率融合、组件构造或 centered 产物算法。坐标约定为：网格形状和离散索引使用 ZYX，物理原点、体素尺寸和原子坐标使用世界 XYZ，长度单位 Å。
+边界:
+    - 本模块不重写 Dataset、模型 forward、概率融合、组件构造或 centered 产物算法；它只组装已有入口并搬运 batch。
+    - 网格形状和离散索引使用 ZYX；物理原点、体素尺寸和原子坐标使用世界 XYZ；长度单位为 Å。
 """
 
 from __future__ import annotations
@@ -26,21 +28,23 @@ from .full_map import window_starts_zyx
 from .runner import FullMapTaskInput, ProductionTask
 
 
-# Stage E3 `ligand_area.npz` 的 occurrence 稀疏 mask 字段名；捕获组是十进制 occurrence_id。
+# Stage E3 ``ligand_area.npz`` 的 occurrence 稀疏 mask 字段名；捕获组是十进制 occurrence identity。
 _MASK_KEY = re.compile(r"^mask_(\d+)$")
 
 
 
-# ================================================= 工具函数 =================================================
+# 工具函数：清单读取、任务分片、配置契约和 batch 设备搬运。
 def load_pdb_id_list(path: str | Path) -> tuple[str, ...]:
-    """
-    读取固定 PDB 清单并保持文件内顺序。
+    """读取冻结 PDB 清单并保持源文件顺序。
 
     输入参数:
-        - path: str | Path, JSON、JSONL 或纯文本固定清单路径；JSON 顶层可为列表或含 `pdb_ids` 列表的对象，列表元素和 JSONL 行可为字符串或含 `pdb_id` 的对象。
+        - path: str | Path；JSON、JSONL 或纯文本清单；JSON 顶层可为字符串列表或包含 ``pdb_ids`` 列表的对象，JSONL 行和列表元素可为字符串或含 ``pdb_id`` 的对象。
 
-    输出:
-        - pdb_ids: tuple[str, ...], 小写、非空、无重复的 PDB identity；严格保持源文件顺序，不按名称重排。
+    返回值:
+        - pdb_ids: tuple[str, ...]；去空白、转小写、非空且无重复的 PDB identity，保持源文件顺序，不按名称重排。
+
+    失败语义:
+        - 文件不存在、JSON 顶层类型错误、对象缺少 ``pdb_id``、identity 为空、清单重复或清单为空时抛出异常。
     """
     source = Path(path)
     if not source.is_file():
@@ -62,7 +66,7 @@ def load_pdb_id_list(path: str | Path) -> tuple[str, ...]:
     else:
         rows = [line.strip() for line in source.read_text(encoding="utf-8").splitlines() if line.strip()]
 
-    # list[str], 按源文件顺序规范化为小写的 PDB identity；对象行只读取显式 `pdb_id`。
+    # list[str]；按源文件顺序保存规范化后的小写 PDB identity；对象行只读取显式 ``pdb_id``。
     pdb_ids: list[str] = []
     for row in rows:
         if isinstance(row, Mapping):
@@ -87,16 +91,15 @@ def shard_pdb_ids(
     shard_index: int,
     shard_count: int,
 ) -> tuple[str, ...]:
-    """
-    按固定清单行号取模生成稳定、互斥且完备的 worker 分片。
+    """按冻结清单位置索引取模生成稳定、互斥且完备的 worker 分片。
 
     输入参数:
-        - pdb_ids: Sequence[str], 固定且无重复的 PDB 清单，顺序决定分片归属。
-        - shard_index: int, 当前 worker 的 0-based 分片编号，范围 `[0, shard_count)`。
-        - shard_count: int, 分片总数，必须为正。
+        - pdb_ids: Sequence[str]；已固定且无重复的 PDB identity 序列；顺序决定分片归属。
+        - shard_index: int；当前 worker 的零基分片编号，必须满足 ``0 <= shard_index < shard_count``。
+        - shard_count: int；分片总数，必须为正整数。
 
-    输出:
-        - shard_pdb_ids: tuple[str, ...], 原清单中满足 `row_index % shard_count == shard_index` 的 PDB identity；保持原相对行序。
+    返回值:
+        - shard_pdb_ids: tuple[str, ...]；满足 ``row_index % shard_count == shard_index`` 的 identity，保持原相对顺序。
     """
     count = int(shard_count)
     index = int(shard_index)
@@ -111,18 +114,17 @@ def build_production_tasks(
     shard_index: int,
     shard_count: int,
 ) -> tuple[ProductionTask, ...]:
-    """
-    从同一固定清单直接构造 runner 任务，不现场追求“最新”样本。
+    """从同一冻结清单构造 runner 任务，不在运行时寻找“最新”样本。
 
     输入参数:
-        - stage1_model_name: str, 当前 producer 正式名
-        - split: str, 当前数据划分
-        - pdb_list_path: str | Path, 固定 PDB 清单路径
-        - shard_index: int, 当前 worker 分片编号
-        - shard_count: int, 分片总数
+        - stage1_model_name: str；当前 Stage1 producer 正式名称。
+        - split: str；当前数据划分名称。
+        - pdb_list_path: str | Path；冻结 PDB 清单路径。
+        - shard_index: int；当前 worker 的零基分片编号。
+        - shard_count: int；分片总数。
 
-    输出:
-        - tasks: tuple[ProductionTask, ...], 与当前分片 PDB 行序一致的 producer/split/PDB 任务；不探测输出目录或样本新旧状态。
+    返回值:
+        - tasks: tuple[ProductionTask, ...]；按当前分片 PDB 行序构造的 producer/split/PDB 任务；不探测输出目录，也不比较样本新旧。
     """
     pdb_ids = shard_pdb_ids(
         load_pdb_id_list(pdb_list_path),
@@ -135,10 +137,18 @@ def _load_dataset_contract(
     config_path: Path,
     stage1_model_name: str,
 ) -> tuple[dict[str, object], float]:
-    """从 resolved config 读取 Dataset 输入通道和固定 8 Å atom buffer 契约。
-    返回 tuple 依次为：
-        - density_channel_config: dict[str, object]，完整保留 resolved dataset density channel 的顺序、开关和参数。
-        - atom_buffer_radius: float，Find 在 core BOX 外选择 receptor 原子的世界坐标半径，正式值为 8.0 Å。
+    """从 resolved config 冷读 Dataset 通道和固定原子缓冲契约。
+
+    输入参数:
+        - config_path: Path；与 checkpoint 绑定的已解析配置文件。
+        - stage1_model_name: str；CLI 绑定的 producer identity，必须与配置的 ``dataset.stage1_model_name`` 一致。
+
+    返回值:
+        - density_channel_config: dict[str, object]；完整保留 resolved dataset 密度通道顺序、开关和参数。
+        - atom_buffer_radius: float；Find core BOX 外纳入受体原子的世界坐标半径，固定为 ``8.0 Å``。
+
+    失败语义:
+        - 缺少 dataset 或 density_channel_config、通道配置不是 mapping、producer 不一致或缓冲半径不是 8.0 时抛出异常。
     """
     from omegaconf import OmegaConf
 
@@ -163,8 +173,14 @@ def _load_dataset_contract(
     return density, atom_buffer_radius
 
 def _move_batch_to_device(batch: Mapping[str, Any], device: str) -> dict[str, Any]:
-    """把 batch 移到device上(PDB identity 和 ragged 元数据保持 Python 值)。
-    输入的 batch 是 Stage1Dataset.collate_fn 生成的混合 mapping；返回 mapping 保留所有非 tensor 字段的原值，只对 tensor 调用 non-blocking device copy。
+    """把 collated batch 的 tensor 字段搬到目标设备。
+
+    输入参数:
+        - batch: Mapping[str, Any]；``Stage1Dataset.collate_fn`` 生成的混合 mapping；身份 list、计数语义和其他非 tensor 值保持 Python 对象。
+        - device: str；目标设备，例如 ``cpu``、``cuda`` 或 ``cuda:0``。
+
+    返回值:
+        - device_batch: dict[str, Any]；保留所有键；tensor 字段使用 ``non_blocking=True`` 搬运，非 tensor 字段原样引用。
     """
     try:
         import torch
@@ -178,26 +194,21 @@ def _move_batch_to_device(batch: Mapping[str, Any], device: str) -> dict[str, An
 
 
 
-# ==================== 加载 GT-occurrence ====================
+# occurrence 读取：将 Stage E3 稀疏 ZYX mask 转为完整图线性索引。
 class AGOccurrenceVoxelLoader:
-    """
-    读取 Stage E3 schema-v3 occurrence 稀疏 ZYX mask。
+    """读取 Stage E3 schema 3 occurrence 稀疏 mask 并恢复线性索引。
 
-    输入参数:
-        - data_root: str | Path, A-G 正式数据根目录
+    构造参数:
+        - data_root: str | Path；A-G 正式数据根目录；后续从 ``density/<pdb_id>`` 读取 occurrence NPZ 和 union NPY。
 
-    调用输出:
-        - occurrences: dict[int, np.ndarray], occurrence_id 到 `(K_occ,)` int64 完整 ZYX 网格 C-order 离散线性 voxel 索引的映射；键按数值升序。
+    调用返回:
+        - occurrences: dict[int, np.ndarray]；occurrence identity 到 int64 ``(K_occ,)`` 完整图 C-order 线性 voxel index 的映射，键按数值升序插入。
     """
     def __init__(self, data_root: str | Path) -> None:
-        """
-        读取 Stage E3 schema-v3 occurrence 稀疏 ZYX mask。
+        """绑定 A-G 正式根目录，不在构造阶段读取 occurrence 文件。
 
         输入参数:
-            - data_root: str | Path, A-G 正式数据根目录
-
-        调用输出:
-            - occurrences: dict[int, np.ndarray], occurrence_id 到 `(K_occ,)` int64 完整 ZYX 网格 C-order 离散线性 voxel 索引的映射；键按数值升序。
+            - data_root: str | Path；后续 occurrence 调用读取的正式数据根目录。
         """
         self.data_root = Path(data_root)
 
@@ -206,19 +217,18 @@ class AGOccurrenceVoxelLoader:
         pdb_id: str,
         full_shape_zyx: tuple[int, int, int],
     ) -> dict[int, np.ndarray]:
-        """
-        返回 occurrence 到完整图 C-order 离散线性 voxel indices 的映射。
+        """返回 occurrence 到完整图 C-order 线性 voxel index 的映射。
 
         输入参数:
-            - pdb_id: str, 当前 PDB identity
-            - full_shape_zyx: tuple[int, int, int], probability 完整图的 ZYX voxel 形状 `(D, H, W)`；必须与文件 `grid_shape_zyx` 完全一致。
+            - pdb_id: str；当前 PDB identity；读取目录前转为小写。
+            - full_shape_zyx: tuple[int, int, int]；完整图的 ``(D, H, W)`` ZYX 形状，必须与 NPZ ``grid_shape_zyx`` 和 union NPY 一致。
 
-        输出:
-            - occurrences: dict[int, np.ndarray], occurrence_id 到 `(K_occ,)` int64 完整图 C-order 离散线性 voxel 索引的映射。
+        返回值:
+        - occurrences: dict[int, np.ndarray]；每个 occurrence 的 int64 ``(K_occ,)`` C-order 线性索引；每个稀疏 mask 的坐标按 ZYX 字典序检查且不重复。
 
-        读取文件:
-            - `<data_root>/density/{pdb_id}/ligand_area.npz`: Stage E3 schema-v3 元数据与零个或多个 `mask_{occurrence_id}`。
-            - `<data_root>/density/{pdb_id}/union_mask.npy`: bool `(1,D,H,W)` occurrence 并集。
+        文件契约:
+            - ``ligand_area.npz`` 必须是 schema 3，``mask_<id>`` 字段必须是整数 ``(K_occ, 3)`` ZYX index。
+            - ``union_mask.npy`` 必须是 bool ``(1, D, H, W)``，且逐体素等于全部 occurrence mask 的并集。
         """
         path = self.data_root / "density" / str(pdb_id).lower() / "ligand_area.npz"
         with np.load(path, allow_pickle=False) as data:
@@ -232,15 +242,15 @@ class AGOccurrenceVoxelLoader:
             if union.dtype != np.bool_ or union.shape != (1, *shape):
                 raise ValueError(f"{path.with_name('union_mask.npy')}: 必须为 (1,Z,Y,X)")
 
-            # list[tuple[int, str]], 按 occurrence_id 数值升序排列的严格 `mask_<整数>` 字段。
+            # list[tuple[int, str]]；按 occurrence identity 数值升序排列的严格 ``mask_<整数>`` 字段。
             mask_keys = sorted(
                 (int(match.group(1)), key)
                 for key in data.files
                 if (match := _MASK_KEY.fullmatch(key)) is not None
             )
-            # dict[int, np.ndarray], occurrence_id 到唯一、升序的完整图 C-order voxel 索引；插入顺序即正式 occurrence 顺序。
+            # dict[int, np.ndarray]；occurrence identity 到升序完整图 C-order 线性索引；插入顺序即当前读取到的 occurrence 字段顺序。
             occurrences: dict[int, np.ndarray] = {}
-            # bool, (D, H, W), 由全部 occurrence 稀疏 mask 重新构造的并集，用于逐 voxel 核对文件 `union_mask[0]`。
+            # np.ndarray bool (D, H, W)；由全部 occurrence 稀疏 mask 重建的并集，用于逐体素核对 union_mask[0]。
             reconstructed_union = np.zeros(shape, dtype=np.bool_)
             for occurrence_id, key in mask_keys:
                 sparse = np.asarray(data[key])
@@ -260,7 +270,7 @@ class AGOccurrenceVoxelLoader:
                     if bool(np.any(np.all(sparse[1:] == sparse[:-1], axis=1))):
                         raise ValueError(f"{path}/{key}: mask voxel 必须唯一")
 
-                # int64, (K_occ,), 稀疏 ZYX voxel 行在完整图中的 C-order 离散线性索引。
+                # np.ndarray int64 (K_occ,)；稀疏 ZYX voxel 行在完整图中的 C-order 线性索引。
                 linear = np.ravel_multi_index(sparse.T, shape).astype(np.int64)
                 occurrences[int(occurrence_id)] = linear
                 if sparse.size:
@@ -271,24 +281,21 @@ class AGOccurrenceVoxelLoader:
 
 
 
-# ==================== 给路径加载 warpper ====================
+# wrapper 读取：绑定 checkpoint/config，并在 worker 生命周期内复用 eval wrapper。
 class CachedStage1WrapperProvider:
-    """
-    从唯一 checkpoint/config 严格恢复并在当前 worker 内复用完整 wrapper。
+    """严格恢复并在当前推理 worker 内缓存一个完整 Stage1 wrapper。
 
-    输入参数:
-        - stage1_model_name: str, 当前提供器绑定的模型来源正式名
-        - checkpoint_path: str | Path, 完整 Stage1 wrapper checkpoint
-        - resolved_config_path: str | Path | None, 与 checkpoint 对应的已解析配置；None 时按 checkpoint 快照的固定相邻规则解析。
-        - device: str, 模型包装器最终所在设备，例如 `cpu` 或 `cuda:0`。
-        - wrapper_loader: Callable | None, 可选显式加载器；None 时使用严格的 `load_stage1_wrapper`。
-        - allow_current_workspace_code: bool, checkpoint 缺少完整代码快照时是否显式允许使用当前工作区代码；正式可复现运行应保持 False。
+    构造参数:
+        - stage1_model_name: str；provider 绑定的 producer identity。
+        - checkpoint_path: str | Path；完整 Stage1 wrapper checkpoint。
+        - resolved_config_path: str | Path | None；与 checkpoint 绑定的 resolved config；为 ``None`` 时由 checkpoint 快照规则解析。
+        - device: str；wrapper 最终所在设备，例如 ``cpu`` 或 ``cuda:0``。
+        - wrapper_loader: Callable | None；显式 wrapper 加载器；为 ``None`` 时调用严格的 ``load_stage1_wrapper``。
+        - allow_current_workspace_code: bool；checkpoint 缺少代码快照时是否允许当前工作区代码；正式可复现运行应保持假。
 
-    __call__ 输入参数:
-        - task: ProductionTask, 当前任务 identity；producer 必须与 provider 绑定值一致
-
-    __call__ 输出:
-        - wrapper: Any, 严格恢复、移动到目标 device 并处于 eval 的完整 wrapper；同一 provider 后续任务复用同一对象。
+    调用契约:
+        - 输入 ``task``：ProductionTask；其 producer 必须等于 provider 绑定值。
+        - 返回 ``wrapper``：已恢复、移动到目标设备并处于 eval 的完整 wrapper；同一 provider 生命周期只加载一次。
     """
     def __init__(
         self,
@@ -299,22 +306,18 @@ class CachedStage1WrapperProvider:
         wrapper_loader: Callable[..., Any] | None = None,
         allow_current_workspace_code: bool = False,
     ) -> None:
-        """
-        从唯一 checkpoint/config 严格恢复并在当前 worker 内复用完整 wrapper。
+        """绑定 checkpoint、配置、producer 和目标设备，延迟到首次调用时恢复 wrapper。
 
         输入参数:
-            - stage1_model_name: str, 当前提供器绑定的模型来源正式名
-            - checkpoint_path: str | Path, 完整 Stage1 wrapper checkpoint
-            - resolved_config_path: str | Path | None, 与 checkpoint 对应的已解析配置；None 时按 checkpoint 快照的固定相邻规则解析。
-            - device: str, 模型包装器最终所在设备，例如 `cpu` 或 `cuda:0`。
-            - wrapper_loader: Callable | None, 可选显式加载器；None 时使用严格的 `load_stage1_wrapper`。
-            - allow_current_workspace_code: bool, checkpoint 缺少完整代码快照时是否显式允许使用当前工作区代码；正式可复现运行应保持 False。
+            - stage1_model_name: str；provider 绑定的 producer identity。
+            - checkpoint_path: str | Path；完整 wrapper checkpoint。
+            - resolved_config_path: str | Path | None；与 checkpoint 对应的 resolved config，或由 checkpoint 快照解析。
+            - device: str；wrapper 的目标设备。
+            - wrapper_loader: Callable | None；可替换的加载器；为空使用正式加载入口。
+            - allow_current_workspace_code: bool；是否允许缺少代码快照时使用当前工作区。
 
-        __call__ 输入参数:
-            - task: ProductionTask, 当前任务 identity；producer 必须与 provider 绑定值一致
-
-        __call__ 输出:
-            - wrapper: Any, 严格恢复、移动到目标 device 并处于 eval 的完整 wrapper；同一 provider 后续任务复用同一对象。
+        状态变化:
+            - 保存路径、设备和加载策略；``_wrapper`` 初始为 ``None``，不在构造时读取 checkpoint。
         """
         self.stage1_model_name = str(stage1_model_name)
         self.checkpoint_path = Path(checkpoint_path)
@@ -325,14 +328,16 @@ class CachedStage1WrapperProvider:
         self._wrapper: Any | None = None
 
     def __call__(self, task: ProductionTask) -> Any:
-        """
-        返回与 task producer 一致、已移到显式 device 的 eval wrapper。
+        """按任务 producer 校验并返回缓存的 eval wrapper。
 
         输入参数:
-            - task: ProductionTask, 当前任务 identity；producer 必须与 provider 绑定值一致
+            - task: ProductionTask；producer 必须等于 provider 绑定的 ``stage1_model_name``。
 
-        输出:
-            - wrapper: Any, 严格恢复、移动到目标 device 并处于 eval 的完整 wrapper；同一 provider 后续任务复用同一对象。
+        返回值:
+            - wrapper: Any；首次调用时由 checkpoint/config 恢复、搬到目标设备并调用 ``eval``；后续调用返回同一对象。
+
+        失败语义:
+            - 任务 producer 不一致时抛出 ``ValueError``；checkpoint 恢复失败由加载器原样抛出。
         """
         if task.stage1_model_name != self.stage1_model_name:
             raise ValueError("wrapper provider 不能跨 stage1_model_name 复用")
@@ -354,23 +359,20 @@ class CachedStage1WrapperProvider:
 
 
 
-# ==================== 给定请求组装 batch(windows_batch / centered_batch) ====================
+# 请求物化：通过正式 Stage1Dataset 和 collator 组装 full-map、centered batch。
 class _TaskDatasetMaterializer:
-    """
-    给定请求组装 batch(windows_batch / centered_batch)。
+    """为同一 producer/split/PDB 复用 Dataset 并组装 full-map、centered batch。
 
-    输入参数:
-        - data_root: Path, A-G 正式数据根目录
-        - task: ProductionTask, 当前 producer/split/PDB identity
-        - density_channel_config: Mapping[str, Any], 从 resolved config 冷读的 producer density channel 配方。
-        - atom_buffer_radius: float, Find 在 core BOX 外纳入原子的世界坐标 buffer 半径，正式值为 8 Å。
-        - cache_max_bytes: int, 当前 Dataset 的 worker-local PDB 资产缓存字节上限。
-        - device: str, collated tensor batch 的目标设备。
+    构造参数:
+        - data_root: Path；A-G 正式数据根目录。
+        - task: ProductionTask；当前 producer、split 和 PDB identity。
+        - density_channel_config: Mapping[str, Any]；从 resolved config 冷读的 producer 密度通道配置。
+        - atom_buffer_radius: float；Find 核心 BOX 外受体原子缓冲半径，正式值为 ``8 Å``。
+        - cache_max_bytes: int；当前进程 Dataset 的 PDB 资产缓存字节上限。
+        - device: str；collated tensor batch 的目标设备。
 
-    内部方法:
-        - window_batch: 将一批滑窗起点交给统一 Dataset/materializer 与正式 collator 生成 batch。
-        - full_map_context: self.dataset.full_map_context(self.task.pdb_id): 复用 Dataset cache 返回完整图几何与 receptor 坐标。
-        - centered_batch: 将一批居中图像交给统一 Dataset/materializer 与正式 collator 生成 batch。
+    生命周期:
+        - 构造一个不启用随机旋转的 centered-mode ``Stage1Dataset``；full-map 和 centered 请求均通过该 Dataset 的 ``materialize_request`` 与同一个 collator 展开。
     """
     def __init__(
         self,
@@ -381,26 +383,23 @@ class _TaskDatasetMaterializer:
         cache_max_bytes: int,
         device: str,
     ) -> None:
-        """
-        给定请求组装 batch(windows_batch / centered_batch)。
+        """创建当前 task 绑定的 Dataset、collator 和设备信息。
 
         输入参数:
-            - data_root: Path, A-G 正式数据根目录
-            - task: ProductionTask, 当前 producer/split/PDB identity
-            - density_channel_config: Mapping[str, Any], 从 resolved config 冷读的 producer density channel 配方。
-            - atom_buffer_radius: float, Find 在 core BOX 外纳入原子的世界坐标 buffer 半径，正式值为 8 Å。
-            - cache_max_bytes: int, 当前 Dataset 的 worker-local PDB 资产缓存字节上限。
-            - device: str, collated tensor batch 的目标设备。
+            - data_root: Path；A-G 正式数据根目录。
+            - task: ProductionTask；producer/split/PDB identity。
+            - density_channel_config: Mapping[str, Any]；resolved config 中的 producer 通道配置。
+            - atom_buffer_radius: float；Find 的 8 Å 核心 BOX 外原子缓冲半径。
+            - cache_max_bytes: int；Dataset worker-local 资产缓存上限。
+            - device: str；输出 batch tensor 的目标设备。
 
-        内部方法:
-            - window_batch: 将一批滑窗起点交给统一 Dataset/materializer 与正式 collator 生成 batch。
-            - full_map_context: self.dataset.full_map_context(self.task.pdb_id): 复用 Dataset cache 返回完整图几何与 receptor 坐标。
-            - centered_batch: 将一批居中图像交给统一 Dataset/materializer 与正式 collator 生成 batch。
+        状态变化:
+            - 用一个合法的零起点 seed request 绑定 PDB；真实滑窗和 centered 起点在公开方法中动态传给共享 Dataset，不写入补零样本。
         """
         from src.datasets.stage1_dataset import Stage1Dataset
         from src.datasets.stage1_requests import ResolvedStage1Crop
 
-        # ResolvedStage1Crop, 仅用于让 Dataset 绑定当前 PDB 的合法无目标请求, 真实滑窗和居中请求由后续方法动态物化。
+        # ResolvedStage1Crop；仅用于让 Dataset 绑定当前 PDB 的无目标请求，真实滑窗和 centered 起点由公开方法动态物化。
         seed_request = ResolvedStage1Crop(
             pdb_id=task.pdb_id,
             box_start_zyx=(0, 0, 0),
@@ -426,18 +425,32 @@ class _TaskDatasetMaterializer:
         self,
         starts_zyx: Sequence[tuple[int, int, int]],
     ) -> dict[str, Any]:
-        """
-        把一批滑窗起点交给统一 Dataset/materializer 与正式 collator 生成 batch。
+        """把一批完整图滑窗起点物化为目标设备上的 Stage1 batch。
 
         输入参数:
-            - starts_zyx: Sequence[tuple[int, int, int]], 长度 B_window；每项是完整图离散 ZYX voxel-index 窗口起点。
+            - starts_zyx: Sequence[tuple[int, int, int]]；长度为 B_window；每项是完整图离散 ZYX 真实 BOX corner index。
 
-        输出:
-            - batch: dict[str, Any], 第一维批量大小 `B == len(requests)` 的目标设备 Stage1 输入。dense 密度、hardmask、BOX 几何按 B 堆叠；Find 原子表按第一维拼接，并由 `atom_counts: int64 (B,)`、`atom_offsets: int64 (B+1,)` 和 `atom_batch_index: int64 (N_A_total,)` 保存 BOX 归属；字段契约与训练 `Stage1Collator` 完全一致。
+        返回值:
+            - batch: dict[str, Any]；第一维 B 等于起点数；密度、hardmask、几何按 B 堆叠，Find 原子表沿原子轴拼接并由 ``atom_counts``、``atom_offsets`` 和 ``atom_batch_index`` 保存归属。
+
+        失败语义:
+            - 起点越界、完整图不足 80³ 或 Dataset 资产契约失败时直接抛出异常，不进行 padding。
+        """
+        把一组 centered 请求物化为一次目标设备 Stage1 batch。
+
+        调用方前提：
+            - requests 中每个 ``pdb_id`` 必须等于当前 materializer 绑定的 ``self.task.pdb_id``，且请求的 producer/split 身份应由上层任务管理；本方法只把 PDB 写入 ``ResolvedStage1Crop``，不额外校验这些身份。
+
+        参数与返回：
+            - requests：Sequence[CenteredRequest]；同一 producer、split、PDB 的有序 centered 请求，每项提供完整图 ZYX BOX 起点及来源身份。
+            - batch：dict[str, Any]；第 0 维为请求数 B，dense 字段按 B 堆叠，Find 原子字段按原子轴拼接，契约与训练 ``Stage1BatchCollator`` 一致。
+
+        兼容字段：
+            - 推理不需要逐原子 label，但旧版 Find 伪原子注入读取其 bool dtype；若 collator 产出 Find 原子表而无 ``atom_label``，本方法补全 False tensor，不表示真实监督。
         """
         from src.datasets.stage1_requests import ResolvedStage1Crop
 
-        # list[dict[str, Any]]，长度 B_window；每项由正式 Dataset 以 `role=sliding` 物化一个不含补零区域的真实 BOX。
+        # list[dict[str, Any]]；长度 B_window；每项由正式 Dataset 以 role=sliding 物化一个不含补零区域的真实 BOX。
         samples = [
             self.dataset.materialize_request(
                 ResolvedStage1Crop(
@@ -454,26 +467,27 @@ class _TaskDatasetMaterializer:
     def full_map_context(
         self,
     ) -> tuple[tuple[int, int, int], np.ndarray, np.ndarray, np.ndarray]:
-        """
-        self.dataset.full_map_context(self.task.pdb_id): 复用 Dataset cache 返回完整图几何与 receptor 坐标。
+        """复用 Dataset cache 返回 full-map 几何和完整受体坐标。
 
-        输出:
-            - shape_zyx: tuple[int, int, int], 完整图的 ZYX voxel 形状 `(D, H, W)`。
-            - voxel_size_xyz: float array, (3,), 世界 XYZ 三轴的体素尺寸，单位 Å/voxel。
-            - origin_xyz: float array, (3,), 完整图 voxel-grid 起点的世界 XYZ 坐标，单位 Å。
-            - receptor_coord_xyz: float array, (N_receptor, 3), 当前 PDB 全部 receptor 原子的世界 XYZ 坐标，单位 Å。
+        返回值:
+            - shape_zyx: tuple[int, int, int]；exp 完整图的 ``(D, H, W)`` ZYX 形状。
+            - voxel_size_xyz: np.ndarray float32 ``(3,)``；世界 XYZ 体素尺寸，单位为 Å。
+            - origin_xyz: np.ndarray float32 ``(3,)``；完整图 voxel-grid corner 的世界 XYZ 原点，单位为 Å。
+            - receptor_coord_xyz: np.ndarray float32 ``(N_receptor, 3)``；完整受体世界 XYZ 坐标，单位为 Å。
         """
         return self.dataset.full_map_context(self.task.pdb_id)
 
     def centered_batch(self, requests: Sequence[CenteredRequest]) -> dict[str, Any]:
-        """
-        把一组正式 centered 请求物化成一次完整模型输入 生成 batch。
+        """把一组 centered 请求物化为一次目标设备 Stage1 batch。
 
         输入参数:
-            - requests: Sequence[CenteredRequest], 同一 producer、split、PDB 和 centered role 的有序请求；每项给出完整图离散 ZYX voxel-index BOX 角点起点及来源 tree/node/threshold 身份。
+            - requests: Sequence[CenteredRequest]；同一 producer、split、PDB 的有序 centered 请求；每项提供完整图 ZYX BOX 起点及 tree/node/threshold 来源身份。
 
-        输出:
-            - batch: dict[str, Any], 第一维批量大小 `B == len(requests)` 的目标设备 Stage1 输入。dense 密度、hardmask、BOX 几何按 B 堆叠；Find 原子表按第一维拼接，并由 `atom_counts: int64 (B,)`、`atom_offsets: int64 (B+1,)` 和 `atom_batch_index: int64 (N_A_total,)` 保存 BOX 归属；字段契约与训练 `Stage1Collator` 完全一致。
+        返回值:
+            - batch: dict[str, Any]；第一维 B 等于请求数；dense 字段按 B 堆叠，Find 原子字段按原子轴拼接，契约与训练 ``Stage1BatchCollator`` 一致。
+
+        兼容字段:
+            - 推理不需要逐原子 label，但旧版 Find 伪原子注入读取其 bool dtype；若 collator 产出 Find 原子表而无 ``atom_label``，本方法补一个全 False tensor，不表示真实监督。
         """
         from src.datasets.stage1_requests import ResolvedStage1Crop
 
@@ -490,7 +504,7 @@ class _TaskDatasetMaterializer:
         ]
         batch = self.collator(samples)
         if "atom_global_indices" in batch and "atom_label" not in batch:
-            # 旧版 Find 的伪原子注入会读取该监督字段的数据类型，但推理不使用其数值。
+            # 兼容旧版 Find 伪原子注入读取的 bool 字段；推理只需要 dtype 和形状，不把它当作真实监督。
             batch["atom_label"] = batch["atom_global_indices"].new_zeros(
                 batch["atom_global_indices"].shape,
                 dtype=torch.bool,
@@ -501,42 +515,33 @@ class _TaskDatasetMaterializer:
 
 
 
-# ======================================== 总打包 ========================================
+# runtime assembly：把 wrapper、Dataset materializer 和 occurrence loader 绑定到一个 worker。
 class Stage1RuntimeAssembly:
-    """
-    为一个推理 worker（一个独立的推理进程）组装 Stage-1 所需的模型、数据集和稀疏 occurrence（A-G `ligand_area.npz` 中的一个稀疏 ligand 区域）读取器。
-    这里的“组装”只建立可调用的输入提供器，不执行模型 forward，也不生成 centered/完整图归档文件。`ProductionTask` 是一个三元任务身份 `(stage1_model_name, split, pdb_id)`；所有公开方法都要求调用任务与本对象绑定的 `stage1_model_name` 一致。
+    """组装一个推理 worker 所需的 Stage1 wrapper、Dataset materializer 和 occurrence loader。
 
-    输入参数:
-        - data_root: str | Path，AdaLigand Stage A-G 正式数据根目录；Stage1Dataset 和 `density/{pdb_id}/ligand_area.npz` occurrence 文件都从这里读取。
-        - stage1_model_name: str，当前推理所绑定的 Stage-1 producer 正式名称；它同时用于匹配 resolved config、恢复 checkpoint 和校验后续 ProductionTask。
-        - checkpoint_path: str | Path，完整 Stage-1 模型包装器 checkpoint 路径；包装器包含模型权重及恢复 forward 所需的 checkpoint 快照信息。
-        - resolved_config_path: str | Path | None，已经解析完变量和默认值的配置文件路径；传入 None 时由 checkpoint 的固定相邻路径规则解析，配置中必须包含与 stage1_model_name 一致的 Dataset 输入契约。
-        - device: str，模型和批次拼装器（collator）输出的 tensor batch 的目标设备，例如 `cpu`、`cuda` 或 `cuda:0`；PDB identity、计数和其他 Python 元数据不搬到该设备。
-        - window_batch_size: int，一次完整图滑窗模型调用包含的窗口数；只影响 full-map forward 的批大小，不影响 centered BOX 批大小。
-        - centered_batch_size: int，一次 centered 模型调用包含的 80³ BOX 数；只影响 centered forward 的批大小，正式默认值为 10。
-        - cache_max_bytes: int，单个推理进程的 Stage1Dataset 资产缓存允许占用的最大字节数，默认值为 536870912000（500 GiB）；该值是上限，不会预先分配内存。
-        - wrapper_loader: Callable | None，可选的模型包装器加载函数；为 None 时使用 `load_stage1_wrapper`，该函数接收 checkpoint/config 路径并返回可调用的完整 wrapper。
-        - allow_current_workspace_code: bool，checkpoint 缺少完整代码快照时是否允许加载当前工作区代码；正式可复现运行应保持 False。
+    该类只建立可调用的输入提供器，不执行模型 forward，也不生成 centered 或 full-map 归档文件。``ProductionTask`` 的身份是 ``(stage1_model_name, split, pdb_id)``；所有公开方法都会拒绝跨 producer 任务。
 
-    构造后的内部组件:
-        - resolved_config_path: Path，最终采用的 resolved config；从中读取 density_channel_config 和固定的 8 Å atom_buffer_radius。
-        - density_channel_config: dict[str, object]，Dataset 读取密度通道的完整配置映射；键和值的顺序由 resolved config 决定。
-        - atom_buffer_radius: float，Find 数据集在 core BOX（坐标位于 80³ BOX 范围内）外纳入 receptor 原子的世界坐标半径，单位 Å，当前契约固定为 8.0。
-        - wrapper_provider: CachedStage1WrapperProvider，按需从 checkpoint 恢复一个处于 eval 模式且位于 device 的完整 Stage-1 wrapper（接收 Dataset 批次并执行模型 forward 的可调用对象）；同一 assembly 生命周期内复用该 wrapper，不跨 stage1_model_name 复用。
-        - occurrence_loader: AGOccurrenceVoxelLoader，读取 Stage E3 schema-v3 `ligand_area.npz`，返回 `dict[int, np.ndarray]`；每个键是 occurrence_id，每个值是该 occurrence 在完整图 ZYX 网格中的 int64 `(K_occ,)` C-order 线性 voxel 索引。
-        - _active_materializer_task: ProductionTask | None，当前缓存 Dataset 所绑定的三元任务身份；初始值为 None。
-        - _active_materializer: _TaskDatasetMaterializer | None，当前任务的进程私有 Stage1Dataset、collator 和 batch builder；初始值为 None。
+    构造参数:
+        - data_root: str | Path；A-G 正式数据根目录；Dataset 和 occurrence 文件都从此处读取。
+        - stage1_model_name: str；当前推理绑定的 Stage1 producer identity。
+        - checkpoint_path: str | Path；完整 Stage1 wrapper checkpoint。
+        - resolved_config_path: str | Path | None；与 checkpoint 对应的 resolved config；为空时按 checkpoint 快照规则解析。
+        - device: str；wrapper 和输出 tensor batch 的目标设备；PDB identity、计数和其他 Python 元数据不搬运。
+        - window_batch_size: int；一次 full-map forward 的窗口数，必须为正。
+        - centered_batch_size: int；centered forward 的 80³ BOX 数，保存为 assembly 配置供上层使用。
+        - cache_max_bytes: int；单进程 Dataset 资产缓存字节上限，不预分配内存。
+        - wrapper_loader: Callable | None；可替换的 wrapper 加载器；为空使用正式 checkpoint loader。
+        - allow_current_workspace_code: bool；checkpoint 缺少代码快照时是否允许当前工作区代码。
 
-    公开方法:
-        - full_map_input(task): 返回 FullMapTaskInput，包含完整图 shape、世界几何、滑窗 batch builder、Find 专用完整图 receptor hardmask、wrapper 和 window_batch_size。
-        - centered_batch_builder(task): 返回以 `Sequence[CenteredRequest]` 为输入、batch 为输出的 centered batch builder；多个 centered role 在同一 task 内复用同一个 Dataset materializer。
-        - occurrence_voxels(task, full_shape_zyx): 返回当前 PDB 的 occurrence_id 到完整图 C-order voxel 索引映射，并核对文件 shape 与完整图 shape 一致。
+    生命周期状态:
+        - ``resolved_config_path``、``density_channel_config`` 和 ``atom_buffer_radius`` 从同一 resolved config 冷读。
+        - ``wrapper_provider`` 按需恢复并缓存一个 eval wrapper；``_active_materializer`` 只缓存最近一个完全相同的 ProductionTask。
+        - ``occurrence_loader`` 不缓存模型或 Dataset；每次调用按指定 PDB 和完整图形状核对 occurrence 文件。
 
-    缓存边界:
-        - wrapper_provider 的缓存按 assembly 生命周期存在；第一次请求任务时加载 wrapper，后续同 producer 任务直接复用，不重复读取 checkpoint。
-        - _active_materializer 只缓存最近一个完全相同的 ProductionTask；切换 split 或 pdb_id 时创建新的 Dataset materializer，并丢弃旧 materializer 的引用。
-        - occurrence_loader 不缓存模型或 Dataset；每次 occurrence_voxels 调用按指定 pdb_id 和 full_shape_zyx 读取并核对对应的 occurrence 文件。
+    公开输出:
+        - ``full_map_input(task)``：FullMapTaskInput，含完整图几何、滑窗 batch builder、Find hardmask、wrapper 和窗口批大小。
+        - ``centered_batch_builder(task)``：接收 centered 请求序列并返回 batch 的 builder。
+        - ``occurrence_voxels(task, full_shape_zyx)``：返回 occurrence identity 到完整图线性 voxel index 的映射。
     """
 
     def __init__(
@@ -552,40 +557,22 @@ class Stage1RuntimeAssembly:
         wrapper_loader: Callable[..., Any] | None = None,
         allow_current_workspace_code: bool = False,
     ) -> None:
-        """
-        为一个推理 worker（一个独立的推理进程）组装 Stage-1 所需的模型、数据集和稀疏 occurrence（A-G `ligand_area.npz` 中的一个稀疏 ligand 区域）读取器。
-        这里的“组装”只建立可调用的输入提供器，不执行模型 forward，也不生成 centered/完整图归档文件。`ProductionTask` 是一个三元任务身份 `(stage1_model_name, split, pdb_id)`；所有公开方法都要求调用任务与本对象绑定的 `stage1_model_name` 一致。
+        """绑定推理输入的路径、producer、设备和批大小，并延迟恢复 wrapper。
 
         输入参数:
-            - data_root: str | Path，AdaLigand Stage A-G 正式数据根目录；Stage1Dataset 和 `density/{pdb_id}/ligand_area.npz` occurrence 文件都从这里读取。
-            - stage1_model_name: str，当前推理所绑定的 Stage-1 producer 正式名称；它同时用于匹配 resolved config、恢复 checkpoint 和校验后续 ProductionTask。
-            - checkpoint_path: str | Path，完整 Stage-1 模型包装器 checkpoint 路径；包装器包含模型权重及恢复 forward 所需的 checkpoint 快照信息。
-            - resolved_config_path: str | Path | None，已经解析完变量和默认值的配置文件路径；传入 None 时由 checkpoint 的固定相邻路径规则解析，配置中必须包含与 stage1_model_name 一致的 Dataset 输入契约。
-            - device: str，模型和批次拼装器（collator）输出的 tensor batch 的目标设备，例如 `cpu`、`cuda` 或 `cuda:0`；PDB identity、计数和其他 Python 元数据不搬到该设备。
-            - window_batch_size: int，一次完整图滑窗模型调用包含的窗口数；只影响 full-map forward 的批大小，不影响 centered BOX 批大小。
-            - centered_batch_size: int，一次 centered 模型调用包含的 80³ BOX 数；只影响 centered forward 的批大小，正式默认值为 10。
-            - cache_max_bytes: int，单个推理进程的 Stage1Dataset 资产缓存允许占用的最大字节数，默认值为 536870912000（500 GiB）；该值是上限，不会预先分配内存。
-            - wrapper_loader: Callable | None，可选的模型包装器加载函数；为 None 时使用 `load_stage1_wrapper`，该函数接收 checkpoint/config 路径并返回可调用的完整 wrapper。
-            - allow_current_workspace_code: bool，checkpoint 缺少完整代码快照时是否允许加载当前工作区代码；正式可复现运行应保持 False。
+            - data_root: str | Path；A-G 正式数据根目录。
+            - stage1_model_name: str；当前推理绑定的 producer identity。
+            - checkpoint_path: str | Path；完整 Stage1 wrapper checkpoint。
+            - resolved_config_path: str | Path | None；已解析配置，或由 checkpoint 快照解析。
+            - device: str；wrapper 和 batch tensor 的目标设备。
+            - window_batch_size: int；full-map 窗口批大小，必须为正。
+            - centered_batch_size: int；centered BOX 批大小。
+            - cache_max_bytes: int；Dataset 资产 cache 的字节上限。
+            - wrapper_loader: Callable | None；可选 wrapper 加载器。
+            - allow_current_workspace_code: bool；是否允许当前工作区代码回退。
 
-        构造后的内部组件:
-            - resolved_config_path: Path，最终采用的 resolved config；从中读取 density_channel_config 和固定的 8 Å atom_buffer_radius。
-            - density_channel_config: dict[str, object]，Dataset 读取密度通道的完整配置映射；键和值的顺序由 resolved config 决定。
-            - atom_buffer_radius: float，Find 数据集在 core BOX（坐标位于 80³ BOX 范围内）外纳入 receptor 原子的世界坐标半径，单位 Å，当前契约固定为 8.0。
-            - wrapper_provider: CachedStage1WrapperProvider，按需从 checkpoint 恢复一个处于 eval 模式且位于 device 的完整 Stage-1 wrapper（接收 Dataset 批次并执行模型 forward 的可调用对象）；同一 assembly 生命周期内复用该 wrapper，不跨 stage1_model_name 复用。
-            - occurrence_loader: AGOccurrenceVoxelLoader，读取 Stage E3 schema-v3 `ligand_area.npz`，返回 `dict[int, np.ndarray]`；每个键是 occurrence_id，每个值是该 occurrence 在完整图 ZYX 网格中的 int64 `(K_occ,)` C-order 线性 voxel 索引。
-            - _active_materializer_task: ProductionTask | None，当前缓存 Dataset 所绑定的三元任务身份；初始值为 None。
-            - _active_materializer: _TaskDatasetMaterializer | None，当前任务的进程私有 Stage1Dataset、collator 和 batch builder；初始值为 None。
-
-        公开方法:
-            - full_map_input(task): 返回 FullMapTaskInput，包含完整图 shape、世界几何、滑窗 batch builder、Find 专用完整图 receptor hardmask、wrapper 和 window_batch_size。
-            - centered_batch_builder(task): 返回以 `Sequence[CenteredRequest]` 为输入、batch 为输出的 centered batch builder；多个 centered role 在同一 task 内复用同一个 Dataset materializer。
-            - occurrence_voxels(task, full_shape_zyx): 返回当前 PDB 的 occurrence_id 到完整图 C-order voxel 索引映射，并核对文件 shape 与完整图 shape 一致。
-
-        缓存边界:
-            - wrapper_provider 的缓存按 assembly 生命周期存在；第一次请求任务时加载 wrapper，后续同 producer 任务直接复用，不重复读取 checkpoint。
-            - _active_materializer 只缓存最近一个完全相同的 ProductionTask；切换 split 或 pdb_id 时创建新的 Dataset materializer，并丢弃旧 materializer 的引用。
-            - occurrence_loader 不缓存模型或 Dataset；每次 occurrence_voxels 调用按指定 pdb_id 和 full_shape_zyx 读取并核对对应的 occurrence 文件。
+        状态变化:
+            - 解析并保存 checkpoint 绑定的 resolved config、密度通道和固定 8 Å atom buffer；创建 wrapper provider 和 occurrence loader，但 wrapper 仍延迟到首次任务调用。
         """
         self.data_root = Path(data_root)
         self.stage1_model_name = str(stage1_model_name)
@@ -595,10 +582,10 @@ class Stage1RuntimeAssembly:
         self.cache_max_bytes = int(cache_max_bytes)
         if self.window_batch_size <= 0:
             raise ValueError("window_batch_size 必须为正")
-        # Path, 与 checkpoint 快照绑定的唯一 resolved config；后续 Dataset 契约只从该文件冷读。
+        # Path；与 checkpoint 快照绑定的唯一 resolved config，后续 Dataset 契约只从该文件冷读。
         config_path = resolve_checkpoint_config_path(checkpoint_path, resolved_config_path)
         self.resolved_config_path = config_path
-        # `dict[str, object]` 与 float，推理 Dataset 必须复用的 density channel 配方和固定 8 Å 原子 buffer。
+        # tuple[dict[str, object], float]；推理 Dataset 必须复用的密度通道配方和固定 8 Å 原子缓冲半径。
         self.density_channel_config, self.atom_buffer_radius = _load_dataset_contract(config_path, self.stage1_model_name)
         self.wrapper_provider = CachedStage1WrapperProvider(
             stage1_model_name=self.stage1_model_name,
@@ -613,25 +600,27 @@ class Stage1RuntimeAssembly:
         self._active_materializer: _TaskDatasetMaterializer | None = None
 
     def full_map_input(self, task: ProductionTask) -> FullMapTaskInput:
-        """
-        构造一张 A-G 完整图的滑窗 Dataset、Find hardmask 与 wrapper。
+        """构造一个 PDB 的 full-map 滑窗输入。
 
         输入参数:
-            - task: ProductionTask, 当前 producer/split/PDB identity
+            - task: ProductionTask；当前 producer、split 和 PDB identity。
 
-        输出:
-            - inputs: FullMapTaskInput, 包含完整 wrapper、完整图 ZYX 形状、滑窗 batch builder、可选完整图 receptor hardmask、窗口 batch 数、世界 XYZ 原点与世界 XYZ 体素尺寸。
+        返回值:
+            - inputs: FullMapTaskInput；包含 eval wrapper、完整图 ZYX 形状、滑窗 batch builder、Find 专用完整图受体 hardmask、窗口批大小和世界 XYZ 几何。
+
+        预检:
+            - 使用真实 80³、stride 40 的滑窗生成器验证完整图可被无 padding 窗口覆盖；Find 额外构造完整图受体 home-voxel hardmask。
         """
         self._check_task(task)
         wrapper = self.wrapper_provider(task)
         materializer = self._materializer(task)
-        # tuple 与三个数组，依次为完整图 ZYX 形状、世界 XYZ 体素尺寸、世界 XYZ 原点和 receptor 原子世界 XYZ 坐标。
+        # tuple[shape_zyx, voxel_size_xyz, origin_xyz, receptor_coords]；几何轴分别是完整图 ZYX 和世界 XYZ。
         full_shape, voxel_size, origin, receptor_coords = (materializer.full_map_context())
-        # 只读验证正式 80³/stride40 能以真实无 padding 窗口覆盖完整图，使形状错误在申请融合大数组前暴露。
+        # 只读验证真实 80³/stride40 窗口覆盖完整图，使形状错误在申请 full-map 融合数组前暴露。
         window_starts_zyx(full_shape, (80, 80, 80), (40, 40, 40))
         if task.stage1_model_name.startswith("Find"):
             from src.datasets.box_geometry import build_hardmask_from_world_coordinates
-            # bool，(D, H, W)，完整图 ZYX voxel 网格上的 receptor home voxel；Find 完整图融合后在 True 位置把 ligand 概率清零。
+            # np.ndarray bool (D, H, W)；完整图 ZYX 网格上的受体 home voxel，Find 融合后在 True 位置清零配体概率。
             receptor_hardmask = build_hardmask_from_world_coordinates(
                 atom_coords_world=receptor_coords,
                 box_origin_world=origin,
@@ -654,46 +643,46 @@ class Stage1RuntimeAssembly:
         self,
         task: ProductionTask,
     ) -> Callable[[Sequence[CenteredRequest]], Mapping[str, object]]:
-        """
-        返回以 `Sequence[CenteredRequest]` 为输入、batch 为输出的 centered batch builder。
+        """返回当前 task 的 centered batch builder。
 
         输入参数:
-            - task: ProductionTask, 当前 producer/split/PDB identity
+            - task: ProductionTask；当前 producer、split 和 PDB identity。
 
-        输出:
-            - builder: Callable[[Sequence[CenteredRequest]], Mapping[str, object]], 当前由 centered 领域 producer 按 `centered_batch_size` 调用；它复用同一 PDB 的 Stage1Dataset cache。
+        返回值:
+            - builder: Callable[[Sequence[CenteredRequest]], Mapping[str, object]]；上层按 ``centered_batch_size`` 分批调用；同一 PDB 复用当前 Dataset cache。
         """
         self._check_task(task)
         self.wrapper_provider(task)
-        return self._materializer(task).centered_batch   # 以 `Sequence[CenteredRequest]` 为输入、batch 为输出的 centered batch builder
+        return self._materializer(task).centered_batch  # 接收 centered 请求序列并返回 collated batch。
 
     def occurrence_voxels(
         self,
         task: ProductionTask,
         full_shape_zyx: tuple[int, int, int],
     ) -> Mapping[int, np.ndarray]:
-        """
-        读取 task 对应的 occurrence 稀疏体素。
+        """读取当前 task 的 occurrence 稀疏体素线性索引。
 
         输入参数:
-            - task: ProductionTask, 当前 producer/split/PDB identity
-            - full_shape_zyx: tuple[int, int, int], 完整图的 ZYX voxel 形状 `(D, H, W)`。
+            - task: ProductionTask；当前 producer、split 和 PDB identity。
+            - full_shape_zyx: tuple[int, int, int]；完整图的 ``(D, H, W)`` ZYX 形状。
 
-        输出:
-            - occurrences: Mapping[int, np.ndarray], occurrence_id 到 `(K_occ,)` int64 完整图 C-order 离散线性 voxel 索引的映射。
+        返回值:
+            - occurrences: Mapping[int, np.ndarray]；occurrence identity 到 int64 ``(K_occ,)`` 完整图 C-order 线性 voxel index 的映射。
         """
         self._check_task(task)
         return self.occurrence_loader(task.pdb_id, full_shape_zyx)
 
     def _materializer(self, task: ProductionTask) -> _TaskDatasetMaterializer:
-        """
-        在同一 PDB 的连续 roles 之间复用 materializer，切换 task 时释放旧引用。
+        """取得与 task 完全绑定的 Dataset materializer。
 
         输入参数:
-            - task: ProductionTask, 当前 producer/split/PDB identity
+            - task: ProductionTask；producer、split 或 PDB 任一变化都会切换绑定。
 
-        输出:
-            - materializer: _TaskDatasetMaterializer, 与 task 完全绑定的 Dataset/materializer
+        返回值:
+            - materializer: _TaskDatasetMaterializer；当前 task 的 Dataset、cache 和 collator。
+
+        生命周期:
+            - 相同 task 复用现有 materializer；切换 task 时只替换引用，旧 materializer 由 Python 生命周期回收。
         """
         if task != self._active_materializer_task:
             self._active_materializer_task = task
@@ -709,16 +698,16 @@ class Stage1RuntimeAssembly:
         return self._active_materializer
 
     def _check_task(self, task: ProductionTask) -> None:
-        """
-        if task.stage1_model_name != self.stage1_model_name:
-            raise ValueError("runtime assembly 不能跨 stage1_model_name 使用")
-        阻止一个 runtime assembly 跨 producer 使用。
+        """阻止一个 runtime assembly 跨 producer 使用。
 
         输入参数:
-            - task: ProductionTask, 要交给当前 assembly 的任务
+            - task: ProductionTask；要交给当前 assembly 的任务。
 
-        输出:
-            - None: producer identity 一致时返回，否则直接报错
+        返回值:
+            - None；producer identity 一致时返回。
+
+        失败语义:
+            - ``task.stage1_model_name`` 与 assembly 绑定值不一致时抛出 ``ValueError``。
         """
         if task.stage1_model_name != self.stage1_model_name:
             raise ValueError("runtime assembly 不能跨 stage1_model_name 使用")

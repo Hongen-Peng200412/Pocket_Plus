@@ -1,9 +1,11 @@
-"""从迁移后的 Stage1 v3 资产并行生成 0:5:5 BOX pool。
+"""从迁移后的 Stage1 V3 正式资产并行生成并发布 0:5:5 BOX pool。
 
-主要入口是 :func:`build_migrated_pdb_box_pool`、:func:`run_shard` 与
-:func:`finalize_box_pool`。本模块复用现有 BOX 几何算法，但从 ``exp.npz`` 的
-``canonical_shape_zyx`` 读取完整图形状，不再依赖已经迁到 ``exp.npy`` 的
-``grid`` 字段。第二版 ``stage1_preparation_box_pool_2`` 不会被读取或改写。
+命令入口是 ``build-shard`` 和 ``finalize``；函数入口分别是 :func:`run_shard`、:func:`finalize_box_pool` 和 :func:`build_migrated_pdb_box_pool`。本模块只读取迁移后的 ``exp.npz`` 几何元数据、occurrence 稀疏 mask 和 ``receptor_tokens.npz`` 坐标，生成完整图内真实 80³ BOX 的 ZYX 起点。完整图形状来自 ``exp.npz:canonical_shape_zyx``，不依赖已经迁到 ``exp.npy`` 的 ``grid`` 字段；第二版 ``stage1_preparation_box_pool_2`` 不会被读取、覆盖或删除。
+
+产物边界:
+    - 每个 PDB 一个非压缩 NPZ：``pdb_id`` 为字符串标量；``occurrence_id`` 为 int32 ``(O,)``；``center_start_zyx`` 为 int32 ``(O,3)``；``bias_start_zyx`` 为 int32 ``(O,30,3)``；``context_start_zyx`` 为 int32 ``(C,3)``，最后一维均为完整图零基 ZYX 起点。
+    - 分片状态 JSON 的顶层字段为 ``schema_version``、``shard_index``、``shard_count``、``assigned_count`` 和 ``pdb_reports``；每条报告含 ``split``、``pdb_id``、``status``、``occurrence_count``、``context_count``。
+    - ``finalize`` 只在分片集合完整且每个 PDB NPZ 具备上述字段时发布 ``manifest.json``、``validation_selection.npz``、``config.json``、``summary.json`` 和 ``_COMPLETE``；manifest 的 ``splits`` 为 train/validation 路径清单，summary 记录请求数、发布数、零 context 数和冻结选择计数。
 """
 
 from __future__ import annotations
@@ -42,7 +44,17 @@ CONTEXT_MAX_ATTEMPTS = 3000
 
 
 def load_split_pdb_ids(path: Path) -> tuple[str, ...]:
-    """从 split JSON 的候选记录提取唯一 PDB identity，并按字典序返回。"""
+    """从 split JSON 候选记录提取唯一 PDB identity 并排序。
+
+    输入参数:
+        - path: Path；顶层必须是候选记录 JSON list；字典记录从 ``pdb_id`` 字段读取 identity。
+
+    返回值:
+        - pdb_ids: tuple[str, ...]；去重、去空白、转小写并按字典序排列的 PDB identity。
+
+    失败语义:
+        - 顶层不是 list、没有有效 identity 或出现空 identity 时抛出异常；函数不保留候选重复项。
+    """
 
     value = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(value, list):
@@ -63,14 +75,23 @@ def build_migrated_pdb_box_pool(
     split_name: str,
     seed: int,
 ) -> dict[str, np.ndarray]:
-    """从迁移后元数据、occurrence 掩码和受体坐标构造一个 PDB 的起点池。
+    """从迁移后正式资产构造一个 PDB 的 center、bias 和 context 起点池。
 
-    返回字段：
-        - ``pdb_id``: 字符串标量，当前 PDB identity。
-        - ``occurrence_id``: int32 ``(N_occ,)``，升序 occurrence 编号。
-        - ``center_start_zyx``: int32 ``(N_occ,3)``，每个 occurrence 的居中 BOX 起点。
-        - ``bias_start_zyx``: int32 ``(N_occ,30,3)``，经验半径与额外 0–3 Å 扰动生成的候选起点。
-        - ``context_start_zyx``: int32 ``(N_context,3)``，当前 PDB 共享的均匀合法起点，最多 500 个。
+    输入参数:
+        - data_root: Path；A-G 正式资产根目录，包含 ``density`` 和 ``parse``。
+        - pdb_id: str；当前 PDB identity，目录名和输出字段使用同一小写值。
+        - split_name: str；``train`` 或 ``validation``，参与 PDB 独立 seed 派生。
+        - seed: int；box pool 的全局基准 seed。
+
+    返回字段:
+        - ``pdb_id``：字符串标量；当前 PDB identity。
+        - ``occurrence_id``：int32 ``(O,)``；按升序排列的 occurrence identity。
+        - ``center_start_zyx``：int32 ``(O, 3)``；逐 occurrence 的完整图 ZYX 居中 BOX 起点。
+        - ``bias_start_zyx``：int32 ``(O, 30, 3)``；逐 occurrence 的 30 个 bias BOX 起点，最后一维为 ZYX。
+        - ``context_start_zyx``：int32 ``(C, 3)``；当前 PDB 的均匀合法 context 起点，最多 500 个。
+
+    读取契约:
+        - ``exp.npz`` 提供 schema 2 的 ``canonical_shape_zyx``、``voxel_size`` 和 ``origin``；``ligand_area.npz`` 提供 schema 3 occurrence mask；``receptor_tokens.npz:coords`` 提供世界 XYZ 受体坐标。
     """
 
     density_directory = data_root / "density" / pdb_id
@@ -79,7 +100,7 @@ def build_migrated_pdb_box_pool(
         voxel_size_xyz = np.asarray(exp_meta["voxel_size"], dtype=np.float32)
         origin_xyz = np.asarray(exp_meta["origin"], dtype=np.float32)
     resolve_stage1_start((0, 0, 0), grid_shape_zyx)
-    # dict[int,np.ndarray[int32]]，occurrence 编号到完整图非空 ZYX 体素索引的映射。
+    # dict[int, np.ndarray int32]；occurrence identity 到完整图非空 ZYX voxel index 的映射。
     occurrence_masks = load_occurrence_masks(
         density_directory / "ligand_area.npz", grid_shape_zyx
     )
@@ -114,7 +135,17 @@ def build_migrated_pdb_box_pool(
 
 
 def build_one_pool(argument: tuple[str, str, str, str, int]) -> dict[str, Any]:
-    """生成并原子发布一个 PDB 起点池，返回分片汇总字段。"""
+    """生成并原子发布一个 PDB 起点池，返回分片汇总字段。
+
+    输入参数:
+        - argument: tuple[str, str, str, str, int]；依次为 ``data_root``、``output_root``、``split_name``、``pdb_id`` 和全局 seed。
+
+    返回值:
+        - report: dict[str, Any]；包含 split、PDB identity、``published`` 状态、occurrence 数和 context 数；由分片状态 JSON 收集。
+
+    文件副作用:
+        - 在 ``output_root/<split_name>/<pdb_id>.npz`` 原子写入非压缩起点池；已有 ``_COMPLETE`` 的 pool 不应进入该入口。
+    """
 
     data_root, output_root, split_name, pdb_id, seed = argument
     pool = build_migrated_pdb_box_pool(Path(data_root), pdb_id, split_name, seed)
@@ -130,7 +161,17 @@ def build_one_pool(argument: tuple[str, str, str, str, int]) -> dict[str, Any]:
 
 
 def run_shard(arguments: argparse.Namespace) -> None:
-    """让一个 Slurm 数组元素生成稳定分配给它的 train 与 validation PDB。"""
+    """让一个 Slurm 数组元素生成并记录其分配到的 train、validation PDB。
+
+    输入参数:
+        - arguments: argparse.Namespace；必须包含 data/output/state root、两个 split JSON、``shard_count``、``shard_index``、``workers`` 和 ``seed``。
+
+    状态变化:
+        - 按 ``tagged_ids[shard_index::shard_count]`` 分配 PDB；使用最多 ``workers`` 个进程生成 NPZ；在 state root 原子写入一个分片 JSON。
+
+    失败语义:
+        - 分片参数无效、train/validation 有 PDB 重叠或输出已经发布时直接失败；空分片只写零报告，不伪造 PDB 产物。
+    """
 
     shard_count = int(arguments.shard_count)
     shard_index = int(arguments.shard_index)
@@ -176,7 +217,17 @@ def run_shard(arguments: argparse.Namespace) -> None:
 
 
 def finalize_box_pool(arguments: argparse.Namespace) -> None:
-    """核对全部分片和单 PDB NPZ，最后发布 manifest、selection 与完成标记。"""
+    """核对全部分片和 PDB NPZ，并原子发布 pool 的最终索引与完成标记。
+
+    输入参数:
+        - arguments: argparse.Namespace；必须包含 data/split/output/state root、``shard_count`` 和 ``seed``。
+
+    发布顺序:
+        - 读取全部分片状态并核对分片身份、PDB 集合和每个 NPZ 的必需字段；随后写入 ``manifest.json``、``validation_selection.npz``、``config.json``、``summary.json`` 和空的 ``_COMPLETE``。
+
+    失败语义:
+        - 缺少分片、重复 PDB、集合不一致、单 PDB 字段不全或已存在 ``_COMPLETE`` 时不发布完成标记；已存在 ``_COMPLETE`` 的正式 pool 不会被覆盖，但未完成目录中的同名 NPZ 可能在分片阶段被重写。
+    """
 
     output_root = Path(arguments.output_root).resolve()
     state_root = Path(arguments.state_root).resolve()
@@ -277,7 +328,15 @@ def finalize_box_pool(arguments: argparse.Namespace) -> None:
 
 
 def main() -> None:
-    """解析 BOX pool 分片或最终发布命令。"""
+    """解析 ``build-shard`` 或 ``finalize`` 子命令并调用对应入口。
+
+    命令参数:
+        - ``build-shard``：额外需要 ``shard-index`` 和 ``workers``，生成当前分片的 PDB pool。
+        - ``finalize``：读取全部分片状态，发布 manifest、validation selection 和 ``_COMPLETE``。
+
+    返回值:
+        - None；成功时由子命令写入产物并打印 JSON 摘要，失败时保留异常供 Slurm 任务报告。
+    """
 
     parser = argparse.ArgumentParser(description="生成 Stage1 v3 0:5:5 BOX pool。")
     subparsers = parser.add_subparsers(dest="command", required=True)
