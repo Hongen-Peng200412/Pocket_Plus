@@ -2,8 +2,7 @@
 """
 从 PDB/CIF 结构中剔除所有 HETATM(配体/水/离子/修饰残基), 仅保留 polymer 受体残基, 写出 mmCIF. 
 
-共享 util: 由 phenix 差图预生成脚本与 Bundle_of_Maps/simulated_map/get_receptor_from_PDB.py 共同 import,
-避免重复实现 receptor 剔除逻辑. 
+共享 util：由当前推理和密度图预处理入口共同导入，避免重复实现受体剔除逻辑。
 """
 
 import warnings

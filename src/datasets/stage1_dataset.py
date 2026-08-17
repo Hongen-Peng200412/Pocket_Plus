@@ -23,7 +23,8 @@
     - nucleic_mainchain_target: int64 ``(80, 80, 80)``; 核酸主链背景/P/O5'/C5'/C4'/C3'/O3' 类别编号. 
     - ligand_inverse_distance_target: float32 ``(80, 80, 80)``; 由最近配体原子距离按 ``1/(1+distance_Å)`` 转换的回归目标. 
     - atom_global_indices: int64 ``(N_A,)``; Find 选择的受体原子在完整受体数组中的编号. 
-    - atom_feat: float32 ``(N_A, 50)``; 49 维基础特征与主链原子标记拼接后的特征.
+    - atom_feat: float32 ``(N_A, 49)``; 受体原子的基础特征，主链标志由模型输入边界拼接。
+    - atom_is_backbone: bool ``(N_A,)``; 与 atom_feat 第 0 维对齐，True 表示蛋白质或核酸主链原子。
     - atom_coord_world: float32 ``(N_A, 3)``; 逐原子世界 XYZ 坐标, 单位 Å. 
     - atom_coord_local_voxel: float32 ``(N_A, 3)``; 逐原子 BOX-local 连续 voxel XYZ 坐标. 
     - atom_coord_centered_world: float32 ``(N_A, 3)``; 逐原子相对 BOX 中心的世界 XYZ 坐标, 单位 Å. 
@@ -31,10 +32,9 @@
     - atom_label: bool ``(N_A,)``; 与 atom_global_indices 第 0 维逐原子对齐的 binding 标签. 
 
 文件读取:
-    - density/<pdb_id>/exp.npz: ``grid``、``voxel_size``、``origin`` 三个实验密度字段. 
-    - density/<pdb_id>/sim.npz: Find 额外读取的模拟密度字段, 几何必须与 exp 完全一致. 
-    - density/<pdb_id>/ligand_area.npz: ``union_mask`` 完整图配体区域并集. 
-    - density/<pdb_id>/ligand_dist.npz: ``distance`` float16 最近配体原子距离图及其空间契约字段. 
+    - density/<pdb_id>/exp.npy 与 sim.npy: 只读 mmap 完整体数组；同名 NPZ 保存空间元数据。
+    - density/<pdb_id>/union_mask.npy: bool 配体区域并集；ligand_area.npz 保存空间元数据和 occurrence 掩码。
+    - density/<pdb_id>/ligand_dist.npy: float16 最近配体原子距离图；ligand_dist.npz 保存空间元数据。
     - parse/<pdb_id>/receptor_tokens.npz: ``coords``、``feat`` 以及辅助监督需要的 ``res_type``、``atom_name``. 
     - labels/<pdb_id>/atom_labels.npz: ``binding_atom`` 逐受体原子结合区域标签. 
 
@@ -163,34 +163,15 @@ class _ByteLruCache:
         self.current_bytes += size
 
 
-def _grid_from_npz(path: Path) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """
-    读取 Stage E `grid/voxel_size/origin` 并返回独立 CPU 数组. 
+def _load_mmap_array(path: Path, expected_dtype: np.dtype) -> np.memmap:
+    """延迟映射一份 ``(1,D,H,W)`` NPY，不读取完整体数组。"""
 
-    输入参数:
-        - path: Path; ``density/<pdb_id>/exp.npz`` 或 ``sim.npz`` 路径. 
-
-    输出字段:
-        - grid_zyx: float32 ``(D, H, W)``; 完整图密度数组, 轴序为 ZYX, 输入文件的单通道 ``(1, D, H, W)`` 已去除通道维. 
-        - voxel_size_xyz: float32 ``(3,)``; 世界 XYZ 每体素尺寸, 单位 Å. 
-        - origin_xyz: float32 ``(3,)``; 完整图 voxel-grid corner 的世界 XYZ 坐标, 单位 Å. 
-    """
-    with np.load(path, allow_pickle=False) as data:
-        missing = sorted({"grid", "voxel_size", "origin"}.difference(data.files))
-        if missing:
-            raise KeyError(f"{path} 缺少密度字段: {missing}。")
-        grid = np.asarray(data["grid"], dtype=np.float32)
-        voxel_size = np.asarray(data["voxel_size"], dtype=np.float32)
-        origin = np.asarray(data["origin"], dtype=np.float32)
-    if grid.ndim != 4 or grid.shape[0] != 1:
-        raise ValueError(f"{path}: grid 必须为 (1,Z,Y,X)，实际 {grid.shape}。")
-    if voxel_size.shape != (3,) or origin.shape != (3,):
-        raise ValueError(f"{path}: voxel_size 与 origin 必须为 (3,) XYZ。")
-    if not np.isfinite(grid).all() or not np.isfinite(voxel_size).all() or not np.isfinite(origin).all():
-        raise ValueError(f"{path}: 密度或几何字段包含 NaN/Inf。")
-    if np.any(voxel_size <= 0):
-        raise ValueError(f"{path}: voxel_size 必须逐轴为正。")
-    return grid[0], voxel_size, origin
+    array = np.load(path, mmap_mode="r", allow_pickle=False)
+    if not isinstance(array, np.memmap) or array.ndim != 4 or array.shape[0] != 1:
+        raise ValueError(f"{path}: NPY 必须是可内存映射的 (1,D,H,W) 数组。")
+    if array.dtype != np.dtype(expected_dtype):
+        raise ValueError(f"{path}: dtype 应为 {np.dtype(expected_dtype)}，实际为 {array.dtype}。")
+    return array
 
 
 def _crop_80(array: np.ndarray, start_zyx: Sequence[int]) -> np.ndarray:
@@ -208,7 +189,10 @@ def _crop_80(array: np.ndarray, start_zyx: Sequence[int]) -> np.ndarray:
     crop = array[z0 : z0 + 80, y0 : y0 + 80, x0 : x0 + 80]
     if crop.shape != STAGE1_BOX_SHAPE_ZYX:
         raise RuntimeError(f"Stage1 crop 必须恰为 80³，实际 {crop.shape}。")
-    return np.ascontiguousarray(crop)
+    crop = np.ascontiguousarray(crop)
+    if np.issubdtype(crop.dtype, np.floating) and not np.isfinite(crop).all():
+        raise ValueError("Stage1 浮点裁块包含 NaN 或 Inf。")
+    return crop
 
 
 def _mainchain_class_targets(
@@ -380,6 +364,7 @@ def _to_tensor_sample(sample: dict[str, Any]) -> dict[str, Any]:
         - ligand_area_target: bool 配体区域目标 tensor. 
         - voxel_label: bool binding 体素目标 tensor. 
         - atom_is_in_core_box: bool 逐原子核心 BOX 掩码 tensor. 
+        - atom_is_backbone: bool 逐原子主链标志 tensor。
         - atom_label: bool 逐原子 binding 标签 tensor. 
         - protein_mainchain_target: int64 蛋白主链类别编号 tensor. 
         - nucleic_mainchain_target: int64 核酸主链类别编号 tensor. 
@@ -405,6 +390,7 @@ def _to_tensor_sample(sample: dict[str, Any]) -> dict[str, Any]:
         "atom_coord_world": torch.float32,
         "atom_coord_local_voxel": torch.float32,
         "atom_coord_centered_world": torch.float32,
+        "atom_is_backbone": torch.bool,
         "atom_is_in_core_box": torch.bool,
         "atom_label": torch.bool,
     }
@@ -412,6 +398,8 @@ def _to_tensor_sample(sample: dict[str, Any]) -> dict[str, Any]:
     for field_name, dtype in dtype_by_field.items():
         if field_name in result:
             array = np.ascontiguousarray(result[field_name])
+            if not array.flags.writeable:
+                array = array.copy()
             result[field_name] = torch.as_tensor(array, dtype=dtype)
     return result
 
@@ -425,11 +413,10 @@ class Stage1Dataset(Dataset):
         - split_file: ``str | Path | Sequence[ResolvedStage1Crop]``; 训练 BOX pool 目录、固定验证请求文件或推理层传入的内存请求序列. 
         - mode: str; 取值为 ``train``、``val``、``validation``、``full_map`` 或 ``centered``. 
         - stage1_model_name: str; ``STAGE1_MODEL_NAMES`` 中的 producer 身份, 决定密度通道和是否返回 Find 原子字段. 
-        - box_pool_root: ``str | None``; 包含 ``manifest.json`` 与 validation selection 的 ``stage1_preparation/box_pool`` 根目录. 
+        - box_pool_root: ``str | None``; 包含 ``manifest.json`` 与 validation selection 的 ``stage1_preparation_box_pool_3`` 根目录.
         - density_channel_config: ``Mapping[str, Any]``; 密度裁剪、拟合和启用通道的配置. 
         - atom_buffer_radius: float; 核心 BOX 外选择受体原子的世界坐标缓冲半径, 当前固定为 8.0 Å. 
         - request_seed: int; 训练请求层的基准 seed. 
-        - box_sample_fraction: float; 传给请求层的比例抽样值, 默认 1.0. 
         - cache_max_bytes: int; 每个 DataLoader worker 的受体表、标签和完整图 LRU 缓存字节上限. 
         - enable_random_rotation: bool; 训练模式是否对密度、标签和原子坐标同步执行随机 90 度旋转. 
         - name: str; Dataset 的显示名称. 
@@ -455,7 +442,6 @@ class Stage1Dataset(Dataset):
         density_channel_config: Mapping[str, Any],
         atom_buffer_radius: float = 8.0,
         request_seed: int = 3407,
-        box_sample_fraction: float = 1.0,
         cache_max_bytes: int = 536_870_912,
         enable_random_rotation: bool = True,
         name: str = "stage1",
@@ -469,11 +455,10 @@ class Stage1Dataset(Dataset):
             - split_file: ``str | Path | Sequence[ResolvedStage1Crop]``; 训练 BOX pool 目录、固定验证请求文件或推理层传入的内存请求序列. 
             - mode: str; 取值为 ``train``、``val``、``validation``、``full_map`` 或 ``centered``. 
             - stage1_model_name: str; Find_0等, ``STAGE1_MODEL_NAMES`` 中的 producer 身份, 决定密度通道和是否返回 Find 原子字段. 
-            - box_pool_root: ``str | None``; 包含 ``manifest.json`` 与 validation selection 的 ``stage1_preparation/box_pool`` 根目录. 
+            - box_pool_root: ``str | None``; 包含 ``manifest.json`` 与 validation selection 的 ``stage1_preparation_box_pool_3`` 根目录.
             - density_channel_config: ``Mapping[str, Any]``; 密度裁剪、拟合和启用通道的配置. 
             - atom_buffer_radius: float; 核心 BOX 外选择受体原子的世界坐标缓冲半径, 当前固定为 8.0 Å. 
             - request_seed: int; 训练请求层的基准 seed. 
-            - box_sample_fraction: float; 传给请求层的比例抽样值, 默认 1.0. 
             - cache_max_bytes: int; 每个 DataLoader worker 的受体表、标签和完整图 LRU 缓存字节上限. 
             - enable_random_rotation: bool; 训练模式是否对密度、标签和原子坐标同步执行随机 90 度旋转. 
             - name: str; Dataset 的显示名称. 
@@ -483,7 +468,7 @@ class Stage1Dataset(Dataset):
 
         单样本输出字段由模块 Docstring 的同名字段清单定义; Find 与 ``unet_c1`` 共用体素物化路径, ``unet_c1`` 仍构造辅助监督但不返回逐原子输入表. 
 
-         ``request_seed`` 与 ``box_sample_fraction``: 只交给 ``build_request_source`` 决定读取哪些 BOX. 
+        ``request_seed`` 只交给 ``build_request_source``，用于确定每个训练周期的随机请求。
         """
         super().__init__()
         del split_train, split_val
@@ -512,7 +497,6 @@ class Stage1Dataset(Dataset):
                 mode=self.mode,
                 box_pool_root=box_pool_root,
                 seed=int(request_seed),
-                box_sample_fraction=float(box_sample_fraction),
             )
         # dict[str,Any], 从 Hydra dataset 配置解析出的密度通道构造契约. 
         channel_cfg = dict(density_channel_config)
@@ -578,7 +562,7 @@ class Stage1Dataset(Dataset):
 
     def _load_structure(self, pdb_id: str, require_targets: bool) -> dict[str, np.ndarray]:
         """
-        读取并缓存 receptor 50D 原子特征及可选 binding label.
+        读取并缓存 receptor 49D 原子特征、主链标志及可选 binding label。
 
         输入参数:
             - pdb_id: str; 当前 PDB 身份. 
@@ -586,7 +570,8 @@ class Stage1Dataset(Dataset):
 
         输出字段:
             - coords: float32 ``(N_receptor, 3)``; 受体原子的世界 XYZ 坐标, 单位 Å. 
-            - feat: float32 ``(N_receptor, 50)``; 49 维基础特征与主链原子标记拼接后的特征.
+            - feat: float32 ``(N_receptor, 49)``; 受体原子基础特征。
+            - is_backbone: bool ``(N_receptor,)``; True 表示蛋白质或核酸主链原子。
             - binding_atom: bool ``(N_receptor,)``; 与 coords 第 0 维逐原子对齐的结合区域标签, 仅 ``require_targets=True`` 时读取. 
             - res_type: uint8 ``(N_receptor,)``; 辅助监督使用的残基类别编号, 仅辅助监督模型且 ``require_targets=True`` 时读取. 
             - atom_name: 字符串数组 ``(N_receptor,)``; 辅助监督使用的原子名, 仅辅助监督模型且 ``require_targets=True`` 时读取. 
@@ -605,22 +590,20 @@ class Stage1Dataset(Dataset):
             coords = np.asarray(data["coords"], dtype=np.float32)
             # float32, (N_receptor, 49), 与 coords 第 0 维逐受体原子对齐的基础特征. 
             feat_base = np.asarray(data["feat"], dtype=np.float32)
-            # float32, (N_receptor, 1), 1 表示蛋白质或核酸主链原子。
-            is_backbone = np.asarray(data["is_backbone"], dtype=np.float32).reshape(-1, 1)
+            # bool, (N_receptor,), True 表示蛋白质或核酸主链原子。
+            is_backbone = np.asarray(data["is_backbone"], dtype=bool)
         if (
             coords.ndim != 2
             or coords.shape[1] != 3
             or feat_base.shape != (coords.shape[0], 49)
-            or is_backbone.shape != (coords.shape[0], 1)
+            or is_backbone.shape != (coords.shape[0],)
         ):
             raise ValueError(
                 f"{receptor_path}: coords/feat/is_backbone 必须为 [N,3]/[N,49]/[N]。"
             )
-        # float32, (N_receptor, 50), 运行时拼接主链标记，不改写 receptor_tokens.npz。
-        feat = np.concatenate([feat_base, is_backbone], axis=1).astype(np.float32, copy=False)
-        if not np.isfinite(coords).all() or not np.isfinite(feat).all():
+        if not np.isfinite(coords).all() or not np.isfinite(feat_base).all():
             raise ValueError(f"{receptor_path}: coords/feat 包含 NaN/Inf。")
-        structure = {"coords": coords, "feat": feat}
+        structure = {"coords": coords, "feat": feat_base, "is_backbone": is_backbone}
         if require_targets:
             label_path = self.root / "labels" / pdb_id / "atom_labels.npz"
             with np.load(label_path, allow_pickle=False) as data:
@@ -645,29 +628,39 @@ class Stage1Dataset(Dataset):
         grid_name: str,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
-        读取并按真实字节数缓存一个 PDB 的 exp/sim 原始完整图. 
+        内存映射并缓存一个 PDB 的 exp/sim 完整体数组及小型几何元数据。
 
         输入参数:
             - pdb_id: str; 当前 PDB 身份. 
             - grid_name: str; ``exp`` 或 ``sim``; 缓存只保存原始 float32 grid 与几何, 不保存派生密度通道. 
 
         输出字段:
-            - grid_zyx: float32 ``(D_full, H_full, W_full)``; 完整图 ZYX voxel grid. 
+            - grid_zyx: float32 mmap ``(D_full, H_full, W_full)``; 完整图 ZYX voxel grid.
             - voxel_size_xyz: float32 ``(3,)``; 世界 XYZ 每体素尺寸, 单位 Å. 
             - origin_xyz: float32 ``(3,)``; 完整图 voxel-grid corner 的世界 XYZ 坐标, 单位 Å. 
 
         调用方只能裁剪读取, 不得原地修改这些 worker-local 共享数组. 
         """
-        if grid_name not in {"exp", "sim"}:
-            raise ValueError(f"未知 density grid_name={grid_name!r}。")
         cache_key = f"{pdb_id}|density={grid_name}"
         cached = self._source_cache.get(cache_key)
         if cached is None:
-            grid, voxel_size, origin = _grid_from_npz(
-                self.root / "density" / pdb_id / f"{grid_name}.npz"
-            )
+            density_directory = self.root / "density" / pdb_id
+            grid = _load_mmap_array(density_directory / f"{grid_name}.npy", np.float32)
+            with np.load(density_directory / f"{grid_name}.npz", allow_pickle=False) as metadata:
+                schema_version = int(np.asarray(metadata["schema_version"]).item())
+                voxel_size = np.asarray(metadata["voxel_size"], dtype=np.float32)
+                origin = np.asarray(metadata["origin"], dtype=np.float32)
+                declared_shape = (
+                    np.asarray(metadata["canonical_shape_zyx"], dtype=np.int64)
+                    if grid_name == "exp"
+                    else np.asarray(grid.shape[1:], dtype=np.int64)
+                )
+            if schema_version != 2:
+                raise ValueError(f"{density_directory}: {grid_name}.npz schema_version 必须为 2。")
+            if not np.array_equal(declared_shape, np.asarray(grid.shape[1:], dtype=np.int64)):
+                raise ValueError(f"{density_directory}: {grid_name} NPY 形状与 NPZ 元数据不一致。")
             cached = {
-                "grid": grid,
+                "grid": grid[0],
                 "voxel_size": voxel_size,
                 "origin": origin,
             }
@@ -678,6 +671,8 @@ class Stage1Dataset(Dataset):
         self,
         pdb_id: str,
         expected_shape_zyx: Sequence[int],
+        expected_voxel_size_xyz: np.ndarray,
+        expected_origin_xyz: np.ndarray,
     ) -> np.ndarray:
         """
         读取并缓存 schema-v3 occurrence union mask, 保持完整图 bool 语义. 
@@ -685,6 +680,8 @@ class Stage1Dataset(Dataset):
         输入参数:
             - pdb_id: str; 当前 PDB 身份. 
             - expected_shape_zyx: ``Sequence[int]`` ``(3,)``; exp 完整图的 ZYX voxel-grid 形状. 
+            - expected_voxel_size_xyz: float32 ``(3,)``; exp 的世界 XYZ 体素尺寸。
+            - expected_origin_xyz: float32 ``(3,)``; exp 的世界 XYZ corner 原点。
 
         输出字段:
             - union_mask: bool ``(1, D_full, H_full, W_full)``; 完整图 ZYX voxel grid 上所有 occurrence 的配体区域并集. 
@@ -693,9 +690,23 @@ class Stage1Dataset(Dataset):
         cache_key = f"{pdb_id}|ligand_union"
         cached = self._source_cache.get(cache_key)
         if cached is None:
-            ligand_path = self.root / "density" / pdb_id / "ligand_area.npz"
+            density_directory = self.root / "density" / pdb_id
+            ligand_path = density_directory / "ligand_area.npz"
+            union_mask = _load_mmap_array(density_directory / "union_mask.npy", np.bool_)
             with np.load(ligand_path, allow_pickle=False) as data:
-                union_mask = np.asarray(data["union_mask"], dtype=bool)
+                schema_version = int(np.asarray(data["schema_version"]).item())
+                declared_shape = np.asarray(data["grid_shape_zyx"], dtype=np.int64)
+                voxel_size = np.asarray(data["voxel_size_xyz"], dtype=np.float32)
+                origin = np.asarray(data["origin_xyz"], dtype=np.float32)
+            if schema_version != 3:
+                raise ValueError(f"{ligand_path}: schema_version 必须为 3。")
+            if not np.array_equal(declared_shape, np.asarray(expected_shape, dtype=np.int64)):
+                raise ValueError(f"{ligand_path}: grid_shape_zyx 与实验密度不一致。")
+            if not np.array_equal(voxel_size, expected_voxel_size_xyz) or not np.array_equal(
+                origin,
+                expected_origin_xyz,
+            ):
+                raise ValueError(f"{ligand_path}: voxel_size_xyz/origin_xyz 与实验密度不一致。")
             if union_mask.shape != (1, *expected_shape):
                 raise ValueError(f"{ligand_path}: union_mask 与 exp grid 形状不一致。")
             cached = {"union_mask": union_mask}
@@ -715,12 +726,12 @@ class Stage1Dataset(Dataset):
         """核对空间契约后读取与实验密度图逐体素对齐的最近配体原子距离图. 
 
         文件字段:
-            - distance: float16 ``(1, D, H, W)``; 每个完整图体素到最近配体原子的距离, 单位 Å; 有配体时为有限非负值, 无配体时全部为正无穷. 
-            - schema_version: uint16 标量; 当前必须为 ``1``. 
-            - grid_shape_zyx: int64 ``(3,)``; 完整图 ZYX 形状, 必须与 ``exp.npz:grid`` 一致. 
-            - voxel_size_xyz: float32 ``(3,)``; 世界 XYZ 每体素尺寸, 必须与 ``exp.npz:voxel_size`` 完全一致. 
-            - origin_xyz: float32 ``(3,)``; 完整图 voxel-grid corner 的世界 XYZ 坐标, 必须与 ``exp.npz:origin`` 完全一致. 
-            - distance_unit: 字符串标量 ``"angstrom"``; 距离单位. 
+            - ``ligand_dist.npy``: float16 ``(1,D,H,W)``; 完整图每个体素到最近配体原子的距离, 单位 Å；实际读取的 80³ 裁块必须有限且非负.
+            - ``ligand_dist.npz:schema_version``: uint16 标量; 当前必须为 ``1``.
+            - ``ligand_dist.npz:grid_shape_zyx``: int64 ``(3,)``; 完整图 ZYX 形状, 必须与 ``exp.npy`` 一致.
+            - ``ligand_dist.npz:voxel_size_xyz``: float32 ``(3,)``; 世界 XYZ 每体素尺寸, 必须与 ``exp.npz:voxel_size`` 完全一致.
+            - ``ligand_dist.npz:origin_xyz``: float32 ``(3,)``; 完整图 voxel-grid corner 的世界 XYZ 坐标, 必须与 ``exp.npz:origin`` 完全一致.
+            - ``ligand_dist.npz:distance_unit``: 字符串标量 ``"angstrom"``; 距离单位.
 
         输出:
             - np.ndarray: 缓存中的完整图距离数组 ``(1, D, H, W)``; 调用方只裁剪, 不改写缓存数组. 
@@ -731,10 +742,11 @@ class Stage1Dataset(Dataset):
         cache_key = f"{pdb_id}|ligand_distance"
         cached = self._source_cache.get(cache_key)
         if cached is None:
-            distance_path = self.root / "density" / pdb_id / "ligand_dist.npz"
+            density_directory = self.root / "density" / pdb_id
+            distance_path = density_directory / "ligand_dist.npz"
+            distance = _load_mmap_array(density_directory / "ligand_dist.npy", np.float16)
             with np.load(distance_path, allow_pickle=False) as data:
                 required = {
-                    "distance",
                     "schema_version",
                     "grid_shape_zyx",
                     "voxel_size_xyz",
@@ -744,7 +756,6 @@ class Stage1Dataset(Dataset):
                 missing = sorted(required.difference(data.files))
                 if missing:
                     raise KeyError(f"{distance_path} 缺少字段 {missing}。")
-                distance = data["distance"].copy()
                 schema_version = np.asarray(data["schema_version"])
                 grid_shape = np.asarray(data["grid_shape_zyx"])
                 voxel_size = np.asarray(data["voxel_size_xyz"])
@@ -754,15 +765,6 @@ class Stage1Dataset(Dataset):
                 raise ValueError(f"{distance_path}: distance 必须为 float16。")
             if distance.shape != (1, *expected_shape):
                 raise ValueError(f"{distance_path}: distance 与 exp grid 形状不一致。")
-            finite = np.isfinite(distance)
-            positive_infinity = np.isposinf(distance)
-            if (
-                np.isnan(distance).any()
-                or np.isneginf(distance).any()
-                or np.any(distance[finite] < 0)
-                or (np.any(finite) and np.any(positive_infinity))
-            ):
-                raise ValueError(f"{distance_path}: distance 必须全部有限且非负，或全部为正无穷。")
             if (
                 schema_version.dtype != np.uint16
                 or schema_version.shape != ()
@@ -803,9 +805,10 @@ class Stage1Dataset(Dataset):
             - ligand_area_target: bool ``(80, 80, 80)`` tensor; 完整配体区域并集的 BOX 裁剪. 
             - protein_mainchain_target: int64 ``(80, 80, 80)`` tensor; 蛋白背景/N/CA/C/O 类别编号. 
             - nucleic_mainchain_target: int64 ``(80, 80, 80)`` tensor; 核酸背景/P/O5'/C5'/C4'/C3'/O3' 类别编号. 
-            - ligand_inverse_distance_target: float32 ``(80, 80, 80)`` tensor; 有限距离按 ``1/(1+distance_Å)`` 转换, 无配体的正无穷距离转换为 0. 
+            - ligand_inverse_distance_target: float32 ``(80, 80, 80)`` tensor; 有限非负距离按 ``1/(1+distance_Å)`` 转换.
             - atom_global_indices: int64 ``(N_A,)`` tensor; 被选择受体原子在完整受体数组中的编号. 
-            - atom_feat: float32 ``(N_A, 50)`` tensor; 与 atom_global_indices 第 0 维逐原子对齐的特征.
+            - atom_feat: float32 ``(N_A, 49)`` tensor; 与 atom_global_indices 第 0 维逐原子对齐的基础特征。
+            - atom_is_backbone: bool ``(N_A,)`` tensor; True 表示蛋白质或核酸主链原子。
             - atom_coord_world: float32 ``(N_A, 3)`` tensor; 被选择受体原子的世界 XYZ 坐标, 单位 Å. 
             - atom_coord_local_voxel: float32 ``(N_A, 3)`` tensor; 被选择受体原子的 BOX-local 连续 voxel XYZ 坐标. 
             - atom_coord_centered_world: float32 ``(N_A, 3)`` tensor; 相对 BOX 几何中心的世界 XYZ 坐标, 单位 Å. 
@@ -896,7 +899,12 @@ class Stage1Dataset(Dataset):
                 atom_is_in_core_box=core_mask & binding_selected,
                 box_shape_zyx=box_shape_zyx,
             ).astype(bool, copy=False)
-            union_mask = self._load_ligand_union(request.pdb_id, full_shape)
+            union_mask = self._load_ligand_union(
+                request.pdb_id,
+                full_shape,
+                voxel_size,
+                full_origin,
+            )
             sample["ligand_area_target"] = _crop_80(union_mask[0], start_zyx).astype(bool, copy=False)
 
             if self.stage1_model_name in _AUXILIARY_SUPERVISION_MODEL_NAMES:
@@ -918,6 +926,8 @@ class Stage1Dataset(Dataset):
                     )[0],
                     start_zyx,
                 ).astype(np.float32, copy=False)
+                if np.any(ligand_distance < 0):
+                    raise ValueError(f"{request.pdb_id}: ligand_dist.npy 的 80³ 裁块包含负距离。")
                 sample["ligand_inverse_distance_target"] = np.where(
                     np.isfinite(ligand_distance), 1.0 / (1.0 + ligand_distance), 0.0
                 ).astype(np.float32, copy=False)
@@ -926,6 +936,7 @@ class Stage1Dataset(Dataset):
             sample.update(atom_coordinates)
             sample["atom_global_indices"] = selected_idx.astype(np.int64, copy=False)
             sample["atom_feat"] = build_atom_features(structure["feat"], selected_idx)
+            sample["atom_is_backbone"] = structure["is_backbone"][selected_idx].astype(bool, copy=False)
             sample["atom_is_in_core_box"] = core_mask.astype(bool, copy=False)
             if request.require_targets:
                 sample["atom_label"] = structure["binding_atom"][selected_idx].astype(bool, copy=False)

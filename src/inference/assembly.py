@@ -217,7 +217,8 @@ class AGOccurrenceVoxelLoader:
             - occurrences: dict[int, np.ndarray], occurrence_id 到 `(K_occ,)` int64 完整图 C-order 离散线性 voxel 索引的映射。
 
         读取文件:
-            - `<data_root>/density/{pdb_id}/ligand_area.npz`: Stage E3 schema-v3 NPZ，必须包含 `schema_version/grid_shape_zyx/union_mask` 和零个或多个 `mask_{occurrence_id}`。
+            - `<data_root>/density/{pdb_id}/ligand_area.npz`: Stage E3 schema-v3 元数据与零个或多个 `mask_{occurrence_id}`。
+            - `<data_root>/density/{pdb_id}/union_mask.npy`: bool `(1,D,H,W)` occurrence 并集。
         """
         path = self.data_root / "density" / str(pdb_id).lower() / "ligand_area.npz"
         with np.load(path, allow_pickle=False) as data:
@@ -227,9 +228,9 @@ class AGOccurrenceVoxelLoader:
             expected_shape = tuple(int(value) for value in full_shape_zyx)
             if shape != expected_shape:
                 raise ValueError(f"{path}: grid_shape_zyx={shape} 与 probability={expected_shape} 不一致")
-            union = np.asarray(data["union_mask"], dtype=np.bool_)
-            if union.shape != (1, *shape):
-                raise ValueError(f"{path}: union_mask 必须为 (1,Z,Y,X)")
+            union = np.load(path.with_name("union_mask.npy"), mmap_mode="r", allow_pickle=False)
+            if union.dtype != np.bool_ or union.shape != (1, *shape):
+                raise ValueError(f"{path.with_name('union_mask.npy')}: 必须为 (1,Z,Y,X)")
 
             # list[tuple[int, str]], 按 occurrence_id 数值升序排列的严格 `mask_<整数>` 字段。
             mask_keys = sorted(

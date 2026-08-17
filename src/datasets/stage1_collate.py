@@ -32,6 +32,7 @@ _OPTIONAL_DENSE_FIELDS = (
 _ATOM_FIELDS = (
     "atom_global_indices",
     "atom_feat",
+    "atom_is_backbone",
     "atom_coord_world",
     "atom_coord_local_voxel",
     "atom_coord_centered_world",

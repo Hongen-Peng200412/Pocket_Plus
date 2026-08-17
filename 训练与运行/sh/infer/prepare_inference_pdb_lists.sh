@@ -29,8 +29,8 @@ set -u
 export PYTHONPATH="${PROJECT_ROOT}:${PYTHONPATH:-}"
 export PYTHONUNBUFFERED=1
 
-# 三份来源文件由 src/datasets/ops 产生；其中同一 PDB 可以出现多次，因此不能原样作为推理清单。
-split_root="/storage/penghongen/AdaLigand/Ori_Data/stage1_preparation/split"
+# 三份来源文件来自已经冻结的 V3 split；同一 PDB 可以出现多次，因此不能原样作为推理清单。
+split_root="/storage/penghongen/AdaLigand/Ori_Data/stage1_preparation_box_pool_3/split"
 data_root="/storage/penghongen/AdaLigand/Ori_Data"
 
 # 三份去重后的 PDB 清单直接放在公共推理根目录，Find_0、Find_1、unet_c1 等模型共同使用。
@@ -57,15 +57,15 @@ import json
 import sys
 from pathlib import Path
 
-from src.datasets.ops.stage1_box_pool import _load_split_pdb_ids
+from src.datasets.stage1_requests import load_split_pdb_ids
 
 
 split_root, data_root, inference_root, formal_root, checkpoint, config = map(Path, sys.argv[1:])
 
-# 每份公共文件都是 JSON 字符串数组；PDB 名称小写、去重并按名称排序。
+# 每份公共文件都是 JSON 字符串数组；PDB 名称小写，并保持冻结 split 的顺序。
 pdb_lists: dict[str, str] = {}
 for split in ("calibration", "validation", "train"):
-    pdb_ids = _load_split_pdb_ids(split_root / f"{split}.json")
+    pdb_ids = load_split_pdb_ids(split_root / f"{split}.json")
     destination = inference_root / f"{split}_pdb_ids.json"
     destination.write_text(
         json.dumps(list(pdb_ids), ensure_ascii=False, indent=2) + "\n",
