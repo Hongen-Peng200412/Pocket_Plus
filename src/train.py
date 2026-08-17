@@ -1037,17 +1037,22 @@ def main(cfg: DictConfig):
             generator.manual_seed(self._get_stage_seed(stage))
             collate_fn = None if use_pyg else getattr(ds, "collate_fn", None)
                 
-            return loader_class(
-                ds,
-                batch_size=self.train_cfg.batch_size,
-                shuffle=bool(shuffle and sampler is None),
-                sampler=sampler,
-                num_workers=self.train_cfg.num_workers,
-                pin_memory=self.train_cfg.get("pin_memory", True) if sys.platform != "win32" else False,
-                collate_fn=collate_fn,
-                worker_init_fn=_seed_worker,
-                generator=generator,
-            )
+            loader_arguments = {
+                "dataset": ds,
+                "batch_size": self.train_cfg.batch_size,
+                "shuffle": bool(shuffle and sampler is None),
+                "sampler": sampler,
+                "num_workers": self.train_cfg.num_workers,
+                "pin_memory": self.train_cfg.get("pin_memory", True) if sys.platform != "win32" else False,
+                "collate_fn": collate_fn,
+                "worker_init_fn": _seed_worker,
+                "generator": generator,
+            }
+            if int(self.train_cfg.num_workers) > 0:
+                loader_arguments["prefetch_factor"] = int(self.train_cfg.get("prefetch_factor", 4))
+                # Dataset 请求会随训练周期切换；常驻 worker 无法接收主进程中的新请求表。
+                loader_arguments["persistent_workers"] = False
+            return loader_class(**loader_arguments)
 
         def train_dataloader(self):
             """

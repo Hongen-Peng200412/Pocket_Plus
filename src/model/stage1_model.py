@@ -9,7 +9,8 @@ Stage1 体素-点云联合模型的清理后主流程.
 
 关键输入字段:
     - voxel_grid: torch.Tensor, (B,C_in,D,H,W), voxel backbone 输入密度/特征体. 
-    - atom_feat: torch.Tensor, (N_real,F_atom) 或 mixed 路径下 (N_all,F_atom), 点分支输入特征. 
+    - atom_feat: torch.Tensor, (N_real,49) 的 Dataset 基础特征，模型按配置选择原样使用或与 atom_is_backbone 拼成 50 维。
+    - atom_is_backbone: torch.Tensor, (N_real,), bool, 逐原子主链标志；仅在配置要求 50 维输入时参与拼接。
     - atom_coord_centered_world: torch.Tensor, (N,3), 以 BOX 中心为原点的连续世界坐标, XYZ 轴序, 单位 Å; 不是 voxel 坐标. 
     - atom_coord_local_voxel: torch.Tensor, (N,3), BOX-local 连续 voxel 坐标, XYZ 轴序, corner 语义; 不是世界坐标或离散索引. 
     - atom_label: torch.Tensor, (N_real,) 或 (N_all,), real atom 监督标签; P anchor 槽位只作为占位. 
@@ -912,20 +913,21 @@ class VolumePointStage1Model(nn.Module):
         atom_counts[1:] = atom_counts[1:] - atom_counts[:-1]
         return atom_counts
 
-    @staticmethod
-    def _canonicalize_stage1_batch(batch: dict[str, Any]) -> dict[str, Any]:
+    def _canonicalize_stage1_batch(self, batch: dict[str, Any]) -> dict[str, Any]:
         """
         把 AdaLigand 外部字段适配为现有模型内部字段. 
 
-        外部统一使用 ``density_input`` 与 ``atom_offsets[B+1]``; 现有 PTV3 内核仍
-        使用 ``voxel_grid`` 与 ``B`` 个累计结束偏移. 适配只创建浅拷贝, 不改写
-        Dataset/Collator 对外契约. 
+        外部统一使用 ``density_input``、49 维 ``atom_feat``、``atom_is_backbone``
+        与 ``atom_offsets[B+1]``。期望的原子特征维数依次读取
+        ``embed_head.atom_feature_dim``、``point_backbone.atom_feature_dim`` 和
+        ``online_pdb_feature_dim``；仅当前一个对象或属性不存在时才采用后一项。
+        模型随后形成 49 或 50 维内部原子特征，并转换 PTV3 使用的累计结束偏移。
 
         输入参数:
             - batch: dict[str,Any], 外部 Stage1 batch; `density_input` 为 `(B,C,D,H,W)` voxel 网格, `atom_offsets` 为外部 `(B+1,)` ragged 边界
 
         输出:
-            - result: dict[str,Any], 浅拷贝后的内部 batch; `voxel_grid` 与 `atom_offsets` 分别转换为内部别名和 `(B,)` 结束偏移
+            - result: dict[str,Any], 浅拷贝后的内部 batch；atom_feat 已符合当前模型输入维数，voxel_grid 和 atom_offsets 已转换为内部形式。
         """
 
         result = {**batch}
@@ -935,6 +937,28 @@ class VolumePointStage1Model(nn.Module):
             raise KeyError("Stage1 batch 必须包含 density_input。")
         if "atom_feat" not in result:
             return result
+        if self.embed_head is not None and hasattr(self.embed_head, "atom_feature_dim"):
+            expected_feature_dim = int(self.embed_head.atom_feature_dim)
+        elif self.point_backbone is not None and hasattr(
+            self.point_backbone,
+            "atom_feature_dim",
+        ):
+            expected_feature_dim = int(self.point_backbone.atom_feature_dim)
+        else:
+            expected_feature_dim = int(self.online_pdb_feature_dim)
+        atom_feat = result["atom_feat"]
+        if int(atom_feat.shape[1]) == 49 and expected_feature_dim == 50:
+            backbone_flag = result.pop("atom_is_backbone").to(
+                device=atom_feat.device,
+                dtype=atom_feat.dtype,
+            )
+            # [N,49] + [N,1] -> [N,50]，最后一维 1 表示蛋白质或核酸主链原子。
+            result["atom_feat"] = torch.cat([atom_feat, backbone_flag[:, None]], dim=1)
+        elif int(atom_feat.shape[1]) != expected_feature_dim:
+            raise ValueError(
+                f"当前模型要求 {expected_feature_dim} 维原子特征，Dataset 提供 {int(atom_feat.shape[1])} 维。"
+            )
+        result.pop("atom_is_backbone", None)
         if "atom_offsets" not in result:
             raise KeyError("Find batch 必须包含 atom_offsets。")
         batch_size = int(result["voxel_grid"].shape[0])

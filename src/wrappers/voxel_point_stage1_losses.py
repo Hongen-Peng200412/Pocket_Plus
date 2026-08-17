@@ -293,8 +293,8 @@ def compute_ligand_distance_loss_term(
     """计算最近配体距离变换值的全体素平均 MSE. 
 
     模型输出先经 sigmoid 映射到 ``[0, 1]``, 再与
-    ``ligand_inverse_distance_target = 1 / (1 + distance_Å)`` 比较. 
-    没有配体原子的结构在距离文件中保存全正无穷, Dataset 将其监督值转换为 0. 
+    ``ligand_inverse_distance_target = 1 / (1 + distance_Å)`` 比较。V3 Dataset
+    要求实际 80³ 裁块中的距离有限且非负。
     """
 
     logits = outputs.get("voxel_logits_distance")

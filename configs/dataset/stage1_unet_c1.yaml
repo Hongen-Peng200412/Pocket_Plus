@@ -7,7 +7,7 @@ _target_: src.datasets.stage1_dataset.Stage1Dataset
 name: stage1_unet_c1
 
 all_data_path: ${oc.env:ADALIGAND_DATA_ROOT,/storage/penghongen/AdaLigand/Ori_Data}
-box_pool_root: ${oc.env:ADALIGAND_STAGE1_PREPARATION_ROOT,/storage/penghongen/AdaLigand/Ori_Data/stage1_preparation}/box_pool
+box_pool_root: ${oc.env:ADALIGAND_STAGE1_PREPARATION_ROOT,/storage/penghongen/AdaLigand/Ori_Data/stage1_preparation_box_pool_3}/box_pool
 split_train: ${dataset.box_pool_root}/train
 split_val: ${dataset.box_pool_root}/validation_selection.npz
 
@@ -15,9 +15,8 @@ stage1_model_name: unet_c1  # str, 选择单通道 density recipe 和无原子�
 class_names: [background, foreground]
 atom_buffer_radius: 8.0             # 只用于构造 hardmask/voxel_label；原子表不返回给模型。
 request_seed: 3407
-cache_max_bytes: 536870912
+cache_max_bytes: 34359738368  # int, 每个 worker 的 mmap 与小型资产 LRU 逻辑上限；不会预分配 32 GiB 内存。
 enable_random_rotation: true
-box_sample_fraction: 1.0
 
 density_channel_config:
   clip_percentile: [0.001, 0.999]
