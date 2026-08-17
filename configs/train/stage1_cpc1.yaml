@@ -22,7 +22,7 @@ data_fault_tolerance:
 max_epochs: 20
 precision: "bf16-mixed"
 gradient_clip_val: 0.5
-val_per_epoch: 30                    # int, 每个 epoch 等间隔执行 30 次完整 validation。
+val_per_epoch: 40                    # int, 每个 epoch 等间隔执行 30 次完整 validation。
                                      # -> src/train.py: 映射为 val_check_interval=1/30。
 
 optimizer:
@@ -38,9 +38,9 @@ scheduler:
   warmup_ratio: 0.005               # float, 从头训练阶段以估算总步数的 0.5% 线性 warmup。
   warmup_start_factor: 0.33
   mode: ${model.monitor_mode}
-  factor: 0.3
-  patience: 2                        # int, 连续第 3 次未改进时降低学习率。
-  threshold: 0.001
+  factor: 0.2
+  patience: 3                        # int, 连续第 3 次未改进时降低学习率。
+  threshold: 0.003
   threshold_mode: abs
   cooldown: 0
   min_lr: 0.0
