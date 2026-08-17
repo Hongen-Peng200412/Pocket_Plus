@@ -107,9 +107,9 @@ def test_find_configs_encode_common_stage1_contract(experiment: str) -> None:
     assert cfg.model.backbone.real_density_cube_cfg.chunk_size == 4096
     assert cfg.train.global_batch_size == 64
     assert cfg.train.max_epochs == 20
-    assert cfg.train.val_per_epoch == 30
+    assert cfg.train.val_per_epoch == 40
     assert cfg.train.optimizer.lr == pytest.approx(5.0e-5)
-    assert cfg.train.scheduler.threshold == 0.001
+    assert cfg.train.scheduler.threshold == 0.003
     assert cfg.model.voxel_aux_loss_weight in {0.0, 0.1}
     assert cfg.model.pseudo_loss_weight == 0.1
     assert cfg.model.ligand_sparse_refine_loss is None
@@ -170,7 +170,7 @@ def test_cpc_stage_boundary_and_scheduler_contract() -> None:
     cpc2 = _compose("CPC2/Find_1")
     assert cpc1.init_from is None
     assert cpc1.train.scheduler.warmup_ratio == 0.005
-    assert cpc1.train.scheduler.patience == 2
+    assert cpc1.train.scheduler.patience == 3
     assert cpc1.train.scheduler.stop_after_lr_reductions == 3
     assert cpc1.model.voxel_aux_loss_weight == 0.1
     assert cpc1.model.voxel_ligand_loss_weight == 1.0
@@ -231,4 +231,4 @@ def test_unet_c1_config_is_density_only_and_exports_final_v_feature() -> None:
     assert cfg.train.prefetch_factor == 4
     assert "excluded_pdb_ids" not in cfg.dataset
     assert "excluded_pdb_ids" not in find1.dataset
-    assert cfg.train.val_per_epoch == 30
+    assert cfg.train.val_per_epoch == 40

@@ -433,7 +433,7 @@ Find_0.sh 或 Find_1.sh
 默认值：
 
 ```text
-/storage/penghongen/AdaLigand/Ori_Data/stage1_preparation
+/storage/penghongen/AdaLigand/Ori_Data/stage1_preparation_box_pool_3
 ```
 
 Find 的完整链路：
@@ -523,15 +523,15 @@ bash 训练与运行/submit_task.sh \
 | 参数 | Find_0 | Find_1 | unet_c1 |
 | --- | ---: | ---: | ---: |
 | 推荐 GPU | H100 × 2 | H100 × 2 | H100 × 1 |
-| 每卡 batch | 8 | 6 | 6 |
+| 每卡 batch | 8 | 6 | 8 |
 | 全局 batch | 48 | 48 | 48 |
-| 梯度累积 | 3 | 4 | 8 |
+| 梯度累积 | 3 | 4 | 6 |
 | DataLoader workers | 每 rank 16，总 32 | 每 rank 16，总 32 | 16 |
 | 最大学习率 | `5e-5` | `5e-5` | `1e-4` |
 | CPC1/单阶段 warmup | `0.005` | `0.005` | `0.005` |
 | CPC1/单阶段 patience | 2 | 3 | 3 |
 | 最大 epoch | 20 | 20 | 20 |
-| 每 epoch 验证次数 | 30 | 30 | 30 |
+| 每 epoch 验证次数 | 30 | 40 | 40 |
 | W&B | online | online | online |
 
 梯度累积来自：
@@ -539,7 +539,7 @@ bash 训练与运行/submit_task.sh \
 ```text
 Find_0：8 BOX/卡 × 2 卡 = 16 BOX/前向；48 ÷ 16 = 累积 3 次
 Find_1：6 BOX/卡 × 2 卡 = 12 BOX/前向；48 ÷ 12 = 累积 4 次
-unet_c1：6 BOX/卡 × 1 卡 = 6 BOX/前向；48 ÷ 6 = 累积 8 次
+unet_c1：8 BOX/卡 × 1 卡 = 8 BOX/前向；48 ÷ 8 = 累积 6 次
 ```
 
 `train.strict_global_batch_size=true` 会要求这个除法得到整数；
@@ -575,7 +575,7 @@ experiment 所引用的损失配置。
 
 - 选择 density-only U-Net；没有 Find 点分支和密度—原子融合主干。
 - 输出头和五项体素监督与新版 Find_1 对齐。
-- 单卡批量 6、全局批量 48，因此每次优化器更新累积 8 个前向。
+- 单卡批量 8、全局批量 48，因此每次优化器更新累积 6 个前向。
 - 只有一个阶段，不执行 CPC2。
 
 ## 8. CPC1 怎样连接 CPC2
