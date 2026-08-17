@@ -362,7 +362,7 @@ def test_training_pool_rebuilds_deterministic_zero_five_five_epochs(tmp_path: Pa
     assert tuple(source_again.requests) == tuple(source.requests)
 
 
-def test_validation_selection_expands_zero_five_five_indices(tmp_path: Path) -> None:
+def test_validation_selection_expands_zero_one_one_indices(tmp_path: Path) -> None:
     pool_root = _write_v3_pool(tmp_path)
     validation_ids = np.asarray([b"2def"], dtype="S4")
     np.savez(
@@ -370,14 +370,14 @@ def test_validation_selection_expands_zero_five_five_indices(tmp_path: Path) -> 
         validation_pdb_id=validation_ids,
         center_pdb_index=np.empty(0, dtype=np.int32),
         center_occurrence_id=np.empty(0, dtype=np.int32),
-        bias_pdb_index=np.zeros(5, dtype=np.int32),
-        bias_occurrence_id=np.full(5, 3, dtype=np.int32),
-        bias_candidate_index=np.arange(5, dtype=np.int16),
-        context_pdb_index=np.zeros(5, dtype=np.int32),
-        context_candidate_index=np.arange(5, dtype=np.int32),
+        bias_pdb_index=np.zeros(1, dtype=np.int32),
+        bias_occurrence_id=np.full(1, 3, dtype=np.int32),
+        bias_candidate_index=np.zeros(1, dtype=np.int16),
+        context_pdb_index=np.zeros(1, dtype=np.int32),
+        context_candidate_index=np.zeros(1, dtype=np.int32),
     )
     requests = load_validation_selection(pool_root / "validation_selection.npz", pool_root)
-    assert Counter(request.role for request in requests) == {"bias": 5, "context": 5}
+    assert Counter(request.role for request in requests) == {"bias": 1, "context": 1}
 
 
 def test_context_and_bias_generators_remain_deterministic() -> None:

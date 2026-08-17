@@ -58,7 +58,7 @@ Dataset 以 `numpy.load(..., mmap_mode="r")` 打开完整图，只复制实际 8
 | `bias_start_zyx` | `int32 (O,30,3)` | 每个 occurrence 的 30 个 bias 候选 |
 | `context_start_zyx` | `int32 (C,3)` | PDB 级 context 候选 |
 
-所有起点都是完整图内 80³ BOX 的零基 ZYX corner index。训练每个 epoch、每个 PDB 至多选择 50 个 occurrence，并对每个 occurrence 选择 5 个 bias 与 5 个 context，请求比例固定为 `center:bias:context = 0:5:5`。验证直接展开 `validation_selection.npz`，不重新随机选择。
+所有起点都是完整图内 80³ BOX 的零基 ZYX corner index。训练每个 epoch、每个 PDB 至多选择 50 个 occurrence，并对每个 occurrence 选择 5 个 bias 与 5 个 context，请求比例固定为 `center:bias:context = 0:5:5`。验证对每个冻结 occurrence 使用 1 个 bias 与 1 个 context，请求比例为 `0:1:1`；Dataset 直接展开 `validation_selection.npz`，不重新随机选择。
 
 活动代码没有 `box_sample_fraction`，也不创建训练或验证比例请求文件。
 
