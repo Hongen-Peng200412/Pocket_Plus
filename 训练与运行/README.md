@@ -30,26 +30,33 @@ release、launch 与四种锁控制的实现位于
 在服务器 Pocket_Plus 项目根目录执行：
 
 ```bash
-# Find_0：一台节点、两张 H200、当前正式基线。
+# Find_0：一台节点、两张 H100，CPC1 训练。
 bash 训练与运行/submit_task.sh \
   --sh Find_0.sh \
-  --resource h200 \
+  --resource h100 \
   --gpus 2 \
-  --cpus 24
+  --cpus 32
 
-# Find_1：一台节点、两张 H100、带五项体素监督的新基线。
+# Find_1：一台节点、两张 H100，CPC1 训练。
 bash 训练与运行/submit_task.sh \
   --sh Find_1.sh \
   --resource h100 \
   --gpus 2 \
-  --cpus 48
+  --cpus 32
 
-# unet_c1：一台节点、一张 H100、只保留 U-Net 体素骨干。
+# unet_c1 主链版：一台节点、一张 H100。
 bash 训练与运行/submit_task.sh \
   --sh unet_c1.sh \
   --resource h100 \
   --gpus 1 \
-  --cpus 24
+  --cpus 16
+
+# unet_c1 无主链辅助损失版：一台节点、两张 H100。
+bash 训练与运行/submit_task.sh \
+  --sh unet_c1_no_mainchain.sh \
+  --resource h100 \
+  --gpus 2 \
+  --cpus 32
 ```
 
 每条命令只调用一次 `sbatch`。默认不创建 `pre_lock` 或 `try_lock`：作业获得资源后
@@ -60,7 +67,7 @@ bash 训练与运行/submit_task.sh \
   --sh Find_1.sh \
   --resource h100 \
   --gpus 2 \
-  --cpus 48 \
+  --cpus 32 \
   --pre_hold
 ```
 
@@ -85,7 +92,7 @@ bash 训练与运行/submit_task.sh \
   --sh Find_1.sh \
   --resource h100 \
   --gpus 2 \
-  --cpus 48 \
+  --cpus 32 \
   --pre_hold \
   --after_hold \
   -- train.optimizer.weight_decay=0.02
@@ -100,7 +107,7 @@ sbatch
   --qos=h100g2
   --nodes=1
   --ntasks-per-node=1
-  --cpus-per-task=48
+  --cpus-per-task=32
   --gres=gpu:h100:2
   --output=/dev/null
   --error=/dev/null
@@ -113,7 +120,7 @@ sbatch
   --resource h100
   --gpus 2
   --nodes 1
-  --cpus 48
+  --cpus 32
   --
   train.optimizer.weight_decay=0.02
 ```
@@ -148,7 +155,7 @@ ${feedback_root}/allocations/<jobid>/err
 bash /home/penghongen/My_Project/Pocket_Plus/训练与运行/submit_task.sh \
   --simple \
   --task-root /home/penghongen/My_Project/Pocket_Plus \
-  --sh /home/penghongen/My_Project/Pocket_Plus/ops/materialize_filtered_stage1_preparation.sh \
+  --sh /home/penghongen/My_Project/Pocket_Plus/ops/stage1_data_preparation/run/finalize_box_pool_3.sh \
   --resource cpu \
   --cpus 1
 ```
@@ -166,8 +173,8 @@ QOS，锁控制也仍然有效。差别是它不创建
 ├── after_lock_400002                       # 删除后结束 Job
 ├── kill_lock_400002                        # 仅人工要求终止当前命令时创建
 ├── run_cmd_400002.sh                       # 当前 allocation 下一次执行的命令
-├── materialize_filtered_stage1_preparation_400002.out
-└── materialize_filtered_stage1_preparation_400002.err
+├── finalize_box_pool_3_400002.out
+└── finalize_box_pool_3_400002.err
 ```
 
 `pre_lock`、`try_lock`、`after_lock`、`kill_lock` 与 `run_cmd` 的操作含义和完整
@@ -502,13 +509,12 @@ bash 训练与运行/submit_task.sh \
   --sh Find_1.sh \
   --resource h100 \
   --gpus 2 \
-  --cpus 48 \
+  --cpus 32 \
   -- train.optimizer.lr=1.0e-5
 ```
 
 会让本次 Find_1 的 `train.optimizer.lr` 最终成为 `1e-5`，覆盖脚本中的
-`5e-5`。CPC1 和 CPC2 都会收到该参数，因为两个 `python src/train.py`
-命令都把 `"$@"` 放在固定覆盖之后。
+`5e-5`。当前 Find 脚本只启动 CPC1，并把 `"$@"` 放在固定覆盖之后。
 
 最终事实始终以新运行目录中的 `config.yaml` 为准，而不是只看 YAML 或 shell。
 
@@ -516,11 +522,11 @@ bash 训练与运行/submit_task.sh \
 
 | 参数 | Find_0 | Find_1 | unet_c1 |
 | --- | ---: | ---: | ---: |
-| 推荐 GPU | H200 × 2 | H100 × 2 | H100 × 1 |
+| 推荐 GPU | H100 × 2 | H100 × 2 | H100 × 1 |
 | 每卡 batch | 8 | 6 | 6 |
 | 全局 batch | 48 | 48 | 48 |
 | 梯度累积 | 3 | 4 | 8 |
-| DataLoader workers | 10 | 10 | 20 |
+| DataLoader workers | 每 rank 16，总 32 | 每 rank 16，总 32 | 16 |
 | 最大学习率 | `5e-5` | `5e-5` | `1e-4` |
 | CPC1/单阶段 warmup | `0.005` | `0.005` | `0.005` |
 | CPC1/单阶段 patience | 2 | 3 | 3 |
