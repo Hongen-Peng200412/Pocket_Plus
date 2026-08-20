@@ -119,6 +119,9 @@ Find 完整模式严格分三阶段：第一阶段扫描 500 组粗网格；第�
 | `C:/Users/15919/Desktop/AdaLigand/文档/规划文档/BOX-level数据契约.md` | Stage1 V3 盘上字段唯一权威 | 当前契约 | 与代码逐字段对照 | 重写推理章节；删除旧 forest/CLG/Selector 契约 |
 | `C:/Users/15919/Desktop/AdaLigand/文档/exec_plan/Stage1_V3推理重写实施记录.md` | 记录关键实现、验证和 Git 事件 | 当前执行记录 | 冷读 | 新建；不记录逐命令流水账 |
 | `C:/Users/15919/Desktop/AdaLigand/文档/mapping/计划执行映射.md` | 连接规格、契约与执行记录 | 当前映射 | 路径对照 | 更新；把旧多阈值计划标为归档 |
+| `CLAUDE/memory/handoffs/2026-08-20-stage1-v3-inference-rewrite-complete.md` | 保存下一任务可直接恢复的端点、决定与开放问题 | 关键节点 handoff | 冷读 | 新建；不记录逐命令流水 |
+| `CLAUDE/memory/index.json` | 指向当前项目记忆更新时间 | 项目记忆索引 | JSON 解析 | 更新至 2026-08-20 |
+| `CLAUDE/memory/projects/pocket-plus.json` | 保存 Pocket Plus 项目级进展入口 | 项目记忆状态 | JSON 解析 | 追加本轮推理收口事件 |
 | `configs/inference/README.md` | 解释 `stage1_v3.yaml` 的读取链和字段 | 正式新增 | 冷读 | 新建；避免配置语义依赖对话 |
 | `configs/inference/stage1_v3.yaml` | 四个 producer 的科学与并行参数；CLI 读取 | 正式新增 | OmegaConf 加载 | 新建；唯一共享配置 |
 | `ops/stage1_inference_benchmark/README.md` | 说明真实 GPU 采样工具 | 正式新增 | 冷读 | 新建；性能事实与科学代码隔离 |
@@ -220,16 +223,16 @@ Find 完整模式严格分三阶段：第一阶段扫描 500 组粗网格；第�
 
 ## 验证
 
-1. 纯 CPU 套件当前 23 项通过, 覆盖窗口边界、连通区域排序、偏斜 blob BOX、BF16 转换、centered 字段、Gaussian 三阶段、micro/macro、top-K、字段选择读取和原子发布。
+1. 本机 CPU/CUDA 组合套件当前 29 项通过, 覆盖窗口边界、float32 blob 稳定排序、偏斜 blob BOX、BF16 转换、centered 字段、Python 3.10 CLI、Dataset 直接构造、calibration 完成标记、Gaussian 三阶段与数值同源、micro/macro、top-K、字段选择读取和原子发布。
 2. 本机 RTX 4060 CUDA smoke 已通过 125 个真实 Conv3d 窗口的异步 H2D/前向/D2H/融合执行链。
 3. Dataset 测试覆盖 V3 NPY/mmap、实际 80³ 数值边界与推理线程共享 LRU 的计数一致性。
 4. 真实 checkpoint smoke 仍须至少覆盖 `unet_c1` 与一个 Find。最终 checkpoint 尚未确定, 本轮不自行提交服务器任务；得到用户授权后在目标环境执行, 不通过删除科学字段规避显存问题。
 5. GPU 采样工具已在本机合成 CUDA smoke 上产生 19 个样本并成功汇总。该结果只验收工具；正式 BOX/s、PDB/s、GPU 活跃比例和队列等待必须使用真实 checkpoint 另行记录。
-6. 第一轮三类全面审查已经完成并修订。第二轮在当前代码、配置、shell、契约和本机验证稳定后执行；此后只窄口径复核已报告问题。
+6. 布局/Git、注释/Docstring、科学逻辑三类审查均完成两轮全面审查；第二轮报告的问题经窄口径复核后全部 `APPROVED`，没有再扩大审查范围。
 
 ## Git 双线收口
 
-实现线按真实顺序保存删除、实现、修复和验证。稳定后从共同基点重建 `Learn/stage1-inference-v3`:
+实现线已按真实顺序保存删除、实现、修复和验证。学习线已从共同基点 `3cbae636f444fb6630eb505d210d7ce0586b4f76` 按以下顺序重建：
 
 1. 集中删除全部旧非测试文件。
 2. 提交当前规格、NOTE、README 与两份学习概览。
@@ -237,3 +240,5 @@ Find 完整模式严格分三阶段：第一阶段扫描 500 组粗网格；第�
 4. 最后集中提交全部测试文件和旧测试删除。
 5. 在实现端点与学习端点运行相同测试, 比较 Python 可执行语句、配置、字段级产物和 Git tree。
 6. 等价通过后将 `Learn/CUMULATIVE` 快进到学习端点。实现分支长期保留, 不推送远端。
+
+本轮首个已批准实现端点是 `codex/stage1-inference-v3@bdecd9802fdef4dcc28401411b35f31a72e5a3cc`，首个已批准学习端点是 `Learn/stage1-inference-v3@c62de259f48da4f04962d4b68658a76a6afbafbe`。两端 tree 均为 `226b56e7ed34b44545af6236afba4653caac32b9`；后续仅追加不改变科学行为的最终验证与 handoff 记录。

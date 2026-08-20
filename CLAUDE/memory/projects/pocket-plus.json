@@ -199,6 +199,11 @@
       "date": "2026-08-03",
       "summary": "Windows 用户级统一 AI SSH 入口已建立，Pocket_Plus 项目入口改为薄包装；密码只保存在本机私有文件，固定主机密钥校验与失败状态传播已验证。关闭 ATrust 后已真实登录 master，并从两仓库入口验证远端命令、LF 标准输入脚本、sbatch 可用性及两份 submit_task.sh 的 Bash 语法。",
       "handoff": "CLAUDE/memory/handoffs/2026-08-03-unified-ai-ssh-entry.md"
+    },
+    {
+      "date": "2026-08-20",
+      "summary": "Stage1 V3 推理本地重写完成：四个 producer 共用 F1 basic/F3 centered，GPU/CPU 有界重叠、三阶段校准、身份门禁与评估事实闭合；29 项 CPU/CUDA 测试和三类独立审查通过，双线端点 tree 等价，真实 checkpoint 实战等待用户授权。",
+      "handoff": "CLAUDE/memory/handoffs/2026-08-20-stage1-v3-inference-rewrite-complete.md"
     }
   ],
   "blockers": [
