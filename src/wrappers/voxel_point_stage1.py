@@ -438,7 +438,7 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
         输出:
             - voxel_logits_ligand: torch.Tensor, (B,1,D,H,W), BOX-local 离散 ZYX voxel 网格上的 sigmoid 前 ligand logits
 
-        推理层负责 sigmoid、Find hardmask 与整图融合; wrapper 不重复 checkpoint 或阈值逻辑. 
+        推理层负责 sigmoid 与整图融合; 所有 producer 的配体概率都不乘受体 hardmask. wrapper 不重复 checkpoint 或阈值逻辑.
         """
 
         backbone = self._unwrap_backbone()
