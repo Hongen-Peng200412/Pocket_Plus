@@ -1,7 +1,0 @@
-{
-  "lambda_positive": [0.016, 0.032, 0.064, 0.128, 0.256],
-  "lambda_negative": [0.001, 0.002, 0.004, 0.008, 0.016],
-  "tau_angstrom": [0.5, 0.75, 1.0, 1.25, 1.5],
-  "gauss_score_min": [0.2, 0.4, 0.8, 1.6],
-  "distance_cutoff_angstrom": 5.0
-}
