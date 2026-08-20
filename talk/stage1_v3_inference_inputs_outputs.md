@@ -2,6 +2,8 @@
 
 本文从正式命令输入开始, 按数据进入代码的顺序说明 Stage1 V3 推理会读取和写出什么。字段级当前权威最终迁入 `src/inference/README.md` 与 AdaLigand `文档/规划文档/BOX-level数据契约.md`; 本文负责冷读导航。
 
+形状记号：`N_entry` 是一个 centered 文件的候选数，`L_voxel` 是全部候选来源体素拼接后的长度，`L_A` 与 `L_P` 分别是 Find A 原子表与 P 点表拼接后的长度。
+
 ## 输入
 
 | 输入 | 一个输入对应的实体 | 推理用途 |
@@ -52,7 +54,7 @@
 | 字段 | 数据类型与形状 | 含义 |
 | --- | --- | --- |
 | `source_blob_index` | `int32`, `(N_entry,)` | 指向同 PDB 对应 blobs 文件的 `blob_index` |
-| `centered_box_index` | `int32`, `(N_entry,)` | 当前 centered 文件中从 0 开始连续的条目身份 |
+| `centered_box_index` | `int32`, `(N_entry,)` | 当前 centered 文件中从 0 开始连续的条目编号 |
 | `box_start_zyx` | `int32`, `(N_entry,3)` | 80³ BOX 在完整图中的离散 ZYX 起点 |
 | `box_shape_zyx` | `uint8`, `(N_entry,3)` | 固定为 `(80,80,80)` |
 | `box_origin_world` | `float32`, `(N_entry,3)` | 80³ BOX corner 的世界 XYZ 坐标, 单位 Å |
@@ -60,15 +62,15 @@
 | `source_probability_mean` | `float32`, `(N_entry,)` | 来源 blobs 文件的区域平均概率 |
 | `source_threshold_value` | `float32`, `(N_entry,)` | 来源 blobs 文件使用的语义 F1 或 F3 阈值 |
 | `score` | `float32`, `(N_entry,)` | 当前冻结评分参数得到的候选分数 |
-| `selected` | `bool`, `(N_entry,)` | 当前候选是否达到最终分数阈值 |
-| `voxel_offsets` | `int64`, `(N_entry+1,)` | 同时切分三个共同稀疏体素数组 |
+| `selected` | `bool`, `(N_entry,)` | 当前候选是否同时达到冻结分数阈值和 `min_voxels` |
+| `voxel_offsets` | `int64`, `(N_entry+1,)` | 以半开区间切分 `voxel_index_local_zyx`、`source_probability`、`centered_probability` 和 F3 可选 `voxel_final`; 首值 0, 末值 L_voxel |
 | `voxel_index_local_zyx` | `int16`, `(L_voxel,3)` | 来源区域体素在当前 80³ BOX 内的离散 ZYX 坐标 |
 | `source_probability` | `float32`, `(L_voxel,)` | 同一来源区域的完整图融合概率 |
 | `centered_probability` | `float32`, `(L_voxel,)` | 当前 80³ BOX 重新前向后在权威体素处取出的概率 |
 
 F1 basic 的正式文件到此结束，不保存辅助受体头、`voxel_final`、48³ 数组或 A/P 表。
 
-F3 另外保存 `voxel_aux_offsets`、`voxel_aux_index_local_zyx` 和 `voxel_aux_probability`。`voxel_final` 为 `float16 (L_voxel,C_voxel)`，与三个来源稀疏体素数组逐行对齐。
+F3 另外保存 `voxel_aux_offsets`、`voxel_aux_index_local_zyx` 和 `voxel_aux_probability`。`voxel_aux_offsets` 以半开区间切分后两个数组, 首值为 0, 末值为 L_aux。`voxel_final` 为 `float16 (L_voxel,C_voxel)`，与 `voxel_index_local_zyx`、`source_probability` 和 `centered_probability` 逐行对齐。
 
 ## F3 的 48³ 字段
 
@@ -78,7 +80,7 @@ F3 另外保存 `voxel_aux_offsets`、`voxel_aux_index_local_zyx` 和 `voxel_aux
 | --- | --- | --- |
 | `v_centroid_local_zyx` | `float32`, `(N_entry,3)` | 完整权威 V 整数下标在 80³ 局部 ZYX 坐标中的算术平均 |
 | `crop_start_local_zyx` | `int16`, `(N_entry,3)` | V-centered 48³ 在 80³ BOX 内的实际 ZYX 起点, 每轴位于 `[0,32]` |
-| `crop_center_offset_zyx` | `float32`, `(N_entry,3)` | 实际 48³ 几何中心减去 V 体素中心质心, 单位 voxel |
+| `crop_center_offset_zyx` | `float32`, `(N_entry,3)` | V 来源体素质心减去实际 48³ 几何中心的 ZYX 偏移, 单位 voxel |
 | `crop_clipped_axis_mask` | `bool`, `(N_entry,3)` | True 表示该轴的请求起点被边界限制 |
 | `experimental_density_48` | `float32`, `(N_entry,48,48,48)` | 当前 48³ 范围的原始实验密度 |
 | `simulated_density_48` | `float32`, `(N_entry,48,48,48)` | 同一范围的原始受体模拟密度 |
@@ -86,7 +88,7 @@ F3 另外保存 `voxel_aux_offsets`、`voxel_aux_index_local_zyx` 和 `voxel_aux
 
 ## Find F3 的 A/P 字段
 
-Find 的 F3 保存 `A_offsets` 与 `P_offsets`。每个 offsets 区间同时切分对应模态的全部并列数组。
+Find 的 F3 保存 `A_offsets` 与 `P_offsets`。`A_offsets` 以半开区间切分 `A_global_index`、`A_coord_local_xyz`、`A_coord_centered_world`、`A_probability`、`A_feat_L0`、`A_feat_L1`、`A_feat_L2` 和 `A_feat_L3`，首值为 0，末值为 L_A。`P_offsets` 以半开区间切分 `P_coord_local_xyz`、`P_probability`、`P_feat_L2` 和 `P_feat_L3`，首值为 0，末值为 L_P。
 
 - A 表保存 `A_global_index`、`A_coord_local_xyz`、`A_coord_centered_world`、`A_probability`、`A_feat_L0`、`A_feat_L1`、`A_feat_L2`、`A_feat_L3`。`A_feat_L0` 为 `float32 (L_A,50)`; 最后一维是主链标志。
 - P 表保存 `P_coord_local_xyz`、`P_probability`、`P_feat_L2`、`P_feat_L3`。
@@ -94,6 +96,6 @@ Find 的 F3 保存 `A_offsets` 与 `P_offsets`。每个 offsets 区间同时切�
 
 ## 校准与评估产物
 
-`calibration/semantic_threshold_scan.npz` 保存完整阈值编号、TP、FP、FN 和 F1/F3 曲线。`calibration/stage1_v3.json` 保存运行身份、两类语义阈值、F1/F3 选择参数和三阶段搜索的获胜事实；`stage1_v3.metrics.json` 保存两个角色的最终指标。全部载荷完成后最后发布 `calibration/_COMPLETE`。
+`calibration/semantic_threshold_scan.npz` 保存完整阈值编号、TP、FP、FN 和 F1/F3 曲线。`calibration/stage1_v3.json` 保存 checkpoint 规范化绝对路径、两类语义阈值、F1/F3 选择参数和三阶段搜索的获胜事实；`stage1_v3.metrics.json` 保存两个角色的最终指标。全部载荷完成后最后发布 `calibration/_COMPLETE`。
 
-每个 PDB 的 `evaluation/<role>.npz` 保存阈值轴、top-K 轴、按分数排序的全部 centered 候选、`candidate_selected`、候选与 occurrence 的交集矩阵、两侧体素数、逐候选语义 TP、双向覆盖命中掩码、各阈值的一对一匹配行列，以及 top-K 获胜候选/occurrence 身份。数据划分级 `<role>.jsonl` 保存逐 PDB 指标，`<role>.metrics.json` 保存 micro 与 PDB 等权 macro 汇总。
+每个 PDB 的 `evaluation/<role>.npz` 保存阈值轴、top-K 轴、按分数排序的全部 centered 候选、`candidate_selected`、候选与 occurrence 的交集矩阵、两侧体素数、逐候选语义 TP、双向覆盖命中掩码、各阈值的完整候选轴下标/`occurrence_id` 轴下标，以及 top-K 获胜事实。`topk_winning_candidate_rank` 是已选候选序列中从 0 开始的名次，不是完整候选轴下标；`topk_winning_occurrence_index` 是 occurrence 轴下标。数据划分级 `<role>.jsonl` 保存逐 PDB 指标，`<role>.metrics.json` 保存 micro 与 PDB 等权 macro 汇总。

@@ -25,8 +25,42 @@ python ops/stage1_inference_benchmark/benchmark_gpu_utilization.py `
 | `utilization_percent` | GPU 利用率百分比 |
 | `memory_used_mib` | 已用显存 MiB |
 
-`summary.json` 的键为：`command`、`run_mode`、`gpu_index`、`return_code`、`wall_seconds`、`sample_interval_seconds`、`gpu_sample_count`、`gpu_active_ratio`、`gpu_utilization_mean_percent`、`gpu_utilization_p50_percent`、`gpu_utilization_p95_percent`、`window_count`、`window_per_second`、`full_map_materialize_wait_seconds`、`full_map_fusion_wait_seconds`、`centered_entry_count`、`centered_entry_per_second`、`centered_materialize_wait_seconds` 和 `centered_cpu_arrange_wait_seconds`。没有有效采样或吞吐分母为零时，对应统计为 `0.0`。GPU active ratio 定义为 `utilization.gpu > 0` 的有效采样比例；它是观测量，不设伪造的通过阈值。
+`summary.json` 的字段为：
 
-串行与流水线必须使用相同 checkpoint、PDB 清单和科学配置分别运行。第二次运行通过 `--comparison-summary <第一次的 summary.json>` 引用另一模式；输出新增 `comparison`，其中 `summary_path` 和 `run_mode` 标识对照，`wall_speed_ratio`、`window_throughput_ratio` 和 `centered_throughput_ratio` 给出当前运行相对对照的比值，分母为零时写 `null`。串行基线通过把完整图与 centered 的预取、待处理队列和发布线程配置为 1 获得；只改变流水并发参数，不改变 stride、阈值、模型或科学字段。
+| 字段 | 类型与单位 | 含义与缺失行为 |
+| --- | --- | --- |
+| `command` | 字符串列表 | 本次工具启动的完整子进程参数 |
+| `run_mode` | 字符串 | `serial` 或 `pipeline` |
+| `gpu_index` | 整数 | 显式采样的 GPU 编号 |
+| `return_code` | 整数 | 子进程退出码 |
+| `wall_seconds` | 浮点数，秒 | 子进程总墙钟时间 |
+| `sample_interval_seconds` | 浮点数，秒 | 两次 GPU 查询之间的目标间隔 |
+| `gpu_sample_count` | 整数 | 有效 GPU 采样数 |
+| `gpu_active_ratio` | 浮点数 | `utilization_percent > 0` 的有效采样比例；没有有效采样时为 0.0 |
+| `gpu_utilization_mean_percent` | 浮点数，百分比 | 有效样本的平均 GPU 利用率；没有有效采样时为 0.0 |
+| `gpu_utilization_p50_percent` | 浮点数，百分比 | 有效样本的 GPU 利用率中位数；没有有效采样时为 0.0 |
+| `gpu_utilization_p95_percent` | 浮点数，百分比 | 有效样本的 GPU 利用率 95 分位数；没有有效采样时为 0.0 |
+| `window_count` | 整数 | `probability/geometry.json` 汇总的完整图窗口数 |
+| `window_per_second` | 浮点数，窗口/秒 | 窗口数除以完整图墙钟时间；分母为零时为 0.0 |
+| `full_map_materialize_wait_seconds` | 浮点数，秒 | 完整图等待 CPU 请求物化的累计时间 |
+| `full_map_fusion_wait_seconds` | 浮点数，秒 | 完整图等待 CPU Gaussian 融合的累计时间 |
+| `centered_entry_count` | 整数 | centered 性能 JSON 汇总的候选数 |
+| `centered_entry_per_second` | 浮点数，候选/秒 | centered 候选数除以 centered 墙钟时间；分母为零时为 0.0 |
+| `centered_materialize_wait_seconds` | 浮点数，秒 | centered 等待 CPU 请求物化的累计时间 |
+| `centered_cpu_arrange_wait_seconds` | 浮点数，秒 | centered 等待 CPU 字段整理的累计时间 |
+
+GPU active ratio 是观测量，不设伪造的通过阈值。
+
+串行与流水线必须使用相同 checkpoint、PDB 清单和科学配置分别运行。第二次运行通过 `--comparison-summary <第一次的 summary.json>` 引用另一模式，输出新增 `comparison`：
+
+| `comparison` 子字段 | 类型 | 含义与缺失行为 |
+| --- | --- | --- |
+| `summary_path` | 字符串 | 被引用的对照 `summary.json` 路径；未传参数时整个 `comparison` 不存在 |
+| `run_mode` | 字符串 | 对照运行的 `serial` 或 `pipeline` 模式 |
+| `wall_speed_ratio` | 浮点数或 `null` | 对照墙钟时间除以当前墙钟时间；当前墙钟时间为零时写 `null` |
+| `window_throughput_ratio` | 浮点数或 `null` | 当前窗口吞吐除以对照窗口吞吐；对照值为零时写 `null` |
+| `centered_throughput_ratio` | 浮点数或 `null` | 当前 centered 吞吐除以对照 centered 吞吐；对照值为零时写 `null` |
+
+串行基线通过把完整图与 centered 的预取、待处理队列和发布线程配置为 1 获得；只改变流水并发参数，不改变 stride、阈值、模型或科学字段。
 
 基准必须使用真实 checkpoint、真实 PDB 清单和目标配置。短清单适合比较实现变化，正式清单适合记录最终实战吞吐；两者的结果不能混作同一基线。

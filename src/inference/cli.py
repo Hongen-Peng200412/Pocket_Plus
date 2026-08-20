@@ -1,10 +1,13 @@
 # -*- coding: utf-8 -*-
-"""解析 Stage1 V3 显式命令并构造 checkpoint 同源运行环境."""
+"""解析 Stage1 V3 命令, 恢复 checkpoint, 构造 Dataset 并调用正式 workflow.
+
+主要入口 :func:`main` 提供 `calibrate` 和 `run` 两个子命令. 本模块不计算概率,
+blobs, centered 特征或指标; 科学参数由 `--config` 指向的 YAML 显式提供.
+"""
 
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 from pathlib import Path
 
@@ -15,21 +18,20 @@ from .checkpoint import load_stage1_wrapper
 from .workflow import run_calibration_workflow, run_frozen_workflow
 
 
-def _sha256_file(path: Path) -> str:
-    """用 Python 3.10 可用的分块读取计算一个文件的 SHA-256."""
-
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for block in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
-
-
 # ================================================================================================
 
 
 def main() -> None:
-    """把显式路径解析为一个 calibration 或冻结参数 workflow 调用."""
+    """把命令行参数装配为一个 calibration 或冻结参数 workflow 调用.
+
+    两个子命令共同要求 config, checkpoint, resolved-config, pdb-list, output-root,
+    producer 和 model-code-source. `calibrate` 只接受 calibration 数据划分; `run`
+    只接受 validation 或 train, 并额外读取 `--calibration` 指向的 `stage1_v3.json`.
+
+    `--output-root` 是推理结果版本目录. 同一 checkpoint 使用不同 F3/F2 等科学
+    参数时必须传入不同目录. calibration JSON 只保存 checkpoint 的规范化路径,
+    不计算文件摘要, 也不推断目录名称.
+    """
 
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--config", required=True)
@@ -56,6 +58,7 @@ def main() -> None:
     run_parser.add_argument("--calibration", required=True)
     arguments = parser.parse_args()
 
+    # 命令行路径和 PDB 清单只在入口解析一次; workflow 接收已解析对象.
     config_path = Path(arguments.config)
     checkpoint_path = Path(arguments.checkpoint)
     resolved_config_path = Path(arguments.resolved_config)
@@ -83,7 +86,8 @@ def main() -> None:
             "--producer 与 resolved config 的 dataset.stage1_model_name 不一致."
         )
     dataset_arguments = OmegaConf.to_container(training_config.dataset, resolve=True)
-    dataset_arguments.pop("_target_", None)
+    dataset_arguments.pop("_target_")
+    # 推理复用训练 Dataset 参数, 但请求源改为当前显式 PDB 清单的完整图占位请求.
     dataset_arguments.update(
         split_file=[
             ResolvedStage1Crop(
@@ -100,18 +104,6 @@ def main() -> None:
     )
     dataset = _current_stage1_dataset.Stage1Dataset(**dataset_arguments)
     wrapper.to(torch.device(str(config.device)))
-    checkpoint_sha256 = _sha256_file(checkpoint_path)
-    artifact_identity = {
-        "schema": "stage1_v3",
-        "producer": str(arguments.producer),
-        "checkpoint_sha256": checkpoint_sha256,
-        "resolved_config_sha256": hashlib.sha256(
-            resolved_config_path.read_bytes()
-        ).hexdigest(),
-        "inference_config_sha256": hashlib.sha256(config_path.read_bytes()).hexdigest(),
-        "semantic_denominator": int(config.calibration.semantic_denominator),
-        "model_code_source": str(arguments.model_code_source),
-    }
     workflow_arguments = {
         "config": config,
         "dataset": dataset,
@@ -122,11 +114,12 @@ def main() -> None:
         "split": str(arguments.split),
         "pdb_ids": pdb_ids,
         "output_root": Path(arguments.output_root),
-        "artifact_identity": artifact_identity,
+        "checkpoint_path": str(checkpoint_path.resolve()),
     }
     if arguments.command == "calibrate":
         run_calibration_workflow(**workflow_arguments)
     else:
+        # calibration 来源由命令显式选择, 可以位于另一输出目录.
         calibration_path = Path(arguments.calibration)
         calibration_payload = json.loads(calibration_path.read_text(encoding="utf-8"))
         calibration_complete = json.loads(

@@ -2,8 +2,10 @@
 """定义 Stage1 V3 推理产物的固定路径和原子发布边界.
 
 主要入口是 :class:`Stage1ArtifactPaths`, :func:`load_stage1_npz`,
-:func:`publish_stage1_artifact` 和 :func:`publish_stage1_json`. 本模块不计算
-概率, 连通区域, centered 特征或评估指标.
+:func:`publish_stage1_artifact`, :func:`publish_stage1_json` 和
+:func:`publish_stage1_jsonl`. 本模块发布数值数组 NPZ, JSON 对象, 逐 PDB JSONL
+和 `_COMPLETE` JSON, 所有文件都在目标目录建立临时文件并原子替换. 本模块不
+计算概率, 连通区域, centered 特征或评估指标.
 """
 
 from __future__ import annotations
@@ -28,9 +30,6 @@ _ARTIFACT_RELATIVE_PATHS = {
 }
 
 
-# ================================================================================================
-
-
 @dataclass(frozen=True)
 class Stage1ArtifactPaths:
     """解析一个 producer, 数据划分和 PDB 的全部正式路径.
@@ -38,7 +37,7 @@ class Stage1ArtifactPaths:
     字段:
         - output_root: Path, Stage1 V3 产物根目录.
         - stage1_model_name: str, producer 名称, 例如 `unet_c1` 或 `Find_1`.
-        - split: str, PDB 数据划分, 例如 `calibration`,`validation` 或 `train`.
+        - split: str, PDB 数据划分, 例如 `calibration`, `validation` 或 `train`.
         - pdb_id: str, 小写 PDB 标识, 例如 `7pa9`.
     """
 
@@ -48,37 +47,31 @@ class Stage1ArtifactPaths:
     pdb_id: str
 
     def __post_init__(self) -> None:
+        """规范化根目录类型, 数据划分和 PDB 标识, 不检查目录是否存在."""
+
         object.__setattr__(self, "output_root", Path(self.output_root))
-        object.__setattr__(self, "stage1_model_name", str(self.stage1_model_name).strip())
+        object.__setattr__(
+            self, "stage1_model_name", str(self.stage1_model_name).strip()
+        )
         object.__setattr__(self, "split", str(self.split).strip().lower())
         object.__setattr__(self, "pdb_id", str(self.pdb_id).strip().lower())
 
     @property
     def pdb_root(self) -> Path:
-        """返回当前数据划分和 PDB 的产物目录."""
+        """返回 `<output_root>/<producer>/<split>/<pdb_id>` 目录."""
 
         return self.output_root / self.stage1_model_name / self.split / self.pdb_id
 
     def artifact(self, role: str) -> Path:
-        """返回五个正式 PDB 角色之一的 NPZ 路径."""
+        """返回 probability, F1/F3 blobs 或 F1/F3 centered 的 NPZ 路径."""
 
         return self.pdb_root / _ARTIFACT_RELATIVE_PATHS[str(role)]
 
     def complete(self, role: str) -> Path:
-        """返回当前 PDB 角色的原子完成标记路径."""
+        """返回 `status/<role>/_COMPLETE` 原子完成标记路径."""
 
         return self.pdb_root / "status" / str(role) / "_COMPLETE"
 
-    @property
-    def blob_exceed(self) -> Path:
-        """返回 F3 完整模式的候选数量超限 JSON 路径."""
-
-        return self.pdb_root / "status" / "F3_centered" / "_BLOB_EXCEED"
-
-    def performance(self, role: str) -> Path:
-        """返回当前 PDB 角色的非科学性能计时 JSON 路径."""
-
-        return self.pdb_root / "status" / str(role) / "performance.json"
 
 def load_stage1_npz(
     path: str | Path,
@@ -97,14 +90,71 @@ def load_stage1_npz(
     source = Path(path)
     with np.load(source, allow_pickle=False) as archive:
         names = tuple(archive.files) if fields is None else tuple(fields)
-        missing = [name for name in names if name not in archive.files]
-        if missing:
-            raise KeyError(f"{source}: 缺少字段 {missing}.")
-        arrays = {name: np.asarray(archive[name]) for name in names}
-    object_fields = [name for name, value in arrays.items() if value.dtype.hasobject]
-    if object_fields:
-        raise TypeError(f"{source}: 不允许 object dtype 字段 {object_fields}.")
-    return arrays
+        return {name: np.asarray(archive[name]) for name in names}
+
+
+def publish_stage1_json(
+    path: str | Path,
+    payload: Mapping[str, Any],
+) -> None:
+    """以 UTF-8 JSON 原子发布配置, 状态或评估汇总.
+
+    `path` 是最终文件路径, `payload` 是一个 JSON 对象. 函数在目标目录写入
+    UTF-8 临时文件, 末尾保留换行, 再以 `os.replace` 原子替换最终文件; 成功
+    时无返回值.
+    """
+
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    handle, temporary_name = tempfile.mkstemp(
+        prefix=f".{target.name}.",
+        suffix=".tmp",
+        dir=target.parent,
+    )
+    os.close(handle)
+    temporary = Path(temporary_name)
+    try:
+        temporary.write_text(
+            json.dumps(dict(payload), ensure_ascii=False, indent=2, sort_keys=True)
+            + "\n",
+            encoding="utf-8",
+        )
+        os.replace(temporary, target)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def publish_stage1_jsonl(
+    path: str | Path,
+    rows: Sequence[Mapping[str, Any]],
+) -> None:
+    """以 UTF-8 JSONL 原子发布逐 PDB 汇总.
+
+    `path` 是最终文件路径, `rows` 按给定顺序逐项编码为单行 JSON 对象. 函数
+    在目标目录写入带末尾换行的临时文件, 再以 `os.replace` 原子替换最终文件;
+    成功时无返回值.
+    """
+
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    handle, temporary_name = tempfile.mkstemp(
+        prefix=f".{target.name}.",
+        suffix=".tmp",
+        dir=target.parent,
+    )
+    os.close(handle)
+    temporary = Path(temporary_name)
+    try:
+        lines = [
+            json.dumps(dict(row), ensure_ascii=False, sort_keys=True) for row in rows
+        ]
+        temporary.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        os.replace(temporary, target)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+# ================================================================================================
 
 
 def publish_stage1_artifact(
@@ -122,7 +172,8 @@ def publish_stage1_artifact(
     发布边界:
         - 临时 NPZ 位于最终文件同一目录, 写完后直接调用 `os.replace`; 不重复解压大型正式数组.
         - 完成标记只在最终 NPZ 已替换后建立; 进程提前失败时不会产生完成标记.
-        - `_COMPLETE` 保存 `output_role: str` 和 `completed_at_utc: str`; 后者为带时区的 ISO 8601 时间.
+        - output_role: str, `_COMPLETE` 所属角色目录名.
+        - completed_at_utc: str, `_COMPLETE` 发布时间, 使用带时区的 ISO 8601 格式.
     """
 
     target = Path(path)
@@ -152,57 +203,5 @@ def publish_stage1_artifact(
                     "completed_at_utc": datetime.now(timezone.utc).isoformat(),
                 },
             )
-    finally:
-        temporary.unlink(missing_ok=True)
-
-
-def publish_stage1_json(
-    path: str | Path,
-    payload: Mapping[str, Any],
-) -> None:
-    """以 UTF-8 JSON 和同目录原子替换发布配置, 状态或评估汇总."""
-
-    target = Path(path)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    handle, temporary_name = tempfile.mkstemp(
-        prefix=f".{target.name}.",
-        suffix=".tmp",
-        dir=target.parent,
-    )
-    os.close(handle)
-    temporary = Path(temporary_name)
-    try:
-        temporary.write_text(
-            json.dumps(dict(payload), ensure_ascii=False, indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
-        )
-        json.loads(temporary.read_text(encoding="utf-8"))
-        os.replace(temporary, target)
-    finally:
-        temporary.unlink(missing_ok=True)
-
-
-def publish_stage1_jsonl(
-    path: str | Path,
-    rows: Sequence[Mapping[str, Any]],
-) -> None:
-    """以 UTF-8 JSONL 和同目录原子替换发布逐 PDB 汇总."""
-
-    target = Path(path)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    handle, temporary_name = tempfile.mkstemp(
-        prefix=f".{target.name}.",
-        suffix=".tmp",
-        dir=target.parent,
-    )
-    os.close(handle)
-    temporary = Path(temporary_name)
-    try:
-        lines = [
-            json.dumps(dict(row), ensure_ascii=False, sort_keys=True)
-            for row in rows
-        ]
-        temporary.write_text("\n".join(lines) + "\n", encoding="utf-8")
-        os.replace(temporary, target)
     finally:
         temporary.unlink(missing_ok=True)

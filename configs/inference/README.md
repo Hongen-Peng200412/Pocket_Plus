@@ -50,4 +50,4 @@ F3 `score_parameter_grid` 是第一阶段粗网格：5 个 tau、5 个正 lambda
 
 `coverage_thresholds` 的顺序同时决定评估 NPZ 的阈值轴和 metrics 字段；当前是 0.3、0.5、0.6。`topk_values` 的顺序决定 top-K 轴；当前是 3、4、5。校准目标固定取第一项 0.3，配置顺序不得随意改变。
 
-修改正式配置后，release/launch 记录必须保存该文件。`stage1_v3.json` 会绑定本文件的 SHA-256，因而 validation/train 不能静默换用另一份推理配置。
+修改正式配置后，release/launch 记录必须保存该文件。同一 checkpoint 使用不同推理配置时，必须传入不同的 `output_root` 版本目录；代码不计算配置摘要，也不自动生成版本名。一个版本目录内的 calibration、validation 和 train 使用同一份配置。

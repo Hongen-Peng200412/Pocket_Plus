@@ -20,17 +20,23 @@ from src.inference.artifacts import (
     load_stage1_npz,
     publish_stage1_artifact,
 )
-from src.inference.calibration import calibrate_semantic_thresholds, tune_centered_selection
+from src.inference.calibration import (
+    calibrate_semantic_thresholds,
+    tune_centered_selection,
+)
 from src.inference.centered import infer_centered_boxes, pack_centered_entries
 from src.inference.evaluation import (
     aggregate_stage1_metrics,
     evaluate_centered_pdb,
 )
-from src.inference.full_map import FullMapResult, gaussian_window_weight, window_starts_zyx
+from src.inference.full_map import (
+    FullMapResult,
+    gaussian_window_weight,
+    window_starts_zyx,
+)
 from src.inference.pipeline import produce_centered_role, produce_probability_map
 from src.inference.scoring import (
     score_centered_candidates,
-    select_centered_candidates,
     sum_gaussian_atom_terms,
 )
 from src.inference.workflow import run_frozen_workflow
@@ -209,7 +215,9 @@ def test_find_gaussian_score_uses_five_angstrom_cutoff() -> None:
         "voxel_index_local_zyx": np.asarray([[0, 0, 0]], dtype=np.int16),
         "voxel_size_world": np.asarray([[1.0, 1.0, 1.0]], dtype=np.float32),
         "A_offsets": np.asarray([0, 2], dtype=np.int64),
-        "A_coord_local_xyz": np.asarray([[0.5, 0.5, 0.5], [8.0, 8.0, 8.0]], dtype=np.float32),
+        "A_coord_local_xyz": np.asarray(
+            [[0.5, 0.5, 0.5], [8.0, 8.0, 8.0]], dtype=np.float32
+        ),
         "A_probability": np.asarray([1.0, 1.0], dtype=np.float32),
     }
     score = score_centered_candidates(
@@ -367,7 +375,7 @@ def test_probability_science_archive_excludes_performance_fields(
     )
     assert set(selected_archive) == {"origin_xyz"}
     assert (paths.pdb_root / "probability" / "geometry.json").is_file()
-    assert paths.performance("probability").is_file()
+    assert (paths.pdb_root / "status" / "probability" / "performance.json").is_file()
     assert paths.complete("probability").is_file()
     marker = json.loads(paths.complete("probability").read_text(encoding="utf-8"))
     assert marker["output_role"] == "probability"
@@ -411,7 +419,9 @@ def test_centered_selection_is_written_before_first_formal_completion(
             "entry_count": 1,
         }
 
-    monkeypatch.setattr("src.inference.pipeline.infer_centered_boxes", infer_centered_boxes)
+    monkeypatch.setattr(
+        "src.inference.pipeline.infer_centered_boxes", infer_centered_boxes
+    )
     blobs = {
         "fits_centered_box": np.asarray([True]),
         "voxel_count": np.asarray([9], dtype=np.int32),
@@ -447,6 +457,7 @@ def test_centered_selection_is_written_before_first_formal_completion(
         )
         arrays = future.result()
     assert captured["min_voxels"] == 9
+    assert captured["full_probability"] is None
     assert arrays["selected"].tolist() == [True]
     assert paths.complete("F1_basic").is_file()
 
@@ -462,7 +473,9 @@ def test_cli_builds_current_dataset_without_hydra_dataclass_conversion(
     resolved = tmp_path / "resolved.yaml"
     resolved.write_text("model: test\n", encoding="utf-8")
     config = tmp_path / "inference.yaml"
-    config.write_text("device: cpu\ncalibration:\n  semantic_denominator: 32\n", encoding="utf-8")
+    config.write_text(
+        "device: cpu\ncalibration:\n  semantic_denominator: 32\n", encoding="utf-8"
+    )
     pdb_list = tmp_path / "pdb.txt"
     pdb_list.write_text("demo\n", encoding="utf-8")
     training_config = OmegaConf.create(
@@ -496,9 +509,15 @@ def test_cli_builds_current_dataset_without_hydra_dataclass_conversion(
         def __init__(self, **kwargs):
             captured.update(kwargs)
 
-    monkeypatch.setattr(cli_module, "load_stage1_wrapper", lambda **_: (Wrapper(), training_config))
+    monkeypatch.setattr(
+        cli_module, "load_stage1_wrapper", lambda **_: (Wrapper(), training_config)
+    )
     monkeypatch.setattr("src.datasets.stage1_dataset.Stage1Dataset", Dataset)
-    monkeypatch.setattr(cli_module, "run_calibration_workflow", lambda **kwargs: captured.update(workflow=kwargs))
+    monkeypatch.setattr(
+        cli_module,
+        "run_calibration_workflow",
+        lambda **kwargs: captured.update(workflow=kwargs),
+    )
     monkeypatch.setattr(
         sys,
         "argv",
@@ -570,12 +589,15 @@ def test_cli_rejects_duplicate_pdb_before_model_loading(
 def test_frozen_workflow_requires_fitted_calibration_marker() -> None:
     """冻结运行不能只凭 stage1_v3.json 绕过 calibration 完成标记."""
 
-    identity = {"schema": "stage1_v3"}
+    checkpoint_path = "/models/stage1.ckpt"
     with pytest.raises(ValueError, match="calibration_fitted"):
         run_frozen_workflow(
             config=object(),
-            calibration_payload={"identity": identity},
-            calibration_complete={"identity": identity, "result_scope": "partial"},
+            calibration_payload={"checkpoint_path": checkpoint_path},
+            calibration_complete={
+                "checkpoint_path": checkpoint_path,
+                "result_scope": "partial",
+            },
             dataset=object(),
             collator=object(),
             wrapper=object(),
@@ -584,7 +606,7 @@ def test_frozen_workflow_requires_fitted_calibration_marker() -> None:
             split="validation",
             pdb_ids=("demo",),
             output_root=Path("unused"),
-            artifact_identity=identity,
+            checkpoint_path=checkpoint_path,
         )
 
 
@@ -629,20 +651,3 @@ def test_find_calibration_uses_coarse_refined_then_minimum_stages() -> None:
     assert tuple(best["stages"]) == ("coarse", "refined", "min_voxels")
     assert best["min_voxels"] == 1
     assert best["score_parameters"]["tau_angstrom"] == 1.0
-
-
-def test_selection_uses_score_and_minimum_voxel_count() -> None:
-    """最终 selected 必须同时满足冻结分数阈值和最小来源体素数."""
-
-    centered = {
-        "voxel_offsets": np.asarray([0, 7, 15], dtype=np.int64),
-        "score": np.zeros(2, dtype=np.float32),
-        "selected": np.zeros(2, dtype=np.bool_),
-    }
-    selected = select_centered_candidates(
-        centered,
-        score=np.asarray([0.9, 0.8], dtype=np.float32),
-        score_threshold=0.75,
-        min_voxels=8,
-    )
-    assert selected["selected"].tolist() == [False, True]

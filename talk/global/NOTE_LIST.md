@@ -2,6 +2,8 @@
 
 本文把 `talk/global/global_8.19.md`、Matcher `matcher/data/` 中的 `# NOTE` 与 2026-08-20 已确认决定整理为当前实现约束。旧实现事实只用于解释删除范围, 不定义新版行为。
 
+形状记号：`N_candidate` 是一个 centered 文件的候选数，`L_A` 与 `L_P` 分别是 Find A 原子表与 P 点表拼接后的长度。
+
 ## 当前主线
 
 1. Stage1 只保留完整图概率、单阈值 26-连通区域、`F1_basic`、`F3_centered`、两类评分和评估。Selector、CLG、组件森林、Li 阈值、旧七种 Fα centered 与 Selected 产物退出活动代码树, 历史只由 Git 保存。
@@ -11,10 +13,10 @@
 3. Matcher 正式读取各模型的 `F3_centered.npz`。`F1_basic.npz` 是便捷推理与消融产物, 正式命令显式关闭 `voxel_final` 和 48³ 稠密数组。
 4. Find 完整版使用 A 原子概率高斯项。U-Net 没有 A/P 表, 完整版分数退化为 `source_probability_mean`, 仍以 $f_2$ 联合选择分数阈值和最小体素数。
 5. 所有模型的配体概率都不乘受体 hardmask。`hardmask` 只保留训练输入、辅助监督和 `voxel_aux` 稀疏索引语义。
-6. 滑窗 `stride`、`sigma`、`save_voxel_final`、`save_dense48`、`enforce_blob_limit` 等会改变行为的参数必须由命令或 YAML 显式提供, Python 不设置隐式默认值。正式示例显式采用建议值 `stride=50` 与 `sigma=0.5`。
+6. 滑窗 `stride_zyx`、`gaussian_sigma`、`save_voxel_final`、`save_dense48` 和 `blob_limit` 等会改变行为的参数必须由命令或 YAML 显式提供, Python 不设置隐式默认值。正式示例显式采用建议值 `stride_zyx=[50,50,50]` 与 `gaussian_sigma=0.5`。
 7. 连通区域第一份产物不按体素数删除候选。它保存阈值下的全部 26-连通区域; `min_voxels` 只在评分和 centered 重跑之前生效。
 8. 完整模式第三阶段在前两阶段冻结的参数下扫描 `min_voxels=8..40`。小于最终最小体素数的连通区域保留在 `F3_blobs.npz`, 但不进入 `F3_centered.npz`。
-9. `_BLOB_EXCEED` 只属于 F3 完整模式。候选数上限和是否强制终止都由命令显式传入; 未启用强制终止时可以写标记并继续生产。
+9. `_BLOB_EXCEED` 只属于 F3 完整模式。eligible 候选数严格大于 YAML 中的 `blob_limit` 时写该事实并继续生产 centered；没有强制终止开关。
 
 ## 评分与评估
 

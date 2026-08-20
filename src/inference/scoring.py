@@ -1,9 +1,8 @@
 # -*- coding: utf-8 -*-
-"""计算 F1 basic 与 F3 centered 候选分数和最终选择标志.
+"""计算 F1 basic 与 F3 centered 候选分数.
 
 主要入口 :func:`score_centered_candidates` 直接返回每个 centered 条目的
-float32 分数. :func:`select_centered_candidates` 将显式体素数和分数阈值写回
-归档数组, 不改变任何特征或坐标值表.
+float32 分数. 最终 `score` 和 `selected` 由单 PDB 发布事务直接写入.
 """
 
 from __future__ import annotations
@@ -14,18 +13,23 @@ import numpy as np
 from scipy.spatial import cKDTree
 
 
-# ================================================================================================
-
-
 def build_gaussian_distance_table(
     centered: Mapping[str, np.ndarray],
 ) -> dict[str, np.ndarray]:
     """计算每个 A 原子到所属来源 blob 最近体素中心的世界距离.
 
-    返回 ``A_offsets: int64 (N_candidate+1,)``,
-    ``A_distance_to_source: float32 (N_atom,)`` 和
-    ``A_probability: float32 (N_atom,)``. 距离超过 5 Å 的原子保存为 ``Inf``,
-    使多个 Gaussian 参数组合复用一次 KD-tree 查询.
+    输入字段:
+        - voxel_offsets: int64 `(N_candidate + 1,)`, 以半开区间切分 `voxel_index_local_zyx`; 首值为 0, 末值为 L_voxel.
+        - voxel_index_local_zyx: 数值数组 `(L_voxel, 3)`, 每个来源体素在所属 80³ BOX 内的 ZYX 索引.
+        - A_offsets: int64 `(N_candidate + 1,)`, 以半开区间同步切分 `A_coord_local_xyz` 和 `A_probability`; 首值为 0, 末值为 N_atom.
+        - A_coord_local_xyz: 数值数组 `(N_atom, 3)`, A 原子在所属 80³ BOX 内的 XYZ 体素坐标.
+        - A_probability: 数值数组 `(N_atom,)`, 与 A 原子逐项对齐的配体概率.
+        - voxel_size_world: 数值数组 `(N_candidate, 3)`, 每个候选的世界 XYZ 体素尺寸, 单位 Å/voxel.
+
+    返回字段:
+        - A_offsets: int64 `(N_candidate + 1,)`, 以半开区间切分两个返回的 A 原子值表; 首值为 0, 末值为 N_atom.
+        - A_distance_to_source: float32 `(N_atom,)`, A 原子到同一候选来源体素中心的最近世界距离, 单位 Å; 超过 5 Å 为 Inf.
+        - A_probability: float32 `(N_atom,)`, 与距离逐原子对齐的模型概率.
     """
 
     voxel_offsets = np.asarray(centered["voxel_offsets"], dtype=np.int64)
@@ -41,12 +45,12 @@ def build_gaussian_distance_table(
         atom_slice = slice(
             int(atom_offsets[entry_index]), int(atom_offsets[entry_index + 1])
         )
-        source_xyz = (
-            local_zyx[voxel_slice][:, [2, 1, 0]] + 0.5
-        ) * voxel_size_xyz[entry_index][None, :]
+        source_xyz = (local_zyx[voxel_slice][:, [2, 1, 0]] + 0.5) * voxel_size_xyz[
+            entry_index
+        ][None, :]
         receptor_xyz = atom_xyz[atom_slice] * voxel_size_xyz[entry_index][None, :]
         if receptor_xyz.shape[0]:
-            # float64 (N_A_entry,), 超过 5 Å 的查询结果为 Inf, Gaussian 求和时排除.
+            # float64, (N_A_entry,), 超过 5 Å 的查询结果为 Inf, Gaussian 求和时排除.
             distance, _ = cKDTree(source_xyz).query(
                 receptor_xyz,
                 k=1,
@@ -68,9 +72,17 @@ def sum_gaussian_atom_terms(
 ) -> tuple[np.ndarray, np.ndarray]:
     """按唯一正式数值顺序计算每个候选的 Gaussian 正项和负项.
 
-    输入 offsets 为 int64 ``(N_candidate+1,)``; 距离与概率为对齐的 float32
-    ``(N_atom,)``. 5 Å 外原子以 ``Inf`` 表示并排除. 权重和求和使用 float64,
-    每个候选的两项结果最终规范为 float32 ``(N_candidate,)``.
+    输入参数:
+        - atom_offsets: int64 `(N_candidate + 1,)`, 同步切分 atom_distance 和 atom_probability; 首值为 0, 末值为 N_atom.
+        - atom_distance: float32 `(N_atom,)`, A 原子到来源体素的最近距离, 单位 Å; Inf 表示 5 Å 截断外原子.
+        - atom_probability: float32 `(N_atom,)`, 与 atom_distance 逐原子对齐的模型概率.
+        - tau_angstrom: float, Gaussian 距离标准差, 单位 Å.
+
+    返回值:
+        - positive: float32 `(N_candidate,)`, 每个候选的 `sum(exp(-d²/(2*tau²)) * p)`.
+        - negative: float32 `(N_candidate,)`, 每个候选的 `sum(exp(-d²/(2*tau²)) * (1-p))`.
+
+    权重和归约使用 float64, 每个候选的结果最后规范为 float32. Inf 距离不参与求和.
     """
 
     offsets = np.asarray(atom_offsets, dtype=np.int64)
@@ -78,6 +90,7 @@ def sum_gaussian_atom_terms(
     probability = np.asarray(atom_probability, dtype=np.float32)
     positive = np.zeros(offsets.size - 1, dtype=np.float32)
     negative = np.zeros_like(positive)
+    # 逐候选使用 float64 归约, 保持校准搜索与正式推理完全相同的数值顺序.
     for index in range(positive.size):
         begin = int(offsets[index])
         end = int(offsets[index + 1])
@@ -95,16 +108,27 @@ def sum_gaussian_atom_terms(
     return positive, negative
 
 
+# ================================================================================================
+
+
 def score_centered_candidates(
     centered: Mapping[str, np.ndarray],
     score_mode: str,
     score_parameters: Mapping[str, float],
 ) -> np.ndarray:
-    """计算 source mean 或 Find Gaussian 分数.
+    """按显式模式计算每个 centered 候选的最终分数.
 
-    ``score_mode='source_mean'`` 只返回 ``source_probability_mean``. 模式
-    ``find_gaussian`` 对每个 A 原子计算到来源 blob 最近体素中心的世界距离,
-    只累加 5 Å 内的 Gaussian 权重. 正项和负项均直接求和, 不归一化.
+    输入参数:
+        - centered: centered 产物字段映射; `source_probability_mean` 是 float32 `(N_candidate,)` 来源 blob 平均概率.
+        - score_mode: 字符串; `source_mean` 使用来源平均概率, `find_gaussian` 叠加 A 原子 Gaussian 正负项.
+        - score_parameters: 浮点数映射; Find 模式读取 tau 和两个 lambda, 来源均值模式不读取字段.
+
+    返回值:
+        - score: float32 `(N_candidate,)`, 与 `centered["source_blob_index"]` 逐候选对齐的分数.
+
+    Find 模式还读取 :func:`build_gaussian_distance_table` 列出的体素和 A 原子字段.
+    分数为 `source_mean + lambda_positive * positive - lambda_negative * negative`.
+    正负项只累加 5 Å 内的 A 原子, 不按原子数归一化.
     """
 
     source_mean = np.asarray(centered["source_probability_mean"], dtype=np.float32)
@@ -125,22 +149,3 @@ def score_centered_candidates(
         + np.float32(lambda_positive) * positive
         - np.float32(lambda_negative) * negative
     ).astype(np.float32, copy=False)
-
-
-def select_centered_candidates(
-    centered: Mapping[str, np.ndarray],
-    score: np.ndarray,
-    score_threshold: float,
-    min_voxels: int,
-) -> dict[str, np.ndarray]:
-    """复制 centered 数组并按显式分数阈值和最小体素数更新选择字段."""
-
-    result = {name: np.asarray(value) for name, value in centered.items()}
-    values = np.asarray(score, dtype=np.float32)
-    voxel_count = np.diff(np.asarray(centered["voxel_offsets"], dtype=np.int64))
-    result["score"] = values
-    result["selected"] = (
-        (values >= np.float32(score_threshold))
-        & (voxel_count >= int(min_voxels))
-    ).astype(np.bool_)
-    return result

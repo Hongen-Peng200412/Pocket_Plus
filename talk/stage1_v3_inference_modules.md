@@ -5,13 +5,13 @@
 ## 推荐阅读顺序
 
 1. `src/inference/artifacts.py`: 路径、状态和正式文件字段。
-2. `src/inference/full_map.py`: 80³ 滑窗与异步融合。
-3. `src/inference/blobs.py`: F1/F3 单阈值 26-连通区域。
-4. `src/inference/centered.py`: 80³ centered 前向、48³ V-centered 切块和 A/P/V 字段。
-5. `src/inference/scoring.py`: 基本分数与 Find A 原子高斯分数。
-6. `src/inference/evaluation.py`: 逐候选事实和 micro/macro 指标。
-7. `src/inference/calibration.py`: 语义阈值和 centered 三阶段参数冻结。
-8. `src/inference/checkpoint.py`: 训练快照和 wrapper 恢复。
+2. `src/inference/checkpoint.py`: 训练快照和 wrapper 恢复。
+3. `src/inference/full_map.py`: 80³ 滑窗与异步融合。
+4. `src/inference/blobs.py`: F1/F3 单阈值 26-连通区域。
+5. `src/inference/centered.py`: 80³ centered 前向、48³ V-centered 切块和 A/P/V 字段。
+6. `src/inference/scoring.py`: 基本分数与 Find A 原子高斯分数。
+7. `src/inference/evaluation.py`: 逐候选事实和 micro/macro 指标。
+8. `src/inference/calibration.py`: 语义阈值和 centered 三阶段参数冻结。
 9. `src/inference/pipeline.py`: 单 PDB 发布事务。
 10. `src/inference/workflow.py`: 跨 PDB 有界流水与两类正式流程。
 11. `src/inference/cli.py`、`configs/inference/stage1_v3.yaml` 和 `训练与运行/sh/infer/stage1_v3.sh`: 正式命令。
@@ -21,7 +21,7 @@
 ~~~text
 cli.main
 ├── load_stage1_wrapper
-├── Stage1Dataset + Stage1BatchCollator
+├── Stage1Dataset + Stage1Dataset.collate_fn
 └── workflow.run_calibration_workflow / run_frozen_workflow
     ├── pipeline.produce_probability_map
     │   └── full_map.infer_full_map
@@ -32,15 +32,15 @@ cli.main
     ├── blobs.publish_probability_blobs
     │   └── scipy.ndimage.label, 26-neighborhood
     ├── pipeline.produce_centered_role
-    │   └── centered.infer_centered_boxes
-    │       ├── CPU Stage1Dataset.materialize_request
-    │       ├── voxel-only forward for F1
-    │       ├── full wrapper forward for F3
-    │       └── CPU pack + asynchronous NPZ publish
+    │   ├── centered.infer_centered_boxes
+    │   │   ├── CPU Stage1Dataset.materialize_request
+    │   │   ├── voxel-only forward for F1
+    │   │   ├── full wrapper forward for F3
+    │   │   └── CPU pack + asynchronous NPZ publish
+    │   └── scoring.score_centered_candidates
     ├── calibration.tune_centered_selection
     └── evaluate_and_publish_role
-        ├── score_centered_candidates
-        ├── evaluate_centered_pdb
+        ├── evaluation.evaluate_centered_pdb
         └── aggregate_stage1_metrics
 ~~~
 

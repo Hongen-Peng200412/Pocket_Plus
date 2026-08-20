@@ -30,7 +30,7 @@ def load_stage1_wrapper(
         - model_code_source: str, ``training_snapshot`` 使用 run 内代码快照; ``current_workspace`` 使用当前工作区模型代码.
 
     返回值:
-        - wrapper: torch.nn.Module, strict state dict,`on_load_checkpoint` 和 `eval()` 已完成.
+        - wrapper: torch.nn.Module, strict state dict, `on_load_checkpoint` 和 `eval()` 已完成.
         - resolved_cfg: OmegaConf DictConfig, 已解析插值的训练最终配置; CLI 用其中 dataset 配置构造完整图请求环境.
     """
 
@@ -53,6 +53,7 @@ def load_stage1_wrapper(
     config_path = Path(resolved_config_path)
     original_src_path: tuple[str, ...] | None = None
     if source_path is not None:
+        # 只在模型恢复期间把 `src` 指向训练快照; 当前 V3 Dataset 稍后由 CLI 导入.
         import src
 
         original_src_path = tuple(str(value) for value in src.__path__)
@@ -81,6 +82,7 @@ def load_stage1_wrapper(
         wrapper.eval()
     finally:
         if original_src_path is not None:
+            # 无论 checkpoint 恢复是否成功都恢复当前工作区的 `src` 搜索路径.
             src.__path__[:] = list(original_src_path)
             importlib.invalidate_caches()
     return wrapper, resolved_cfg

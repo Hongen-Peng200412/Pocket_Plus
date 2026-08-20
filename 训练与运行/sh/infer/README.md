@@ -13,7 +13,7 @@
 - U-Net F3 的来源平均概率阈值和最小体素数；
 - Find F3 的 A 原子 Gaussian 参数、分数阈值和最小体素数。
 
-冻结目录同时包含 `stage1_v3.json`、`semantic_threshold_scan.npz`、`stage1_v3.metrics.json` 和最后发布的 `_COMPLETE`。冻结 JSON 绑定 producer、checkpoint、训练 resolved config、推理配置和语义分母；`run` 不接受身份不一致的文件。
+冻结目录同时包含 `stage1_v3.json`、`semantic_threshold_scan.npz`、`stage1_v3.metrics.json` 和最后发布的 `_COMPLETE`。冻结 JSON 保存 checkpoint 的规范化绝对路径以及冻结后的科学参数；`run` 读取 `--calibration` 指定的 JSON 和同目录完成标记，要求两者与当前命令的 checkpoint 路径一致。calibration 目录可以不同于当前 `--output-root`。
 
 ```bash
 bash 训练与运行/submit_task.sh \
@@ -48,7 +48,9 @@ bash 训练与运行/submit_task.sh \
   --model-code-source current_workspace
 ```
 
-四个 producer 名称固定为 `unet_c1`、`Find_0`、`Find_1` 和 `Find_2`。checkpoint、训练配置和 producer 必须互相对应。`--model-code-source` 没有默认值：`current_workspace` 使用本轮 V3 Dataset 与模型代码，`training_snapshot` 使用训练 run 内的完整 `src_snapshot/src`；该选择写入 calibration 身份，冻结后不能切换。
+四个 producer 名称固定为 `unet_c1`、`Find_0`、`Find_1` 和 `Find_2`。checkpoint、训练配置和 producer 必须互相对应。`--model-code-source` 没有默认值：`current_workspace` 使用本轮 V3 Dataset 与模型代码，`training_snapshot` 使用训练 run 内的完整 `src_snapshot/src`。同一版本目录内必须保持该选择一致，并在 release/launch 记录中明确保存。
+
+`--output-root` 表示一个完整推理版本目录。若同一 checkpoint 分别使用 F3 最优目标和 F2 最优目标，两个命令应传入两个不同目录，例如 `.../unet_c1_f3` 与 `.../unet_c1_f2`。代码不读取目录名含义，也不为 checkpoint、配置或代码计算摘要；版本差异由命令和执行记录明确保存。
 
 ## 显式科学参数
 
@@ -82,7 +84,7 @@ bash 训练与运行/submit_task.sh \
 
 `F3_centered` 的 eligible 数量严格大于配置中的 `blob_limit` 时，额外写 `status/F3_centered/_BLOB_EXCEED`，并继续生产 centered；不存在跳过 PDB 的特殊终态。
 
-数据划分级评估位于 `<output_root>/<producer>/<split>/evaluation/`，每个角色同时保存逐 PDB JSONL 和全局 metrics JSON。逐 PDB NPZ 保存交集矩阵、阈值轴、覆盖命中掩码、一对一匹配身份和 top-K 获胜身份。
+数据划分级评估位于 `<output_root>/<producer>/<split>/evaluation/`，每个角色同时保存逐 PDB JSONL 和全局 metrics JSON。逐 PDB NPZ 保存交集矩阵、阈值轴、覆盖命中掩码和一对一匹配下标；`topk_winning_candidate_rank` 是已选候选序列中从 0 开始的获胜名次，`topk_winning_occurrence_index` 是 occurrence 轴下标。
 
 ## 发布和恢复
 

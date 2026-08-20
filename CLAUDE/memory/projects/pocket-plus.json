@@ -204,6 +204,11 @@
       "date": "2026-08-20",
       "summary": "Stage1 V3 推理本地重写完成：四个 producer 共用 F1 basic/F3 centered，GPU/CPU 有界重叠、三阶段校准、身份门禁与评估事实闭合；29 项 CPU/CUDA 测试和三类独立审查通过，双线端点 tree 等价，真实 checkpoint 实战等待用户授权。",
       "handoff": "CLAUDE/memory/handoffs/2026-08-20-stage1-v3-inference-rewrite-complete.md"
+    },
+    {
+      "date": "2026-08-20",
+      "summary": "Stage1 V3 推理可读性重做完成：主代理逐名检查 48 个代码对象，三类第 3/3 轮审查与窄口径复核全部批准，save_dense48=false 不再解压完整概率图；学习历史重建为原有 8 个主题提交并与真实实现 tree 等价，真实 checkpoint 与服务器基准仍待授权。",
+      "handoff": "CLAUDE/memory/handoffs/2026-08-20-stage1-v3-inference-readability-rebuild.md"
     }
   ],
   "blockers": [
