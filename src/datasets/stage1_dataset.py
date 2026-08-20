@@ -36,12 +36,13 @@
     - ``parse/<pdb_id>/receptor_tokens.npz``：提供 ``coords``、``feat``、``is_backbone``；辅助监督请求另外读取 ``res_type`` 和 ``atom_name``。
     - ``labels/<pdb_id>/atom_labels.npz``：提供与完整受体表逐原子对齐的 ``binding_atom`` bool 标签。
 
-缓存只消除同一 DataLoader worker 的重复读取，不改变请求顺序、裁剪范围或标签值；Dataset 不补零，也不在 ``__getitem__`` 中静默删除失败请求。
+缓存消除同一 DataLoader worker 或同一推理进程中物化线程的重复读取, 不改变请求顺序, 裁剪范围或标签值; Dataset 不补零, 也不在 ``__getitem__`` 中静默删除失败请求.
 """
 
 from __future__ import annotations
 
 import random
+import threading
 from collections import OrderedDict
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -79,31 +80,34 @@ _AUXILIARY_SUPERVISION_MODEL_NAMES = {"Find_1", "unet_c1"}
 
 
 class _ByteLruCache:
-    """在单个 DataLoader worker 内按 NumPy 数组字节数维护 LRU 资产缓存。
+    """维护可由同一进程物化线程共享的按字节 LRU 资产缓存.
 
     输入参数:
-        - max_bytes: int；当前 worker 的缓存总字节上限，负值按零处理，零表示禁用写入。
+        - max_bytes: int; 当前进程内该缓存的总字节上限, 负值按零处理, 零表示禁用写入.
 
     状态字段:
-        - max_bytes: int；规范化后的缓存上限。
-        - current_bytes: int；当前 ``values`` 中所有数组 ``nbytes`` 之和。
-        - values: OrderedDict[str, tuple[dict[str, np.ndarray], int]]；按最近使用顺序保存资产字典及其字节数，键由调用方用 PDB identity 和资产类型组成。
+        - max_bytes: int; 规范化后的缓存上限.
+        - current_bytes: int; 当前 ``values`` 中所有数组 ``nbytes`` 之和.
+        - values: OrderedDict[str, tuple[dict[str, np.ndarray], int]]; 按最近使用顺序保存资产字典及其字节数, 键由调用方用 PDB identity 和资产类型组成.
 
-    缓存只保存完整图或轻量原子表，不保存裁好的 BOX；不同请求因此始终从权威整图重新裁剪，且淘汰不会改变请求内容。
+    缓存只保存完整图或轻量原子表, 不保存裁好的 BOX. ``get()`` 与 ``put()``
+    只在 OrderedDict 和字节计数更新期间持有可重入锁; mmap 裁块与密度通道计算
+    不在锁内. 不同请求始终从权威整图重新裁剪, 淘汰不会改变请求内容.
     """
 
     def __init__(self, max_bytes: int) -> None:
-        """初始化一个没有条目的按字节受限 LRU 缓存。
+        """初始化一个没有条目的按字节受限 LRU 缓存.
 
         输入参数:
-            - max_bytes: int；缓存总字节上限，负值规范化为 ``0``。
+            - max_bytes: int; 缓存总字节上限, 负值规范化为 ``0``.
 
         状态变化:
-            - ``max_bytes``、``current_bytes`` 和 ``values`` 被初始化为可供当前 worker 使用的空缓存状态。
+            - ``max_bytes``, ``current_bytes`` 和 ``values`` 被初始化为空缓存状态.
         """
         self.max_bytes = max(0, int(max_bytes))
         self.current_bytes = 0
         self.values: OrderedDict[str, tuple[dict[str, np.ndarray], int]] = OrderedDict()
+        self._lock = threading.RLock()
 
     @staticmethod
     def _size_bytes(value: Mapping[str, np.ndarray]) -> int:
@@ -129,11 +133,12 @@ class _ByteLruCache:
         状态变化:
             - 命中条目从原顺序位置移动到最近使用位置；未命中不修改缓存。
         """
-        item = self.values.pop(key, None)
-        if item is None:
-            return None
-        self.values[key] = item
-        return item[0]
+        with self._lock:
+            item = self.values.pop(key, None)
+            if item is None:
+                return None
+            self.values[key] = item
+            return item[0]
 
     def put(self, key: str, value: dict[str, np.ndarray]) -> None:
         """写入一个资产并按最近使用顺序淘汰旧条目。
@@ -146,19 +151,20 @@ class _ByteLruCache:
             - 已有同键条目先移除；若新条目不超过上限，则从最久未使用条目开始淘汰，直到总字节数可容纳新条目。
             - 缓存禁用或单条目超过上限时不写入，且不会抛出容量异常。
         """
-        if self.max_bytes == 0:
-            return
-        size = self._size_bytes(value)
-        if size > self.max_bytes:
-            return
-        old = self.values.pop(key, None)
-        if old is not None:
-            self.current_bytes -= old[1]
-        while self.values and self.current_bytes + size > self.max_bytes:
-            _, (_, removed_size) = self.values.popitem(last=False)
-            self.current_bytes -= removed_size
-        self.values[key] = (value, size)
-        self.current_bytes += size
+        with self._lock:
+            if self.max_bytes == 0:
+                return
+            size = self._size_bytes(value)
+            if size > self.max_bytes:
+                return
+            old = self.values.pop(key, None)
+            if old is not None:
+                self.current_bytes -= old[1]
+            while self.values and self.current_bytes + size > self.max_bytes:
+                _, (_, removed_size) = self.values.popitem(last=False)
+                self.current_bytes -= removed_size
+            self.values[key] = (value, size)
+            self.current_bytes += size
 
 
 def _load_mmap_array(path: Path, expected_dtype: np.dtype) -> np.memmap:
@@ -406,6 +412,9 @@ def _to_tensor_sample(sample: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
+# ================================================================================================
+
+
 class Stage1Dataset(Dataset):
     """统一物化 train、validation、full_map 和 centered 的真实 80³ 请求。
 
@@ -453,7 +462,7 @@ class Stage1Dataset(Dataset):
         split_val: str | Sequence[str] | None = None,
         class_names: Sequence[str] = ("background", "foreground"),
     ) -> None:
-        """解析请求源、密度通道契约和当前 worker 的完整图缓存。
+        """解析请求源, 密度通道契约和当前进程的完整图缓存.
 
         输入参数:
             - all_data_path: str；A-G 正式资产根目录。
@@ -464,7 +473,7 @@ class Stage1Dataset(Dataset):
             - density_channel_config: Mapping[str, Any]；传给 ``DensityChannelConfig`` 的通道字段。
             - atom_buffer_radius: float；必须为 ``8.0``，用于局部受体原子选择。
             - request_seed: int；仅传给 ``build_request_source`` 生成训练周期请求。
-            - cache_max_bytes: int；当前 worker 的完整图和受体资产缓存上限。
+            - cache_max_bytes: int; 当前 Dataset 实例的完整图和受体资产缓存上限.
             - enable_random_rotation: bool；仅在 train 模式开启同步空间增强。
             - name: str；Dataset 显示名称。
             - split_train: str | Sequence[str] | None；历史兼容参数，构造时丢弃。
@@ -474,7 +483,7 @@ class Stage1Dataset(Dataset):
         状态变化:
             - ``request_source`` 保存固定请求序列或动态训练请求集。
             - ``resolved_density_channels`` 保存展开 ``all`` 后的通道顺序。
-            - ``_source_cache`` 初始化为当前 worker 独占的按字节 LRU。
+            - ``_source_cache`` 初始化为当前 Dataset 实例共享的线程安全按字节 LRU.
         """
         super().__init__()
         del split_train, split_val
@@ -522,8 +531,8 @@ class Stage1Dataset(Dataset):
         if self.stage1_model_name == "unet_c1" and resolved_channels != ["exp_clipnorm_nopost"]:
             raise ValueError("unet_c1 density 输入必须恰为 exp_clipnorm_nopost。")
         self.resolved_density_channels = tuple(resolved_channels)
-        # _ByteLruCache；同一 worker 共享轻量 receptor 表、监督数组和最近使用的原始整图。
-        # full_map 会连续消费同一 PDB 的多个窗口，缓存避免每个窗口重复打开 exp/sim；训练的随机 PDB 访问仍由同一字节上限淘汰大数组。
+        # _ByteLruCache; 同一 Dataset 实例共享轻量 receptor 表, 监督数组和最近使用的原始整图.
+        # full_map 连续消费同一 PDB 的多个窗口时复用缓存命中; 首次并发 miss 允许重复打开 mmap.
         self._source_cache = _ByteLruCache(cache_max_bytes)
 
     def set_epoch(self, epoch: int) -> None:
@@ -647,7 +656,7 @@ class Stage1Dataset(Dataset):
             - exp NPZ 的 ``canonical_shape_zyx`` 被核对；sim 的完整图形状取自 NPY，并在物化阶段与 exp 的实际 shape 比较；本入口不额外读取 sim NPZ 的 shape 字段。
 
         缓存语义:
-            - 返回的完整图可能是只读 mmap；调用方只能裁剪读取，不得原地改写 worker-local 共享数组。
+            - 返回的完整图可能是只读 mmap; 调用方只能裁剪读取, 不得原地改写 Dataset 实例共享数组.
             - 这里不扫描完整图的 NaN/Inf；数值检查发生在实际 80³ 裁块上。
         """
         cache_key = f"{pdb_id}|density={grid_name}"
@@ -1010,7 +1019,7 @@ class Stage1Dataset(Dataset):
             - receptor_coord_xyz: np.ndarray float32 ``(N_receptor, 3)``；完整受体表的世界 XYZ 坐标，单位为 Å。
 
         缓存语义:
-            - 数据来自与 ``materialize_request`` 相同的 worker-local LRU；调用方不需要为获取 shape、几何或受体坐标再次解压完整 exp 或受体表。
+            - 数据来自与 ``materialize_request`` 相同的 Dataset 实例级 LRU; 命中后可由物化线程共享. 首次并发 miss 可能重复打开同一 mmap, 但缓存状态保持线程安全.
         """
         identity = str(pdb_id).strip().lower()
         exp_grid, voxel_size, origin = self._load_density_grid(identity, "exp")
