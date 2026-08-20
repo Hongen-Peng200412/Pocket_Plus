@@ -1,10 +1,11 @@
 # -*- coding: utf-8 -*-
-"""Stage1 V3 请求、NPY/mmap Dataset 与批处理契约测试。"""
+"""Stage1 V3 请求, NPY/mmap Dataset 与批处理契约测试."""
 
 from __future__ import annotations
 
 import json
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import numpy as np
@@ -28,7 +29,7 @@ from src.datasets.stage1_requests import (
 
 
 def test_split_pdb_ids_deduplicate_in_first_appearance_order(tmp_path: Path) -> None:
-    """候选记录级 split 可含重复 PDB，推理清单保持首次出现顺序。"""
+    """候选记录级 split 可含重复 PDB, 推理清单保持首次出现顺序."""
 
     split_path = tmp_path / "train.json"
     split_path.write_text(
@@ -50,7 +51,7 @@ def _write_upstream(
     pdb_id: str = "1abc",
     shape: tuple[int, int, int] = (80, 80, 80),
 ) -> None:
-    """写入一份最小 V3 NPY、空间元数据、受体与标签资产。"""
+    """写入一份最小 V3 NPY, 空间元数据, 受体与标签资产."""
 
     density_directory = root / "density" / pdb_id
     parse_directory = root / "parse" / pdb_id
@@ -148,7 +149,7 @@ def _density_config(channels: list[str]) -> dict[str, object]:
 
 
 def _write_v3_pool(root: Path) -> Path:
-    """写入包含一个 train PDB 与一个 validation PDB 的 V3 请求池。"""
+    """写入包含一个 train PDB 与一个 validation PDB 的 V3 请求池."""
 
     for split_name, pdb_id in (("train", "1abc"), ("validation", "2def")):
         pool_directory = root / split_name
@@ -246,8 +247,29 @@ def test_unet_dataset_does_not_read_sim_or_return_atom_table(tmp_path: Path) -> 
     assert sample["ligand_inverse_distance_target"][4, 3, 2].item() == pytest.approx(0.25)
 
 
+def test_source_cache_remains_consistent_under_inference_threads(tmp_path: Path) -> None:
+    """推理线程共享 mmap LRU 时, 锁必须保持字节计数和条目映射一致."""
+
+    _write_upstream(tmp_path)
+    dataset = Stage1Dataset(
+        all_data_path=str(tmp_path),
+        split_file=_request(require_targets=False),
+        mode="full_map",
+        stage1_model_name="unet_c1",
+        box_pool_root=None,
+        density_channel_config=_density_config(["exp_clipnorm_nopost"]),
+        enable_random_rotation=False,
+    )
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        samples = tuple(executor.map(lambda _: dataset[0], range(8)))
+    assert len(samples) == 8
+    assert dataset._source_cache.current_bytes == sum(
+        size for _, size in dataset._source_cache.values.values()
+    )
+
+
 def test_distance_validation_reads_only_the_requested_crop(tmp_path: Path) -> None:
-    """裁块外的 Inf 不触发扫描，裁块内的 Inf 按 V3 数值契约拒绝。"""
+    """裁块外的 Inf 不触发扫描, 裁块内的 Inf 按 V3 数值契约拒绝."""
 
     shape = (100, 100, 100)
     _write_upstream(tmp_path, shape=shape)

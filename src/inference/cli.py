@@ -1,340 +1,142 @@
 # -*- coding: utf-8 -*-
-"""Stage1 V3 calibration 与正式推理命令入口.
-
-命令只接受显式配置文件和显式部署路径. ``calibrate`` 生成 producer 级冻结
-参数; ``run`` 读取该文件, 生成 F1 basic、F3 centered 和完整评估产物.
-"""
+"""解析 Stage1 V3 显式命令并构造 checkpoint 同源运行环境."""
 
 from __future__ import annotations
 
 import argparse
-from concurrent.futures import ThreadPoolExecutor
-import itertools
+import hashlib
+import json
 from pathlib import Path
 
-import hydra
-import numpy as np
 from omegaconf import OmegaConf
 import torch
 
-from .artifacts import (
-    Stage1ArtifactPaths,
-    load_stage1_npz,
-    publish_stage1_artifact,
-    publish_stage1_json,
-    publish_stage1_jsonl,
-)
-from .calibration import calibrate_semantic_thresholds, tune_centered_selection
 from .checkpoint import load_stage1_wrapper
-from .blobs import publish_probability_blobs
-from .evaluation import (
-    aggregate_stage1_metrics,
-    evaluate_centered_pdb,
-    evaluation_arrays,
-    load_occurrence_voxels,
-)
-from .pipeline import (
-    produce_centered_role,
-    produce_probability_map,
-    score_and_publish_centered,
-)
+from .workflow import run_calibration_workflow, run_frozen_workflow
+
+
+def _sha256_file(path: Path) -> str:
+    """用 Python 3.10 可用的分块读取计算一个文件的 SHA-256."""
+
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
 
 
 # ================================================================================================
 
 
 def main() -> None:
-    """解析命令并执行完整 calibration 或冻结参数推理流程."""
+    """把显式路径解析为一个 calibration 或冻结参数 workflow 调用."""
 
-    parser = argparse.ArgumentParser(description="AdaLigand Stage1 V3 inference")
-    parser.add_argument("command", choices=("calibrate", "run"))
-    parser.add_argument("--config", required=True)
-    parser.add_argument("--checkpoint", required=True)
-    parser.add_argument("--resolved-config", required=True)
-    parser.add_argument("--pdb-list", required=True)
-    parser.add_argument("--split", required=True)
-    parser.add_argument("--output-root", required=True)
-    parser.add_argument("--producer", choices=("unet_c1", "Find_0", "Find_1", "Find_2"), required=True)
-    parser.add_argument("--calibration", required=False)
-    parser.add_argument(
-        "--allow-current-workspace-code",
-        choices=("true", "false"),
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--config", required=True)
+    common.add_argument("--checkpoint", required=True)
+    common.add_argument("--resolved-config", required=True)
+    common.add_argument("--pdb-list", required=True)
+    common.add_argument("--output-root", required=True)
+    common.add_argument(
+        "--producer",
+        choices=("unet_c1", "Find_0", "Find_1", "Find_2"),
         required=True,
     )
+    common.add_argument(
+        "--model-code-source",
+        choices=("current_workspace", "training_snapshot"),
+        required=True,
+    )
+    parser = argparse.ArgumentParser(description="AdaLigand Stage1 V3 inference")
+    commands = parser.add_subparsers(dest="command", required=True)
+    calibrate_parser = commands.add_parser("calibrate", parents=(common,))
+    calibrate_parser.add_argument("--split", choices=("calibration",), required=True)
+    run_parser = commands.add_parser("run", parents=(common,))
+    run_parser.add_argument("--split", choices=("validation", "train"), required=True)
+    run_parser.add_argument("--calibration", required=True)
     arguments = parser.parse_args()
-    if arguments.command == "run" and arguments.calibration is None:
-        parser.error("run 必须显式传入 --calibration.")
 
-    config = OmegaConf.load(arguments.config)
+    config_path = Path(arguments.config)
+    checkpoint_path = Path(arguments.checkpoint)
+    resolved_config_path = Path(arguments.resolved_config)
+    config = OmegaConf.load(config_path)
     OmegaConf.resolve(config)
     pdb_ids = tuple(
         line.strip().lower()
         for line in Path(arguments.pdb_list).read_text(encoding="utf-8").splitlines()
         if line.strip() and not line.lstrip().startswith("#")
     )
+    if len(pdb_ids) != len(set(pdb_ids)):
+        raise ValueError("PDB 清单包含重复标识; 同一数据划分中的 PDB 必须唯一.")
     wrapper, training_config = load_stage1_wrapper(
-        checkpoint_path=arguments.checkpoint,
-        resolved_config_path=arguments.resolved_config,
+        checkpoint_path=checkpoint_path,
+        resolved_config_path=resolved_config_path,
         map_location="cpu",
-        allow_current_workspace_code=arguments.allow_current_workspace_code == "true",
+        model_code_source=str(arguments.model_code_source),
     )
+    # 快照模型恢复结束后再导入当前 V3 Dataset, 避免当前辅助模块污染快照导入链.
     from src.datasets.stage1_requests import ResolvedStage1Crop
+    import src.datasets.stage1_dataset as _current_stage1_dataset
 
-    seed_requests = [
-        ResolvedStage1Crop(
-            pdb_id=pdb_id,
-            box_start_zyx=(0, 0, 0),
-            require_targets=False,
-            role="sliding",
+    if str(training_config.dataset.stage1_model_name) != str(arguments.producer):
+        raise ValueError(
+            "--producer 与 resolved config 的 dataset.stage1_model_name 不一致."
         )
-        for pdb_id in pdb_ids
-    ]
-    dataset = hydra.utils.instantiate(
-        training_config.dataset,
-        split_file=seed_requests,
+    dataset_arguments = OmegaConf.to_container(training_config.dataset, resolve=True)
+    dataset_arguments.pop("_target_", None)
+    dataset_arguments.update(
+        split_file=[
+            ResolvedStage1Crop(
+                pdb_id=pdb_id,
+                box_start_zyx=(0, 0, 0),
+                require_targets=False,
+                role="sliding",
+            )
+            for pdb_id in pdb_ids
+        ],
         mode="full_map",
         box_pool_root=None,
         enable_random_rotation=False,
     )
-    collator = dataset.collate_fn
-    device = str(config.device)
-    wrapper.to(torch.device(device))
-    producer = str(arguments.producer)
-    output_root = Path(arguments.output_root)
-
-    probability_by_pdb: dict[str, dict[str, np.ndarray]] = {}
-    for pdb_id in pdb_ids:
-        paths = Stage1ArtifactPaths(output_root, producer, arguments.split, pdb_id)
-        if bool(config.overwrite) or not paths.complete("probability").is_file():
-            probability_by_pdb[pdb_id] = produce_probability_map(
-                paths=paths,
-                dataset=dataset,
-                collator=collator,
-                wrapper=wrapper,
-                device=device,
-                window_config=config.window,
-            )
-        else:
-            probability_by_pdb[pdb_id] = load_stage1_npz(
-                paths.artifact("probability"),
-                ("probability_map", "full_shape_zyx", "origin_xyz", "voxel_size_xyz"),
-            )
-
+    dataset = _current_stage1_dataset.Stage1Dataset(**dataset_arguments)
+    wrapper.to(torch.device(str(config.device)))
+    checkpoint_sha256 = _sha256_file(checkpoint_path)
+    artifact_identity = {
+        "schema": "stage1_v3",
+        "producer": str(arguments.producer),
+        "checkpoint_sha256": checkpoint_sha256,
+        "resolved_config_sha256": hashlib.sha256(
+            resolved_config_path.read_bytes()
+        ).hexdigest(),
+        "inference_config_sha256": hashlib.sha256(config_path.read_bytes()).hexdigest(),
+        "semantic_denominator": int(config.calibration.semantic_denominator),
+        "model_code_source": str(arguments.model_code_source),
+    }
+    workflow_arguments = {
+        "config": config,
+        "dataset": dataset,
+        "collator": dataset.collate_fn,
+        "wrapper": wrapper,
+        "device": str(config.device),
+        "producer": str(arguments.producer),
+        "split": str(arguments.split),
+        "pdb_ids": pdb_ids,
+        "output_root": Path(arguments.output_root),
+        "artifact_identity": artifact_identity,
+    }
     if arguments.command == "calibrate":
-        probability_and_target: list[tuple[np.ndarray, np.ndarray]] = []
-        for pdb_id in pdb_ids:
-            union_mask = np.load(
-                Path(dataset.root) / "density" / pdb_id / "union_mask.npy",
-                mmap_mode="r",
-                allow_pickle=False,
-            )[0]
-            probability_and_target.append(
-                (probability_by_pdb[pdb_id]["probability_map"], union_mask)
-            )
-        semantic = calibrate_semantic_thresholds(
-            probability_and_target,
-            denominator=int(config.calibration.semantic_denominator),
-            betas=(1.0, 3.0),
-        )
-        calibration_payload: dict[str, object] = {
-            "producer": producer,
-            "semantic": semantic,
-            "roles": {},
-        }
+        run_calibration_workflow(**workflow_arguments)
     else:
-        calibration_payload = OmegaConf.to_container(
-            OmegaConf.load(arguments.calibration),
-            resolve=True,
+        calibration_path = Path(arguments.calibration)
+        calibration_payload = json.loads(calibration_path.read_text(encoding="utf-8"))
+        calibration_complete = json.loads(
+            (calibration_path.parent / "_COMPLETE").read_text(encoding="utf-8")
         )
-
-    role_evaluations: dict[str, list] = {}
-    for role_name, role_config in config.roles.items():
-        blob_role = str(role_config.blob_role)
-        centered_role = str(role_config.centered_role)
-        if arguments.command == "calibrate":
-            semantic_role = str(role_config.semantic_role)
-            semantic_threshold = float(
-                calibration_payload["semantic"]["thresholds"][semantic_role]["value"]
-            )
-            generation_min_voxels = min(
-                int(value) for value in role_config.min_voxel_values
-            )
-            centered_by_pdb: dict[str, dict[str, np.ndarray]] = {}
-            with ThreadPoolExecutor(
-                max_workers=int(config.blob_workers),
-                thread_name_prefix="stage1-blobs",
-            ) as blob_executor:
-                blob_futures = {
-                    pdb_id: blob_executor.submit(
-                        publish_probability_blobs,
-                        Stage1ArtifactPaths(output_root, producer, arguments.split, pdb_id),
-                        blob_role,
-                        semantic_threshold,
-                    )
-                    for pdb_id in pdb_ids
-                }
-                for pdb_id in pdb_ids:
-                    paths = Stage1ArtifactPaths(output_root, producer, arguments.split, pdb_id)
-                    arrays = produce_centered_role(
-                        paths=paths,
-                        dataset=dataset,
-                        collator=collator,
-                        wrapper=wrapper,
-                        device=device,
-                        blobs=blob_futures[pdb_id].result(),
-                        centered_role=centered_role,
-                        min_voxels=generation_min_voxels,
-                        centered_config=role_config.centered,
-                        blob_limit=(
-                            None if role_config.blob_limit is None else int(role_config.blob_limit)
-                        ),
-                        enforce_blob_limit=(
-                            None
-                            if role_config.enforce_blob_limit_calibration is None
-                            else bool(role_config.enforce_blob_limit_calibration)
-                        ),
-                        publish_complete=False,
-                    )
-                    if arrays is not None:
-                        centered_by_pdb[pdb_id] = arrays
-
-            ground_truth = {
-                pdb_id: load_occurrence_voxels(
-                    Path(dataset.root) / "density" / pdb_id / "ligand_area.npz"
-                )
-                for pdb_id in centered_by_pdb
-            }
-            score_mode = str(role_config.score_mode[producer])
-            if score_mode == "source_mean":
-                score_parameter_rows = ({},)
-            else:
-                grid = role_config.score_parameter_grid
-                score_parameter_rows = tuple(
-                    {
-                        "tau_angstrom": float(tau),
-                        "lambda_positive": float(positive),
-                        "lambda_negative": float(negative),
-                    }
-                    for tau, positive, negative in itertools.product(
-                        grid.tau_angstrom,
-                        grid.lambda_positive,
-                        grid.lambda_negative,
-                    )
-                )
-            best = tune_centered_selection(
-                centered_by_pdb=centered_by_pdb,
-                ground_truth_by_pdb=ground_truth,
-                score_mode=score_mode,
-                score_parameter_rows=score_parameter_rows,
-                min_voxel_values=role_config.min_voxel_values,
-                objective_beta=float(role_config.objective_beta),
-                coverage_thresholds=config.evaluation.coverage_thresholds,
-                topk_values=config.evaluation.topk_values,
-            )
-            calibration_payload["roles"][role_name] = {
-                "source_threshold": semantic_threshold,
-                "selection": best,
-            }
-            selection = best
-        else:
-            role_calibration = calibration_payload["roles"][role_name]
-            semantic_threshold = float(role_calibration["source_threshold"])
-            selection = role_calibration["selection"]
-            with ThreadPoolExecutor(
-                max_workers=int(config.blob_workers),
-                thread_name_prefix="stage1-blobs",
-            ) as blob_executor:
-                blob_futures = {
-                    pdb_id: blob_executor.submit(
-                        publish_probability_blobs,
-                        Stage1ArtifactPaths(output_root, producer, arguments.split, pdb_id),
-                        blob_role,
-                        semantic_threshold,
-                    )
-                    for pdb_id in pdb_ids
-                }
-                for pdb_id in pdb_ids:
-                    paths = Stage1ArtifactPaths(output_root, producer, arguments.split, pdb_id)
-                    produce_centered_role(
-                        paths=paths,
-                        dataset=dataset,
-                        collator=collator,
-                        wrapper=wrapper,
-                        device=device,
-                        blobs=blob_futures[pdb_id].result(),
-                        centered_role=centered_role,
-                        min_voxels=int(selection["min_voxels"]),
-                        centered_config=role_config.centered,
-                        blob_limit=(
-                            None if role_config.blob_limit is None else int(role_config.blob_limit)
-                        ),
-                        enforce_blob_limit=(
-                            None
-                            if role_config.enforce_blob_limit_run is None
-                            else bool(role_config.enforce_blob_limit_run)
-                        ),
-                        publish_complete=True,
-                    )
-
-        evaluations = []
-        jsonl_rows = []
-        for pdb_id in pdb_ids:
-            paths = Stage1ArtifactPaths(output_root, producer, arguments.split, pdb_id)
-            if not paths.artifact(centered_role).is_file():
-                continue
-            selected = score_and_publish_centered(
-                paths=paths,
-                centered_role=centered_role,
-                score_mode=str(selection["score_mode"]),
-                score_parameters=selection["score_parameters"],
-                score_threshold=float(selection["score_threshold"]),
-                min_voxels=int(selection["min_voxels"]),
-            )
-            occurrence_id, occurrence_rows, full_shape = load_occurrence_voxels(
-                Path(dataset.root) / "density" / pdb_id / "ligand_area.npz"
-            )
-            evaluation = evaluate_centered_pdb(
-                pdb_id=pdb_id,
-                centered=selected,
-                occurrence_id=occurrence_id,
-                occurrence_voxel_zyx=occurrence_rows,
-                full_shape_zyx=full_shape,
-                coverage_thresholds=config.evaluation.coverage_thresholds,
-                topk_values=config.evaluation.topk_values,
-            )
-            evaluations.append(evaluation)
-            publish_stage1_artifact(
-                paths.evaluation(centered_role, "npz"),
-                evaluation_arrays(evaluation),
-                None,
-            )
-            single_metrics = aggregate_stage1_metrics(
-                (evaluation,),
-                coverage_thresholds=config.evaluation.coverage_thresholds,
-                topk_values=config.evaluation.topk_values,
-            )
-            jsonl_rows.append({"pdb_id": pdb_id, **single_metrics})
-        global_metrics = aggregate_stage1_metrics(
-            evaluations,
-            coverage_thresholds=config.evaluation.coverage_thresholds,
-            topk_values=config.evaluation.topk_values,
+        run_frozen_workflow(
+            calibration_payload=calibration_payload,
+            calibration_complete=calibration_complete,
+            **workflow_arguments,
         )
-        evaluation_root = output_root / producer / arguments.split / "evaluation"
-        publish_stage1_jsonl(
-            evaluation_root / f"{centered_role}.jsonl",
-            jsonl_rows,
-        )
-        publish_stage1_json(
-            evaluation_root / f"{centered_role}.metrics.json",
-            global_metrics,
-        )
-        role_evaluations[role_name] = evaluations
-
-    if arguments.command == "calibrate":
-        calibration_path = (
-            output_root / producer / "calibration" / "stage1_v3.json"
-        )
-        publish_stage1_json(calibration_path, calibration_payload)
 
 
 if __name__ == "__main__":

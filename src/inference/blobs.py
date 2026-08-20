@@ -14,14 +14,30 @@ from scipy import ndimage
 from .artifacts import Stage1ArtifactPaths, load_stage1_npz, publish_stage1_artifact
 
 
-# ================================================================================================
-
-
 def extract_probability_blobs(
     probability_map: np.ndarray,
     threshold: float,
 ) -> dict[str, np.ndarray]:
-    """按平均概率降序和最小全图线性索引升序整理全部 26-连通区域."""
+    """提取并稳定排序一个阈值下的全部 26 邻域连通区域.
+
+    输入参数:
+        - probability_map: float32 ``(D, H, W)``, 完整图 ZYX 配体概率.
+        - threshold: float, 包含端点的概率阈值.
+
+    返回值:
+        - blob_index: int32 ``(N_blob,)``, 排序后的连续身份.
+        - voxel_offsets: int64 ``(N_blob+1,)``, 切分两个逐体素值表.
+        - voxel_index_global_zyx: int32 ``(L_voxel, 3)``, 完整图 ZYX 索引.
+        - source_probability: float32 ``(L_voxel,)``, 来源体素的完整图概率.
+        - source_probability_mean: float32 ``(N_blob,)``, 各区域平均概率.
+        - voxel_count: int32 ``(N_blob,)``, 各区域体素数.
+        - fits_centered_box: bool ``(N_blob,)``, 包围盒是否可被合法 80³ BOX 容纳.
+        - centered_box_start_zyx: int32 ``(N_blob, 3)``, 合法 BOX 起点; 不可容纳时为 ``-1``.
+        - source_threshold_value: float32 ``(1,)``, 本次阈值.
+
+    区域按平均概率降序, 再按最小完整图 C-order 线性索引升序. 本函数不按
+    ``min_voxels`` 删除区域.
+    """
 
     probability = np.asarray(probability_map, dtype=np.float32)
     labels, count = ndimage.label(
@@ -30,23 +46,40 @@ def extract_probability_blobs(
     )
     records: list[tuple[float, int, np.ndarray, np.ndarray, bool, np.ndarray]] = []
     full_shape = np.asarray(probability.shape, dtype=np.int64)
+    linear_positive = np.flatnonzero(labels.reshape(-1)).astype(np.int64)
+    positive_label = labels.reshape(-1)[linear_positive]
+    label_order = np.argsort(positive_label, kind="stable")
+    linear_by_label = linear_positive[label_order]
+    label_counts = np.bincount(
+        positive_label,
+        minlength=int(count) + 1,
+    )[1:]
+    label_offsets = np.concatenate(
+        (np.zeros(1, dtype=np.int64), np.cumsum(label_counts, dtype=np.int64))
+    )
+    probability_flat = probability.reshape(-1)
     for label_id in range(1, int(count) + 1):
-        coordinates = np.argwhere(labels == label_id).astype(np.int32)
-        linear = np.ravel_multi_index(coordinates.T, probability.shape)
-        order = np.argsort(linear, kind="stable")
-        coordinates = coordinates[order]
-        values = probability[tuple(coordinates.T)].astype(np.float32)
+        begin = int(label_offsets[label_id - 1])
+        end = int(label_offsets[label_id])
+        linear = linear_by_label[begin:end]
+        coordinates = np.column_stack(
+            np.unravel_index(linear, probability.shape)
+        ).astype(np.int32)
+        values = probability_flat[linear].astype(np.float32)
         minimum = coordinates.min(axis=0).astype(np.int64)
         maximum = coordinates.max(axis=0).astype(np.int64)
         requested = np.rint(
             coordinates.astype(np.float64).mean(axis=0) + 0.5 - 40.0
         ).astype(np.int64)
-        start = np.clip(requested, 0, full_shape - 80)
-        fits = bool(np.all(minimum >= start) and np.all(maximum < start + 80))
+        lowest_start = np.maximum(0, maximum - 79)
+        highest_start = np.minimum(minimum, full_shape - 80)
+        fits = bool(np.all(lowest_start <= highest_start))
+        start = np.clip(requested, lowest_start, highest_start) if fits else requested
+        source_mean = np.float32(values.mean(dtype=np.float64))
         records.append(
             (
-                float(values.mean(dtype=np.float64)),
-                int(linear[order[0]]),
+                float(source_mean),
+                int(linear[0]),
                 coordinates,
                 values,
                 fits,
@@ -89,17 +122,30 @@ def extract_probability_blobs(
     }
 
 
+# ================================================================================================
+
+
 def publish_probability_blobs(
     paths: Stage1ArtifactPaths,
     role: str,
     threshold: float,
+    probability_map: np.ndarray | None = None,
 ) -> dict[str, np.ndarray]:
-    """读取已完成概率图, 发布 F1 或 F3 的全部连通区域并返回同一数组映射."""
+    """发布 F1 或 F3 的全部连通区域并返回同一数组映射.
 
-    probability = load_stage1_npz(
-        paths.artifact("probability"),
-        ("probability_map",),
-    )["probability_map"]
+    ``probability_map`` 为完整图 ``float32 (D, H, W)``. GPU 流水刚生成完整图时,
+    调用者直接传入该数组, 使 CPU 连通区域提取与概率 NPZ 压缩并行. 复用已有
+    概率产物时传入 ``None``, 本函数从 ``probability_map.npz`` 读取同名字段.
+    """
+
+    probability = (
+        load_stage1_npz(
+            paths.artifact("probability"),
+            ("probability_map",),
+        )["probability_map"]
+        if probability_map is None
+        else np.asarray(probability_map, dtype=np.float32)
+    )
     arrays = extract_probability_blobs(probability, threshold)
     publish_stage1_artifact(
         paths.artifact(role),

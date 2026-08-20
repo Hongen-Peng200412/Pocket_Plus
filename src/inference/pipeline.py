@@ -1,12 +1,13 @@
 # -*- coding: utf-8 -*-
-"""执行一个 PDB 的 Stage1 V3 概率图、blob、centered 和评分发布.
+"""执行一个 PDB 的 Stage1 V3 概率图, blob, centered 和评分发布.
 
-本模块提供按正式产物边界划分的三个入口. 清单遍历、calibration 搜索和并发的
-跨 PDB 调度留在 ``cli.py``, 避免把命令流程藏进多层 runner 包装.
+本模块提供按正式产物边界划分的入口. 清单遍历, calibration 搜索和跨 PDB
+并发调度由 ``workflow.py`` 直接编排; ``cli.py`` 只负责解析命令与构造依赖.
 """
 
 from __future__ import annotations
 
+from concurrent.futures import Executor, Future
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -33,9 +34,21 @@ def produce_probability_map(
     wrapper: Any,
     device: str,
     window_config: Mapping[str, Any],
-) -> dict[str, np.ndarray]:
-    """运行滑窗并原子发布一个 PDB 的 ``probability_map.npz``."""
+    publisher: Executor,
+) -> tuple[dict[str, np.ndarray], Future[None]]:
+    """运行滑窗并异步发布一个 PDB 的概率产物.
 
+    Dataset, collator 与 wrapper 直接传给 :func:`infer_full_map`;
+    ``window_config`` 必须显式提供 stride, sigma, batch, 线程, 预取, 精度和
+    融合队列深度.
+
+    返回的数组只含 ``probability_map``,``origin_xyz`` 和
+    ``voxel_size_xyz`` 三个科学字段. ``Future`` 完成时, 科学 NPZ, 窗口
+    ``geometry.json``, 性能 JSON 和 ``status/probability/_COMPLETE`` 已按该
+    顺序发布. NPZ 压缩由 ``publisher`` 执行, 不阻塞下一个 PDB 的 GPU 前向.
+    """
+
+    paths.complete("probability").unlink(missing_ok=True)
     result = infer_full_map(
         dataset=dataset,
         collator=collator,
@@ -52,20 +65,36 @@ def produce_probability_map(
     )
     arrays = {
         "probability_map": result.probability_map.astype(np.float32, copy=False),
-        "full_shape_zyx": np.asarray(result.probability_map.shape, dtype=np.int64),
         "origin_xyz": result.origin_xyz.astype(np.float32, copy=False),
         "voxel_size_xyz": result.voxel_size_xyz.astype(np.float32, copy=False),
-        "window_shape_zyx": np.asarray((80, 80, 80), dtype=np.uint8),
-        "stride_zyx": np.asarray(window_config["stride_zyx"], dtype=np.int32),
-        "gaussian_sigma": np.asarray(window_config["gaussian_sigma"], dtype=np.float32),
-        "window_count": np.asarray(result.window_count, dtype=np.int32),
     }
-    publish_stage1_artifact(
-        paths.artifact("probability"),
-        arrays,
-        paths.complete("probability"),
-    )
-    return arrays
+    if not all(np.isfinite(value).all() for value in arrays.values()):
+        raise ValueError(f"{paths.pdb_id}: 完整图概率或几何包含 NaN/Inf.")
+    geometry = {
+        "full_shape_zyx": [int(value) for value in result.probability_map.shape],
+        "origin_xyz": [float(value) for value in result.origin_xyz],
+        "voxel_size_xyz": [float(value) for value in result.voxel_size_xyz],
+        "window_shape_zyx": [80, 80, 80],
+        "stride_zyx": [int(value) for value in window_config["stride_zyx"]],
+        "gaussian_sigma": float(window_config["gaussian_sigma"]),
+        "window_count": int(result.window_count),
+    }
+    performance = {
+        "wall_seconds": float(result.wall_seconds),
+        "materialize_wait_seconds": float(result.materialize_wait_seconds),
+        "fusion_wait_seconds": float(result.fusion_wait_seconds),
+    }
+
+    def publish() -> None:
+        publish_stage1_json(paths.pdb_root / "probability" / "geometry.json", geometry)
+        publish_stage1_json(paths.performance("probability"), performance)
+        publish_stage1_artifact(
+            paths.artifact("probability"),
+            arrays,
+            paths.complete("probability"),
+        )
+
+    return arrays, publisher.submit(publish)
 
 
 def produce_centered_role(
@@ -79,16 +108,25 @@ def produce_centered_role(
     min_voxels: int,
     centered_config: Mapping[str, Any],
     blob_limit: int | None,
-    enforce_blob_limit: bool | None,
-    publish_complete: bool,
-) -> dict[str, np.ndarray] | None:
+    selection: Mapping[str, Any] | None,
+    publisher: Executor,
+) -> Future[dict[str, np.ndarray]]:
     """读取调用者已并行生成的 F1/F3 blobs 并发布 centered 文件.
 
-    F3 中满足 ``fits_centered_box`` 和 ``min_voxels`` 的候选数严格大于
-    ``blob_limit`` 时写 ``_BLOB_EXCEED``. ``enforce_blob_limit`` 为真则返回
-    ``None`` 且不发布 centered; 为假时保留标记并继续.
+    ``blobs`` 是当前角色已经发布或刚从 CPU future 返回的字段映射. F3 中
+    满足 ``fits_centered_box`` 和 ``min_voxels`` 的候选数严格大于
+    ``blob_limit`` 时写 ``_BLOB_EXCEED`` 并继续生产, 不建立特殊跳过终态;
+    该 JSON 精确保存 `pdb_id`, `centered_role`, `eligible_blob_count` 和 `limit`.
+    返回 centered 发布 Future. ``selection=None`` 用于 calibration 搜索前的
+    临时候选归档, 只发布未评分 NPZ, 不建立完成标记. 传入冻结选择映射时,
+    Future 在首次压缩前写入 ``score`` 与 ``selected``; 完成时 centered NPZ,
+    五键性能 JSON 和角色 ``_COMPLETE`` 均已发布. 浮点字段在提交压缩前直接
+    检查 NaN/Inf. 性能 JSON 精确保存 `wall_seconds`,
+    `materialize_wait_seconds`, `cpu_arrange_wait_seconds`, `batch_count` 和
+    `entry_count`; 正式完成标记保存 `output_role` 与 `completed_at_utc`.
     """
 
+    paths.complete(centered_role).unlink(missing_ok=True)
     eligible = np.asarray(blobs["fits_centered_box"], dtype=np.bool_) & (
         np.asarray(blobs["voxel_count"], dtype=np.int64) >= int(min_voxels)
     )
@@ -100,13 +138,8 @@ def produce_centered_role(
                 "centered_role": centered_role,
                 "eligible_blob_count": int(eligible.sum()),
                 "limit": int(blob_limit),
-                "enforced": bool(enforce_blob_limit),
             },
         )
-        if enforce_blob_limit:
-            paths.artifact(centered_role).unlink(missing_ok=True)
-            paths.complete(centered_role).unlink(missing_ok=True)
-            return None
     elif centered_role == "F3_centered":
         Path(paths.blob_exceed).unlink(missing_ok=True)
 
@@ -114,7 +147,7 @@ def produce_centered_role(
         paths.artifact("probability"),
         ("probability_map", "origin_xyz", "voxel_size_xyz"),
     )
-    arrays = infer_centered_boxes(
+    packed, performance = infer_centered_boxes(
         dataset=dataset,
         collator=collator,
         wrapper=wrapper,
@@ -134,49 +167,33 @@ def produce_centered_role(
         centered_forward=str(centered_config["forward"]),
         save_voxel_final=bool(centered_config["save_voxel_final"]),
         save_dense48=bool(centered_config["save_dense48"]),
+        packer=publisher,
     )
-    if not publish_complete:
+
+    def publish() -> dict[str, np.ndarray]:
+        arrays = packed.result()
+        if selection is not None:
+            score = score_centered_candidates(
+                arrays,
+                score_mode=str(selection["score_mode"]),
+                score_parameters=selection["score_parameters"],
+            )
+            arrays = select_centered_candidates(
+                arrays,
+                score=score,
+                score_threshold=float(selection["score_threshold"]),
+                min_voxels=int(selection["min_voxels"]),
+            )
+        for name, value in arrays.items():
+            if np.issubdtype(value.dtype, np.floating) and not np.isfinite(value).all():
+                raise ValueError(f"{paths.pdb_id}:{centered_role}:{name} 包含 NaN/Inf.")
         paths.complete(centered_role).unlink(missing_ok=True)
-    publish_stage1_artifact(
-        paths.artifact(centered_role),
-        arrays,
-        paths.complete(centered_role) if publish_complete else None,
-    )
-    return arrays
+        publish_stage1_json(paths.performance(centered_role), performance)
+        publish_stage1_artifact(
+            paths.artifact(centered_role),
+            arrays,
+            None if selection is None else paths.complete(centered_role),
+        )
+        return arrays
 
-
-def score_and_publish_centered(
-    paths: Stage1ArtifactPaths,
-    centered_role: str,
-    score_mode: str,
-    score_parameters: Mapping[str, float],
-    score_threshold: float,
-    min_voxels: int,
-) -> dict[str, np.ndarray]:
-    """计算冻结分数和选择标志, 原子替换同一 centered 正式路径."""
-
-    centered = load_stage1_npz(
-        paths.artifact(centered_role),
-        (
-            "source_probability_mean",
-            "voxel_offsets",
-            "voxel_index_local_zyx",
-        ),
-    )
-    score = score_centered_candidates(
-        centered,
-        score_mode=score_mode,
-        score_parameters=score_parameters,
-    )
-    selected = select_centered_candidates(
-        centered,
-        score=score,
-        score_threshold=float(score_threshold),
-        min_voxels=int(min_voxels),
-    )
-    publish_stage1_artifact(
-        paths.artifact(centered_role),
-        selected,
-        paths.complete(centered_role),
-    )
-    return selected
+    return publisher.submit(publish)

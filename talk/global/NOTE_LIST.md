@@ -30,7 +30,7 @@ $$
 
 - 基本分数固定为 `source_probability_mean`, 不再引入与最终阈值尺度冗余的平均概率系数。
 - Find 完整分数为来源概率均值加 A 原子正高斯项减 A 原子负高斯项。U-Net 的 A 原子项缺席且按 0 处理。
-- 双向 coverage 与固定 Hungarian 一对一指标报告阈值 `0.3`、`0.5`、`0.6`。top-K 报告 `K=3,4,5` 与相同三个 coverage 阈值。
+- 双向 coverage 与逐阈值最大一对一匹配报告阈值 `0.3`、`0.5`、`0.6`。top-K 报告 `K=3,4,5` 与相同三个 coverage 阈值。
 - micro 指标先跨 PDB 汇总分子和分母。macro 指标先在每个 PDB 内计算, 再对 PDB 等权平均。空分母值固定为 `0.0`。
 - 每个 PDB 保存完整预测候选与真实 occurrence 的交集计数、候选体素数、真实 occurrence 体素数、匹配与 top-K 事实; 汇总 JSON 不能取代这些基础数组。
 
@@ -41,10 +41,12 @@ $$
 ~~~text
 <output_root>/<stage1_model_name>/<split>/<pdb_id>/
 ├── probability/probability_map.npz
+├── probability/geometry.json
 ├── blobs/F1_blobs.npz
 ├── blobs/F3_blobs.npz
 ├── centered/F1_basic.npz
 ├── centered/F3_centered.npz
+├── status/<role>/performance.json
 └── status/<role>/_COMPLETE
 ~~~
 
@@ -61,8 +63,8 @@ $$
 ## CPU 与 GPU 并行
 
 1. 完整图阶段并行执行 CPU 窗口物化、页锁定 H2D、GPU voxel-only 前向、异步 D2H 和唯一有序 CPU 融合。
-2. GPU 开始下一个 PDB 的完整图时, CPU 进程并行读取已经原子发布的概率图并生成两个 blobs 文件。
-3. centered 阶段并行执行 CPU 请求物化、H2D、GPU centered 前向、D2H、CPU 字段打包和原子发布。单 GPU 只有一个明确调度者, 不由多个进程争抢显存。
+2. 一个完整图离开 GPU 后，概率 NPZ 压缩与两个 blobs 任务同时进入 CPU 线程池；GPU 无需等待压缩，立即处理下一个 PDB。
+3. centered 阶段并行执行 CPU 请求物化、H2D、GPU centered 前向、D2H 和 CPU 字段打包；一个 PDB 的最终压缩与下一个 PDB 的 GPU 前向重叠。单 GPU 只有一个明确调度者。
 4. 队列容量、CPU worker 数、GPU batch size 和精度均由配置显式给出。并行只改变执行重叠, 不改变 PDB 顺序、候选顺序、融合累加顺序和产物数值定义。
 5. GPU 利用率基准同时保存串行与流水线吞吐、GPU 活跃时间比例、`nvidia-smi` 利用率分布和各队列等待时间。首次验收记录证据, 不凭空设定固定百分比门槛。
 

@@ -43,18 +43,18 @@
 * `configs/loss/`
 * `configs/train/`
 
-## 4. AdaLigand Stage1 推理、评估与 Selector
+## 4. AdaLigand Stage1 V3 推理与评估
 
 推理和评估相关问题优先读：
 
 * `src/inference/README.md`
-  * 完整图概率、阈值冻结、组件森林、CLG 与三类 centered 产物的入口和发布顺序。
-* `src/evaluation/`
-  * 体素、coverage、固定连续分数 Hungarian、top-K 与报告实现。
-* `src/selector/README.md`
-  * Selector 冻结输入、训练、校正、selection 与 Selected-refined 的边界。
-* `configs/selector/`
-  * Find_0、Find_1、unet_c1 三个 producer 的 Selector 配置。
+  * 完整图概率、F1/F3 blobs、F1 basic、F3 centered、校准、评估和跨 PDB 有界流水。
+* `configs/inference/README.md`
+  * 四个 producer 共用的显式科学与并行配置。
+* `训练与运行/sh/infer/README.md`
+  * `calibrate`/`run` 命令、正式产物路径和提交方式。
+* `talk/stage1_v3_inference_inputs_outputs.md`
+  * Stage1 V3 输入与数组字段的学习型概览。
 
 旧的混合式推理、评估、保存与可视化管线不属于本分支接口；不要根据 Git 历史中的旧入口补回兼容层。
 

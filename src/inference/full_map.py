@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """用无 padding 80³ 滑窗生成完整图配体概率.
 
-主要入口 :func:`infer_full_map` 在同一个调用中重叠 CPU 请求物化、页锁定
-H2D、GPU 前向、异步 D2H 与有序 CPU 融合. 并行不改变窗口顺序、batch
+主要入口 :func:`infer_full_map` 在同一个调用中重叠 CPU 请求物化, 页锁定
+H2D, GPU 前向, 异步 D2H 与有序 CPU 融合. 并行不改变窗口顺序, batch
 边界或 float32 Gaussian 累加顺序.
 """
 
@@ -11,13 +11,11 @@ from __future__ import annotations
 from collections import deque
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
+import time
 from typing import Any, Sequence
 
 import numpy as np
 import torch
-
-
-# ================================================================================================
 
 
 @dataclass(frozen=True)
@@ -25,16 +23,22 @@ class FullMapResult:
     """保存一个 PDB 的完整概率图与几何.
 
     字段:
-        - probability_map: float32 `(D,H,W)`, 完整 ZYX 网格融合概率.
+        - probability_map: float32 `(D, H, W)`, 完整 ZYX 网格融合概率.
         - origin_xyz: float32 `(3,)`, 完整图 world XYZ corner, 单位 Å.
         - voxel_size_xyz: float32 `(3,)`, 世界 XYZ 体素尺寸, 单位 Å/voxel.
         - window_count: int, 实际执行的无 padding 80³ 窗口数.
+        - wall_seconds: float, 当前 PDB 完整图调用的墙钟秒数.
+        - materialize_wait_seconds: float, 主线程等待 CPU 请求物化 future 的累计秒数.
+        - fusion_wait_seconds: float, 主线程因融合队列背压或最终收口等待的累计秒数.
     """
 
     probability_map: np.ndarray
     origin_xyz: np.ndarray
     voxel_size_xyz: np.ndarray
     window_count: int
+    wall_seconds: float
+    materialize_wait_seconds: float
+    fusion_wait_seconds: float
 
 
 def window_starts_zyx(
@@ -42,7 +46,7 @@ def window_starts_zyx(
     window_shape_zyx: Sequence[int],
     stride_zyx: Sequence[int],
 ) -> tuple[tuple[int, int, int], ...]:
-    """按 Z、Y、X 字典序返回覆盖完整图边界的无 padding 窗口起点."""
+    """按 Z, Y, X 字典序返回覆盖完整图边界的无 padding 窗口起点."""
 
     full_shape = tuple(int(value) for value in full_shape_zyx)
     window_shape = tuple(int(value) for value in window_shape_zyx)
@@ -87,6 +91,9 @@ def gaussian_window_weight(
     ).astype(np.float32, copy=False)
 
 
+# ================================================================================================
+
+
 def infer_full_map(
     dataset: Any,
     collator: Any,
@@ -105,11 +112,14 @@ def infer_full_map(
 
     Dataset 必须提供 `full_map_context(pdb_id)` 与
     `materialize_request(ResolvedStage1Crop)`. wrapper 必须提供
-    `forward_voxel_probability(batch)`, 返回 sigmoid 前 `(B,1,80,80,80)` logits.
+    `forward_voxel_probability(batch)`, 返回 sigmoid 前 `(B, 1, 80, 80, 80)` logits.
     """
 
     from src.datasets.stage1_requests import ResolvedStage1Crop
 
+    started_at = time.perf_counter()
+    materialize_wait_seconds = 0.0
+    fusion_wait_seconds = 0.0
     full_shape, voxel_size, origin, _ = dataset.full_map_context(pdb_id)
     starts = window_starts_zyx(full_shape, (80, 80, 80), stride_zyx)
     weight = gaussian_window_weight((80, 80, 80), sigma)
@@ -132,8 +142,15 @@ def infer_full_map(
             )
             for start in batch_starts
         ]
-        samples = [dataset.materialize_request(request) for request in requests]
-        return collator(samples), tuple(batch_starts)
+        batch = collator(
+            [dataset.materialize_request(request) for request in requests]
+        )
+        if torch.device(device).type == "cuda":
+            batch = {
+                name: value.pin_memory() if torch.is_tensor(value) else value
+                for name, value in batch.items()
+            }
+        return batch, tuple(batch_starts)
 
     def fuse_batch(
         host_probability: torch.Tensor,
@@ -172,7 +189,9 @@ def infer_full_map(
         use_cuda = batch_device.type == "cuda"
         with torch.inference_mode():
             while prepared:
+                wait_started_at = time.perf_counter()
                 cpu_batch, batch_starts = prepared.popleft().result()
+                materialize_wait_seconds += time.perf_counter() - wait_started_at
                 if next_batch < len(start_batches):
                     prepared.append(
                         materializer.submit(
@@ -182,21 +201,13 @@ def infer_full_map(
                     )
                     next_batch += 1
                 if use_cuda:
-                    pinned_batch = {
-                        key: (
-                            value.pin_memory()
-                            if torch.is_tensor(value) and value.device.type == "cpu"
-                            else value
-                        )
-                        for key, value in cpu_batch.items()
-                    }
                     model_batch = {
                         key: (
                             value.to(batch_device, non_blocking=True)
                             if torch.is_tensor(value)
                             else value
                         )
-                        for key, value in pinned_batch.items()
+                        for key, value in cpu_batch.items()
                     }
                     autocast_dtype = (
                         torch.bfloat16
@@ -211,7 +222,9 @@ def infer_full_map(
                         logits = wrapper.forward_voxel_probability(model_batch)
                     probability = torch.sigmoid(logits[:, 0]).to(torch.float32)
                     while len(pending_fusions) >= int(pending_fusion_batches):
+                        wait_started_at = time.perf_counter()
                         pending_fusions.popleft().result()
+                        fusion_wait_seconds += time.perf_counter() - wait_started_at
                     host_probability = torch.empty(
                         probability.shape,
                         dtype=torch.float32,
@@ -220,7 +233,7 @@ def infer_full_map(
                     )
                     host_probability.copy_(probability, non_blocking=True)
                     event = torch.cuda.Event()
-                    event.record()
+                    event.record(torch.cuda.current_stream(batch_device))
                     pending_fusions.append(
                         fusion_executor.submit(
                             fuse_batch,
@@ -252,7 +265,9 @@ def infer_full_map(
                         )
                     )
         while pending_fusions:
+            wait_started_at = time.perf_counter()
             pending_fusions.popleft().result()
+            fusion_wait_seconds += time.perf_counter() - wait_started_at
     finally:
         materializer.shutdown(wait=True, cancel_futures=True)
         fusion_executor.shutdown(wait=True, cancel_futures=True)
@@ -270,4 +285,7 @@ def infer_full_map(
         origin_xyz=np.asarray(origin, dtype=np.float32),
         voxel_size_xyz=np.asarray(voxel_size, dtype=np.float32),
         window_count=len(starts),
+        wall_seconds=time.perf_counter() - started_at,
+        materialize_wait_seconds=materialize_wait_seconds,
+        fusion_wait_seconds=fusion_wait_seconds,
     )
