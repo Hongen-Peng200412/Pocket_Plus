@@ -6,7 +6,9 @@ from __future__ import annotations
 from concurrent.futures import Future, ThreadPoolExecutor
 import json
 from pathlib import Path
+import random
 import sys
+from types import SimpleNamespace
 
 import numpy as np
 from omegaconf import OmegaConf
@@ -17,6 +19,7 @@ import src.inference.cli as cli_module
 from src.inference.blobs import extract_probability_blobs
 from src.inference.artifacts import (
     Stage1ArtifactPaths,
+    f_alpha_tag,
     load_stage1_npz,
     publish_stage1_artifact,
 )
@@ -34,12 +37,16 @@ from src.inference.full_map import (
     gaussian_window_weight,
     window_starts_zyx,
 )
-from src.inference.pipeline import produce_centered_role, produce_probability_map
+from src.inference.pipeline import (
+    CENTERED_BLOB_LIMIT,
+    run_centered_stage,
+    run_evaluate_stage,
+    run_probability_stage,
+)
 from src.inference.scoring import (
     score_centered_candidates,
     sum_gaussian_atom_terms,
 )
-from src.inference.workflow import run_frozen_workflow
 
 
 # ================================================================================================
@@ -110,8 +117,6 @@ def test_centered_packing_preserves_offsets_and_feature_dtypes() -> None:
                 "voxel_size_world": np.ones(3, dtype=np.float32),
                 "source_probability_mean": np.asarray(0.8, dtype=np.float32),
                 "source_threshold_value": np.asarray(0.5, dtype=np.float32),
-                "score": np.asarray(0.8, dtype=np.float32),
-                "selected": np.asarray(False, dtype=np.bool_),
                 "voxel_index_local_zyx": np.zeros((voxel_count, 3), dtype=np.int16),
                 "source_probability": np.full(voxel_count, 0.8, dtype=np.float32),
                 "centered_probability": np.full(voxel_count, 0.7, dtype=np.float32),
@@ -139,7 +144,7 @@ def test_centered_packing_preserves_offsets_and_feature_dtypes() -> None:
                 "source_probability_48": np.zeros((48, 48, 48), dtype=np.float32),
             }
         )
-    arrays = pack_centered_entries(entries, True, True, True, True)
+    arrays = pack_centered_entries(entries, "Find_1")
     assert arrays["voxel_offsets"].tolist() == [0, 2, 3]
     assert arrays["A_offsets"].tolist() == [0, 1, 2]
     assert arrays["A_feat_L0"].shape == (2, 50)
@@ -149,23 +154,51 @@ def test_centered_packing_preserves_offsets_and_feature_dtypes() -> None:
 
 
 def test_centered_cpu_arranger_accepts_bfloat16_output(tmp_path: Path) -> None:
-    """H100 bf16 输出复制到 CPU 后必须先转 float32 再进入 NumPy."""
+    """合成 CPU bf16 输出必须先转 float32 再进入 NumPy."""
+
+    density_root = tmp_path / "density" / "demo"
+    density_root.mkdir(parents=True)
+    np.save(
+        density_root / "exp.npy",
+        np.zeros((1, 80, 80, 80), dtype=np.float32),
+    )
+    np.save(
+        density_root / "sim.npy",
+        np.ones((1, 80, 80, 80), dtype=np.float32),
+    )
 
     class Dataset:
+        """提供单个 centered 请求所需的最小 CPU Dataset."""
+
         root = tmp_path
 
         def materialize_request(self, request):
-            return {"hardmask": torch.zeros((80, 80, 80), dtype=torch.bool)}
+            """返回只含 hardmask 的单请求载荷."""
+
+            hardmask = torch.zeros((80, 80, 80), dtype=torch.bool)
+            hardmask[2, 3, 4] = True
+            return {"hardmask": hardmask}
 
     class Wrapper:
+        """返回 BF16 ligand、auxiliary logits 与 voxel_final 的最小 wrapper."""
+
         def __call__(self, batch):
+            """按输入 batch 大小构造共同 centered 字段所需的 BF16 模型输出."""
+
             shape = (len(batch["hardmask"]), 1, 80, 80, 80)
             return {
                 "voxel_logits_ligand": torch.zeros(shape, dtype=torch.bfloat16),
                 "voxel_logits_aux": torch.zeros(shape, dtype=torch.bfloat16),
+                "voxel_features": {
+                    "voxel_final": torch.zeros(
+                        (shape[0], 4, 80, 80, 80), dtype=torch.bfloat16
+                    )
+                },
             }
 
     def collator(rows):
+        """把单请求 hardmask 堆成模型 batch."""
+
         return {"hardmask": torch.stack([row["hardmask"] for row in rows])}
 
     blobs = {
@@ -186,7 +219,7 @@ def test_centered_cpu_arranger_accepts_bfloat16_output(tmp_path: Path) -> None:
             pdb_id="demo",
             producer="unet_c1",
             blobs=blobs,
-            full_probability=np.zeros((80, 80, 80), dtype=np.float32),
+            full_probability=np.full((80, 80, 80), 2.0, dtype=np.float32),
             origin_xyz=np.zeros(3, dtype=np.float32),
             voxel_size_xyz=np.ones(3, dtype=np.float32),
             device="cpu",
@@ -195,41 +228,160 @@ def test_centered_cpu_arranger_accepts_bfloat16_output(tmp_path: Path) -> None:
             centered_workers=1,
             prefetch_batches=1,
             pending_cpu_batches=1,
-            min_voxels=1,
-            centered_forward="full",
-            save_voxel_final=False,
-            save_dense48=False,
+            forward_min_voxels=1,
             packer=packer,
         )
         arrays = packed.result()
     assert arrays["centered_probability"].dtype == np.float32
-    assert arrays["voxel_aux_probability"].dtype == np.float32
+    assert arrays["voxel_final"].dtype == np.float16
+    assert arrays["voxel_final"].shape == (1, 4)
+    assert {
+        "voxel_aux_offsets",
+        "voxel_aux_index_local_zyx",
+        "voxel_aux_probability",
+        "v_centroid_local_zyx",
+        "crop_start_local_zyx",
+        "crop_center_offset_zyx",
+        "crop_clipped_axis_mask",
+        "experimental_density_48",
+        "simulated_density_48",
+        "source_probability_48",
+    } <= arrays.keys()
+    assert arrays["voxel_aux_offsets"].tolist() == [0, 1]
+    assert arrays["voxel_aux_index_local_zyx"].tolist() == [[2, 3, 4]]
+    np.testing.assert_allclose(arrays["voxel_aux_probability"], [0.5])
+    assert arrays["crop_start_local_zyx"].tolist() == [[0, 0, 0]]
+    np.testing.assert_array_equal(arrays["experimental_density_48"], 0.0)
+    np.testing.assert_array_equal(arrays["simulated_density_48"], 1.0)
+    np.testing.assert_array_equal(arrays["source_probability_48"], 2.0)
 
 
 def test_find_gaussian_score_uses_five_angstrom_cutoff() -> None:
-    """5 Å 内 A 原子贡献正项, 5 Å 外原子不参与 Gaussian 分数."""
+    """恰好 5 Å 的 A 原子参与 Gaussian 分数, 超过 5 Å 的原子不参与."""
 
     centered = {
         "source_probability_mean": np.asarray([0.5], dtype=np.float32),
         "voxel_offsets": np.asarray([0, 1], dtype=np.int64),
         "voxel_index_local_zyx": np.asarray([[0, 0, 0]], dtype=np.int16),
         "voxel_size_world": np.asarray([[1.0, 1.0, 1.0]], dtype=np.float32),
-        "A_offsets": np.asarray([0, 2], dtype=np.int64),
+        "A_offsets": np.asarray([0, 3], dtype=np.int64),
         "A_coord_local_xyz": np.asarray(
-            [[0.5, 0.5, 0.5], [8.0, 8.0, 8.0]], dtype=np.float32
+            [[0.5, 0.5, 0.5], [5.5, 0.5, 0.5], [5.6, 0.5, 0.5]],
+            dtype=np.float32,
         ),
-        "A_probability": np.asarray([1.0, 1.0], dtype=np.float32),
+        "A_probability": np.ones(3, dtype=np.float32),
     }
     score = score_centered_candidates(
         centered,
-        score_mode="find_gaussian",
+        score_mode="gaussian",
         score_parameters={
             "tau_angstrom": 1.0,
             "lambda_positive": 0.2,
             "lambda_negative": 0.1,
         },
     )
-    assert np.allclose(score, [0.7])
+    expected = 0.5 + 0.2 * (1.0 + np.exp(-12.5))
+    assert np.allclose(score, [expected])
+
+
+def test_find_centered_keeps_atom_at_ten_angstrom_boundary(tmp_path: Path) -> None:
+    """Find centered 的 A 表保留距来源体素中心恰好 10 Å 的原子."""
+
+    density_root = tmp_path / "density" / "demo"
+    density_root.mkdir(parents=True)
+    density = np.zeros((1, 80, 80, 80), dtype=np.float32)
+    np.save(density_root / "exp.npy", density)
+    np.save(density_root / "sim.npy", density)
+
+    class Dataset:
+        """提供一个来源体素与一个受体原子的 Find centered 输入."""
+
+        root = tmp_path
+
+        def materialize_request(self, request):
+            """返回与单个受体原子逐项对齐的 Dataset 字段."""
+
+            return {
+                "hardmask": torch.zeros((80, 80, 80), dtype=torch.bool),
+                "atom_counts": torch.tensor(1, dtype=torch.int64),
+                "atom_global_indices": torch.tensor([7], dtype=torch.int64),
+                "atom_feat": torch.zeros((1, 49), dtype=torch.float32),
+                "atom_is_backbone": torch.tensor([False]),
+            }
+
+    class Wrapper:
+        """返回位于来源体素中心 10 Å 处的单个 Find A 原子."""
+
+        def __call__(self, batch):
+            """构造一个候选所需的体素、A 原子与空 P 点输出."""
+
+            batch_size = int(batch["hardmask"].shape[0])
+            box_shape = (batch_size, 1, 80, 80, 80)
+            return {
+                "voxel_logits_ligand": torch.zeros(box_shape),
+                "voxel_logits_aux": torch.zeros(box_shape),
+                "voxel_features": {"voxel_final": torch.zeros(box_shape)},
+                "atom_counts": torch.ones(batch_size, dtype=torch.int64),
+                "atom_global_indices": torch.tensor([7], dtype=torch.int64),
+                "atom_coord_local_voxel": torch.tensor(
+                    [[10.5, 0.5, 0.5]], dtype=torch.float32
+                ),
+                "atom_logits": torch.zeros((1, 1)),
+                "A_feat_L1": torch.zeros((1, 1)),
+                "A_feat_L2": torch.zeros((1, 1)),
+                "A_feat_L3": torch.zeros((1, 1)),
+                "anchor_batch_index": torch.empty(0, dtype=torch.int64),
+                "anchor_coord_local_voxel": torch.empty((0, 3)),
+                "pseudo_logits": torch.empty((0, 1)),
+                "P_feat_L2": torch.empty((0, 1)),
+                "P_feat_L3": torch.empty((0, 1)),
+            }
+
+    def collator(rows):
+        """把单个 Find Dataset 载荷拼成 batch 字段."""
+
+        return {
+            "hardmask": torch.stack([row["hardmask"] for row in rows]),
+            "atom_counts": torch.stack([row["atom_counts"] for row in rows]),
+            "atom_global_indices": torch.cat(
+                [row["atom_global_indices"] for row in rows]
+            ),
+            "atom_feat": torch.cat([row["atom_feat"] for row in rows]),
+            "atom_is_backbone": torch.cat([row["atom_is_backbone"] for row in rows]),
+        }
+
+    blobs = {
+        "voxel_count": np.asarray([1], dtype=np.int32),
+        "fits_centered_box": np.asarray([True]),
+        "centered_box_start_zyx": np.zeros((1, 3), dtype=np.int32),
+        "voxel_offsets": np.asarray([0, 1], dtype=np.int64),
+        "voxel_index_global_zyx": np.zeros((1, 3), dtype=np.int32),
+        "source_probability": np.asarray([0.8], dtype=np.float32),
+        "source_probability_mean": np.asarray([0.8], dtype=np.float32),
+        "source_threshold_value": np.asarray([0.5], dtype=np.float32),
+    }
+    with ThreadPoolExecutor(max_workers=1) as packer:
+        packed, _ = infer_centered_boxes(
+            dataset=Dataset(),
+            collator=collator,
+            wrapper=Wrapper(),
+            pdb_id="demo",
+            producer="Find_1",
+            blobs=blobs,
+            full_probability=np.zeros((80, 80, 80), dtype=np.float32),
+            origin_xyz=np.zeros(3, dtype=np.float32),
+            voxel_size_xyz=np.ones(3, dtype=np.float32),
+            device="cpu",
+            precision="float32",
+            centered_batch_size=1,
+            centered_workers=1,
+            prefetch_batches=1,
+            pending_cpu_batches=1,
+            forward_min_voxels=1,
+            packer=packer,
+        )
+        arrays = packed.result()
+    assert arrays["A_global_index"].tolist() == [7]
 
 
 def test_find_gaussian_score_reuses_calibration_numeric_terms_exactly() -> None:
@@ -259,7 +411,7 @@ def test_find_gaussian_score_reuses_calibration_numeric_terms_exactly() -> None:
     )
     actual = score_centered_candidates(
         centered,
-        score_mode="find_gaussian",
+        score_mode="gaussian",
         score_parameters={
             "tau_angstrom": 0.75,
             "lambda_positive": 0.064,
@@ -280,11 +432,11 @@ def test_semantic_and_instance_metrics_follow_micro_contract() -> None:
             )
         ],
         denominator=10,
-        betas=(1.0, 3.0),
+        alpha=2.0,
     )
-    assert semantic["thresholds"]["F1"]["grid_index"] == 3
+    assert semantic["threshold_grid_index"] == 3
     assert semantic["scan"]["tp"].shape == (11,)
-    assert semantic["scan"]["f_beta_curve"].shape == (2, 11)
+    assert semantic["scan"]["f_beta_curve"].shape == (11,)
 
     centered = {
         "selected": np.asarray([True, True]),
@@ -343,18 +495,17 @@ def test_probability_science_archive_excludes_performance_fields(
     paths.complete("probability").write_text("stale", encoding="utf-8")
 
     def infer_full_map(**_):
+        """确认旧完成标记已撤销并返回固定完整图结果."""
+
         assert not paths.complete("probability").exists()
         return result
 
     monkeypatch.setattr("src.inference.pipeline.infer_full_map", infer_full_map)
-    with ThreadPoolExecutor(max_workers=1) as publisher:
-        arrays, future = produce_probability_map(
-            paths=paths,
-            dataset=object(),
-            collator=object(),
-            wrapper=object(),
-            device="cpu",
-            window_config={
+    config = OmegaConf.create(
+        {
+            "publish_workers": 1,
+            "pending_probability_pdbs": 1,
+            "window": {
                 "stride_zyx": [50, 50, 50],
                 "gaussian_sigma": 0.5,
                 "batch_size": 1,
@@ -363,12 +514,22 @@ def test_probability_science_archive_excludes_performance_fields(
                 "precision": "float32",
                 "pending_fusion_batches": 1,
             },
-            publisher=publisher,
-        )
-        assert set(arrays) == {"probability_map", "origin_xyz", "voxel_size_xyz"}
-        future.result()
-    archive = load_stage1_npz(paths.artifact("probability"), tuple(arrays))
-    assert set(archive) == set(arrays)
+        }
+    )
+    run_probability_stage(
+        config=config,
+        dataset=object(),
+        collator=object(),
+        wrapper=object(),
+        device="cpu",
+        producer="unet_c1",
+        split="validation",
+        pdb_ids=("demo",),
+        output_root=tmp_path,
+        overwrite=True,
+    )
+    archive = load_stage1_npz(paths.artifact("probability"), None)
+    assert set(archive) == {"probability_map", "origin_xyz", "voxel_size_xyz"}
     selected_archive = load_stage1_npz(
         paths.artifact("probability"),
         ("origin_xyz",),
@@ -386,7 +547,7 @@ def test_centered_selection_is_written_before_first_formal_completion(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    """冻结 workflow 必须在 centered 首次压缩时同时写 score 与 selected."""
+    """centered 阶段必须在首次压缩时同时写 score 与 selected."""
 
     paths = Stage1ArtifactPaths(tmp_path, "unet_c1", "validation", "demo")
     publish_stage1_artifact(
@@ -403,13 +564,13 @@ def test_centered_selection_is_written_before_first_formal_completion(
         {
             "source_probability_mean": np.asarray([0.8], dtype=np.float32),
             "voxel_offsets": np.asarray([0, 9], dtype=np.int64),
-            "score": np.zeros(1, dtype=np.float32),
-            "selected": np.zeros(1, dtype=np.bool_),
         }
     )
     captured = {}
 
     def infer_centered_boxes(**kwargs):
+        """记录 centered 调用参数并返回固定打包 Future 与性能字段."""
+
         captured.update(kwargs)
         return packed, {
             "wall_seconds": 1.0,
@@ -422,44 +583,61 @@ def test_centered_selection_is_written_before_first_formal_completion(
     monkeypatch.setattr(
         "src.inference.pipeline.infer_centered_boxes", infer_centered_boxes
     )
-    blobs = {
-        "fits_centered_box": np.asarray([True]),
-        "voxel_count": np.asarray([9], dtype=np.int32),
-    }
-    with ThreadPoolExecutor(max_workers=1) as publisher:
-        future = produce_centered_role(
-            paths=paths,
-            dataset=object(),
-            collator=object(),
-            wrapper=object(),
-            device="cpu",
-            blobs=blobs,
-            centered_role="F1_basic",
-            min_voxels=9,
-            centered_config={
-                "precision": "float32",
+    publish_stage1_artifact(
+        paths.artifact("F2_blobs"),
+        {
+            "blob_index": np.asarray([0], dtype=np.int32),
+            "fits_centered_box": np.asarray([True]),
+            "voxel_count": np.asarray([9], dtype=np.int32),
+            "voxel_offsets": np.asarray([0, 9], dtype=np.int64),
+            "voxel_index_global_zyx": np.zeros((9, 3), dtype=np.int32),
+            "source_probability": np.full(9, 0.8, dtype=np.float32),
+            "source_probability_mean": np.asarray([0.8], dtype=np.float32),
+            "centered_box_start_zyx": np.zeros((1, 3), dtype=np.int32),
+            "source_threshold_value": np.asarray([0.5], dtype=np.float32),
+        },
+        paths.complete("F2_blobs"),
+    )
+    config = OmegaConf.create(
+        {
+            "publish_workers": 2,
+            "pending_centered_pdbs": 1,
+            "centered": {
                 "batch_size": 1,
                 "workers": 1,
                 "prefetch_batches": 1,
                 "pending_cpu_batches": 1,
-                "forward": "voxel_only",
-                "save_voxel_final": False,
-                "save_dense48": False,
+                "precision": "float32",
             },
-            blob_limit=None,
-            selection={
-                "score_mode": "source_mean",
-                "score_parameters": {},
-                "score_threshold": 0.7,
-                "min_voxels": 9,
-            },
-            publisher=publisher,
-        )
-        arrays = future.result()
-    assert captured["min_voxels"] == 9
-    assert captured["full_probability"] is None
+        }
+    )
+    run_centered_stage(
+        config=config,
+        dataset=object(),
+        collator=object(),
+        wrapper=object(),
+        device="cpu",
+        producer="unet_c1",
+        split="validation",
+        pdb_ids=("demo",),
+        output_root=tmp_path,
+        alpha=2.0,
+        forward_min_voxels=9,
+        selection={
+            "score_mode": "basic",
+            "score_parameters": {},
+            "score_threshold": 0.7,
+            "prefiltered_min_voxel": 9,
+            "min_voxels": 9,
+        },
+        overwrite=True,
+        score_only=False,
+    )
+    arrays = load_stage1_npz(paths.artifact("F2_centered"), None)
+    assert captured["forward_min_voxels"] == 9
+    np.testing.assert_array_equal(captured["full_probability"], 0.0)
     assert arrays["selected"].tolist() == [True]
-    assert paths.complete("F1_basic").is_file()
+    assert paths.complete("F2_centered").is_file()
 
 
 def test_cli_builds_current_dataset_without_hydra_dataclass_conversion(
@@ -473,11 +651,9 @@ def test_cli_builds_current_dataset_without_hydra_dataclass_conversion(
     resolved = tmp_path / "resolved.yaml"
     resolved.write_text("model: test\n", encoding="utf-8")
     config = tmp_path / "inference.yaml"
-    config.write_text(
-        "device: cpu\ncalibration:\n  semantic_denominator: 32\n", encoding="utf-8"
-    )
-    pdb_list = tmp_path / "pdb.txt"
-    pdb_list.write_text("demo\n", encoding="utf-8")
+    config.write_text("device: cpu\nalpha: 2.0\n", encoding="utf-8")
+    pdb_list = tmp_path / "pdb.json"
+    pdb_list.write_text('["demo"]\n', encoding="utf-8")
     training_config = OmegaConf.create(
         {
             "dataset": {
@@ -497,16 +673,24 @@ def test_cli_builds_current_dataset_without_hydra_dataclass_conversion(
     )
 
     class Wrapper:
+        """记录 CLI 传入的模型设备."""
+
         def to(self, device):
+            """确认当前测试使用 CPU 设备."""
+
             assert str(device) == "cpu"
 
     captured = {}
 
     class Dataset:
+        """记录 CLI 直接传给当前 Stage1Dataset 的构造参数."""
+
         root = tmp_path
         collate_fn = staticmethod(lambda rows: rows)
 
         def __init__(self, **kwargs):
+            """保存 Dataset 构造参数供断言使用."""
+
             captured.update(kwargs)
 
     monkeypatch.setattr(
@@ -515,22 +699,22 @@ def test_cli_builds_current_dataset_without_hydra_dataclass_conversion(
     monkeypatch.setattr("src.datasets.stage1_dataset.Stage1Dataset", Dataset)
     monkeypatch.setattr(
         cli_module,
-        "run_calibration_workflow",
-        lambda **kwargs: captured.update(workflow=kwargs),
+        "run_probability_stage",
+        lambda *args: captured.update(stage=args),
     )
     monkeypatch.setattr(
         sys,
         "argv",
         [
             "stage1",
-            "calibrate",
+            "probability",
             "--config",
             str(config),
             "--checkpoint",
             str(checkpoint),
             "--resolved-config",
             str(resolved),
-            "--pdb-list",
+            "--pdb-json",
             str(pdb_list),
             "--output-root",
             str(tmp_path / "output"),
@@ -555,22 +739,22 @@ def test_cli_rejects_duplicate_pdb_before_model_loading(
     """同一 PDB 不能在校准事实与最终指标中采用两种重复口径."""
 
     config = tmp_path / "inference.yaml"
-    config.write_text("device: cpu\n", encoding="utf-8")
-    pdb_list = tmp_path / "pdb.txt"
-    pdb_list.write_text("demo\nDEMO\n", encoding="utf-8")
+    config.write_text("device: cpu\nalpha: 2.0\n", encoding="utf-8")
+    pdb_list = tmp_path / "pdb.json"
+    pdb_list.write_text('["demo", "DEMO"]\n', encoding="utf-8")
     monkeypatch.setattr(
         sys,
         "argv",
         [
             "stage1",
-            "calibrate",
+            "probability",
             "--config",
             str(config),
             "--checkpoint",
             str(tmp_path / "unused.ckpt"),
             "--resolved-config",
             str(tmp_path / "unused.yaml"),
-            "--pdb-list",
+            "--pdb-json",
             str(pdb_list),
             "--output-root",
             str(tmp_path / "output"),
@@ -582,36 +766,373 @@ def test_cli_rejects_duplicate_pdb_before_model_loading(
             "calibration",
         ],
     )
-    with pytest.raises(ValueError, match="重复"):
+    with pytest.raises(ValueError, match="唯一"):
         cli_module.main()
 
 
-def test_frozen_workflow_requires_fitted_calibration_marker() -> None:
-    """冻结运行不能只凭 stage1_v3.json 绕过 calibration 完成标记."""
+def test_cli_uses_fixed_random_sharding_for_production_stage(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """相同 JSON, seed, 分片数和编号必须得到相同 PDB 子序列."""
 
-    checkpoint_path = "/models/stage1.ckpt"
-    with pytest.raises(ValueError, match="calibration_fitted"):
-        run_frozen_workflow(
-            config=object(),
-            calibration_payload={"checkpoint_path": checkpoint_path},
-            calibration_complete={
-                "checkpoint_path": checkpoint_path,
-                "result_scope": "partial",
+    config = tmp_path / "inference.yaml"
+    config.write_text("alpha: 2.0\n", encoding="utf-8")
+    pdb_json = tmp_path / "pdb.json"
+    source = [f"pdb{index}" for index in range(10)]
+    pdb_json.write_text(json.dumps(source), encoding="utf-8")
+    captured = {}
+    monkeypatch.setattr(
+        cli_module,
+        "run_blobs_stage",
+        lambda *args: captured.update(pdb_ids=args[4]),
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "stage1",
+            "blobs",
+            "--config",
+            str(config),
+            "--producer",
+            "unet_base",
+            "--pdb-json",
+            str(pdb_json),
+            "--split",
+            "train",
+            "--output-root",
+            str(tmp_path / "output"),
+            "--semantic-threshold",
+            "0.5",
+            "--shard-count",
+            "3",
+            "--shard-index",
+            "1",
+        ],
+    )
+    cli_module.main()
+    expected = list(source)
+    random.Random(3407).shuffle(expected)
+    assert captured["pdb_ids"] == tuple(expected[1::3])
+
+
+def test_cli_passes_explicit_all_candidate_evaluation_name(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """evaluate 必须显式接收结果名和全候选范围, 不隐式构造选择参数."""
+
+    config = tmp_path / "inference.yaml"
+    config.write_text("alpha: 2.0\n", encoding="utf-8")
+    pdb_json = tmp_path / "pdb.json"
+    pdb_json.write_text('["demo"]\n', encoding="utf-8")
+    captured: dict[str, tuple[object, ...]] = {}
+
+    def capture_evaluate_stage(*arguments: object) -> None:
+        """记录 CLI 交给正式评估阶段的位置参数."""
+
+        captured["arguments"] = arguments
+
+    monkeypatch.setattr(
+        cli_module,
+        "run_evaluate_stage",
+        capture_evaluate_stage,
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "stage1",
+            "evaluate",
+            "--config",
+            str(config),
+            "--producer",
+            "unet_c1",
+            "--pdb-json",
+            str(pdb_json),
+            "--split",
+            "validation",
+            "--output-root",
+            str(tmp_path / "output"),
+            "--data-root",
+            str(tmp_path / "data"),
+            "--artifact",
+            "blobs",
+            "--evaluation-name",
+            "raw_blobs",
+            "--all-candidates",
+        ],
+    )
+    cli_module.main()
+    assert captured["arguments"][8] == "raw_blobs"
+    assert captured["arguments"][9] is None
+
+
+def test_f_alpha_tag_uses_readable_decimal_path_names() -> None:
+    """整数不保留小数点, 小数点改成 p, 相邻 Python float 不得碰撞."""
+
+    assert f_alpha_tag(2.0) == "F2"
+    assert f_alpha_tag(0.5) == "F0p5"
+    assert f_alpha_tag(1.5) == "F1p5"
+    assert f_alpha_tag(1.0000001) != f_alpha_tag(1.0000002)
+    assert f_alpha_tag(0.33333331) != f_alpha_tag(0.33333332)
+
+
+def test_evaluate_keeps_raw_and_filtered_results_side_by_side(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """全候选评估不得二次打分, 显式名称必须允许过滤结果并存."""
+
+    paths = Stage1ArtifactPaths(tmp_path, "unet_c1", "validation", "demo")
+    publish_stage1_artifact(
+        paths.artifact("F2_blobs"),
+        {
+            "blob_index": np.asarray([0, 1], dtype=np.int32),
+            "source_probability_mean": np.asarray([0.9, 0.4], dtype=np.float32),
+            "voxel_offsets": np.asarray([0, 1, 2], dtype=np.int64),
+            "voxel_index_global_zyx": np.asarray(
+                [[0, 0, 0], [1, 1, 1]], dtype=np.int32
+            ),
+        },
+        None,
+    )
+    ligand_area = tmp_path / "density" / "demo" / "ligand_area.npz"
+    ligand_area.parent.mkdir(parents=True)
+    np.savez_compressed(
+        ligand_area,
+        grid_shape_zyx=np.asarray([2, 2, 2], dtype=np.int32),
+        mask_7=np.asarray([[0, 0, 0]], dtype=np.int32),
+    )
+    config = OmegaConf.create(
+        {"evaluation": {"coverage_thresholds": [0.5], "topk_values": [1]}}
+    )
+    real_scorer = score_centered_candidates
+
+    def reject_scoring(*_args: object, **_kwargs: object) -> None:
+        """证明全候选分支不会进入 basic 或 Gaussian 打分."""
+
+        raise AssertionError("all-candidates must not call the scorer")
+
+    monkeypatch.setattr(
+        "src.inference.pipeline.score_centered_candidates", reject_scoring
+    )
+    run_evaluate_stage(
+        config,
+        tmp_path,
+        "unet_c1",
+        "validation",
+        ("demo",),
+        tmp_path,
+        2.0,
+        "blobs",
+        "raw_blobs",
+        None,
+    )
+    monkeypatch.setattr(
+        "src.inference.pipeline.score_centered_candidates", real_scorer
+    )
+    run_evaluate_stage(
+        config,
+        tmp_path,
+        "unet_c1",
+        "validation",
+        ("demo",),
+        tmp_path,
+        2.0,
+        "blobs",
+        "basic_strict",
+        {
+            "score_mode": "basic",
+            "score_parameters": {},
+            "score_threshold": 0.8,
+            "prefiltered_min_voxel": 1,
+            "min_voxels": 1,
+        },
+    )
+
+    raw = load_stage1_npz(
+        paths.pdb_root / "evaluation" / "raw_blobs.npz", None
+    )
+    filtered = load_stage1_npz(
+        paths.pdb_root / "evaluation" / "basic_strict.npz", None
+    )
+    assert raw["candidate_selected"].tolist() == [True, True]
+    assert filtered["candidate_selected"].tolist() == [True, False]
+    evaluation_root = tmp_path / "unet_c1" / "validation" / "evaluation"
+    assert (evaluation_root / "raw_blobs.metrics.json").is_file()
+    assert (evaluation_root / "basic_strict.metrics.json").is_file()
+
+
+@pytest.mark.parametrize(
+    ("source_blob_count", "expect_exceed"),
+    ((CENTERED_BLOB_LIMIT, False), (CENTERED_BLOB_LIMIT + 1, True)),
+)
+def test_centered_blob_limit_uses_strict_greater_than(
+    tmp_path: Path,
+    source_blob_count: int,
+    expect_exceed: bool,
+) -> None:
+    """1000 个来源 blob 仍完成空候选归档, 1001 个只写 `_BLOB_EXCEED`."""
+
+    paths = Stage1ArtifactPaths(tmp_path, "unet_base", "train", "demo")
+    density_root = tmp_path / "density" / "demo"
+    density_root.mkdir(parents=True)
+    density = np.zeros((1, 80, 80, 80), dtype=np.float32)
+    np.save(density_root / "exp.npy", density)
+    np.save(density_root / "sim.npy", density)
+    publish_stage1_artifact(
+        paths.artifact("F2_blobs"),
+        {
+            "blob_index": np.arange(source_blob_count, dtype=np.int32),
+            "voxel_offsets": np.zeros(source_blob_count + 1, dtype=np.int64),
+            "voxel_index_global_zyx": np.empty((0, 3), dtype=np.int32),
+            "source_probability": np.empty(0, dtype=np.float32),
+            "source_probability_mean": np.zeros(source_blob_count, dtype=np.float32),
+            "voxel_count": np.zeros(source_blob_count, dtype=np.int32),
+            "fits_centered_box": np.zeros(source_blob_count, dtype=np.bool_),
+            "centered_box_start_zyx": np.full(
+                (source_blob_count, 3), -1, dtype=np.int32
+            ),
+            "source_threshold_value": np.asarray([0.5], dtype=np.float32),
+        },
+        paths.complete("F2_blobs"),
+    )
+    publish_stage1_artifact(
+        paths.artifact("probability"),
+        {
+            "probability_map": np.zeros((80, 80, 80), dtype=np.float32),
+            "origin_xyz": np.zeros(3, dtype=np.float32),
+            "voxel_size_xyz": np.ones(3, dtype=np.float32),
+        },
+        paths.complete("probability"),
+    )
+    config = OmegaConf.create(
+        {
+            "publish_workers": 1,
+            "pending_centered_pdbs": 1,
+            "centered": {
+                "precision": "float32",
+                "batch_size": 1,
+                "workers": 1,
+                "prefetch_batches": 1,
+                "pending_cpu_batches": 1,
             },
-            dataset=object(),
-            collator=object(),
-            wrapper=object(),
-            device="cpu",
-            producer="unet_c1",
-            split="validation",
-            pdb_ids=("demo",),
-            output_root=Path("unused"),
-            checkpoint_path=checkpoint_path,
+        }
+    )
+    run_centered_stage(
+        config,
+        SimpleNamespace(root=tmp_path),
+        None,
+        None,
+        "cpu",
+        "unet_base",
+        "train",
+        ("demo",),
+        tmp_path,
+        2.0,
+        1,
+        None,
+        False,
+        False,
+    )
+    if expect_exceed:
+        marker = json.loads(
+            paths.blob_exceed("F2_centered").read_text(encoding="utf-8")
         )
+        assert marker["source_blob_count"] == source_blob_count
+        assert marker["limit"] == CENTERED_BLOB_LIMIT
+        assert not paths.artifact("F2_centered").exists()
+    else:
+        assert paths.artifact("F2_centered").is_file()
+        assert paths.complete("F2_centered").is_file()
+        assert not paths.blob_exceed("F2_centered").exists()
+
+
+def test_centered_score_only_changes_two_fields(tmp_path: Path) -> None:
+    """score-only 必须保留候选轴与任意其他正式数组的逐元素内容."""
+
+    paths = Stage1ArtifactPaths(tmp_path, "unet_base", "validation", "demo")
+    publish_stage1_artifact(
+        paths.artifact("F2_centered"),
+        {
+            "source_probability_mean": np.asarray([0.8, 0.4], dtype=np.float32),
+            "voxel_offsets": np.asarray([0, 2, 3], dtype=np.int64),
+            "source_blob_index": np.asarray([3, 7], dtype=np.int32),
+            "voxel_final": np.arange(6, dtype=np.float16).reshape(3, 2),
+        },
+        paths.complete("F2_centered"),
+    )
+    config = OmegaConf.create({})
+    run_centered_stage(
+        config,
+        None,
+        None,
+        None,
+        "cpu",
+        "unet_base",
+        "validation",
+        ("demo",),
+        tmp_path,
+        2.0,
+        None,
+        {
+            "score_mode": "basic",
+            "score_parameters": {},
+            "score_threshold": 0.5,
+            "prefiltered_min_voxel": 2,
+            "min_voxels": 1,
+        },
+        False,
+        True,
+    )
+    arrays = load_stage1_npz(paths.artifact("F2_centered"), None)
+    assert arrays["score"].tolist() == pytest.approx([0.8, 0.4])
+    assert arrays["selected"].tolist() == [True, False]
+    np.testing.assert_array_equal(
+        arrays["voxel_final"], np.arange(6, dtype=np.float16).reshape(3, 2)
+    )
+
+
+def test_tune_prefilter_is_fixed_before_basic_parameter_search() -> None:
+    """预过滤必须先固定小候选为未入选, 且不限制后续 min_voxels 搜索值."""
+
+    centered = {
+        "source_blob_index": np.asarray([0, 1], dtype=np.int32),
+        "source_probability_mean": np.asarray([0.9, 0.8], dtype=np.float32),
+        "voxel_offsets": np.asarray([0, 1, 3], dtype=np.int64),
+        "voxel_index_local_zyx": np.asarray(
+            [[2, 2, 2], [0, 0, 0], [0, 0, 1]], dtype=np.int16
+        ),
+        "box_start_zyx": np.zeros((2, 3), dtype=np.int32),
+    }
+    best = tune_centered_selection(
+        centered_items=(("demo", centered),),
+        ground_truth_by_pdb={
+            "demo": (
+                np.asarray([7], dtype=np.int32),
+                (np.asarray([[0, 0, 0], [0, 0, 1]], dtype=np.int32),),
+                (3, 3, 3),
+            )
+        },
+        score_mode="basic",
+        score_parameter_grid=None,
+        refinement_multipliers=None,
+        prefiltered_min_voxel=2,
+        min_voxel_values=[1],
+        objective_beta=2.0,
+        coverage_thresholds=[0.3, 0.5, 0.6],
+        topk_values=[3, 4, 5],
+    )
+    assert best["prefiltered_min_voxel"] == 2
+    assert best["min_voxels"] == 1
+    assert best["score_threshold"] == pytest.approx(0.8)
+    assert best["objective"] == pytest.approx(3.0)
 
 
 def test_find_calibration_uses_coarse_refined_then_minimum_stages() -> None:
-    """Find 完整模式必须先冻结两轮 Gaussian 参数, 再单独选择 min_voxels."""
+    """Find 必须先固定预过滤, 再搜索 Gaussian 参数与独立 min_voxels."""
 
     centered = {
         "source_blob_index": np.asarray([0], dtype=np.int32),
@@ -635,7 +1156,7 @@ def test_find_calibration_uses_coarse_refined_then_minimum_stages() -> None:
                 (1, 1, 1),
             )
         },
-        score_mode="find_gaussian",
+        score_mode="gaussian",
         score_parameter_grid={
             "tau_angstrom": [1.0],
             "lambda_positive": [0.2],
@@ -643,11 +1164,14 @@ def test_find_calibration_uses_coarse_refined_then_minimum_stages() -> None:
             "gauss_score_min": [0.5],
         },
         refinement_multipliers={"lambda": [1.0], "score_threshold": [1.0]},
+        prefiltered_min_voxel=2,
         min_voxel_values=[1, 2],
         objective_beta=2.0,
         coverage_thresholds=[0.3, 0.5, 0.6],
         topk_values=[3, 4, 5],
     )
     assert tuple(best["stages"]) == ("coarse", "refined", "min_voxels")
+    assert best["prefiltered_min_voxel"] == 2
     assert best["min_voxels"] == 1
+    assert best["objective"] == pytest.approx(0.0)
     assert best["score_parameters"]["tau_angstrom"] == 1.0
