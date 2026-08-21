@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
-# Stage1 V3 calibration 与冻结参数推理入口.
-# 本脚本只固定项目环境和配置文件; checkpoint, producer, 清单, 数据划分, 输出根目录及模型代码来源都由提交命令显式传入.
+# Stage1 V3 五阶段推理入口.
+# 本脚本只固定项目环境和配置文件; probability, blobs, centered, tune 或 evaluate 的其余参数由提交命令显式传入.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
@@ -10,7 +10,7 @@ CONDA_BASE="${CONDA_BASE:-${HOME}/anaconda3}"
 CONDA_ENV_NAME="${POCKET_CONDA_ENV:-Pocket_Plus_centos7_cu121_allgpu}"
 
 if (($# == 0)); then
-    echo "[stage1_v3][错误] 必须传入 calibrate 或 run 及其全部显式参数." >&2
+    echo "[stage1_v3][错误] 必须传入 probability、blobs、centered、tune 或 evaluate 及其显式参数." >&2
     exit 2
 fi
 

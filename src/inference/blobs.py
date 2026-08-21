@@ -1,11 +1,8 @@
 # -*- coding: utf-8 -*-
-"""从完整概率图提取并发布单阈值 26-连通区域.
+"""从完整概率图提取单个 F-alpha 阈值的 26-连通区域.
 
-主要入口 :func:`extract_probability_blobs` 返回全部区域的稳定稀疏表,
-:func:`publish_probability_blobs` 把该表写入 `F1_blobs.npz` 或
-`F3_blobs.npz`. `Stage1ArtifactPaths` 决定当前 output_root, producer, split 和
-PDB 目录; 发布入口同时建立对应角色 `_COMPLETE`. 本模块不按 `min_voxels`
-删除区域.
+主要入口 :func:`extract_probability_blobs` 返回全部区域的稳定稀疏表. 文件发布
+由 `pipeline.run_blobs_stage()` 负责. 本模块不按 `min_voxels` 删除区域.
 """
 
 from __future__ import annotations
@@ -13,7 +10,8 @@ from __future__ import annotations
 import numpy as np
 from scipy import ndimage
 
-from .artifacts import Stage1ArtifactPaths, load_stage1_npz, publish_stage1_artifact
+
+# ================================================================================================
 
 
 def extract_probability_blobs(
@@ -28,58 +26,74 @@ def extract_probability_blobs(
 
     返回值:
         - blob_index: int32 ``(N_blob,)``, 排序后的连续 blob 编号.
-        - voxel_offsets: int64 ``(N_blob+1,)``, 以半开区间同时切分两个稀疏体素值表; 首值为 0, 末值为 L_voxel.
+        - voxel_offsets: int64 ``(N_blob+1,)``, 以半开区间同步切分 `voxel_index_global_zyx` 与 `source_probability`; 首值为 0, 末值为 L_voxel.
         - voxel_index_global_zyx: int32 ``(L_voxel, 3)``, 完整图 ZYX 索引.
         - source_probability: float32 ``(L_voxel,)``, 来源体素的完整图概率.
         - source_probability_mean: float32 ``(N_blob,)``, 各区域平均概率.
         - voxel_count: int32 ``(N_blob,)``, 各区域体素数.
         - fits_centered_box: bool ``(N_blob,)``, 包围盒是否可被合法 80³ BOX 容纳.
-        - centered_box_start_zyx: int32 ``(N_blob, 3)``, 合法 BOX 起点; 不可容纳时为 ``-1``.
+        - centered_box_start_zyx: int32 ``(N_blob, 3)``, (合法的)让blob中心尽可能居中的 BOX 起点; 不可容纳时为 ``-1``.
         - source_threshold_value: float32 ``(1,)``, 本次阈值.
 
     区域按平均概率降序, 再按最小完整图 C-order 线性索引升序. 本函数不按
     ``min_voxels`` 删除区域.
     """
-
+    # float32, (D, H, W), 完整图 ZYX 配体概率; D/H/W 分别对应 Z/Y/X 体素轴.
     probability = np.asarray(probability_map, dtype=np.float32)
-    # labels 与 probability 同为完整图 ZYX; 3³ 全一结构精确定义 26 邻域.
+    # 整数数组, (D, H, W), 0 表示低于阈值的背景体素, 1:count 表示 26 邻域连通区域编号.
     labels, count = ndimage.label(
         probability >= np.float32(threshold),
         structure=np.ones((3, 3, 3), dtype=np.uint8),
     )
+    # 每项依次保存正式平均概率, 最小 C-order 线性编号, ZYX 坐标, 逐体素概率, BOX 可容纳标志和 BOX 起点.
     records: list[tuple[float, int, np.ndarray, np.ndarray, bool, np.ndarray]] = []
+    # int64, (3,), 完整概率图的 ZYX 形状; 用于限制 80³ BOX 起点不越过完整图边界.
     full_shape = np.asarray(probability.shape, dtype=np.int64)
+    # int64, (L_positive,), 所有阈值内体素在 probability.reshape(-1) 中的 C-order 线性编号.
     linear_positive = np.flatnonzero(labels.reshape(-1)).astype(np.int64)
+    # 整数数组, (L_positive,), 与 linear_positive 逐体素对齐的连通区域编号.
     positive_label = labels.reshape(-1)[linear_positive]
+    # int64, (L_positive,), 按连通区域编号稳定分组时对 linear_positive 第一维采用的重排下标.
     label_order = np.argsort(positive_label, kind="stable")
+    # int64, (L_positive,), 按连通区域编号连续排列的完整图 C-order 线性编号.
     linear_by_label = linear_positive[label_order]
+    # int64, (N_blob,), 每个连通区域包含的体素数; 数组第 i 项对应标签 i + 1.
     label_counts = np.bincount(
         positive_label,
         minlength=int(count) + 1,
     )[1:]
+    # int64, (N_blob + 1,), 把 linear_by_label 切成各连通区域; 首值为 0, 末值为 L_positive.
     label_offsets = np.concatenate(
         (np.zeros(1, dtype=np.int64), np.cumsum(label_counts, dtype=np.int64))
     )
-    # label_offsets 让每个连通区域只切片一次, 不为每个标签重复扫描完整图.
+    # float32, (D*H*W,), 完整概率图的 C-order 一维视图; 数值由 linear_by_label 直接寻址.
     probability_flat = probability.reshape(-1)
     for label_id in range(1, int(count) + 1):
         begin = int(label_offsets[label_id - 1])
         end = int(label_offsets[label_id])
+        # int64, (K_blob,), 当前连通区域体素在完整概率图中的 C-order 线性编号.
         linear = linear_by_label[begin:end]
+        # int32, (K_blob, 3), 当前连通区域在完整图中的 ZYX 体素索引.
         coordinates = np.column_stack(
             np.unravel_index(linear, probability.shape)
         ).astype(np.int32)
+        # float32, (K_blob,), 与 coordinates 第一维逐体素对齐的完整图配体概率.
         values = probability_flat[linear].astype(np.float32)
+        # int64, (3,), 当前连通区域包围盒两端的完整图 ZYX 体素索引, 端点均包含.
         minimum = coordinates.min(axis=0).astype(np.int64)
         maximum = coordinates.max(axis=0).astype(np.int64)
+        # int64, (3,), 让连通区域体素质心落在 80³ BOX 中心附近的候选 ZYX 起点.
         requested = np.rint(
             coordinates.astype(np.float64).mean(axis=0) + 0.5 - 40.0
         ).astype(np.int64)
+        # int64, (3,), 同时容纳区域包围盒且位于完整图内时允许的 BOX 起点闭区间.
         lowest_start = np.maximum(0, maximum - 79)
         highest_start = np.minimum(minimum, full_shape - 80)
-        # 合法起点区间由区域包围盒和完整图边界共同决定; 质心只选择区间内的具体起点.
+        # bool 标量, True 表示三个 ZYX 轴都存在合法 80³ BOX 起点.
         fits = bool(np.all(lowest_start <= highest_start))
+        # int64, (3,), 可容纳时是离质心候选最近的合法起点; 不可容纳时仅保留未裁切候选且不会落盘.
         start = np.clip(requested, lowest_start, highest_start) if fits else requested
+        # float32 标量, 当前区域所有来源体素概率以 float64 求均值后的正式排序值.
         source_mean = np.float32(values.mean(dtype=np.float64))
         records.append(
             (
@@ -91,9 +105,11 @@ def extract_probability_blobs(
                 start.astype(np.int32) if fits else np.full(3, -1, dtype=np.int32),
             )
         )
-    # 正式 float32 均值是第一排序键, 最小完整图 C-order 线性索引是稳定 tie-break.
+    # records 的候选轴先按正式 float32 均值降序, 再按最小完整图 C-order 线性编号升序.
     records.sort(key=lambda record: (-record[0], record[1]))
+    # int32, (N_blob,), 排序后每个连通区域的来源体素数.
     counts = np.asarray([record[2].shape[0] for record in records], dtype=np.int32)
+    # int64, (N_blob + 1,), 同步切分返回的 voxel_index_global_zyx 与 source_probability; 首值为 0, 末值为 L_voxel.
     offsets = np.concatenate(
         (np.zeros(1, dtype=np.int64), np.cumsum(counts, dtype=np.int64))
     )
@@ -126,45 +142,3 @@ def extract_probability_blobs(
         ),
         "source_threshold_value": np.asarray([threshold], dtype=np.float32),
     }
-
-
-# ================================================================================================
-
-
-def publish_probability_blobs(
-    paths: Stage1ArtifactPaths,
-    role: str,
-    threshold: float,
-    probability_map: np.ndarray | None,
-) -> dict[str, np.ndarray]:
-    """发布 F1 或 F3 的全部连通区域并返回同一数组映射.
-
-    输入参数:
-        - paths: 当前 producer, 数据划分和 PDB 的正式产物路径.
-        - role: `F1_blobs` 或 `F3_blobs`, 同时决定 NPZ 和完成标记路径.
-        - threshold: float, 包含端点的完整图概率阈值.
-        - probability_map: float32 `(D, H, W)` 完整图 ZYX 概率或 None; 传入数组时直接提取, 传入 None 时从当前 PDB 的正式概率 NPZ 读取.
-
-    返回值:
-        - arrays: :func:`extract_probability_blobs` 定义的全部连通区域字段; 与已发布 NPZ 数值一致.
-
-    ``probability_map`` 为完整图 ``float32 (D, H, W)``. GPU 流水刚生成完整图时,
-    调用者直接传入该数组, 使 CPU 连通区域提取与概率 NPZ 压缩并行. 复用已有
-    概率产物时传入 ``None``, 本函数从 ``probability_map.npz`` 读取同名字段.
-    """
-
-    probability = (
-        load_stage1_npz(
-            paths.artifact("probability"),
-            ("probability_map",),
-        )["probability_map"]
-        if probability_map is None
-        else np.asarray(probability_map, dtype=np.float32)
-    )
-    arrays = extract_probability_blobs(probability, threshold)
-    publish_stage1_artifact(
-        paths.artifact(role),
-        arrays,
-        paths.complete(role),
-    )
-    return arrays

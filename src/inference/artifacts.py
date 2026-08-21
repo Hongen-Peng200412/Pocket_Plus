@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""定义 Stage1 V3 推理产物的固定路径和原子发布边界.
+"""定义 Stage1 V3 推理产物的 F-alpha 路径和原子发布边界.
 
 主要入口是 :class:`Stage1ArtifactPaths`, :func:`load_stage1_npz`,
 :func:`publish_stage1_artifact`, :func:`publish_stage1_json` 和
@@ -21,13 +21,12 @@ from typing import Any, Mapping, Sequence
 import numpy as np
 
 
-_ARTIFACT_RELATIVE_PATHS = {
-    "probability": Path("probability/probability_map.npz"),
-    "F1_blobs": Path("blobs/F1_blobs.npz"),
-    "F3_blobs": Path("blobs/F3_blobs.npz"),
-    "F1_basic": Path("centered/F1_basic.npz"),
-    "F3_centered": Path("centered/F3_centered.npz"),
-}
+def f_alpha_tag(alpha: float) -> str:
+    """把正浮点 alpha 转成可往返的 `F2` 或 `F0p5` 文件标签."""
+
+    decimal = repr(float(alpha))
+    decimal = decimal[:-2] if decimal.endswith(".0") else decimal
+    return f"F{decimal.replace('.', 'p')}"
 
 
 @dataclass(frozen=True)
@@ -63,14 +62,23 @@ class Stage1ArtifactPaths:
         return self.output_root / self.stage1_model_name / self.split / self.pdb_id
 
     def artifact(self, role: str) -> Path:
-        """返回 probability, F1/F3 blobs 或 F1/F3 centered 的 NPZ 路径."""
+        """返回 probability 或动态 F-alpha blobs/centered 的 NPZ 路径."""
 
-        return self.pdb_root / _ARTIFACT_RELATIVE_PATHS[str(role)]
+        name = str(role)
+        if name == "probability":
+            return self.pdb_root / "probability" / "probability_map.npz"
+        directory = "blobs" if name.endswith("_blobs") else "centered"
+        return self.pdb_root / directory / f"{name}.npz"
 
     def complete(self, role: str) -> Path:
         """返回 `status/<role>/_COMPLETE` 原子完成标记路径."""
 
         return self.pdb_root / "status" / str(role) / "_COMPLETE"
+
+    def blob_exceed(self, centered_role: str) -> Path:
+        """返回动态 centered 角色的 `_BLOB_EXCEED` 路径."""
+
+        return self.pdb_root / "status" / str(centered_role) / "_BLOB_EXCEED"
 
 
 def load_stage1_npz(
