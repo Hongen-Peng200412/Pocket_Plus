@@ -1,6 +1,6 @@
 # Stage1 V3 GPU 利用率基准
 
-本目录只包含一次真实推理命令的外部采样工具。它不改变模型、配置或产物，只在子进程运行期间读取 `nvidia-smi`，结束后读取 `probability/geometry.json` 和 `status/<role>/performance.json` 的计数与队列等待时间。科学 NPZ 不保存性能字段。
+本目录只包含一次真实推理命令的外部采样工具。采样器本身不改写被测子进程的产物；被测推理命令仍执行正常写盘行为。采样器在子进程运行期间读取 `nvidia-smi`，结束后读取 `probability/geometry.json` 和 `status/<role>/performance.json` 的计数与队列等待时间。科学 NPZ 不保存性能字段。
 
 Windows RTX 和 Linux 服务器都可使用：
 
@@ -13,7 +13,7 @@ python ops/stage1_inference_benchmark/benchmark_gpu_utilization.py `
   --split calibration `
   --gpu-index 0 `
   --run-mode pipeline `
-  -- python -m src.inference.cli calibrate ...
+  -- python -m src.inference.cli probability ...
 ```
 
 `samples.csv` 的列为：
@@ -61,6 +61,6 @@ GPU active ratio 是观测量，不设伪造的通过阈值。
 | `window_throughput_ratio` | 浮点数或 `null` | 当前窗口吞吐除以对照窗口吞吐；对照值为零时写 `null` |
 | `centered_throughput_ratio` | 浮点数或 `null` | 当前 centered 吞吐除以对照 centered 吞吐；对照值为零时写 `null` |
 
-串行基线通过把完整图与 centered 的预取、待处理队列和发布线程配置为 1 获得；只改变流水并发参数，不改变 stride、阈值、模型或科学字段。
+串行基线通过把完整图与 centered 的预取、待处理队列和发布线程配置为 1 获得；只改变流水并发参数，不改变 stride、阈值、模型或科学字段。完整图和 centered 已拆成独立命令，因此两类基准分别运行：`probability` 命令测完整图流水，`centered` 命令测 centered 流水。两类结果不能合并成同一个阶段吞吐。
 
 基准必须使用真实 checkpoint、真实 PDB 清单和目标配置。短清单适合比较实现变化，正式清单适合记录最终实战吞吐；两者的结果不能混作同一基线。
