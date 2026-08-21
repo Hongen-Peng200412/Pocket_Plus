@@ -73,10 +73,10 @@ from src.datasets.stage1_requests import (
     build_request_source,
     resolve_stage1_start,
 )
-from src.stage1_producers import FIND_MODEL_NAMES, STAGE1_MODEL_NAMES
+from src.stage1_producers import FIND_MODEL_NAMES
 
 
-_AUXILIARY_SUPERVISION_MODEL_NAMES = {"Find_1", "unet_c1"}
+_AUXILIARY_SUPERVISION_MODEL_NAMES = {"Find_1", "unet_c1", "unet_base", "unet_diff"}
 
 
 class _ByteLruCache:
@@ -422,7 +422,7 @@ class Stage1Dataset(Dataset):
         - all_data_path: str；A-G 正式根目录，下面必须有 ``density``、``parse`` 和 ``labels``。
         - split_file: str | Path | Sequence[ResolvedStage1Crop]；训练 pool、冻结 validation 请求文件或推理层传入的内存请求序列。
         - mode: str；请求模式，支持 ``train``、``val``、``validation``、``full_map`` 和 ``centered``。
-        - stage1_model_name: str；``STAGE1_MODEL_NAMES`` 中的 producer 名称，决定密度通道以及是否附加 Find 原子字段。
+        - stage1_model_name: str；producer 身份名称；Find 名称决定是否附加受体原子字段，密度输入由 ``density_channel_config.enabled_channels`` 决定。
         - box_pool_root: str | None；包含 V3 ``manifest.json`` 和 validation selection 的 pool 根目录；内存请求序列可不提供。
         - density_channel_config: Mapping[str, Any]；密度裁剪、拟合和启用通道的配置映射。
         - atom_buffer_radius: float；核心 BOX 外选择受体原子的世界坐标缓冲半径，本 Dataset 固定为 ``8.0 Å``。
@@ -468,7 +468,7 @@ class Stage1Dataset(Dataset):
             - all_data_path: str；A-G 正式资产根目录。
             - split_file: str | Path | Sequence[ResolvedStage1Crop]；V3 pool、冻结请求文件或已解析请求序列。
             - mode: str；决定 ``build_request_source`` 选择训练、validation 或推理请求展开方式。
-            - stage1_model_name: str；决定 Find 的完整密度通道或 ``unet_c1`` 的单 exp 通道。
+            - stage1_model_name: str；producer 身份名称；不限制 density-only producer 的密度通道组合。
             - box_pool_root: str | None；V3 pool 根目录；内存请求序列不需要该路径。
             - density_channel_config: Mapping[str, Any]；传给 ``DensityChannelConfig`` 的通道字段。
             - atom_buffer_radius: float；必须为 ``8.0``，用于局部受体原子选择。
@@ -494,8 +494,6 @@ class Stage1Dataset(Dataset):
         self.class_names = tuple(str(value) for value in class_names)
         if self.mode not in {"train", "val", "validation", "full_map", "centered"}:
             raise ValueError(f"未知 Stage1 Dataset mode: {mode!r}。")
-        if self.stage1_model_name not in STAGE1_MODEL_NAMES:
-            raise ValueError(f"stage1_model_name 必须属于 {STAGE1_MODEL_NAMES}。")
         if self.class_names != ("background", "foreground"):
             raise ValueError("AdaLigand Stage1 当前只接受 [background, foreground] 二分类顺序。")
         if float(atom_buffer_radius) != 8.0:
@@ -528,9 +526,12 @@ class Stage1Dataset(Dataset):
         )
         if self.stage1_model_name in FIND_MODEL_NAMES and resolved_channels != list(ALL_CHANNEL_NAMES):
             raise ValueError("Find producer 必须按权威顺序启用完整 56D ALL density channels。")
-        if self.stage1_model_name == "unet_c1" and resolved_channels != ["exp_clipnorm_nopost"]:
-            raise ValueError("unet_c1 density 输入必须恰为 exp_clipnorm_nopost。")
         self.resolved_density_channels = tuple(resolved_channels)
+        # bool; 任一 sim、diff 或 posdiff 通道都要求同时读取模拟密度整图。
+        self.requires_sim_density = any(
+            channel_name.startswith(("sim_", "diff_", "posdiff_"))
+            for channel_name in self.resolved_density_channels
+        )
         # _ByteLruCache; 同一 Dataset 实例共享轻量 receptor 表, 监督数组和最近使用的原始整图.
         # full_map 连续消费同一 PDB 的多个窗口时复用缓存命中; 首次并发 miss 允许重复打开 mmap.
         self._source_cache = _ByteLruCache(cache_max_bytes)
@@ -892,7 +893,7 @@ class Stage1Dataset(Dataset):
 
         # np.ndarray float32 (80, 80, 80)；当前 ZYX 起点的实验密度裁块。
         exp_crop = _crop_80(exp_grid, start_zyx)
-        if self.stage1_model_name.startswith("Find"):
+        if self.requires_sim_density:
             sim_grid, sim_voxel_size, sim_origin = self._load_density_grid(request.pdb_id, "sim")
             if sim_grid.shape != exp_grid.shape or not np.array_equal(sim_voxel_size, voxel_size) or not np.array_equal(sim_origin, full_origin):
                 raise ValueError(f"{request.pdb_id}: exp/sim 的 shape、voxel_size、origin 必须完全一致。")

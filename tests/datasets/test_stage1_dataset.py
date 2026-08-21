@@ -247,6 +247,55 @@ def test_unet_dataset_does_not_read_sim_or_return_atom_table(tmp_path: Path) -> 
     assert sample["ligand_inverse_distance_target"][4, 3, 2].item() == pytest.approx(0.25)
 
 
+@pytest.mark.parametrize(
+    ("model_name", "channels"),
+    (
+        ("unet_base", list(ALL_CHANNEL_NAMES)),
+        ("unet_diff", ["exp_clipnorm_nopost", "diff_clipnorm_nopost"]),
+    ),
+)
+def test_density_only_ablation_reads_sim_and_returns_auxiliary_targets(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    model_name: str,
+    channels: list[str],
+) -> None:
+    """验证多通道 density-only 消融按通道读取 sim，并生成全部体素辅助目标。"""
+
+    _write_upstream(tmp_path)
+    observed_sim_shapes: list[tuple[int, ...]] = []
+
+    def fake_build_density_channels(exp_raw, sim_raw, config, receptor_mask):
+        del receptor_mask
+        assert sim_raw is not None
+        assert sim_raw.shape == exp_raw.shape
+        observed_sim_shapes.append(tuple(sim_raw.shape))
+        return np.zeros((len(config.enabled_channels), *exp_raw.shape), dtype=np.float32)
+
+    monkeypatch.setattr(
+        stage1_dataset_module,
+        "build_density_channels",
+        fake_build_density_channels,
+    )
+    dataset = Stage1Dataset(
+        all_data_path=str(tmp_path),
+        split_file=_request(require_targets=True),
+        mode="val",
+        stage1_model_name=model_name,
+        box_pool_root=None,
+        density_channel_config=_density_config(channels),
+        enable_random_rotation=False,
+    )
+
+    sample = dataset[0]
+    assert observed_sim_shapes == [(80, 80, 80)]
+    assert sample["density_input"].shape == (len(channels), 80, 80, 80)
+    assert "atom_feat" not in sample
+    assert sample["protein_mainchain_target"].shape == (80, 80, 80)
+    assert sample["nucleic_mainchain_target"].shape == (80, 80, 80)
+    assert sample["ligand_inverse_distance_target"][4, 3, 2].item() == pytest.approx(0.25)
+
+
 def test_source_cache_remains_consistent_under_inference_threads(tmp_path: Path) -> None:
     """推理线程共享 mmap LRU 时, 锁必须保持字节计数和条目映射一致."""
 

@@ -232,3 +232,37 @@ def test_unet_c1_config_is_density_only_and_exports_final_v_feature() -> None:
     assert "excluded_pdb_ids" not in cfg.dataset
     assert "excluded_pdb_ids" not in find1.dataset
     assert cfg.train.val_per_epoch == 40
+
+
+@pytest.mark.parametrize(
+    ("experiment", "channels"),
+    (
+        ("unet_base", None),
+        ("unet_diff", ["exp_clipnorm_nopost", "diff_clipnorm_nopost"]),
+    ),
+)
+def test_unet_density_ablation_configs_keep_common_training_and_auxiliary_losses(
+    experiment: str,
+    channels: list[str] | None,
+) -> None:
+    """验证两项 U-Net 消融只改变 density 通道，并共同启用正式训练与辅助损失。"""
+
+    cfg = _compose(experiment)
+    resolved_channels = list(cfg.dataset.density_channel_config.enabled_channels)
+    if channels is None:
+        assert len(resolved_channels) == 56
+    else:
+        assert resolved_channels == channels
+    assert cfg.dataset.stage1_model_name == experiment
+    assert cfg.model.backbone.point_backbone is None
+    assert cfg.model.backbone.embed_head is None
+    assert cfg.model.backbone.enable_atom_head is False
+    assert cfg.model.backbone.voxel_backbone.enable_structure_heads is True
+    assert cfg.model.voxel_ligand_loss_weight == pytest.approx(1.0)
+    assert cfg.model.voxel_aux_loss_weight == pytest.approx(0.1)
+    assert cfg.model.ligand_distance_loss_weight == pytest.approx(0.3)
+    assert cfg.model.protein_mainchain_loss_weight == pytest.approx(0.05)
+    assert cfg.model.nucleic_mainchain_loss_weight == pytest.approx(0.05)
+    assert cfg.train.optimizer.lr == pytest.approx(1.0e-4)
+    assert cfg.train.num_workers == 16
+    assert cfg.train.val_per_epoch == 40

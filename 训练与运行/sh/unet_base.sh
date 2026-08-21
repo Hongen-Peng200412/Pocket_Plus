@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# Find_1 CPC1 从头训练入口；本脚本不再自动接续 CPC2。
+# unet_base 正式训练入口; 使用 56 个密度通道从头训练 density-only RAUNet64。
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
@@ -27,49 +27,52 @@ export ADALIGAND_DATA_ROOT="${ADALIGAND_DATA_ROOT:-/storage/penghongen/AdaLigand
 export ADALIGAND_STAGE1_PREPARATION_ROOT="${ADALIGAND_STAGE1_PREPARATION_ROOT:-/storage/penghongen/AdaLigand/Ori_Data/stage1_preparation_box_pool_3}"
 
 devices="${TASK_GPUS:-1}"
-nnodes="${TASK_NNODES:-2}"
-experiment_group="AdaLigand_Stage1/Find_1/CPC1"
-tag="Find_1/CPC1"
-run_stamp="${TASK_RUN_STAMP:-$(date '+%Y%m%dT%H%M%S')}_CPC1"
-formal_run="${EXPERIMENT_FEEDBACK_ROOT}/logs/${experiment_group//\//-}/${tag//\//-}____${run_stamp}"
+nnodes="${TASK_NNODES:-1}"
+resource_type="${TASK_RESOURCE_TYPE:-a800}"
+cpu_count="${TASK_CPU_COUNT:-16}"
+if [[ "${resource_type}" != "a800" || "${nnodes}" != "1" || "${devices}" != "1" || "${cpu_count}" != "16" ]]; then
+    echo "[unet_base][错误] 本任务要求 resource=a800, nodes=1, gpus=1, cpus=16; 实际为 resource=${resource_type}, nodes=${nnodes}, gpus=${devices}, cpus=${cpu_count}。" >&2
+    exit 2
+fi
+ddp_find_unused_parameters=false
+
+experiment_group="AdaLigand_Stage1/unet_base"
+tag="unet_base"
+run_stamp="${TASK_RUN_STAMP:-$(date '+%Y%m%dT%H%M%S')}_formal"
+formal_run="${EXPERIMENT_FEEDBACK_ROOT}/logs/${experiment_group//\//-}/${tag}____${run_stamp}"
 
 overrides=(
-    "+experiment=CPC1/Find_1"
+    "+experiment=unet_base"
     "experiment_group=${experiment_group}"
     "tag=${tag}"
     "init_from=null"
     "project_name=AdaLigand_Stage1"
     "train.devices=${devices}"
     "train.nnodes=${nnodes}"
-    "train.ddp_find_unused_parameters=true"
+    "train.ddp_find_unused_parameters=${ddp_find_unused_parameters}"
     "train.global_batch_size=48"
-    "train.batch_size=6"
+    "train.batch_size=8"
     "train.strict_global_batch_size=true"
     "train.enable_batch_size_tuning=false"
-    "train.num_workers=30"
+    "train.num_workers=16"
     "train.prefetch_factor=4"
     "train.max_epochs=20"
     "train.val_per_epoch=40"
-    "train.optimizer.lr=5.0e-5"
-    "model.backbone.density_cube_cfg.chunk_size=4096"
-    "model.backbone.real_density_cube_cfg.chunk_size=8192"
-    "model.backbone.real_atom_density_cube_size=9"
-    "model.backbone.real_density_cube_cfg.cube_size=9"
+    "train.optimizer.lr=1.0e-4"
     "train.scheduler.warmup_ratio=0.005"
     "train.scheduler.patience=3"
     "train.scheduler.stop_after_lr_reductions=3"
-    "train.gradient_clip_val=1000"
     "offline=false"
 )
 
 cd "${PROJECT_ROOT}"
-echo "[Find_1] 启动 CPC1：${formal_run}"
+echo "[unet_base] 启动正式训练: ${formal_run}"
 export TASK_RUN_STAMP="${run_stamp}"
 python -u src/train.py "${overrides[@]}" "$@"
 
 formal_best="${formal_run}/checkpoints/BEST.ckpt"
 [[ -f "${formal_best}" ]] || {
-    echo "[Find_1][错误] CPC1 没有产生 BEST.ckpt：${formal_best}" >&2
+    echo "[unet_base][错误] 没有产生 BEST.ckpt: ${formal_best}" >&2
     exit 1
 }
-echo "[Find_1] CPC1 正式训练完成。"
+echo "[unet_base] 正式训练完成。"

@@ -209,6 +209,11 @@
       "date": "2026-08-20",
       "summary": "Stage1 V3 推理可读性重做完成：主代理逐名检查 48 个代码对象，三类第 3/3 轮审查与窄口径复核全部批准，save_dense48=false 不再解压完整概率图；学习历史重建为原有 8 个主题提交并与真实实现 tree 等价，真实 checkpoint 与服务器基准仍待授权。",
       "handoff": "CLAUDE/memory/handoffs/2026-08-20-stage1-v3-inference-readability-rebuild.md"
+    },
+    {
+      "date": "2026-08-21",
+      "summary": "Stage1 U-Net 密度通道消融完成名称耦合修复与真实数据验证：unet_base 使用 56 通道，unet_diff 使用实验密度和差分密度双通道，两者全部辅助损失目标可用；Jobs 350302/350305 以单 A800、16 CPU、after_hold 分别在 nvlinkg8/h200g2 排队并进入守护。",
+      "handoff": "CLAUDE/memory/handoffs/2026-08-21-unet-density-ablation-guard.md"
     }
   ],
   "blockers": [

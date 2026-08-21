@@ -1,0 +1,62 @@
+# @package _global_
+# AdaLigand unet_base：56 通道 density-only RAUNet64，从头训练。
+defaults:
+  - override /model/voxel_backbone: stardard
+  - override /model/point_backbone: none
+  - override /model/fusion: none
+  - override /model/atom_head: none
+  - override /model/pseudo_atom: none
+  - override /model/typed_point: "on"
+  - override /model/task: binary
+  - override /model/embed_head: none
+  - override /model/sparse_refine/candidate_set: none
+  - override /model/sparse_refine/anchor_sampler: none
+  - override /model/sparse_refine/density_cube: none
+  - override /model/sparse_refine/anchor_to_candidate: none
+  - override /model/sparse_refine/sparse_refine_head: none
+  - override /model/sparse_refine/anchor_class_conditioning: none
+  - override /loss: stage1_unet_c1
+  - override /dataset: stage1_unet_base
+  - override /train: stage1_cpc1
+  - override /frozen_module: none
+  - _self_
+
+name: unet_base
+tag: "unet_base"
+experiment_group: "AdaLigand_Stage1/unet_base"
+project_name: AdaLigand_Stage1
+init_from: null
+
+model:
+  backbone:
+    prior_prob_init_enabled: true
+    atom_logit_dim: 1
+    enable_atom_head: false
+    enable_interface_norm: false
+    enable_recycling: true
+    max_recycles: 3
+    randomize_recycles: true
+    detach_recycle_states: true
+    act_layer_name: "gelu"
+    ffn_type: "gated"
+    voxel_backbone:
+      # centered 归档只消费最终 recycle 的 `voxel_final`；U-Net 内部张量不落盘。
+      return_feature_keys: [voxel_final]
+      # U-Net 骨干保持不变；这里只让最终特征与新版 Find_1 使用相同的输出头接口。
+      feature_channels: 64
+      enable_multiscale_output: false
+      enable_structure_heads: true
+      aux_head_hidden_channels: 32
+      ligand_head_hidden_channels: 32
+      num_conv3d_aux: 0
+      num_conv3d_ligand: 0
+  class_names: ${dataset.class_names}
+  # 配体区域 PRAUC 越高越好；checkpoint 选择与平台期学习率调度共同读取这两个字段。
+  monitor_metric: val_score/global/voxel_ligand_PRAUC
+  monitor_mode: max
+  validation_diagnostics:
+    enabled: false
+
+train:
+  optimizer:
+    lr: 1.0e-4
