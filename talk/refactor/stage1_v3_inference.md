@@ -26,24 +26,25 @@
 ### producer 与 centered 字段
 
 - producer 由命令显式提供，CLI 不维护 `unet_c1/Find_0/...` 白名单。
-- 所有 producer 都执行完整 forward，并保存 centered 共同字段与 `voxel_final`。
-- `unet_*` 不保存 A/P、辅助受体体素或 48³ 稠密数组。
-- `Find_*` 另外保存 auxiliary、A/P、实验密度 48³、模拟密度 48³ 和完整图概率 48³。
+- 所有 producer 都执行完整 forward，并保存 centered 共同字段、`voxel_final`、辅助受体体素、V-centered 48³ 几何、实验密度 48³、模拟密度 48³ 和完整图概率 48³。
+- `unet_*` 不保存 A/P 表。
+- `Find_*` 在共同字段上另外保存 A/P 表。
 - alpha 不决定模型前向模式或字段集合。
 
 ### 前向与选择
 
 - `forward_min_voxels` 由正常 centered 命令显式提供，只控制哪些 `fits_centered_box=true` 来源 blob 进入 GPU。
-- 选择 JSON 的 `min_voxels` 只控制 `selected`，不得改变 centered 候选轴和 offsets。
+- `prefiltered_min_voxel` 由 tune 命令显式提供，在全部参数尝试前固定；小于该值的候选始终未入选。
+- 选择 JSON 分别保存固定 `prefiltered_min_voxel` 和搜索所得 `min_voxels`；两者共同控制 `selected`，互不限制，也不得改变 centered 候选轴和 offsets。
 - 未提供选择参数的 centered 不含 `score/selected`。
 - score-only 只能增加或替换 `score/selected`，其他数组逐元素保持。
 - Matcher 可以忽略 `selected`，但必须保持 `centered_box_index`、`source_blob_index` 和 offsets 对齐。
 
 ### basic 与 Gaussian
 
-- basic 分数是 `source_probability_mean`；basic tune 使用全部 blobs，包括 `fits_centered_box=false` 的区域。
+- basic 分数是 `source_probability_mean`；basic tune 的事实包含全部 blobs，包括 `fits_centered_box=false` 的区域，再应用统一预过滤门槛。
 - Gaussian 分数使用来源平均概率与 5 Å 内 A 原子正负项；只有 Find centered 具备所需 A 表。
-- Gaussian tune 保留粗搜索、固定 tau 的细搜索和最终最小体素数三个阶段。
+- Gaussian tune 在统一预过滤后保留粗搜索、固定 tau 的细搜索和最终最小体素数三个阶段。
 - tune 分别写 `F{alpha}_basic.json` 与 `F{alpha}_gaussian.json`。
 
 ### 语义阈值
@@ -148,10 +149,10 @@
 | `calibration.py:_f_beta_from_precision_recall_counts` | 从两组命中数计算 F-beta；目标函数调用 | 与上一数值原语相邻；无包装层 | 一行 Docstring 已说明两种零分母 |
 | `calibration.py:_gaussian_terms` | 按 tau 预计算 Gaussian 正负项；tune 调用 | 冷端缓存原语；一层 PDB 循环 | Docstring 说明输入事实和返回映射 |
 | `calibration.py:_augment_one_to_one_match` | 为当前候选寻找一条一对一增广路；由 `_scan_actual_score_thresholds` 调用并自递归 | 冷端科学原语放在扫描函数之前；移出候选循环后不再重复创建局部函数 | Docstring 逐参数说明邻接矩阵、原位匹配状态、访问掩码和布尔返回语义 |
-| `calibration.py:_scan_actual_score_thresholds` | 扫描全部实际 basic 分数；tune 调用 | 复杂度来自排序扫描；一对一增广路调用前述数值原语，不含局部函数 | Docstring 说明稳定阈值顺序、目标和返回字段；关键累计数组有注释 |
-| `calibration.py:_selection_objective` | 计算三项 micro F-beta 之和；两类 tune 搜索调用 | 数值目标紧邻扫描函数；按 PDB 汇总后一次计算 | Docstring 点名 semantic、coverage@0.3、one-to-one@0.3 |
+| `calibration.py:_scan_actual_score_thresholds` | 扫描预过滤合格候选的实际 basic 分数；tune 调用 | 复杂度来自排序扫描；一对一增广路调用前述数值原语，不含局部函数 | Docstring 说明固定预过滤、稳定阈值顺序、目标和返回字段；关键累计数组有注释 |
+| `calibration.py:_selection_objective` | 在固定预过滤与当前 min_voxels 下计算三项 micro F-beta 之和；两类 tune 搜索调用 | 数值目标紧邻扫描函数；按 PDB 汇总后一次计算 | Docstring 点名固定候选资格、semantic、coverage@0.3、one-to-one@0.3 |
 | `calibration.py:calibrate_semantic_thresholds` | 拟合一个 alpha 的语义阈值；blobs 阶段调用 | 正式入口位于唯一分隔线后；逐 PDB 直方图后一次向量扫描 | Docstring 列出输入、摘要字段和完整 scan 字段 |
-| `calibration.py:tune_centered_selection` | 执行 basic 或 Gaussian 三阶段选择；tune 阶段调用 | 正式入口紧随语义拟合；Gaussian 网格嵌套是科学搜索轴，不拆成转发函数 | Docstring 逐项说明候选、真实 occurrence、网格、目标和输出 |
+| `calibration.py:tune_centered_selection` | 先固定统一预过滤，再执行 basic 或 Gaussian 三阶段选择；tune 阶段调用 | 正式入口紧随语义拟合；只增加一个候选布尔轴，Gaussian 网格嵌套仍是科学搜索轴，不拆成转发函数 | Docstring 逐项说明候选、真实 occurrence、固定门槛、网格、目标和输出 |
 | `centered.py:pack_centered_entries` | 把逐候选映射压成无 object dtype 数组；`infer_centered_boxes` 的 packer 调用 | 冷端归档函数位于唯一分隔线前；ragged 组循环共享 offsets，不增加字段类 | Docstring 列出共同、Find 专用和空候选字段契约 |
 | `centered.py:infer_centered_boxes` | 编排请求物化、完整 forward、D2H、CPU 整理和异步打包；centered 阶段调用 | 正式入口位于分隔线后；局部两个回调共享当前 PDB 大数组，避免把 Dataset/collator 变成顶层包装；Find 分支改成 U-Net 早 `continue`，移除两层大块条件嵌套 | Docstring 列出全部输入字段、并行边界、返回 Future 和性能字段；行内注释说明关键数组形状与坐标系 |
 | `centered.py:materialize_batch` | 在线程池物化一批 centered 请求；只由外层预取队列调用 | 必要局部回调；一层设备条件，无额外 helper | Docstring 列出 batch 中 A 字段和来源编号 |
@@ -163,11 +164,11 @@
 | `pipeline.py:publish_probability` | 在线程池发布几何、性能、概率和完成标记 | 必要局部回调；顺序写三类文件，无条件嵌套 | Docstring 说明捕获边界和无返回值 |
 | `pipeline.py:run_blobs_stage` | 可选拟合阈值并并行生成 blobs；CLI 调用 | 第二阶段；拟合与发布各一个直接分支 | Docstring 逐参数说明三种阈值来源、返回摘要和完成标记 |
 | `pipeline.py:publish_blobs` | 在线程池读取 probability 并发布 blobs | 必要局部回调；只捕获路径、角色和阈值 | Docstring 说明输入 PDB 和完成事务 |
-| `pipeline.py:run_centered_stage` | 正常 centered 或 score-only；CLI 调用 | 第三阶段；score-only 早返回，正常路径的 `_BLOB_EXCEED` 是 PDB 循环内单一短分支 | Docstring 逐参数说明两种模式、1000 上限和无返回值 |
+| `pipeline.py:run_centered_stage` | 正常 centered 或 score-only；CLI 调用 | 第三阶段；score-only 早返回，正常路径的 `_BLOB_EXCEED` 是 PDB 循环内单一短分支 | Docstring 逐参数说明两种模式、两个独立选择门槛、1000 上限和无返回值 |
 | `pipeline.py:publish_centered` | 等待打包、可选评分并发布性能与 centered | 必要局部回调；单个 selection 条件 | Docstring 说明 Future、性能和异常传播用途 |
-| `pipeline.py:run_tune_stage` | 读取 blobs/centered 并冻结选择 JSON；CLI 调用 | 第四阶段；basic/Gaussian 只在字段读取处分支 | Docstring 逐参数说明目标、输入事实和返回 selection |
-| `pipeline.py:run_evaluate_stage` | 发布逐 PDB 事实和聚合指标；CLI 调用 | 第五阶段；blobs/centered 在一个循环中直接转换，不建立候选适配类 | Docstring 逐参数说明评估名、超量跳过和返回指标 |
-| `cli.py:main` | 定义五个命令、读取 JSON、固定分片、按需装配模型并直接调用阶段入口 | 唯一 CLI 函数；没有局部 helper，命令分派最多两层条件，避免 parse/build/dispatch 包装链 | Docstring 说明五阶段共同参数、分片、完整清单和无身份摘要 |
+| `pipeline.py:run_tune_stage` | 读取 blobs/centered、传入固定预过滤并冻结选择 JSON；CLI 调用 | 第四阶段；basic/Gaussian 只在字段读取处分支，不裁剪 ragged 候选轴 | Docstring 逐参数说明固定门槛、目标、输入事实和返回 selection |
+| `pipeline.py:run_evaluate_stage` | 发布逐 PDB 事实和聚合指标；CLI 调用 | 第五阶段；blobs/centered 在一个循环中直接转换，不建立候选适配类 | Docstring 逐参数说明两个独立门槛、评估名、超量跳过和返回指标 |
+| `cli.py:main` | 定义五个命令、读取 JSON、固定分片、按需装配模型并直接调用阶段入口 | 唯一 CLI 函数；没有局部 helper，命令分派最多两层条件，避免 parse/build/dispatch 包装链 | Docstring 说明五阶段共同参数、tune 显式预过滤、分片、完整清单和无身份摘要 |
 
 `evaluation.py:aggregate_stage1_metrics` 是用户点名的可读性样例，本轮没有改变其计算。主代理仍重新检查了该函数：Docstring 已完整列出固定字段、按阈值生成的动态字段、top-K 字段与零分母语义；三组汇总数组均有形状注释，因此没有为改注释而制造无行为差异的补丁。
 
@@ -193,7 +194,8 @@
 | `test_f_alpha_tag_uses_readable_decimal_path_names` | 整数、小数 alpha 标签与相邻 Python float 不碰撞 | 三个直观标签和两组精度边界 |
 | `test_centered_blob_limit_uses_strict_greater_than` | 1000 正常、1001 超量 | 同一参数化测试覆盖端点两侧 |
 | `test_centered_score_only_changes_two_fields` | score-only 保留其他数组 | 发布前后逐数组比较 |
-| `test_find_calibration_uses_coarse_refined_then_minimum_stages` | Gaussian 粗搜、细搜、最小体素顺序 | 单候选事实压缩搜索规模 |
+| `test_tune_prefilter_is_fixed_before_basic_parameter_search` | basic tune 先固定预过滤且不裁剪 min_voxels 搜索值 | 小型高分假阳性固定未入选，较低分真实候选仍得到满分目标 |
+| `test_find_calibration_uses_coarse_refined_then_minimum_stages` | Gaussian 先固定预过滤，再执行粗搜、细搜和最小体素顺序 | 单候选事实同时覆盖 `prefiltered_min_voxel > min_voxels` 的合法空选择 |
 
 `tests/inference/test_stage1_cuda.py` 同样只有一个分隔线。两个正式测试函数及其局部 `Dataset`、`Wrapper`、模型方法和 `collator` 均已逐项检查并补充职责 Docstring：
 
@@ -230,4 +232,6 @@
 
 ## 当前状态
 
-代码、配置、三份 Human MD Review 源 README、BOX-level 权威契约、执行记录和映射索引已经进入实现分支。主代理逐文件逐函数自查已经完成；当前 CPU 回归为 34 passed，Windows RTX CUDA smoke 为 2 passed，编译、Black、YAML 解析、五个 CLI 帮助入口和 Bash 语法检查通过。新增 centered CUDA smoke 发现并修正了 `voxel_final` 高级索引后多余转置导致 `(C_voxel,K_source)` 的真实 shape 错误；第二轮逻辑审查发现 SciPy 最近邻上界不含端点，正式实现已改为显式纳入 5 Å Gaussian 原子和 10 Å Find A 原子，并分别增加端点测试。布局/Git、注释/文档与逻辑三类独立审查都已完成三轮全面核查，第三轮报告项也已窄口径复核并全部批准。只剩双线 Git 收口和最终 handoff。
+代码、配置、三份 Human MD Review 源 README、BOX-level 权威契约、执行记录和映射索引已经完成。主代理逐文件逐函数自查已经完成；当前 CPU 回归为 34 passed，Windows RTX CUDA smoke 为 2 passed，编译、Black、YAML 解析、五个 CLI 帮助入口和 Bash 语法检查通过。新增 centered CUDA smoke 发现并修正了 `voxel_final` 高级索引后多余转置导致 `(C_voxel,K_source)` 的真实 shape 错误；第二轮逻辑审查发现 SciPy 最近邻上界不含端点，正式实现已改为显式纳入 5 Å Gaussian 原子和 10 Å Find A 原子，并分别增加端点测试。布局/Git、注释/文档与逻辑三类独立审查都已完成三轮全面核查，第三轮报告项也已窄口径复核并全部批准。
+
+双线收口前的核心内容端点为实现 `d130c30`、学习 `c047e68`，两端 tree 均为 `6010c2159d6350d591f504d1ca1e5540607be6be`；学习端点再次通过上述 CPU 与 CUDA 回归。最终只追加本段状态记录，并在实现线与学习线同步同一文档内容后重新执行 tree 等价检查。
