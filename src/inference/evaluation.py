@@ -94,7 +94,9 @@ def load_occurrence_voxels(
 
     path = Path(ligand_area_path)
     with np.load(path, allow_pickle=False) as archive:
+        # shape: 三个整数, 完整图的 ZYX 体素数量.
         shape = tuple(int(value) for value in archive["grid_shape_zyx"])
+        # names: 按数字后缀升序排列的 mask_<occurrence_id> 字段名.
         names = sorted(
             (
                 name
@@ -103,7 +105,9 @@ def load_occurrence_voxels(
             ),
             key=lambda name: int(name[5:]),
         )
+        # int32, (N_gt,), 每个真实 ligand occurrence 的数字标识.
         occurrence_id = np.asarray([int(name[5:]) for name in names], dtype=np.int32)
+        # rows: 长度 N_gt 的元组; 第 i 项是 occurrence_id[i] 的 int32 (K_gt_i, 3) 完整图 ZYX 体素索引.
         rows = tuple(np.asarray(archive[name], dtype=np.int32) for name in names)
     return occurrence_id, rows, shape
 
@@ -145,22 +149,32 @@ def evaluate_centered_pdb(
     下标; 没有命中时为 ``-1``.
     """
 
+    # float64, (N_pred,), centered 候选的冻结分数, 输入顺序与 source_blob_index 一致.
     score = np.asarray(centered["score"], dtype=np.float64)
+    # int64, (N_pred,), 按分数稳定降序排列的原候选轴下标.
     order = np.argsort(-score, kind="stable")
+    # bool, (N_pred,), 按分数降序对齐的最终候选选择掩码.
     candidate_selected = np.asarray(centered["selected"], dtype=np.bool_)[order]
     score = score[order]
+    # int64, (N_pred + 1,), 以原候选轴顺序切分 voxel_index_local_zyx.
     voxel_offsets = np.asarray(centered["voxel_offsets"], dtype=np.int64)
+    # int64, (L_voxel, 3), 每个候选稀疏体素在所属 BOX 内的局部 ZYX 索引.
     local_rows = np.asarray(centered["voxel_index_local_zyx"], dtype=np.int64)
+    # int64, (N_pred, 3), 每个候选 80³ BOX 在完整图中的 ZYX 起点.
     box_starts = np.asarray(centered["box_start_zyx"], dtype=np.int64)
+    # shape: 三个整数, 完整图的 ZYX 体素数量.
     shape = tuple(int(value) for value in full_shape_zyx)
 
     # 每个稀疏 ZYX 坐标集合转换成完整图 C-order 线性编号, 便于执行集合交并.
     pred_linear: list[np.ndarray] = []
     for entry_index in order.tolist():
+        # begin, end: 当前原候选在 voxel_index_local_zyx 中的半开区间端点.
         begin = int(voxel_offsets[entry_index])
         end = int(voxel_offsets[entry_index + 1])
+        # int64, (K_pred, 3), 当前候选在完整图中的 ZYX 体素索引.
         global_zyx = local_rows[begin:end] + box_starts[entry_index][None, :]
         pred_linear.append(np.unique(np.ravel_multi_index(global_zyx.T, shape)))
+    # gt_linear: 长度 N_gt 的列表; 第 j 项是 occurrence_id[j] 的唯一 C-order 线性体素编号.
     gt_linear = [
         np.unique(np.ravel_multi_index(np.asarray(rows, dtype=np.int64).T, shape))
         for rows in occurrence_voxel_zyx
@@ -173,22 +187,29 @@ def evaluate_centered_pdb(
         ],
         dtype=np.int64,
     ).reshape(len(pred_linear), len(gt_linear))
+    # int64, (N_pred,), 每个预测候选的唯一体素数, 候选轴按 score 降序.
     pred_sizes = np.asarray([rows.size for rows in pred_linear], dtype=np.int64)
+    # int64, (N_gt,), 每个真实 occurrence 的唯一体素数.
     gt_sizes = np.asarray([rows.size for rows in gt_linear], dtype=np.int64)
 
     # 语义 TP/FP/FN 使用已选候选的体素并集; 逐候选事实仍保留全部候选.
+    # int64, (N_selected,), 已选候选在分数降序候选轴中的下标.
     selected_rows = np.flatnonzero(candidate_selected)
+    # selected_pred_linear: 按分数降序排列的已选候选线性体素集合.
     selected_pred_linear = [pred_linear[index] for index in selected_rows.tolist()]
+    # int64, (K_pred_union,), 全部已选候选的唯一 C-order 线性体素并集.
     pred_union = (
         np.unique(np.concatenate(selected_pred_linear))
         if selected_pred_linear
         else np.empty(0, dtype=np.int64)
     )
+    # int64, (K_gt_union,), 全部真实 occurrence 的唯一 C-order 线性体素并集.
     gt_union = (
         np.unique(np.concatenate(gt_linear))
         if gt_linear
         else np.empty(0, dtype=np.int64)
     )
+    # int64, (N_pred,), 每个候选与真实 occurrence 总并集的交集体素数.
     candidate_semantic_tp = np.asarray(
         [
             np.intersect1d(pred, gt_union, assume_unique=True).size
@@ -200,32 +221,41 @@ def evaluate_centered_pdb(
     semantic_fp = int(pred_union.size - semantic_tp)
     semantic_fn = int(gt_union.size - semantic_tp)
 
+    # float64, (N_pred, N_gt), 交集占预测候选体素数的比例.
     pred_cover = np.divide(
         intersections,
         pred_sizes[:, None],
         out=np.zeros(intersections.shape, dtype=np.float64),
         where=pred_sizes[:, None] > 0,
     )
+    # float64, (N_pred, N_gt), 交集占真实 occurrence 体素数的比例.
     gt_cover = np.divide(
         intersections,
         gt_sizes[None, :],
         out=np.zeros(intersections.shape, dtype=np.float64),
         where=gt_sizes[None, :] > 0,
     )
+    # thresholds: 长度 N_threshold 的双向覆盖阈值轴, 保持调用方顺序.
     thresholds = tuple(float(value) for value in coverage_thresholds)
+    # bool, (N_threshold, N_pred), 每个候选是否与任一 occurrence 达到双向覆盖阈值.
     coverage_pred_hit_mask = np.zeros(
         (len(thresholds), len(pred_linear)), dtype=np.bool_
     )
+    # bool, (N_threshold, N_gt), 每个 occurrence 是否被任一已选候选达到双向覆盖阈值.
     coverage_gt_hit_mask = np.zeros((len(thresholds), len(gt_linear)), dtype=np.bool_)
+    # match_pred_rows: 长度 N_threshold 的列表; 每项保存该阈值一对一匹配的候选轴下标.
     match_pred_rows: list[np.ndarray] = []
+    # match_gt_rows: 长度 N_threshold 的列表; 每项保存与 match_pred_rows 同步的 occurrence 轴下标.
     match_gt_rows: list[np.ndarray] = []
     for threshold_row, threshold in enumerate(thresholds):
         # bool, (N_pred, N_gt), 两个方向的覆盖率都达到同一阈值才形成有效边.
         valid = (pred_cover >= threshold) & (gt_cover >= threshold)
         coverage_pred_hit_mask[threshold_row] = valid.any(axis=1)
+        # bool, (N_selected, N_gt), 只保留已选候选后的有效匹配边.
         selected_valid = valid[selected_rows]
         coverage_gt_hit_mask[threshold_row] = selected_valid.any(axis=0)
         if selected_valid.size:
+            # matched_pred, matched_gt: int64, (N_assignment,), Hungarian 返回的已选候选轴与 occurrence 轴下标.
             matched_pred, matched_gt = linear_sum_assignment(
                 -selected_valid.astype(np.int8)
             )
@@ -236,22 +266,30 @@ def evaluate_centered_pdb(
         else:
             match_pred_rows.append(np.empty(0, dtype=np.int32))
             match_gt_rows.append(np.empty(0, dtype=np.int32))
+    # int64, (N_threshold,), 每个覆盖阈值下有效的一对一匹配数量.
     one_to_one_tp = np.asarray([rows.size for rows in match_pred_rows], dtype=np.int64)
+    # int64, (N_threshold + 1,), 同步切分扁平化的一对一候选下标与 occurrence 下标.
     match_offsets = np.concatenate(
         (
             np.zeros(1, dtype=np.int64),
             np.cumsum(one_to_one_tp, dtype=np.int64),
         )
     )
+    # int64, (N_topk, N_threshold), 每组 top-K 是否至少命中一个 occurrence, 取值为 0 或 1.
     topk_success = np.zeros((len(topk_values), len(thresholds)), dtype=np.int64)
+    # int32, (N_topk, N_threshold), 首个获胜候选在已选候选序列中的名次; -1 表示未命中.
     topk_winning_candidate_rank = np.full(topk_success.shape, -1, dtype=np.int32)
+    # int32, (N_topk, N_threshold), 首个获胜 occurrence 的轴下标; -1 表示未命中.
     topk_winning_occurrence_index = np.full(topk_success.shape, -1, dtype=np.int32)
     for topk_row, topk in enumerate(topk_values):
+        # int64, (min(K, N_selected),), 前 K 个已选候选在完整分数降序候选轴中的下标.
         top_candidate_rows = selected_rows[: int(topk)]
         for threshold_row, threshold in enumerate(thresholds):
+            # bool, (min(K, N_selected), N_gt), top-K 候选与 occurrence 的双向覆盖命中表.
             valid = (pred_cover[top_candidate_rows] >= threshold) & (
                 gt_cover[top_candidate_rows] >= threshold
             )
+            # int64, (N_winner, 2), 命中表中按 C-order 排列的候选名次与 occurrence 轴下标.
             winners = np.argwhere(valid)
             if winners.size:
                 topk_success[topk_row, threshold_row] = 1
@@ -340,6 +378,7 @@ def aggregate_stage1_metrics(
     阈值字段后缀把小数点替换为 `p`, 例如 0.3 写成 `0p3`. 任一指标分母为零时保存 0.0.
     """
 
+    # thresholds: 长度 N_threshold 的双向覆盖阈值轴, 与每个 PdbEvaluation 的首轴一致.
     thresholds = tuple(float(value) for value in coverage_thresholds)
     # int64, (N_pdb, 3), 每个 PDB 的语义 TP, FP, FN; 空数据划分保持 (0, 3).
     semantic = np.asarray(
@@ -351,11 +390,13 @@ def aggregate_stage1_metrics(
     )
     if semantic.size == 0:
         semantic = np.zeros((0, 3), dtype=np.int64)
+    # total_tp, total_fp, total_fn: 跨 PDB 汇总的语义体素计数.
     total_tp, total_fp, total_fn = semantic.sum(axis=0, dtype=np.int64).tolist()
     semantic_precision = (
         total_tp / (total_tp + total_fp) if total_tp + total_fp else 0.0
     )
     semantic_recall = total_tp / (total_tp + total_fn) if total_tp + total_fn else 0.0
+    # report: 最终写入数据划分级 global_metrics.json 的标量字段映射.
     report: dict[str, object] = {
         "pdb_count": len(evaluations),
         "semantic_tp": int(total_tp),
@@ -370,6 +411,7 @@ def aggregate_stage1_metrics(
             if denominator
             else 0.0
         )
+        # per_pdb: 长度 N_pdb 的语义 F-beta, 用于 PDB 等权 macro 平均.
         per_pdb = []
         for item in evaluations:
             numerator = (1.0 + beta2) * float(item.semantic_tp)
@@ -381,26 +423,30 @@ def aggregate_stage1_metrics(
             float(np.mean(per_pdb)) if per_pdb else 0.0
         )
 
-    # 两个标量分别是全部 PDB 的已选候选总数和真实 occurrence 总数.
+    # pred_total: 全部 PDB 的已选候选总数, 是预测侧 micro precision 的分母.
     pred_total = sum(int(item.candidate_selected.sum()) for item in evaluations)
+    # gt_total: 全部 PDB 的真实 occurrence 总数, 是真实侧 micro recall 的分母.
     gt_total = sum(int(item.gt_sizes.size) for item in evaluations)
-    # int64, (N_threshold,), coverage 候选命中, coverage occurrence 命中和一对一匹配总数.
+    # int64, (N_threshold,), 各阈值下达到多对多覆盖条件的已选候选总数.
     coverage_pred = (
         np.sum(np.stack([item.coverage_pred_hit for item in evaluations]), axis=0)
         if evaluations
         else np.zeros(len(thresholds), dtype=np.int64)
     )
+    # int64, (N_threshold,), 各阈值下被已选候选覆盖的真实 occurrence 总数.
     coverage_gt = (
         np.sum(np.stack([item.coverage_gt_hit for item in evaluations]), axis=0)
         if evaluations
         else np.zeros(len(thresholds), dtype=np.int64)
     )
+    # int64, (N_threshold,), 各阈值下最大一对一匹配的总数.
     one_to_one = (
         np.sum(np.stack([item.one_to_one_tp for item in evaluations]), axis=0)
         if evaluations
         else np.zeros(len(thresholds), dtype=np.int64)
     )
     for row, threshold in enumerate(thresholds):
+        # tag: 当前阈值的 JSON 字段后缀, 例如 0.3 转为 0p3.
         tag = f"{threshold:.3f}".rstrip("0").rstrip(".").replace(".", "p")
         for name, pred_hit, gt_hit in (
             ("coverage", int(coverage_pred[row]), int(coverage_gt[row])),
@@ -419,7 +465,9 @@ def aggregate_stage1_metrics(
                     else 0.0
                 )
 
+            # per_pdb_f1: 长度 N_pdb 的当前指标 F1, 用于 PDB 等权 macro 平均.
             per_pdb_f1: list[float] = []
+            # per_pdb_f2: 长度 N_pdb 的当前指标 F2, 用于 PDB 等权 macro 平均.
             per_pdb_f2: list[float] = []
             for item in evaluations:
                 if name == "coverage":
@@ -453,6 +501,7 @@ def aggregate_stage1_metrics(
     eligible_pdb = sum(int(item.gt_sizes.size > 0) for item in evaluations)
     report["topk_eligible_pdb_count"] = eligible_pdb
     for topk_row, topk in enumerate(topk_values):
+        # int64, (N_threshold,), 当前 K 下至少命中一个 occurrence 的 PDB 数量.
         successes = (
             np.sum(
                 np.stack([item.topk_success[topk_row] for item in evaluations]),
