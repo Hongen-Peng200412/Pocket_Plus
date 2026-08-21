@@ -26,9 +26,9 @@
 ### producer 与 centered 字段
 
 - producer 由命令显式提供，CLI 不维护 `unet_c1/Find_0/...` 白名单。
-- 所有 producer 都执行完整 forward，并保存 centered 共同字段与 `voxel_final`。
-- `unet_*` 不保存 A/P、辅助受体体素或 48³ 稠密数组。
-- `Find_*` 另外保存 auxiliary、A/P、实验密度 48³、模拟密度 48³ 和完整图概率 48³。
+- 所有 producer 都执行完整 forward，并保存 centered 共同字段、`voxel_final`、辅助受体体素、V-centered 48³ 几何、实验密度 48³、模拟密度 48³ 和完整图概率 48³。
+- `unet_*` 不保存 A/P 表。
+- `Find_*` 在共同字段上另外保存 A/P 表。
 - alpha 不决定模型前向模式或字段集合。
 
 ### 前向与选择
@@ -232,4 +232,6 @@
 
 ## 当前状态
 
-代码、配置、三份 Human MD Review 源 README、BOX-level 权威契约、执行记录和映射索引已经进入实现分支。主代理逐文件逐函数自查已经完成；当前 CPU 回归为 34 passed，Windows RTX CUDA smoke 为 2 passed，编译、Black、YAML 解析、五个 CLI 帮助入口和 Bash 语法检查通过。新增 centered CUDA smoke 发现并修正了 `voxel_final` 高级索引后多余转置导致 `(C_voxel,K_source)` 的真实 shape 错误；第二轮逻辑审查发现 SciPy 最近邻上界不含端点，正式实现已改为显式纳入 5 Å Gaussian 原子和 10 Å Find A 原子，并分别增加端点测试。布局/Git、注释/文档与逻辑三类独立审查都已完成三轮全面核查，第三轮报告项也已窄口径复核并全部批准。只剩双线 Git 收口和最终 handoff。
+代码、配置、三份 Human MD Review 源 README、BOX-level 权威契约、执行记录和映射索引已经完成。主代理逐文件逐函数自查已经完成；当前 CPU 回归为 34 passed，Windows RTX CUDA smoke 为 2 passed，编译、Black、YAML 解析、五个 CLI 帮助入口和 Bash 语法检查通过。新增 centered CUDA smoke 发现并修正了 `voxel_final` 高级索引后多余转置导致 `(C_voxel,K_source)` 的真实 shape 错误；第二轮逻辑审查发现 SciPy 最近邻上界不含端点，正式实现已改为显式纳入 5 Å Gaussian 原子和 10 Å Find A 原子，并分别增加端点测试。布局/Git、注释/文档与逻辑三类独立审查都已完成三轮全面核查，第三轮报告项也已窄口径复核并全部批准。
+
+双线收口前的核心内容端点为实现 `d130c30`、学习 `c047e68`，两端 tree 均为 `6010c2159d6350d591f504d1ca1e5540607be6be`；学习端点再次通过上述 CPU 与 CUDA 回归。最终只追加本段状态记录，并在实现线与学习线同步同一文档内容后重新执行 tree 等价检查。
