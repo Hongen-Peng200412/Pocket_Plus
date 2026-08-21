@@ -136,7 +136,6 @@ def infer_full_map(
 
     CPU 线程提前物化 batch, 当前线程独占 GPU, 单独融合线程按提交顺序等待 CUDA event. 并行不改变窗口顺序, batch 边界或 float32 累加顺序.
     """
-
     from src.datasets.stage1_requests import ResolvedStage1Crop
 
     started_at = time.perf_counter()
@@ -169,7 +168,6 @@ def infer_full_map(
 
         本模块不改 batch 字段并直接交给 wrapper; CUDA 推理时张量已锁页.
         """
-
         requests = [
             ResolvedStage1Crop(
                 pdb_id=pdb_id,
@@ -201,7 +199,6 @@ def infer_full_map(
 
         本函数按输入顺序原位累加外层 `weighted_sum` 和 `weight_sum`, 不返回新对象.
         """
-
         if ready_event is not None:
             ready_event.synchronize()
         probabilities = host_probability.numpy()
