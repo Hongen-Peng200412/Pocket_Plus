@@ -214,6 +214,11 @@
       "date": "2026-08-21",
       "summary": "Stage1 U-Net 密度通道消融完成名称耦合修复与真实数据验证：unet_base 使用 56 通道，unet_diff 使用实验密度和差分密度双通道，两者全部辅助损失目标可用；Jobs 350302/350305 以单 A800、16 CPU、after_hold 分别在 nvlinkg8/h200g2 排队并进入守护。",
       "handoff": "CLAUDE/memory/handoffs/2026-08-21-unet-density-ablation-guard.md"
+    },
+    {
+      "date": "2026-08-21",
+      "summary": "Stage1 V3 已增量加入显式 PDB 级 split 补建入口：仅从五份 occurrence JSON 提取、规范化、去重并排序 pdb_id，写出五份纯列表 JSON；不新增 summary、完成标记或额外审计，定向测试 2 passed，尚未操作 Git 或服务器。",
+      "handoff": "CLAUDE/memory/handoffs/2026-08-21-stage1-pdb-split-minimal-publication.md"
     }
   ],
   "blockers": [

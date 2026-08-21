@@ -1,8 +1,8 @@
 """按 EMDB 首次发布时间、质量阈值和资产契约冻结 Stage1 V3 PDB split。
 
-命令入口是 ``fetch-release-dates`` 和 ``freeze``；函数入口分别为 :func:`fetch_release_dates` 与 :func:`freeze_split`。前者从 EMDB 官方 ``entry/admin`` 接口建立可续传的 ``map_release`` 日志；后者把 Stage G 候选按 PDB 聚合，先隔离 2026-01-01 及以后首次发布的 PDB，再对更早 PDB 应用 ``map_resolution < 4``、``cc_contour > 0.65``、完整图至少 80³ 和迁移资产契约。
+命令入口是 ``fetch-release-dates``、``freeze`` 和 ``publish-pdb-splits``；函数入口分别为 :func:`fetch_release_dates`、:func:`freeze_split` 与 :func:`publish_pdb_splits`。前者从 EMDB 官方 ``entry/admin`` 接口建立可续传的 ``map_release`` 日志；``freeze`` 把 Stage G 候选按 PDB 聚合，先隔离 2026-01-01 及以后首次发布的 PDB，再对更早 PDB 应用 ``map_resolution < 4``、``cc_contour > 0.65``、完整图至少 80³ 和迁移资产契约；``publish-pdb-splits`` 从已经发布的 occurrence 记录补建五份纯 PDB identity 清单，不重跑划分规则。
 
-本模块只在 ``output_root`` 写 split JSON、审计 JSONL、配置、摘要和 ``_COMPLETE``，不修改 A—G 正式资产，也不构造 BOX 起点。split JSON 的顶层是候选记录列表；审计 JSONL 每行是一个 PDB 审计对象；``config.json`` 保存阈值、日期和 seed；``summary.json`` 保存各状态计数与 split 数量。
+本模块只在显式输出目录写 split 产物，不修改 A—G 正式资产，也不构造 BOX 起点。原始 split JSON 的顶层是候选记录列表；``pdb_split/<split>.json`` 的顶层是小写 PDB identity 字符串列表。
 """
 
 from __future__ import annotations
@@ -34,6 +34,13 @@ VALIDATION_PDB_COUNT = 200
 CALIBRATION_PDB_COUNT = 100
 SPLIT_SEED = 3407
 MIN_GRID_SHAPE_ZYX = (80, 80, 80)
+PDB_SPLIT_NAMES = (
+    "train",
+    "validation",
+    "calibration",
+    "held_out",
+    "quarantine_missing_release",
+)
 
 
 def read_jsonl(path: Path) -> list[dict[str, Any]]:
@@ -453,14 +460,35 @@ def freeze_split(arguments: argparse.Namespace) -> None:
     print(json.dumps(summary, ensure_ascii=False, indent=2))
 
 
-def main() -> None:
-    """解析 ``fetch-release-dates`` 或 ``freeze`` 子命令并调用对应入口。
+def publish_pdb_splits(arguments: argparse.Namespace) -> None:
+    """从已发布的 occurrence 记录补建五份纯 PDB identity 清单。
 
-    返回值:
-        - None；成功时写入续传日志或冻结 split 产物，失败时保留异常供任务系统报告。
+    输入参数:
+        - arguments: argparse.Namespace; ``split_root`` 指向含五份 occurrence 级 split JSON 的既有目录, ``output_root`` 指向新建的 PDB 级清单目录。
+
+    输出文件:
+        - ``<output_root>/<split>.json``: list[str]; ``split`` 依次为 train、validation、calibration、held_out、quarantine_missing_release, 内容是去重并排序的小写 PDB identity。
+
+    边界:
+        - 本入口只去重既有 split 的 ``pdb_id``; 不重新执行日期、质量、资产或 occurrence 过滤, 也不修改五份来源 JSON。
     """
 
-    parser = argparse.ArgumentParser(description="冻结 Stage1 v3 日期质量划分。")
+    split_root = Path(arguments.split_root).resolve()
+    output_root = Path(arguments.output_root).resolve()
+    for split_name in PDB_SPLIT_NAMES:
+        records = json.loads((split_root / f"{split_name}.json").read_text(encoding="utf-8"))
+        pdb_ids = sorted({str(record["pdb_id"]).strip().lower() for record in records})
+        atomic_write_json(output_root / f"{split_name}.json", pdb_ids)
+
+
+def main() -> None:
+    """解析三个显式子命令并调用对应入口。
+
+    返回值:
+        - None; 成功时写入续传日志、冻结 occurrence split 或补建 PDB split, 失败时保留异常供任务系统报告。
+    """
+
+    parser = argparse.ArgumentParser(description="冻结 Stage1 v3 日期质量划分并补建 PDB 级清单。")
     subparsers = parser.add_subparsers(dest="command", required=True)
     fetch_parser = subparsers.add_parser("fetch-release-dates")
     fetch_parser.add_argument("--candidates", required=True)
@@ -477,11 +505,21 @@ def main() -> None:
     freeze_parser.add_argument("--data-root", required=True)
     freeze_parser.add_argument("--output-root", required=True)
     freeze_parser.add_argument("--seed", type=int, required=True)
+
+    # 已有 Stage1 V3 split 的一次性补建命令如下。该命令只读取五份 occurrence JSON, 并写出五份 PDB identity 列表。
+    # python -u -m ops.stage1_data_preparation.freeze_split publish-pdb-splits \
+    #   --split-root /storage/penghongen/AdaLigand/Ori_Data/stage1_preparation_box_pool_3/split \
+    #   --output-root /storage/penghongen/AdaLigand/Ori_Data/stage1_preparation_box_pool_3/split/pdb_split
+    pdb_split_parser = subparsers.add_parser("publish-pdb-splits")
+    pdb_split_parser.add_argument("--split-root", required=True)
+    pdb_split_parser.add_argument("--output-root", required=True)
     arguments = parser.parse_args()
     if arguments.command == "fetch-release-dates":
         fetch_release_dates(arguments)
-    else:
+    elif arguments.command == "freeze":
         freeze_split(arguments)
+    else:
+        publish_pdb_splits(arguments)
 
 
 if __name__ == "__main__":

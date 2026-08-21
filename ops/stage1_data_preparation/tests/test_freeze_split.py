@@ -91,3 +91,52 @@ def test_freeze_split_uses_strict_boundaries_and_200_100_rest(
         assert all_trainable.isdisjoint(ids)
         all_trainable.update(ids)
     assert all_trainable == set(eligible_ids)
+
+
+def test_publish_pdb_splits_writes_five_unique_identity_lists(tmp_path: Path) -> None:
+    """显式补建命令只按 PDB 去重来源记录, 并保留五个互斥集合。"""
+
+    split_root = tmp_path / "split"
+    split_root.mkdir()
+    source_records = {
+        "train": [
+            {"pdb_id": "1ABC", "candidate_id": 0},
+            {"pdb_id": "1abc", "candidate_id": 1},
+            {"pdb_id": "2DEF", "candidate_id": 0},
+        ],
+        "validation": [{"pdb_id": "3ghi", "candidate_id": 0}],
+        "calibration": [{"pdb_id": "4JKL", "candidate_id": 0}],
+        "held_out": [
+            {"pdb_id": "5mno", "candidate_id": 0},
+            {"pdb_id": "5MNO", "candidate_id": 1},
+        ],
+        "quarantine_missing_release": [{"pdb_id": "6pqr", "candidate_id": 0}],
+    }
+    for split_name, records in source_records.items():
+        (split_root / f"{split_name}.json").write_text(
+            json.dumps(records),
+            encoding="utf-8",
+        )
+
+    output_root = split_root / "pdb_split"
+    split_module.publish_pdb_splits(
+        argparse.Namespace(split_root=str(split_root), output_root=str(output_root))
+    )
+
+    assert json.loads((output_root / "train.json").read_text(encoding="utf-8")) == [
+        "1abc",
+        "2def",
+    ]
+    assert json.loads((output_root / "validation.json").read_text(encoding="utf-8")) == ["3ghi"]
+    assert json.loads((output_root / "calibration.json").read_text(encoding="utf-8")) == ["4jkl"]
+    assert json.loads((output_root / "held_out.json").read_text(encoding="utf-8")) == ["5mno"]
+    assert json.loads(
+        (output_root / "quarantine_missing_release.json").read_text(encoding="utf-8")
+    ) == ["6pqr"]
+    assert sorted(path.name for path in output_root.iterdir()) == [
+        "calibration.json",
+        "held_out.json",
+        "quarantine_missing_release.json",
+        "train.json",
+        "validation.json",
+    ]

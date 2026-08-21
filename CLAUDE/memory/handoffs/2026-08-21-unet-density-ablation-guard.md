@@ -18,7 +18,7 @@ AdaLigand Stage1 的两项 density-only U-Net 消融已完成端到端修复、�
 - 服务器正式 A–G 数据样本确认输入形状分别为 56 通道和 2 通道，且全部辅助目标存在。
 - 安全同步后的本地与服务器关键文件 SHA-256 一致。
 - 相关任务文件已从 Git 暂存区撤出；本地改动保持未暂存或未跟踪，没有创建提交。
-- Job `350302` 的 release、launch 与最终配置已核验；W&B 本地摘要达到 `trainer/global_step=203`，总损失约 `0.2310`，A800 利用率为 94%，无明确错误，已判定稳定训练。
+- Job `350302` 的 release、launch 与最终配置已核验；W&B 本地摘要达到 `trainer/global_step=1154`，训练总损失约 `0.1692`，首次验证总损失约 `0.2399`、配体体素 PRAUC 约 `0.5019`，五项损失均为有限数值，已判定持续稳定训练。
 
 ## Decisions
 
@@ -29,8 +29,8 @@ AdaLigand Stage1 的两项 density-only U-Net 消融已完成端到端修复、�
 
 ## Open Questions
 
-- 两项任务何时获得 A800 由 Slurm 优先级决定。
-- 获得资源后仍需以 release、launch 和训练目录中的最终 `config.yaml` 核验真实运行配置，并确认正常 step 或明确的长时间内存加载状态。
+- Job `350305` 何时获得 A800 由 Slurm 资源可用性决定。
+- Job `350305` 获得资源后仍需以 release、launch 和训练目录中的最终 `config.yaml` 核验真实运行配置，并确认正常 step 或明确的长时间内存加载状态。
 
 ## Next Actions
 
