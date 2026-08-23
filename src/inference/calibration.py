@@ -439,21 +439,19 @@ def tune_centered_selection(
     先固定 ``prefiltered_min_voxel``, 小于该值的候选在全部参数尝试中保持未入选.
     basic 模式再在最小 ``min_voxels`` 下扫描实际出现的 float32 分数,
     然后冻结分数阈值并扫描全部最小体素数.
-    Gaussian 模式第一阶段扫描 tau、两个 lambda 和 ``gauss_score_min`` 的显式粗网格;
+    Gaussian 模式第一阶段扫描 tau, 两个 lambda 和 ``gauss_score_min`` 的显式粗网格;
     第二阶段固定 tau, 对第一阶段三个其余参数应用显式乘数;
     第三阶段冻结 Gaussian 参数并只扫描 ``min_voxels``.
-    目标是 semantic、coverage@0.3 和 one-to-one@0.3 三个 micro F-beta 之和.
+    目标是 semantic, coverage@0.3 和 one-to-one@0.3 三个 micro F-beta 之和.
 
     输入参数:
         - centered_items.pdb_id: 字符串, 当前小写 PDB 标识.
         - centered_items.centered.source_blob_index: int32 `(N_candidate,)`, 来源 blob 编号.
         - centered_items.centered.source_probability_mean: float32 `(N_candidate,)`, 来源 blob 平均概率.
-        - centered_items.centered.voxel_offsets: int64 `(N_candidate + 1,)`,
-          以半开区间切分 `voxel_index_local_zyx`; 首值为 0, 末值为 L_voxel.
+        - centered_items.centered.voxel_offsets: int64 `(N_candidate + 1,)`, 以半开区间切分 `voxel_index_local_zyx`; 首值为 0, 末值为 L_voxel.
         - centered_items.centered.voxel_index_local_zyx: int16 `(L_voxel, 3)`, 候选 BOX 内 ZYX 体素索引.
         - centered_items.centered.box_start_zyx: int32 `(N_candidate, 3)`, 候选 BOX 在完整图中的 ZYX 起点.
-        - centered_items.centered.A_offsets: Find Gaussian 专用 int64 `(N_candidate + 1,)`,
-          以半开区间同步切分 `A_coord_local_xyz` 与 `A_probability`; 首值为 0, 末值为 N_A.
+        - centered_items.centered.A_offsets: Find Gaussian 专用 int64 `(N_candidate + 1,)`, 以半开区间同步切分 `A_coord_local_xyz` 与 `A_probability`; 首值为 0, 末值为 N_A.
         - centered_items.centered.A_coord_local_xyz: Find Gaussian 专用 float32 `(N_A, 3)`, BOX 局部 XYZ 原子坐标.
         - centered_items.centered.A_probability: Find Gaussian 专用 float32 `(N_A,)`, A 原子概率.
         - centered_items.centered.voxel_size_world: Find Gaussian 专用 float32 `(N_candidate, 3)`, 世界 XYZ 体素尺寸.
@@ -575,7 +573,10 @@ def tune_centered_selection(
             )
             facts_by_pdb[pdb_id] = CenteredCalibrationFacts(
                 evaluation=evaluation,
-                source_probability_mean=np.asarray(centered["source_probability_mean"], dtype=np.float32),
+                source_probability_mean=np.asarray(
+                    centered["source_probability_mean"],
+                    dtype=np.float32,
+                ),
                 voxel_count=voxel_count,
                 prefilter_eligible=voxel_count >= int(prefiltered_min_voxel),
                 coverage_adjacency=(pred_cover >= 0.3) & (gt_cover >= 0.3),

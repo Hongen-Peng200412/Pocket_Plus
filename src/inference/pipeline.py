@@ -340,8 +340,7 @@ def run_centered_stage(
         - output_root: str | Path, probability, blobs 和 centered 的共同根目录.
         - alpha: float, 来源 blobs 与目标 centered 的 F-alpha 参数.
         - forward_min_voxels: int | None, 正常模式进入 GPU 的来源体素数下限.
-        - selection: Mapping[str, object] | None, 可选 basic 或 Gaussian 冻结参数;
-          分别含固定 `prefiltered_min_voxel` 和搜索所得 `min_voxels`.
+        - selection: Mapping[str, object] | None, 可选 basic 或 Gaussian 冻结参数; 分别含固定 `prefiltered_min_voxel` 和搜索所得 `min_voxels`.
         - overwrite: bool, 正常模式是否重算已有 centered 完成标记.
         - score_only: bool, 是否只替换已有 centered 的 `score` 和 `selected`.
 
@@ -578,13 +577,22 @@ def run_tune_stage(
             if score_mode == "basic":
                 candidate_count = int(np.asarray(loaded_candidate["blob_index"]).size)
                 candidate = {
-                    "source_blob_index": np.asarray(loaded_candidate["blob_index"], dtype=np.int32),
+                    "source_blob_index": np.asarray(
+                        loaded_candidate["blob_index"],
+                        dtype=np.int32,
+                    ),
                     "source_probability_mean": np.asarray(
                         loaded_candidate["source_probability_mean"],
                         dtype=np.float32,
                     ),
-                    "voxel_offsets": np.asarray(loaded_candidate["voxel_offsets"], dtype=np.int64),
-                    "voxel_index_local_zyx": np.asarray(loaded_candidate["voxel_index_global_zyx"], dtype=np.int32),
+                    "voxel_offsets": np.asarray(
+                        loaded_candidate["voxel_offsets"],
+                        dtype=np.int64,
+                    ),
+                    "voxel_index_local_zyx": np.asarray(
+                        loaded_candidate["voxel_index_global_zyx"],
+                        dtype=np.int32,
+                    ),
                     "box_start_zyx": np.zeros((candidate_count, 3), dtype=np.int32),
                 }
             else:
