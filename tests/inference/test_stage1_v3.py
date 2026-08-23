@@ -1124,6 +1124,7 @@ def test_tune_prefilter_is_fixed_before_basic_parameter_search() -> None:
         objective_beta=2.0,
         coverage_thresholds=[0.3, 0.5, 0.6],
         topk_values=[3, 4, 5],
+        workers=1,
     )
     assert best["prefiltered_min_voxel"] == 2
     assert best["min_voxels"] == 1
@@ -1169,6 +1170,7 @@ def test_find_calibration_uses_coarse_refined_then_minimum_stages() -> None:
         objective_beta=2.0,
         coverage_thresholds=[0.3, 0.5, 0.6],
         topk_values=[3, 4, 5],
+        workers=1,
     )
     assert tuple(best["stages"]) == ("coarse", "refined", "min_voxels")
     assert best["prefiltered_min_voxel"] == 2

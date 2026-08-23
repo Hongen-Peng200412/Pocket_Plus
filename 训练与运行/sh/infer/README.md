@@ -115,6 +115,8 @@ bash 训练与运行/sh/infer/stage1_v3.sh centered \
 
 `tune --score-mode gaussian` 对 Find centered 应用同一预过滤，再读取 A 原子表并依次执行 Gaussian 粗搜索、细搜索和最小体素数搜索。输出为 `calibration/F{alpha}_gaussian.json`。
 
+两个模式都读取 `configs/inference/stage1_v3.yaml:calibration.workers`。当前值 16 同时用于候选/occurrence 文件读取、逐 PDB 事实构造和相互独立的参数目标计算；basic 的实际 float32 分数阈值扫描仍按降序串行累计。脚本把 OMP、MKL 与 OpenBLAS 内部线程固定为 1，由调参线程池提供外层并发。并发结果按 YAML 列表原顺序收集，目标并列时仍由原列表中的首项获胜。
+
 ```bash
 bash 训练与运行/sh/infer/stage1_v3.sh tune \
   --producer Find_0 \

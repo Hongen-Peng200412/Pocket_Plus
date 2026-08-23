@@ -1,6 +1,6 @@
 # Stage1 V3 推理测试
 
-本目录验证 `src/inference/` 的正式科学和执行契约。`test_stage1_v3.py` 运行 CPU 科学契约测试，`test_stage1_cuda.py` 在可用 GPU 上运行真实 CUDA 异步 smoke；旧 Selector、组件森林、CLG、Li、固定 `F1_basic/F3_centered` 和 `calibrate/run` 流程的专项测试已经删除，历史行为只通过 Git 查阅。
+本目录验证 `src/inference/` 的正式科学和执行契约。`test_stage1_v3.py` 运行 CPU 科学契约测试，`test_calibration_parallel.py` 验证 basic/Gaussian 外层并发与串行结果等价，`test_stage1_cuda.py` 在可用 GPU 上运行真实 CUDA 异步 smoke；旧 Selector、组件森林、CLG、Li、固定 `F1_basic/F3_centered` 和 `calibrate/run` 流程的专项测试已经删除，历史行为只通过 Git 查阅。
 
 `test_stage1_v3.py` 覆盖以下边界：
 
@@ -18,6 +18,12 @@
 - evaluate 显式结果名、全候选不做二次打分，以及全候选与参数过滤结果并存；
 - centered 全模型前向、score-only 只替换两个选择字段，以及来源 blob 数严格大于 1000 时的 `_BLOB_EXCEED`；
 - 科学概率 NPZ 与性能 JSON 的字段隔离和原子完成标记。
+
+`test_calibration_parallel.py` 另外覆盖：
+
+- `workers=1` 与 `workers>1` 的 basic 完整选择 JSON 逐字段相等，并用同步屏障证明最终 `min_voxels` 目标确实由多个线程重叠计算；
+- `workers=1` 与 `workers>1` 的 Gaussian 粗搜、细搜和最终体素门槛结果逐字段相等；
+- 刻意延迟首个参数任务形成乱序完成，并让全部目标值并列，证明三个阶段仍按配置原顺序保留首项。
 
 运行命令：
 

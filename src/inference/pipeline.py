@@ -19,6 +19,7 @@ from __future__ import annotations
 from collections import deque
 from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
+from time import perf_counter
 from typing import Any, Mapping, Sequence
 
 import numpy as np
@@ -510,42 +511,41 @@ def run_tune_stage(
     alpha_tag = f_alpha_tag(alpha)
     blob_role = f"{alpha_tag}_blobs"
     centered_role = f"{alpha_tag}_centered"
-    items: list[tuple[str, Mapping[str, np.ndarray]]] = []
-    ground_truth: dict[str, tuple[np.ndarray, Sequence[np.ndarray], Sequence[int]]] = {}
-    for pdb_id in pdb_ids:
-        paths = Stage1ArtifactPaths(output_root, producer, split, pdb_id)
-        if score_mode == "basic":
-            blobs = load_stage1_npz(
-                paths.artifact(blob_role),
-                (
+    # 每个 future 二元组分别读取候选 NPZ 与同一 PDB 的 occurrence 体素; 列表顺序保持 pdb_ids 顺序.
+    input_loading_started = perf_counter()
+    pending_inputs: list[
+        tuple[
+            str,
+            Future[Mapping[str, np.ndarray]],
+            Future[
+                tuple[
+                    np.ndarray,
+                    tuple[np.ndarray, ...],
+                    tuple[int, int, int],
+                ]
+            ],
+        ]
+    ] = []
+    with ThreadPoolExecutor(max_workers=int(config.calibration.workers)) as loader:
+        for pdb_id in pdb_ids:
+            paths = Stage1ArtifactPaths(output_root, producer, split, pdb_id)
+            if score_mode == "basic":
+                artifact_path = paths.artifact(blob_role)
+                required_fields = (
                     "blob_index",
                     "source_probability_mean",
                     "voxel_offsets",
                     "voxel_index_global_zyx",
-                ),
-            )
-            candidate_count = int(np.asarray(blobs["blob_index"]).size)
-            candidate = {
-                "source_blob_index": np.asarray(blobs["blob_index"], dtype=np.int32),
-                "source_probability_mean": np.asarray(
-                    blobs["source_probability_mean"], dtype=np.float32
-                ),
-                "voxel_offsets": np.asarray(blobs["voxel_offsets"], dtype=np.int64),
-                "voxel_index_local_zyx": np.asarray(
-                    blobs["voxel_index_global_zyx"], dtype=np.int32
-                ),
-                "box_start_zyx": np.zeros((candidate_count, 3), dtype=np.int32),
-            }
-        else:
-            if (
-                not paths.artifact(centered_role).is_file()
-                and paths.blob_exceed(centered_role).is_file()
-            ):
-                print(f"{pdb_id}: tune skipped because _BLOB_EXCEED")
-                continue
-            candidate = load_stage1_npz(
-                paths.artifact(centered_role),
-                (
+                )
+            else:
+                if (
+                    not paths.artifact(centered_role).is_file()
+                    and paths.blob_exceed(centered_role).is_file()
+                ):
+                    print(f"{pdb_id}: tune skipped because _BLOB_EXCEED")
+                    continue
+                artifact_path = paths.artifact(centered_role)
+                required_fields = (
                     "source_blob_index",
                     "source_probability_mean",
                     "voxel_offsets",
@@ -555,12 +555,42 @@ def run_tune_stage(
                     "A_coord_local_xyz",
                     "A_probability",
                     "voxel_size_world",
-                ),
+                )
+            pending_inputs.append(
+                (
+                    pdb_id,
+                    loader.submit(load_stage1_npz, artifact_path, required_fields),
+                    loader.submit(
+                        load_occurrence_voxels,
+                        Path(data_root) / "density" / pdb_id / "ligand_area.npz",
+                    ),
+                )
             )
-        items.append((pdb_id, candidate))
-        ground_truth[pdb_id] = load_occurrence_voxels(
-            Path(data_root) / "density" / pdb_id / "ligand_area.npz"
-        )
+
+        items: list[tuple[str, Mapping[str, np.ndarray]]] = []
+        ground_truth: dict[str, tuple[np.ndarray, Sequence[np.ndarray], Sequence[int]]] = {}
+        for pdb_id, candidate_future, ground_truth_future in pending_inputs:
+            loaded_candidate = candidate_future.result()
+            if score_mode == "basic":
+                candidate_count = int(np.asarray(loaded_candidate["blob_index"]).size)
+                candidate = {
+                    "source_blob_index": np.asarray(loaded_candidate["blob_index"], dtype=np.int32),
+                    "source_probability_mean": np.asarray(
+                        loaded_candidate["source_probability_mean"],
+                        dtype=np.float32,
+                    ),
+                    "voxel_offsets": np.asarray(loaded_candidate["voxel_offsets"], dtype=np.int64),
+                    "voxel_index_local_zyx": np.asarray(loaded_candidate["voxel_index_global_zyx"], dtype=np.int32),
+                    "box_start_zyx": np.zeros((candidate_count, 3), dtype=np.int32),
+                }
+            else:
+                candidate = loaded_candidate
+            items.append((pdb_id, candidate))
+            ground_truth[pdb_id] = ground_truth_future.result()
+    print(
+        f"[Stage1 tune] 输入文件加载完成: pdb_count={len(items)}, "
+        f"seconds={perf_counter() - input_loading_started:.3f}"
+    )
     selection = tune_centered_selection(
         centered_items=items,
         ground_truth_by_pdb=ground_truth,
@@ -576,6 +606,7 @@ def run_tune_stage(
         objective_beta=float(objective_beta),
         coverage_thresholds=config.evaluation.coverage_thresholds,
         topk_values=config.evaluation.topk_values,
+        workers=int(config.calibration.workers),
     )
     selection = {"alpha": float(alpha), **selection}
     publish_stage1_json(
