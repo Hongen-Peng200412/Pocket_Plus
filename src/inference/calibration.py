@@ -9,7 +9,9 @@
 
 from __future__ import annotations
 
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
+from time import perf_counter
 from typing import Iterable, Mapping, Sequence
 
 import numpy as np
@@ -28,6 +30,7 @@ class CenteredCalibrationFacts:
         - source_probability_mean: float32 ``(N_candidate,)``, 来源 blob 平均概率.
         - voxel_count: int64 ``(N_candidate,)``, 每个来源 blob 的体素数.
         - prefilter_eligible: bool ``(N_candidate,)``, True 表示候选达到 tune 前固定的来源 blob 体素数下限.
+        - coverage_adjacency: bool ``(N_candidate,N_gt)``, True 表示候选与 occurrence 的双向覆盖都达到固定校准阈值 0.3.
         - atom_offsets: int64 ``(N_candidate+1,)``, 以半开区间同时切分 `atom_distance` 和 `atom_probability`; 首值为 0, 末值为 N_atom.
         - atom_distance: float32 ``(N_atom,)``, A 原子到来源 blob 的最近世界距离; 超过 5 Å 为 ``Inf``.
         - atom_probability: float32 ``(N_atom,)``, 与距离逐项对齐的 A 原子概率.
@@ -35,10 +38,11 @@ class CenteredCalibrationFacts:
     非 Find producer 使用一个零 `atom_offsets` 以及空的 `atom_distance` 和 `atom_probability`.
     大型 V/A/P 特征和 48³ 稠密数组不进入本对象.
     """
-    evaluation: PdbEvaluation  # 虽然接收完整的 CenteredCalibrationFacts，实际只读取：atom_offsets, atom_distance, atom_probability, intersection 等不关设打分的字段, 它完全不使用其中的 evaluation, 并不存在“用已经调好的 selected 反过来调参”的循环依赖。
+    evaluation: PdbEvaluation  # 候选与 occurrence 的交集和体素计数; 参数搜索不读取临时 selected 作为监督.
     source_probability_mean: np.ndarray
     voxel_count: np.ndarray
     prefilter_eligible: np.ndarray
+    coverage_adjacency: np.ndarray
     atom_offsets: np.ndarray
     atom_distance: np.ndarray
     atom_probability: np.ndarray
@@ -69,32 +73,6 @@ def _f_beta_from_precision_recall_counts(
     beta2 = float(beta) ** 2
     denominator = beta2 * precision + recall
     return (1.0 + beta2) * precision * recall / denominator if denominator else 0.0
-
-
-def _gaussian_terms(
-    facts_by_pdb: Mapping[str, CenteredCalibrationFacts],
-    tau_angstrom: float,
-) -> dict[str, tuple[np.ndarray, np.ndarray]]:
-    """为一个 tau 计算每个 PDB 的候选 Gaussian 正项和负项.
-
-    输入参数:
-        - facts_by_pdb: 以小写 PDB 标识为键的校准事实; 每个值携带同一 PDB 的 A 原子距离和概率.
-        - tau_angstrom: float, Gaussian 距离标准差, 单位 Å.
-
-    返回值:
-        - result: 以小写 PDB 标识为键的映射; 每个值的第一个 float32 `(N_candidate,)` 数组是 Gaussian 正项, 第二个同形数组是 Gaussian 负项.
-    """
-    # dict[pdb_id, tuple[positive, negative]], 两个 float32 `(N_candidate,)` 数组都与当前 PDB 的候选轴对齐.
-    result: dict[str, tuple[np.ndarray, np.ndarray]] = {}
-    for pdb_id, facts in facts_by_pdb.items():
-        # 每个候选仅归约 atom_offsets 对应区间内的 A 原子; tau 只改变 Gaussian 距离权重.
-        result[pdb_id] = sum_gaussian_atom_terms(
-            facts.atom_offsets,
-            facts.atom_distance,
-            facts.atom_probability,
-            tau_angstrom,
-        )
-    return result
 
 
 def _augment_one_to_one_match(
@@ -181,8 +159,6 @@ def _scan_actual_score_thresholds(
     semantic_tp = semantic_fp = selected_count = 0
     # 三个整数累计 coverage 命中候选数, coverage 命中 occurrence 数和一对一匹配数.
     coverage_pred_hit = coverage_gt_hit = one_to_one_tp = 0
-    # adjacency_by_pdb[pdb_id]: bool `(N_candidate, N_gt)`, True 表示候选与 occurrence 双向覆盖都达到 0.3.
-    adjacency_by_pdb: dict[str, np.ndarray] = {}
     # covered_gt_by_pdb[pdb_id]: bool `(N_gt,)`, True 表示 occurrence 已被当前累计候选集合覆盖.
     covered_gt_by_pdb: dict[str, np.ndarray] = {}
     # matched_gt_by_pdb[pdb_id]: int32 `(N_gt,)`, 数值是当前匹配的候选轴下标; -1 表示未匹配.
@@ -190,21 +166,6 @@ def _scan_actual_score_thresholds(
 
     for pdb_id, facts in facts_by_pdb.items():
         evaluation = facts.evaluation
-        # float64, (N_candidate, N_gt), 每对候选与 occurrence 的交集占候选体素数比例; 空候选取 0.
-        pred_cover = np.divide(
-            evaluation.intersections,
-            evaluation.pred_sizes[:, None],
-            out=np.zeros(evaluation.intersections.shape, dtype=np.float64),
-            where=evaluation.pred_sizes[:, None] > 0,
-        )
-        # float64, (N_candidate, N_gt), 同一交集占 occurrence 体素数比例; 空 occurrence 取 0.
-        gt_cover = np.divide(
-            evaluation.intersections,
-            evaluation.gt_sizes[None, :],
-            out=np.zeros(evaluation.intersections.shape, dtype=np.float64),
-            where=evaluation.gt_sizes[None, :] > 0,
-        )
-        adjacency_by_pdb[pdb_id] = (pred_cover >= 0.3) & (gt_cover >= 0.3)
         covered_gt_by_pdb[pdb_id] = np.zeros(evaluation.gt_sizes.size, dtype=np.bool_)  # 后面更新
         matched_gt_by_pdb[pdb_id] = np.full(evaluation.gt_sizes.size, -1, dtype=np.int32)
 
@@ -224,9 +185,12 @@ def _scan_actual_score_thresholds(
             evaluation = facts.evaluation
             # 当前候选的语义 TP 是其体素与全部真实 occurrence 并集的交集数; 其余预测体素计为 FP.
             semantic_tp += int(evaluation.candidate_semantic_tp[candidate_index])
-            semantic_fp += int(evaluation.pred_sizes[candidate_index] - evaluation.candidate_semantic_tp[candidate_index])
+            semantic_fp += int(
+                evaluation.pred_sizes[candidate_index]
+                - evaluation.candidate_semantic_tp[candidate_index]
+            )
             selected_count += 1
-            adjacency = adjacency_by_pdb[pdb_id]
+            adjacency = facts.coverage_adjacency
             # int64, (N_neighbor,), 当前候选双向覆盖达到 0.3 的 occurrence 轴下标.
             neighbors = np.flatnonzero(adjacency[candidate_index])
             coverage_pred_hit += int(neighbors.size > 0)
@@ -316,22 +280,8 @@ def _selection_objective(
         semantic_gt += int(evaluation.semantic_tp + evaluation.semantic_fn)
         selected_count += int(selected.size)
         gt_count += int(evaluation.gt_sizes.size)
-        # float64, (N_selected, N_gt), 候选侧双向覆盖比例; 第一维已经由 selected 收缩.
-        pred_cover = np.divide(
-            evaluation.intersections[selected],
-            evaluation.pred_sizes[selected, None],
-            out=np.zeros((selected.size, evaluation.gt_sizes.size), dtype=np.float64),
-            where=evaluation.pred_sizes[selected, None] > 0,
-        )
-        # float64, (N_selected, N_gt), occurrence 侧双向覆盖比例; 与 pred_cover 逐候选/occurrence 对齐.
-        gt_cover = np.divide(
-            evaluation.intersections[selected],
-            evaluation.gt_sizes[None, :],
-            out=np.zeros((selected.size, evaluation.gt_sizes.size), dtype=np.float64),
-            where=evaluation.gt_sizes[None, :] > 0,
-        )
-        # bool, (N_selected, N_gt), True 表示候选与 occurrence 两侧覆盖比例都达到 0.3.
-        adjacency = (pred_cover >= 0.3) & (gt_cover >= 0.3)
+        # bool, (N_selected, N_gt), 预计算双向 0.3 覆盖事实按当前已选候选轴切片.
+        adjacency = facts.coverage_adjacency[selected]
         coverage_pred_hit += int(adjacency.any(axis=1).sum())
         coverage_gt_hit += int(adjacency.any(axis=0).sum())
         if adjacency.size:
@@ -344,6 +294,39 @@ def _selection_objective(
         _f_beta_from_counts(semantic_tp, semantic_fp, semantic_fn, beta)
         + _f_beta_from_precision_recall_counts(coverage_pred_hit, selected_count, coverage_gt_hit, gt_count, beta)
         + _f_beta_from_precision_recall_counts(one_to_one_tp, selected_count, one_to_one_tp, gt_count, beta)
+    )
+
+
+def _gaussian_selection_objective(
+    facts_by_pdb: Mapping[str, CenteredCalibrationFacts],
+    terms_by_pdb: Mapping[str, tuple[np.ndarray, np.ndarray]],
+    lambda_positive: float,
+    lambda_negative: float,
+    score_threshold: float,
+    min_voxels: int,
+    beta: float,
+) -> float:
+    """计算一个 Gaussian 参数组合的冻结选择目标.
+
+    `terms_by_pdb` 的正项和负项数组都与对应 PDB 的候选轴对齐. 本函数保持原有
+    float32 系数乘法和逐 PDB 目标计算, 作为粗搜索、细搜索与最终体素门槛搜索
+    共用的外层并发任务.
+    """
+    # 每个 float32 `(N_candidate,)` 数组保存来源均值加 A 原子正项再减负项后的 Gaussian 分数.
+    scores = {
+        pdb_id: (
+            facts_by_pdb[pdb_id].source_probability_mean
+            + np.float32(lambda_positive) * terms[0]
+            - np.float32(lambda_negative) * terms[1]
+        )
+        for pdb_id, terms in terms_by_pdb.items()
+    }
+    return _selection_objective(
+        facts_by_pdb,
+        scores,
+        score_threshold,
+        min_voxels,
+        beta,
     )
 
 
@@ -449,13 +432,17 @@ def tune_centered_selection(
     objective_beta: float,
     coverage_thresholds: Sequence[float],
     topk_values: Sequence[int],
+    workers: int,
 ) -> dict[str, object]:
     """按冻结顺序搜索 centered 分数与最小体素数.
 
-    先固定 ``prefiltered_min_voxel``, 小于该值的候选在全部参数尝试中保持未入选. 
-    basic 模式再在最小 ``min_voxels`` 下扫描实际出现的 float32 分数, 然后冻结分数阈值并扫描全部最小体素数. 
-    Gaussian 模式第一阶段扫描 tau, 两个 lambda 和 ``gauss_score_min`` 的显式粗网格; 第二阶段固定 tau, 对第一阶段三个其余参数应用显式乘数; 第三阶段冻结 Gaussian 参数并只扫描 ``min_voxels``. 
-    目标是 semantic, coverage@0.3 和 one-to-one@0.3 三个 micro F-beta 之和. 
+    先固定 ``prefiltered_min_voxel``, 小于该值的候选在全部参数尝试中保持未入选.
+    basic 模式再在最小 ``min_voxels`` 下扫描实际出现的 float32 分数,
+    然后冻结分数阈值并扫描全部最小体素数.
+    Gaussian 模式第一阶段扫描 tau, 两个 lambda 和 ``gauss_score_min`` 的显式粗网格;
+    第二阶段固定 tau, 对第一阶段三个其余参数应用显式乘数;
+    第三阶段冻结 Gaussian 参数并只扫描 ``min_voxels``.
+    目标是 semantic, coverage@0.3 和 one-to-one@0.3 三个 micro F-beta 之和.
 
     输入参数:
         - centered_items.pdb_id: 字符串, 当前小写 PDB 标识.
@@ -483,6 +470,7 @@ def tune_centered_selection(
         - objective_beta: float, semantic, coverage@0.3 与 one-to-one@0.3 三项 micro F-beta 共同使用的 beta.
         - coverage_thresholds: 浮点数序列, 逐 PDB 事实保存的双向覆盖阈值轴; 校准目标使用 0.3.
         - topk_values: 整数序列, 逐 PDB 事实保存的 top-K 候选数量轴.
+        - workers: int, 校准事实、Gaussian 原子项、参数组合和最终最小体素数组合的外层 CPU 线程数.
 
     返回字段:
         - objective: float, 最终最小体素数对应的三项 micro F-beta 之和.
@@ -512,177 +500,318 @@ def tune_centered_selection(
 
         - stages.min_voxels.objective: float, 最终最小体素数对应的目标值.
         - stages.min_voxels.min_voxels: int, 两种模式最终冻结的最小体素数.
+
+    副作用:
+        - 标准输出记录事实构造、各参数搜索阶段和最终体素门槛搜索的耗时; 这些时间不进入返回映射.
     """
-    # 每个 PDB 只保留交集矩阵, 来源均值, 体素数和可选 A 原子距离表; 大型 centered 特征不常驻校准内存.
-    facts_by_pdb: dict[str, CenteredCalibrationFacts] = {}
-    for pdb_id, centered in centered_items:
-        # N_candidate 是当前 centered 文件的候选数量; source_blob_index 第一维定义权威候选轴.
-        candidate_count = np.asarray(centered["source_blob_index"]).size
-        # 复制当前评估需要的数组, 再临时把全部候选标为已选; 此处只构造参数搜索事实, 不读取既有 selected.
-        all_selected = {name: np.asarray(value) for name, value in centered.items()}
-        all_selected["selected"] = np.ones(candidate_count, dtype=np.bool_)
-        # float32, (N_candidate,), 严格递减的临时分数只用于让评估事实保持原候选顺序.
-        all_selected["score"] = -np.arange(candidate_count, dtype=np.float32)
-        occurrence_id, occurrence_rows, full_shape = ground_truth_by_pdb[pdb_id]
-        # PdbEvaluation 保存候选/occurrence 交集, 两侧体素数和固定覆盖事实; tune 后续不会使用临时 selected 作为监督.
-        evaluation = evaluate_centered_pdb(
-            pdb_id=pdb_id,
-            centered=all_selected,
-            occurrence_id=occurrence_id,
-            occurrence_voxel_zyx=occurrence_rows,
-            full_shape_zyx=full_shape,
-            coverage_thresholds=coverage_thresholds,
-            topk_values=topk_values,
-        )
-        if score_mode == "gaussian":
-            # Gaussian 模式只保留 A 原子 offsets, 到来源 blob 的最近距离和逐原子概率.
-            atom_table = build_gaussian_distance_table(centered)
-            atom_offsets = atom_table["A_offsets"]
-            atom_distance = atom_table["A_distance_to_source"]
-            atom_probability = atom_table["A_probability"]
-        else:
-            # basic 模式没有 A 原子项; 单个零 offsets 与两个空数组仍保持统一字段契约.
-            atom_offsets = np.zeros(1, dtype=np.int64)
-            atom_distance = np.empty(0, dtype=np.float32)
-            atom_probability = np.empty(0, dtype=np.float32)
-        # int64, (N_candidate,), 每个候选的来源 blob 体素数; 相邻 voxel_offsets 的差定义候选区间长度.
-        voxel_count = np.diff(np.asarray(centered["voxel_offsets"], dtype=np.int64))
-        facts_by_pdb[pdb_id] = CenteredCalibrationFacts(
-            evaluation=evaluation,
-            source_probability_mean=np.asarray(centered["source_probability_mean"], dtype=np.float32),
-            voxel_count=voxel_count,
-            prefilter_eligible=voxel_count >= int(prefiltered_min_voxel),
-            atom_offsets=atom_offsets,
-            atom_distance=atom_distance,
-            atom_probability=atom_probability,
-        )
-
-    # 第一和第二阶段统一使用最宽松的体素下限, 最终阶段才单独冻结 min_voxels.
-    initial_min_voxels = min(int(value) for value in min_voxel_values)
-    if score_mode == "basic":
-        # basic 只扫描实际出现的来源 blob 平均概率, 不建立人为阈值网格.
-        # scores[pdb_id]: float32 `(N_candidate,)`, 与当前 PDB 的 CenteredCalibrationFacts 候选轴对齐.
-        scores = {
-            pdb_id: facts.source_probability_mean
-            for pdb_id, facts in facts_by_pdb.items()
-        }
-        first_stage = _scan_actual_score_thresholds(facts_by_pdb, scores, initial_min_voxels, objective_beta)
-        score_parameters: dict[str, float] = {}
-        score_threshold = float(first_stage["score_threshold"])
-        stages: dict[str, object] = {"score_threshold": first_stage}
-    else:
-        # Gaussian 粗网格同时搜索距离尺度, 两个符号项系数和分数下限.
-        coarse_best: dict[str, object] | None = None
-        if score_parameter_grid is None:
-            raise ValueError("gaussian 缺少 score_parameter_grid.")
-        for tau in score_parameter_grid["tau_angstrom"]:
-            # terms[pdb_id] 是当前 tau 下的正项/负项二元组; 每个数组形状为 `(N_candidate,)`.
-            terms = _gaussian_terms(facts_by_pdb, float(tau))
-            for lambda_positive in score_parameter_grid["lambda_positive"]:
-                for lambda_negative in score_parameter_grid["lambda_negative"]:
-                    # 对每个键 pdb_id, 值为float32 `(N_candidate,)`, 来源均值加正项并减负项得到当前系数组合的 Gaussian 分数.
-                    scores = {
-                        pdb_id: (
-                            facts_by_pdb[pdb_id].source_probability_mean
-                            + np.float32(lambda_positive) * values[0]
-                            - np.float32(lambda_negative) * values[1]
-                        )
-                        for pdb_id, values in terms.items()
-                    }
-                    for score_min in score_parameter_grid["gauss_score_min"]:
-                        # 当前粗网格组合固定 initial_min_voxels, 只比较分数参数对应的三项 micro F-beta 总目标.
-                        objective = _selection_objective(
-                            facts_by_pdb,
-                            scores,
-                            float(score_min),
-                            initial_min_voxels,
-                            objective_beta,
-                        )
-                        # 严格提升才替换, 因而完全并列时保留配置列表中先出现的粗网格组合.
-                        if coarse_best is None or objective > float(coarse_best["objective"]):
-                            coarse_best = {
-                                "objective": objective,
-                                "tau_angstrom": float(tau),
-                                "lambda_positive": float(lambda_positive),
-                                "lambda_negative": float(lambda_negative),
-                                "score_threshold": float(score_min),
-                            }
-        if coarse_best is None or refinement_multipliers is None:
-            raise ValueError("gaussian 粗网格或第二阶段乘数为空.")
-        # 细网格固定粗搜索的 tau, 只对两个系数和分数下限应用显式乘数.
-        tau = float(coarse_best["tau_angstrom"])
-        terms = _gaussian_terms(facts_by_pdb, tau)
-        refined_best: dict[str, object] | None = None
-
-        for positive_multiplier in refinement_multipliers["lambda"]:
-            # lambda_positive 与 lambda_negative 分别以粗搜索最优值为中心做乘法细化.
-            lambda_positive = float(coarse_best["lambda_positive"]) * float(positive_multiplier)
-            for negative_multiplier in refinement_multipliers["lambda"]:
-                lambda_negative = float(coarse_best["lambda_negative"]) * float(negative_multiplier)
-                # float32 `(N_candidate,)`, 当前细化系数组合复用冻结 tau 的 Gaussian 正负项.
-                scores = {
-                    pdb_id: (
-                        facts_by_pdb[pdb_id].source_probability_mean
-                        + np.float32(lambda_positive) * values[0]
-                        - np.float32(lambda_negative) * values[1]
-                    )
-                    for pdb_id, values in terms.items()
-                }
-                for threshold_multiplier in refinement_multipliers["score_threshold"]:
-                    # score_threshold 由粗搜索最优分数下限乘当前细化系数得到.
-                    score_threshold = float(coarse_best["score_threshold"]) * float(threshold_multiplier)
-                    objective = _selection_objective(
-                        facts_by_pdb,
-                        scores,
-                        score_threshold,
-                        initial_min_voxels,
-                        objective_beta,
-                    )
-                    # 严格提升才替换, 保持细化乘数列表定义的稳定并列顺序.
-                    if refined_best is None or objective > float(refined_best["objective"]):
-                        refined_best = {
-                            "objective": objective,
-                            "tau_angstrom": tau,
-                            "lambda_positive": lambda_positive,
-                            "lambda_negative": lambda_negative,
-                            "score_threshold": score_threshold,
-                        }
-        if refined_best is None:
-            raise RuntimeError("gaussian 第二阶段没有产生参数组合.")
-        score_parameters = {
-            "tau_angstrom": float(refined_best["tau_angstrom"]),
-            "lambda_positive": float(refined_best["lambda_positive"]),
-            "lambda_negative": float(refined_best["lambda_negative"]),
-        }
-        score_threshold = float(refined_best["score_threshold"])
-        # 最终 min_voxels 扫描复用冻结 Gaussian 参数对应的分数, 不再重新搜索 tau 或 lambda.
-        scores = {
-            pdb_id: (
-                facts_by_pdb[pdb_id].source_probability_mean
-                + np.float32(score_parameters["lambda_positive"]) * values[0]
-                - np.float32(score_parameters["lambda_negative"]) * values[1]
+    # centered_items 的顺序同时定义 PDB 事实和并列参数的稳定输入顺序.
+    ordered_items = tuple(centered_items)
+    tune_started = perf_counter()
+    with ThreadPoolExecutor(max_workers=int(workers)) as executor:
+        # 每个 PDB 的交集事实与可选 A 原子距离表独立构造; `Future` 按输入清单顺序保存和读取.
+        pending_facts: list[
+            tuple[
+                str,
+                Mapping[str, np.ndarray],
+                Future[PdbEvaluation],
+                Future[dict[str, np.ndarray]] | None,
+            ]
+        ] = []
+        for pdb_id, centered in ordered_items:
+            # N_candidate 是当前 centered 文件的候选数量; source_blob_index 第一维定义权威候选轴.
+            candidate_count = np.asarray(centered["source_blob_index"]).size
+            # 临时把全部候选标为已选; 严格递减分数只让评估事实保持原候选顺序, 不读取既有 selected.
+            all_selected = {name: np.asarray(value) for name, value in centered.items()}
+            all_selected["selected"] = np.ones(candidate_count, dtype=np.bool_)
+            all_selected["score"] = -np.arange(candidate_count, dtype=np.float32)
+            occurrence_id, occurrence_rows, full_shape = ground_truth_by_pdb[pdb_id]
+            evaluation_future = executor.submit(
+                evaluate_centered_pdb,
+                pdb_id=pdb_id,
+                centered=all_selected,
+                occurrence_id=occurrence_id,
+                occurrence_voxel_zyx=occurrence_rows,
+                full_shape_zyx=full_shape,
+                coverage_thresholds=coverage_thresholds,
+                topk_values=topk_values,
             )
-            for pdb_id, values in terms.items()
-        }
-        stages = {"coarse": coarse_best, "refined": refined_best}
+            atom_future = (
+                executor.submit(build_gaussian_distance_table, centered)
+                if score_mode == "gaussian"
+                else None
+            )
+            pending_facts.append((pdb_id, centered, evaluation_future, atom_future))
 
-    # 分数定义冻结后只扫描来源 blob 最小体素数.
-    minimum_best: dict[str, object] | None = None
-    for min_voxels in min_voxel_values:
-        # 当前组合只改变候选体素数下限; 分数数组与 score_threshold 在前两个阶段已经冻结.
-        objective = _selection_objective(
-            facts_by_pdb,
-            scores,
-            score_threshold,
-            int(min_voxels),
-            objective_beta,
+        # 每个 PDB 只保留交集矩阵、来源均值、体素数和可选 A 原子距离表; 大型 centered 特征不进入事实表.
+        facts_by_pdb: dict[str, CenteredCalibrationFacts] = {}
+        for pdb_id, centered, evaluation_future, atom_future in pending_facts:
+            evaluation = evaluation_future.result()
+            if atom_future is not None:
+                atom_table = atom_future.result()
+                atom_offsets = atom_table["A_offsets"]
+                atom_distance = atom_table["A_distance_to_source"]
+                atom_probability = atom_table["A_probability"]
+            else:
+                atom_offsets = np.zeros(1, dtype=np.int64)
+                atom_distance = np.empty(0, dtype=np.float32)
+                atom_probability = np.empty(0, dtype=np.float32)
+            # int64, (N_candidate,), 每个候选来源 blob 的体素数; 相邻 voxel_offsets 的差定义候选区间长度.
+            voxel_count = np.diff(np.asarray(centered["voxel_offsets"], dtype=np.int64))
+            # float64, (N_candidate, N_gt), 每对候选与 occurrence 的交集占候选来源 blob 体素数的比例; 空候选取 0.
+            pred_cover = np.divide(
+                evaluation.intersections,
+                evaluation.pred_sizes[:, None],
+                out=np.zeros(evaluation.intersections.shape, dtype=np.float64),
+                where=evaluation.pred_sizes[:, None] > 0,
+            )
+            # float64, (N_candidate, N_gt), 同一交集占真实 occurrence 体素数的比例; 空 occurrence 取 0.
+            gt_cover = np.divide(
+                evaluation.intersections,
+                evaluation.gt_sizes[None, :],
+                out=np.zeros(evaluation.intersections.shape, dtype=np.float64),
+                where=evaluation.gt_sizes[None, :] > 0,
+            )
+            facts_by_pdb[pdb_id] = CenteredCalibrationFacts(
+                evaluation=evaluation,
+                source_probability_mean=np.asarray(
+                    centered["source_probability_mean"],
+                    dtype=np.float32,
+                ),
+                voxel_count=voxel_count,
+                prefilter_eligible=voxel_count >= int(prefiltered_min_voxel),
+                coverage_adjacency=(pred_cover >= 0.3) & (gt_cover >= 0.3),
+                atom_offsets=atom_offsets,
+                atom_distance=atom_distance,
+                atom_probability=atom_probability,
+            )
+        print(
+            f"[Stage1 tune] PDB 事实构造完成: pdb_count={len(facts_by_pdb)}, "
+            f"seconds={perf_counter() - tune_started:.3f}"
         )
-        # 严格提升才替换, 因而目标并列时保留 min_voxel_values 中先出现的体素数下限.
-        if minimum_best is None or objective > float(minimum_best["objective"]):
-            minimum_best = {
-                "objective": objective,
-                "min_voxels": int(min_voxels),
+
+        # 第一和第二阶段统一使用最宽松的体素下限, 最终阶段才单独冻结 min_voxels.
+        initial_min_voxels = min(int(value) for value in min_voxel_values)
+        if score_mode == "basic":
+            # basic 的实际 float32 分数扫描保持串行, 因为候选必须按分数组累计更新匹配状态.
+            scores = {
+                pdb_id: facts.source_probability_mean
+                for pdb_id, facts in facts_by_pdb.items()
             }
+            score_scan_started = perf_counter()
+            first_stage = _scan_actual_score_thresholds(
+                facts_by_pdb,
+                scores,
+                initial_min_voxels,
+                objective_beta,
+            )
+            print(
+                "[Stage1 tune] basic 实际分数阈值扫描完成: "
+                f"seconds={perf_counter() - score_scan_started:.3f}"
+            )
+            score_parameters: dict[str, float] = {}
+            score_threshold = float(first_stage["score_threshold"])
+            stages: dict[str, object] = {"score_threshold": first_stage}
+            minimum_started = perf_counter()
+            minimum_futures = [
+                executor.submit(
+                    _selection_objective,
+                    facts_by_pdb,
+                    scores,
+                    score_threshold,
+                    int(min_voxels),
+                    objective_beta,
+                )
+                for min_voxels in min_voxel_values
+            ]
+        else:
+            if score_parameter_grid is None:
+                raise ValueError("gaussian 缺少 score_parameter_grid.")
+
+            # 每个 tau 与 PDB 的 A 原子归约互相独立; 二维 `Future` 列表仍按 tau 列表和 PDB 清单原顺序收口.
+            gaussian_terms_started = perf_counter()
+            pending_terms: list[
+                tuple[
+                    float,
+                    list[tuple[str, Future[tuple[np.ndarray, np.ndarray]]]],
+                ]
+            ] = []
+            for tau_value in score_parameter_grid["tau_angstrom"]:
+                tau = float(tau_value)
+                pending_terms.append(
+                    (
+                        tau,
+                        [
+                            (
+                                pdb_id,
+                                executor.submit(
+                                    sum_gaussian_atom_terms,
+                                    facts.atom_offsets,
+                                    facts.atom_distance,
+                                    facts.atom_probability,
+                                    tau,
+                                ),
+                            )
+                            for pdb_id, facts in facts_by_pdb.items()
+                        ],
+                    )
+                )
+            terms_by_tau = [
+                (
+                    tau,
+                    {pdb_id: future.result() for pdb_id, future in pdb_futures},
+                )
+                for tau, pdb_futures in pending_terms
+            ]
+            print(
+                "[Stage1 tune] Gaussian 原子项准备完成: "
+                f"tau_count={len(terms_by_tau)}, seconds={perf_counter() - gaussian_terms_started:.3f}"
+            )
+
+            # Gaussian 粗网格 `Future` 按 tau、正项系数、负项系数和分数阈值的原嵌套顺序保存.
+            coarse_started = perf_counter()
+            coarse_futures: list[
+                tuple[
+                    float,
+                    float,
+                    float,
+                    float,
+                    Future[float],
+                ]
+            ] = []
+            for tau, terms in terms_by_tau:
+                for lambda_positive_value in score_parameter_grid["lambda_positive"]:
+                    lambda_positive = float(lambda_positive_value)
+                    for lambda_negative_value in score_parameter_grid["lambda_negative"]:
+                        lambda_negative = float(lambda_negative_value)
+                        for score_min_value in score_parameter_grid["gauss_score_min"]:
+                            score_min = float(score_min_value)
+                            coarse_futures.append(
+                                (
+                                    tau,
+                                    lambda_positive,
+                                    lambda_negative,
+                                    score_min,
+                                    executor.submit(
+                                        _gaussian_selection_objective,
+                                        facts_by_pdb,
+                                        terms,
+                                        lambda_positive,
+                                        lambda_negative,
+                                        score_min,
+                                        initial_min_voxels,
+                                        objective_beta,
+                                    ),
+                                )
+                            )
+
+            coarse_best: dict[str, object] | None = None
+            for tau, lambda_positive, lambda_negative, score_min, future in coarse_futures:
+                objective = future.result()
+                # 结果按配置原顺序读取, 严格提升才替换; 并发完成顺序不参与并列决策.
+                if coarse_best is None or objective > float(coarse_best["objective"]):
+                    coarse_best = {
+                        "objective": objective,
+                        "tau_angstrom": tau,
+                        "lambda_positive": lambda_positive,
+                        "lambda_negative": lambda_negative,
+                        "score_threshold": score_min,
+                    }
+            if coarse_best is None or refinement_multipliers is None:
+                raise ValueError("gaussian 粗网格或第二阶段乘数为空.")
+            print(
+                "[Stage1 tune] Gaussian 粗搜索完成: "
+                f"combination_count={len(coarse_futures)}, seconds={perf_counter() - coarse_started:.3f}"
+            )
+
+            # 细网格固定粗搜索获胜 tau, 并复用相同 tau 的 A 原子正负项.
+            refined_started = perf_counter()
+            tau = float(coarse_best["tau_angstrom"])
+            terms = next(values for candidate_tau, values in terms_by_tau if candidate_tau == tau)
+            refined_futures: list[
+                tuple[
+                    float,
+                    float,
+                    float,
+                    Future[float],
+                ]
+            ] = []
+            for positive_multiplier in refinement_multipliers["lambda"]:
+                lambda_positive = float(coarse_best["lambda_positive"]) * float(positive_multiplier)
+                for negative_multiplier in refinement_multipliers["lambda"]:
+                    lambda_negative = float(coarse_best["lambda_negative"]) * float(negative_multiplier)
+                    for threshold_multiplier in refinement_multipliers["score_threshold"]:
+                        score_threshold_value = float(coarse_best["score_threshold"]) * float(threshold_multiplier)
+                        refined_futures.append(
+                            (
+                                lambda_positive,
+                                lambda_negative,
+                                score_threshold_value,
+                                executor.submit(
+                                    _gaussian_selection_objective,
+                                    facts_by_pdb,
+                                    terms,
+                                    lambda_positive,
+                                    lambda_negative,
+                                    score_threshold_value,
+                                    initial_min_voxels,
+                                    objective_beta,
+                                ),
+                            )
+                        )
+
+            refined_best: dict[str, object] | None = None
+            for lambda_positive, lambda_negative, score_threshold_value, future in refined_futures:
+                objective = future.result()
+                if refined_best is None or objective > float(refined_best["objective"]):
+                    refined_best = {
+                        "objective": objective,
+                        "tau_angstrom": tau,
+                        "lambda_positive": lambda_positive,
+                        "lambda_negative": lambda_negative,
+                        "score_threshold": score_threshold_value,
+                    }
+            if refined_best is None:
+                raise RuntimeError("gaussian 第二阶段没有产生参数组合.")
+            print(
+                "[Stage1 tune] Gaussian 细搜索完成: "
+                f"combination_count={len(refined_futures)}, seconds={perf_counter() - refined_started:.3f}"
+            )
+
+            score_parameters = {
+                "tau_angstrom": float(refined_best["tau_angstrom"]),
+                "lambda_positive": float(refined_best["lambda_positive"]),
+                "lambda_negative": float(refined_best["lambda_negative"]),
+            }
+            score_threshold = float(refined_best["score_threshold"])
+            stages = {"coarse": coarse_best, "refined": refined_best}
+            minimum_started = perf_counter()
+            minimum_futures = [
+                executor.submit(
+                    _gaussian_selection_objective,
+                    facts_by_pdb,
+                    terms,
+                    score_parameters["lambda_positive"],
+                    score_parameters["lambda_negative"],
+                    score_threshold,
+                    int(min_voxels),
+                    objective_beta,
+                )
+                for min_voxels in min_voxel_values
+            ]
+
+        # 分数定义冻结后, 最终体素门槛目标也按配置顺序读取并执行首项获胜规则.
+        minimum_best: dict[str, object] | None = None
+        for min_voxels, future in zip(min_voxel_values, minimum_futures):
+            objective = future.result()
+            if minimum_best is None or objective > float(minimum_best["objective"]):
+                minimum_best = {
+                    "objective": objective,
+                    "min_voxels": int(min_voxels),
+                }
+        print(
+            "[Stage1 tune] 最终 min_voxels 搜索完成: "
+            f"combination_count={len(minimum_futures)}, seconds={perf_counter() - minimum_started:.3f}"
+        )
     if minimum_best is None:
         raise RuntimeError("min_voxel_values 没有产生参数组合.")
     stages["min_voxels"] = minimum_best
