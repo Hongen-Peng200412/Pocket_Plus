@@ -50,7 +50,7 @@ overrides=(
     "train.prefetch_factor=4"
     "train.max_epochs=20"
     "train.val_per_epoch=40"
-    "train.optimizer.lr=1.0e-4"
+    "train.optimizer.lr=5.0e-5"
     "model.backbone.density_cube_cfg.chunk_size=4096"
     "model.backbone.real_density_cube_cfg.chunk_size=8192"
     "model.backbone.real_atom_density_cube_size=9"
@@ -58,7 +58,7 @@ overrides=(
     "train.scheduler.warmup_ratio=0.005"
     "train.scheduler.patience=3"
     "train.scheduler.stop_after_lr_reductions=3"
-    "train.gradient_clip_val=1000"
+    "train.gradient_clip_val=0.5"
     "offline=false"
 )
 

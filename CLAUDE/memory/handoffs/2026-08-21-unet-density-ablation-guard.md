@@ -4,7 +4,7 @@ Date: 2026-08-21
 
 ## Current State
 
-AdaLigand Stage1 的两项 density-only U-Net 消融已完成端到端修复、测试、安全同步和 Slurm 提交。Job `350302` 是 `unet_base`，使用 `nvlink` partition、`nvlinkg8` QOS、1 张 A800 和 16 CPU，已在 `gnode09` 稳定训练；Job `350305` 是 `unet_diff`，使用 `nvlink` partition、`h200g2` QOS、1 张 A800 和 16 CPU，仍因 `Resources` 等待。两项任务都使用 `pre_hold=0`、`after_hold=1`。
+AdaLigand Stage1 的两项 density-only U-Net 消融已完成端到端修复、测试、安全同步、Slurm 提交和最终运行核验。Job `350302` 是 `unet_base`，使用 `nvlink` partition、`nvlinkg8` QOS、1 张 A800 和 16 CPU，已在 `gnode09` 稳定训练；Job `350305` 是 `unet_diff`，使用 `nvlink` partition、`h200g2` QOS、1 张 A800 和 16 CPU，已在 `gnode10` 稳定训练。两项任务都使用 `pre_hold=0`、`after_hold=1`。
 
 详细证据和后续关键事件记录在 `文档/exec_plan/2026-08-21_unet密度通道消融守护.md`。
 
@@ -19,6 +19,8 @@ AdaLigand Stage1 的两项 density-only U-Net 消融已完成端到端修复、�
 - 安全同步后的本地与服务器关键文件 SHA-256 一致。
 - 相关任务文件已从 Git 暂存区撤出；本地改动保持未暂存或未跟踪，没有创建提交。
 - Job `350302` 的 release、launch 与最终配置已核验；W&B 本地摘要达到 `trainer/global_step=1154`，训练总损失约 `0.1692`，首次验证总损失约 `0.2399`、配体体素 PRAUC 约 `0.5019`，五项损失均为有限数值，已判定持续稳定训练。
+- Job `350305` 的 launch 为 `unet_diff_job350305_20260822T171529_a1`，release 为 `Pocket_Plus_fdb8a30fa196`；最终配置确认 2 个差分密度通道、全局批量 48、每卡批量 8、梯度累积 6、16 个 worker、学习率 `1.0e-4`、结构输出头和五项损失全部开启。W&B 本地摘要连续从 `trainer/global_step=5` 推进到 23、38，五项损失均为有限值，A800 显存约 79.4 GiB，GPU 利用率抽样为 57% 和 73%，没有错误、OOM、NaN 或 `try_lock`；已判定稳定训练。
+- Job `350305` 已在 `trainer/global_step=1175` 完成首次验证：验证总损失约 `0.2976`、配体体素 PRAUC 约 `0.2980`、受体 PRAUC 约 `0.2707`，五项验证损失均为有限值并继续训练。同期 Job `350302` 达到 `trainer/global_step=6998`；两项任务均没有错误、OOM、NaN 或 `try_lock`。
 
 ## Decisions
 
@@ -29,16 +31,13 @@ AdaLigand Stage1 的两项 density-only U-Net 消融已完成端到端修复、�
 
 ## Open Questions
 
-- Job `350305` 何时获得 A800 由 Slurm 资源可用性决定。
-- Job `350305` 获得资源后仍需以 release、launch 和训练目录中的最终 `config.yaml` 核验真实运行配置，并确认正常 step 或明确的长时间内存加载状态。
+- 当前没有配置或启动阻塞；后续只需守护两项训练的运行、验证、失败、`try_lock` 与结束事件。
 
 ## Next Actions
 
-1. 以 60 或 120 分钟静默周期监视已稳定训练的 Job `350302` 和仍在排队的 Job `350305`。
-2. Job `350305` 启动后核验 release、launch、最终 Hydra 配置、标准输出和标准错误。
-3. 确认 Job `350305` 进入正常 step 或可证明的内存加载阶段后，把两项任务共同纳入稳定训练守护。
-4. 只在关键事件发生时更新运行记录和本 handoff。
-5. 若任务结束并进入 `try_lock`，保留资源与锁，先诊断并向用户报告，不擅自删除锁或重启。
+1. 两项任务共同采用由连续 300 秒睡眠片段组成的 60 或 120 分钟静默守护周期，不创建 heartbeat。
+2. 只在失败、进入 `try_lock`、结束或其他重要状态变化时更新运行记录和本 handoff。
+3. 若任务结束并进入 `try_lock`，保留资源与锁，先诊断并向用户报告，不擅自删除锁或重启。
 
 ## Files To Reopen
 
