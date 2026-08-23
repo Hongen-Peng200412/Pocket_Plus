@@ -65,6 +65,18 @@ def test_window_geometry_and_normalized_gaussian() -> None:
     assert weight[39, 39, 39] > weight[0, 0, 0]
 
 
+def test_inference_shell_pins_nested_numeric_threads_to_one() -> None:
+    """外层推理与调参并发启用时, shell 必须覆盖继承环境并把数值库线程固定为 1."""
+
+    project_root = Path(__file__).resolve().parents[2]
+    shell_text = (project_root / "训练与运行" / "sh" / "infer" / "stage1_v3.sh").read_text(
+        encoding="utf-8"
+    )
+    for variable_name in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS"):
+        assert f"export {variable_name}=1" in shell_text
+        assert f"{variable_name}:-1" not in shell_text
+
+
 def test_blobs_keep_all_components_and_sort_stably() -> None:
     """连通区域阶段不应用 min_voxels, 同均值按最小全图线性索引排序."""
 

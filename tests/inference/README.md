@@ -23,12 +23,13 @@
 
 - `workers=1` 与 `workers>1` 的 basic 完整选择 JSON 逐字段相等，并用同步屏障证明最终 `min_voxels` 目标确实由多个线程重叠计算；
 - `workers=1` 与 `workers>1` 的 Gaussian 粗搜、细搜和最终体素门槛结果逐字段相等；
-- 刻意延迟首个参数任务形成乱序完成，并让全部目标值并列，证明三个阶段仍按配置原顺序保留首项。
+- 用线程事件分别阻塞粗搜、细搜和最终体素门槛的首个参数任务，并让全部目标值并列，证明三个阶段乱序完成时仍按配置原顺序保留首项；
+- `run_tune_stage()` 以两个 worker 并行读取临时正式 NPZ，保持 PDB 清单顺序，完成 basic 字段改名、Gaussian A 原子字段读取和两类 JSON 发布。
 
 运行命令：
 
 ```powershell
-D:\Anaconda\envs\Pocket_Plus_windows\python.exe -m pytest -q tests/inference/test_stage1_v3.py
+D:\Anaconda\envs\Pocket_Plus_windows\python.exe -m pytest -q tests/inference/test_stage1_v3.py tests/inference/test_calibration_parallel.py
 ```
 
 测试使用 CPU 构造最小数组和临时目录，不需要正式 checkpoint。真实 checkpoint、CUDA 显存和 GPU 利用率属于 `ops/stage1_inference_benchmark/` 的实战验证。
@@ -39,4 +40,4 @@ CUDA smoke 单独运行，覆盖 probability 与 centered 的真实 CUDA 前向�
 D:\Anaconda\envs\Pocket_Plus_windows\python.exe -m pytest -q tests/inference/test_stage1_cuda.py
 ```
 
-本目录与 `tests/datasets/test_stage1_dataset.py` 应在同一次 CPU 回归中运行。`run_centered_stage()` 的首次发布和 score-only 更新都由正式发布测试覆盖，不保留只测试薄包装的单独用例。实际测试次数、GPU 型号和运行结果记录在 AdaLigand `文档/exec_plan/Stage1_V3推理重写实施记录.md`。
+完整 CPU 回归同时运行 `tests/inference/test_stage1_v3.py`、`tests/inference/test_calibration_parallel.py` 与 `tests/datasets/test_stage1_dataset.py`。`run_centered_stage()` 的首次发布和 score-only 更新，以及 `run_tune_stage()` 的 basic/Gaussian 并行加载、字段转换与 JSON 发布，都由正式入口测试覆盖，不保留只测试薄包装的单独用例。实际测试次数、GPU 型号和运行结果记录在 AdaLigand 的对应执行记录。

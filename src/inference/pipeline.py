@@ -340,7 +340,8 @@ def run_centered_stage(
         - output_root: str | Path, probability, blobs 和 centered 的共同根目录.
         - alpha: float, 来源 blobs 与目标 centered 的 F-alpha 参数.
         - forward_min_voxels: int | None, 正常模式进入 GPU 的来源体素数下限.
-        - selection: Mapping[str, object] | None, 可选 basic 或 Gaussian 冻结参数; 分别含固定 `prefiltered_min_voxel` 和搜索所得 `min_voxels`.
+        - selection: Mapping[str, object] | None, 可选 basic 或 Gaussian 冻结参数;
+          分别含固定 `prefiltered_min_voxel` 和搜索所得 `min_voxels`.
         - overwrite: bool, 正常模式是否重算已有 centered 完成标记.
         - score_only: bool, 是否只替换已有 centered 的 `score` 和 `selected`.
 
@@ -506,12 +507,15 @@ def run_tune_stage(
 
     返回值:
         - selection: dict[str, object], 字段完整遵循 :func:`tune_centered_selection`; pipeline 只在顶层增加 float `alpha`.
+
+    副作用:
+        - 标准输出记录候选 NPZ 与 `ligand_area.npz` 的并行加载耗时; 该时间不写入选择参数 JSON.
     """
 
     alpha_tag = f_alpha_tag(alpha)
     blob_role = f"{alpha_tag}_blobs"
     centered_role = f"{alpha_tag}_centered"
-    # 每个 future 二元组分别读取候选 NPZ 与同一 PDB 的 occurrence 体素; 列表顺序保持 pdb_ids 顺序.
+    # 每个 `Future` 二元组分别读取候选 NPZ 与同一 PDB 的 occurrence 体素; 列表顺序保持 pdb_ids 顺序.
     input_loading_started = perf_counter()
     pending_inputs: list[
         tuple[

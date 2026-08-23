@@ -436,19 +436,24 @@ def tune_centered_selection(
 ) -> dict[str, object]:
     """按冻结顺序搜索 centered 分数与最小体素数.
 
-    先固定 ``prefiltered_min_voxel``, 小于该值的候选在全部参数尝试中保持未入选. 
-    basic 模式再在最小 ``min_voxels`` 下扫描实际出现的 float32 分数, 然后冻结分数阈值并扫描全部最小体素数. 
-    Gaussian 模式第一阶段扫描 tau, 两个 lambda 和 ``gauss_score_min`` 的显式粗网格; 第二阶段固定 tau, 对第一阶段三个其余参数应用显式乘数; 第三阶段冻结 Gaussian 参数并只扫描 ``min_voxels``. 
-    目标是 semantic, coverage@0.3 和 one-to-one@0.3 三个 micro F-beta 之和. 
+    先固定 ``prefiltered_min_voxel``, 小于该值的候选在全部参数尝试中保持未入选.
+    basic 模式再在最小 ``min_voxels`` 下扫描实际出现的 float32 分数,
+    然后冻结分数阈值并扫描全部最小体素数.
+    Gaussian 模式第一阶段扫描 tau、两个 lambda 和 ``gauss_score_min`` 的显式粗网格;
+    第二阶段固定 tau, 对第一阶段三个其余参数应用显式乘数;
+    第三阶段冻结 Gaussian 参数并只扫描 ``min_voxels``.
+    目标是 semantic、coverage@0.3 和 one-to-one@0.3 三个 micro F-beta 之和.
 
     输入参数:
         - centered_items.pdb_id: 字符串, 当前小写 PDB 标识.
         - centered_items.centered.source_blob_index: int32 `(N_candidate,)`, 来源 blob 编号.
         - centered_items.centered.source_probability_mean: float32 `(N_candidate,)`, 来源 blob 平均概率.
-        - centered_items.centered.voxel_offsets: int64 `(N_candidate + 1,)`, 以半开区间切分 `voxel_index_local_zyx`; 首值为 0, 末值为 L_voxel.
+        - centered_items.centered.voxel_offsets: int64 `(N_candidate + 1,)`,
+          以半开区间切分 `voxel_index_local_zyx`; 首值为 0, 末值为 L_voxel.
         - centered_items.centered.voxel_index_local_zyx: int16 `(L_voxel, 3)`, 候选 BOX 内 ZYX 体素索引.
         - centered_items.centered.box_start_zyx: int32 `(N_candidate, 3)`, 候选 BOX 在完整图中的 ZYX 起点.
-        - centered_items.centered.A_offsets: Find Gaussian 专用 int64 `(N_candidate + 1,)`, 以半开区间同步切分 `A_coord_local_xyz` 与 `A_probability`; 首值为 0, 末值为 N_A.
+        - centered_items.centered.A_offsets: Find Gaussian 专用 int64 `(N_candidate + 1,)`,
+          以半开区间同步切分 `A_coord_local_xyz` 与 `A_probability`; 首值为 0, 末值为 N_A.
         - centered_items.centered.A_coord_local_xyz: Find Gaussian 专用 float32 `(N_A, 3)`, BOX 局部 XYZ 原子坐标.
         - centered_items.centered.A_probability: Find Gaussian 专用 float32 `(N_A,)`, A 原子概率.
         - centered_items.centered.voxel_size_world: Find Gaussian 专用 float32 `(N_candidate, 3)`, 世界 XYZ 体素尺寸.
@@ -497,12 +502,15 @@ def tune_centered_selection(
 
         - stages.min_voxels.objective: float, 最终最小体素数对应的目标值.
         - stages.min_voxels.min_voxels: int, 两种模式最终冻结的最小体素数.
+
+    副作用:
+        - 标准输出记录事实构造、各参数搜索阶段和最终体素门槛搜索的耗时; 这些时间不进入返回映射.
     """
     # centered_items 的顺序同时定义 PDB 事实和并列参数的稳定输入顺序.
     ordered_items = tuple(centered_items)
     tune_started = perf_counter()
     with ThreadPoolExecutor(max_workers=int(workers)) as executor:
-        # 每个 PDB 的交集事实与可选 A 原子距离表独立构造; future 按输入清单顺序保存和读取.
+        # 每个 PDB 的交集事实与可选 A 原子距离表独立构造; `Future` 按输入清单顺序保存和读取.
         pending_facts: list[
             tuple[
                 str,
@@ -551,13 +559,14 @@ def tune_centered_selection(
                 atom_probability = np.empty(0, dtype=np.float32)
             # int64, (N_candidate,), 每个候选来源 blob 的体素数; 相邻 voxel_offsets 的差定义候选区间长度.
             voxel_count = np.diff(np.asarray(centered["voxel_offsets"], dtype=np.int64))
-            # 两个 float64 `(N_candidate,N_gt)` 比例共享交集矩阵; 空候选或空 occurrence 的覆盖比例固定为 0.
+            # float64, (N_candidate, N_gt), 每对候选与 occurrence 的交集占候选来源 blob 体素数的比例; 空候选取 0.
             pred_cover = np.divide(
                 evaluation.intersections,
                 evaluation.pred_sizes[:, None],
                 out=np.zeros(evaluation.intersections.shape, dtype=np.float64),
                 where=evaluation.pred_sizes[:, None] > 0,
             )
+            # float64, (N_candidate, N_gt), 同一交集占真实 occurrence 体素数的比例; 空 occurrence 取 0.
             gt_cover = np.divide(
                 evaluation.intersections,
                 evaluation.gt_sizes[None, :],
@@ -601,6 +610,7 @@ def tune_centered_selection(
             score_parameters: dict[str, float] = {}
             score_threshold = float(first_stage["score_threshold"])
             stages: dict[str, object] = {"score_threshold": first_stage}
+            minimum_started = perf_counter()
             minimum_futures = [
                 executor.submit(
                     _selection_objective,
@@ -616,7 +626,7 @@ def tune_centered_selection(
             if score_parameter_grid is None:
                 raise ValueError("gaussian 缺少 score_parameter_grid.")
 
-            # 每个 tau 与 PDB 的 A 原子归约互相独立; 二维 future 仍按 tau 列表和 PDB 清单原顺序收口.
+            # 每个 tau 与 PDB 的 A 原子归约互相独立; 二维 `Future` 列表仍按 tau 列表和 PDB 清单原顺序收口.
             gaussian_terms_started = perf_counter()
             pending_terms: list[
                 tuple[
@@ -656,7 +666,7 @@ def tune_centered_selection(
                 f"tau_count={len(terms_by_tau)}, seconds={perf_counter() - gaussian_terms_started:.3f}"
             )
 
-            # Gaussian 粗网格 future 按 tau、正项系数、负项系数和分数阈值的原嵌套顺序保存.
+            # Gaussian 粗网格 `Future` 按 tau、正项系数、负项系数和分数阈值的原嵌套顺序保存.
             coarse_started = perf_counter()
             coarse_futures: list[
                 tuple[
@@ -773,6 +783,7 @@ def tune_centered_selection(
             }
             score_threshold = float(refined_best["score_threshold"])
             stages = {"coarse": coarse_best, "refined": refined_best}
+            minimum_started = perf_counter()
             minimum_futures = [
                 executor.submit(
                     _gaussian_selection_objective,
@@ -788,7 +799,6 @@ def tune_centered_selection(
             ]
 
         # 分数定义冻结后, 最终体素门槛目标也按配置顺序读取并执行首项获胜规则.
-        minimum_started = perf_counter()
         minimum_best: dict[str, object] | None = None
         for min_voxels, future in zip(min_voxel_values, minimum_futures):
             objective = future.result()

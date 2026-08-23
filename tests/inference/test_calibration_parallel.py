@@ -3,14 +3,19 @@
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
 import threading
-import time
 
 import numpy as np
+from omegaconf import OmegaConf
 import pytest
 
 import src.inference.calibration as calibration_module
+import src.inference.pipeline as pipeline_module
+from src.inference.artifacts import Stage1ArtifactPaths, publish_stage1_artifact
 from src.inference.calibration import tune_centered_selection
+from src.inference.pipeline import run_tune_stage
 
 
 def _build_parallel_tuning_case() -> tuple[
@@ -139,6 +144,179 @@ def test_gaussian_parallel_result_is_exact() -> None:
     assert parallel == serial
 
 
+def test_run_tune_stage_parallel_loads_both_modes_and_publishes_json(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """正式 tune 入口必须并行读取输入, 保持 PDB 顺序并发布 basic/Gaussian JSON."""
+    config = OmegaConf.create(
+        {
+            "calibration": {
+                "workers": 2,
+                "min_voxel_values": [1, 2],
+                "gaussian_grid": {
+                    "tau_angstrom": [1.0],
+                    "lambda_positive": [0.2],
+                    "lambda_negative": [0.1],
+                    "gauss_score_min": [0.5],
+                },
+                "gaussian_refinement": {
+                    "lambda": [1.0],
+                    "score_threshold": [1.0],
+                },
+            },
+            "evaluation": {
+                "coverage_thresholds": [0.3, 0.5, 0.6],
+                "topk_values": [3, 4, 5],
+            },
+        }
+    )
+    data_root = tmp_path / "data"
+    output_root = tmp_path / "artifacts"
+    pdb_ids = ("second", "first")
+    voxel_rows = {
+        "second": np.asarray([[1, 1, 1], [1, 1, 2]], dtype=np.int32),
+        "first": np.asarray([[0, 0, 0], [0, 0, 1]], dtype=np.int32),
+    }
+    for index, pdb_id in enumerate(pdb_ids):
+        density_root = data_root / "density" / pdb_id
+        density_root.mkdir(parents=True)
+        np.savez(
+            density_root / "ligand_area.npz",
+            grid_shape_zyx=np.asarray([4, 4, 4], dtype=np.int32),
+            mask_7=voxel_rows[pdb_id],
+        )
+        basic_paths = Stage1ArtifactPaths(
+            output_root,
+            "unet_c1",
+            "calibration",
+            pdb_id,
+        )
+        publish_stage1_artifact(
+            basic_paths.artifact("F1_blobs"),
+            {
+                "blob_index": np.asarray([index], dtype=np.int32),
+                "source_probability_mean": np.asarray([0.8 - 0.2 * index], dtype=np.float32),
+                "voxel_offsets": np.asarray([0, 2], dtype=np.int64),
+                "voxel_index_global_zyx": voxel_rows[pdb_id],
+            },
+            None,
+        )
+        gaussian_paths = Stage1ArtifactPaths(
+            output_root,
+            "Find_0",
+            "calibration",
+            pdb_id,
+        )
+        publish_stage1_artifact(
+            gaussian_paths.artifact("F2_centered"),
+            {
+                "source_blob_index": np.asarray([index], dtype=np.int32),
+                "source_probability_mean": np.asarray([0.8 - 0.2 * index], dtype=np.float32),
+                "voxel_offsets": np.asarray([0, 2], dtype=np.int64),
+                "voxel_index_local_zyx": voxel_rows[pdb_id].astype(np.int16),
+                "box_start_zyx": np.zeros((1, 3), dtype=np.int32),
+                "A_offsets": np.asarray([0, 1], dtype=np.int64),
+                "A_coord_local_xyz": voxel_rows[pdb_id][:1, ::-1].astype(np.float32) + 0.5,
+                "A_probability": np.asarray([0.75], dtype=np.float32),
+                "voxel_size_world": np.ones((1, 3), dtype=np.float32),
+            },
+            None,
+        )
+
+    original_load_npz = pipeline_module.load_stage1_npz
+    original_load_occurrence = pipeline_module.load_occurrence_voxels
+    original_tune = pipeline_module.tune_centered_selection
+    first_two_loads = threading.Barrier(2)
+    loader_threads: set[int] = set()
+    load_count = 0
+    state_lock = threading.Lock()
+
+    def synchronized_npz_load(*args: object, **kwargs: object) -> dict[str, np.ndarray]:
+        nonlocal load_count
+        with state_lock:
+            current_load = load_count
+            load_count += 1
+            loader_threads.add(threading.get_ident())
+        if current_load < 2:
+            first_two_loads.wait(timeout=5.0)
+        return original_load_npz(*args, **kwargs)
+
+    def synchronized_occurrence_load(
+        *args: object,
+        **kwargs: object,
+    ) -> tuple[np.ndarray, tuple[np.ndarray, ...], tuple[int, int, int]]:
+        nonlocal load_count
+        with state_lock:
+            current_load = load_count
+            load_count += 1
+            loader_threads.add(threading.get_ident())
+        if current_load < 2:
+            first_two_loads.wait(timeout=5.0)
+        return original_load_occurrence(*args, **kwargs)
+
+    observed_calls: list[dict[str, object]] = []
+
+    def recording_tune(**kwargs: object) -> dict[str, object]:
+        items = tuple(kwargs["centered_items"])
+        kwargs["centered_items"] = items
+        observed_calls.append(
+            {
+                "score_mode": kwargs["score_mode"],
+                "workers": kwargs["workers"],
+                "pdb_ids": tuple(pdb_id for pdb_id, _ in items),
+                "first_fields": tuple(items[0][1]),
+            }
+        )
+        return original_tune(**kwargs)
+
+    monkeypatch.setattr(pipeline_module, "load_stage1_npz", synchronized_npz_load)
+    monkeypatch.setattr(
+        pipeline_module,
+        "load_occurrence_voxels",
+        synchronized_occurrence_load,
+    )
+    monkeypatch.setattr(pipeline_module, "tune_centered_selection", recording_tune)
+
+    basic = run_tune_stage(
+        config=config,
+        data_root=data_root,
+        producer="unet_c1",
+        split="calibration",
+        pdb_ids=pdb_ids,
+        output_root=output_root,
+        alpha=1.0,
+        score_mode="basic",
+        objective_beta=1.0,
+        prefiltered_min_voxel=1,
+    )
+    gaussian = run_tune_stage(
+        config=config,
+        data_root=data_root,
+        producer="Find_0",
+        split="calibration",
+        pdb_ids=pdb_ids,
+        output_root=output_root,
+        alpha=2.0,
+        score_mode="gaussian",
+        objective_beta=2.0,
+        prefiltered_min_voxel=1,
+    )
+
+    assert len(loader_threads) >= 2
+    assert observed_calls[0]["pdb_ids"] == pdb_ids
+    assert observed_calls[0]["workers"] == 2
+    assert "source_blob_index" in observed_calls[0]["first_fields"]
+    assert "blob_index" not in observed_calls[0]["first_fields"]
+    assert observed_calls[1]["pdb_ids"] == pdb_ids
+    assert observed_calls[1]["workers"] == 2
+    assert "A_offsets" in observed_calls[1]["first_fields"]
+    basic_json = output_root / "unet_c1" / "calibration" / "F1_basic.json"
+    gaussian_json = output_root / "Find_0" / "calibration" / "F2_gaussian.json"
+    assert json.loads(basic_json.read_text(encoding="utf-8")) == basic
+    assert json.loads(gaussian_json.read_text(encoding="utf-8")) == gaussian
+
+
 def test_gaussian_out_of_order_completion_keeps_first_tied_configuration(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -166,28 +344,112 @@ def test_gaussian_out_of_order_completion_keeps_first_tied_configuration(
     }
     serial = tune_centered_selection(**arguments, workers=1)
 
-    original_objective = calibration_module._selection_objective
-    completion_order: list[int] = []
-    next_call = 0
+    original_atom_terms = calibration_module.sum_gaussian_atom_terms
+    original_gaussian_objective = calibration_module._gaussian_selection_objective
+    atom_barrier = threading.Barrier(2)
+    search_barriers = {
+        "coarse": threading.Barrier(2),
+        "refined": threading.Barrier(2),
+        "min_voxels": threading.Barrier(2),
+    }
+    release_first_configuration = {
+        stage: threading.Event() for stage in search_barriers
+    }
+    atom_threads: set[int] = set()
+    search_threads = {stage: set() for stage in search_barriers}
+    completion_order: list[tuple[str, float, float, float, int]] = []
+    atom_call_count = 0
+    search_call_count = 0
     state_lock = threading.Lock()
 
-    def delayed_first_objective(*args: object, **kwargs: object) -> float:
-        nonlocal next_call
+    def synchronized_atom_terms(*args: object, **kwargs: object) -> tuple[np.ndarray, np.ndarray]:
+        nonlocal atom_call_count
         with state_lock:
-            current_call = next_call
-            next_call += 1
-        if current_call == 0:
-            time.sleep(0.1)
-        objective = original_objective(*args, **kwargs)
+            current_call = atom_call_count
+            atom_call_count += 1
+            atom_threads.add(threading.get_ident())
+        if current_call < 2:
+            atom_barrier.wait(timeout=5.0)
+        return original_atom_terms(*args, **kwargs)
+
+    def delayed_gaussian_objective(
+        facts_by_pdb: object,
+        terms_by_pdb: object,
+        lambda_positive: float,
+        lambda_negative: float,
+        score_threshold: float,
+        min_voxels: int,
+        beta: float,
+    ) -> float:
+        nonlocal search_call_count
         with state_lock:
-            completion_order.append(current_call)
+            current_call = search_call_count
+            search_call_count += 1
+        if current_call < 8:
+            stage = "coarse"
+            stage_offset = current_call
+        elif current_call < 16:
+            stage = "refined"
+            stage_offset = current_call - 8
+        else:
+            stage = "min_voxels"
+            stage_offset = current_call - 16
+        with state_lock:
+            search_threads[stage].add(threading.get_ident())
+        if stage_offset < 2:
+            search_barriers[stage].wait(timeout=5.0)
+
+        is_first_configuration = (
+            stage == "coarse"
+            and np.isclose(lambda_positive, 0.2)
+            and np.isclose(lambda_negative, 0.1)
+            and np.isclose(score_threshold, 0.5)
+        ) or (
+            stage != "coarse"
+            and np.isclose(lambda_positive, 0.16)
+            and np.isclose(lambda_negative, 0.08)
+            and np.isclose(score_threshold, 0.25)
+            and min_voxels == 1
+        )
+        if is_first_configuration:
+            if not release_first_configuration[stage].wait(timeout=5.0):
+                raise RuntimeError(f"{stage} 首个配置没有等到另一个任务先完成")
+        objective = original_gaussian_objective(
+            facts_by_pdb,
+            terms_by_pdb,
+            lambda_positive,
+            lambda_negative,
+            score_threshold,
+            min_voxels,
+            beta,
+        )
+        with state_lock:
+            completion_order.append(
+                (
+                    stage,
+                    lambda_positive,
+                    lambda_negative,
+                    score_threshold,
+                    min_voxels,
+                )
+            )
+        if not is_first_configuration:
+            release_first_configuration[stage].set()
         return objective
 
-    monkeypatch.setattr(calibration_module, "_selection_objective", delayed_first_objective)
+    monkeypatch.setattr(calibration_module, "sum_gaussian_atom_terms", synchronized_atom_terms)
+    monkeypatch.setattr(calibration_module, "_gaussian_selection_objective", delayed_gaussian_objective)
     parallel = tune_centered_selection(**arguments, workers=4)
 
     assert parallel == serial
-    assert completion_order[0] != 0
+    assert len(atom_threads) >= 2
+    assert all(len(thread_ids) >= 2 for thread_ids in search_threads.values())
+    for stage in ("coarse", "refined", "min_voxels"):
+        first_completed = next(entry for entry in completion_order if entry[0] == stage)
+        if stage == "coarse":
+            assert first_completed[1:4] != pytest.approx((0.2, 0.1, 0.5))
+        else:
+            assert first_completed[1:] != pytest.approx((0.16, 0.08, 0.25, 1))
     assert parallel["stages"]["coarse"] == {
         "objective": 0.0,
         "tau_angstrom": 1.0,
