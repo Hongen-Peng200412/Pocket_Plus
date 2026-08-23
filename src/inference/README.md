@@ -13,7 +13,7 @@
 | 5 | `centered.py` | `infer_centered_boxes()` 执行候选完整前向；`pack_centered_entries()` 组装共享 offsets 的正式数组 |
 | 6 | `scoring.py` | `score_centered_candidates()` 计算 basic 来源均值分数或 Find A 原子 Gaussian 分数 |
 | 7 | `evaluation.py` | `evaluate_centered_pdb()` 计算逐 PDB 交集事实；`aggregate_stage1_metrics()` 汇总 micro、macro 与 top-K 指标 |
-| 8 | `calibration.py` | `calibrate_semantic_thresholds()` 拟合单个 alpha 语义阈值；`tune_centered_selection()` 调整 basic/Gaussian 选择参数 |
+| 8 | `calibration.py` | `calibrate_semantic_thresholds()` 拟合单个 alpha 语义阈值；`tune_centered_selection()` 按固定配置顺序并行调整 basic/Gaussian 选择参数 |
 | 9 | `pipeline.py` | 五个 `run_*_stage()` 直接编排跨 PDB 阶段、并行队列和文件发布 |
 | 10 | `cli.py` | `main()` 解析五个子命令、JSON 清单和固定随机分片；只在 GPU 阶段构造 Dataset/wrapper |
 
@@ -231,6 +231,8 @@ $d_i$ 是 A 原子到同候选来源 blob 最近体素中心的世界距离，�
 ## 并行与发布
 
 一个 PDB 内部，CPU 线程提前物化 batch，当前调用线程独占 GPU，异步 D2H 结果由单独 CPU 线程按提交顺序融合或整理。跨 PDB 时，probability 与 centered 的 NPZ 压缩分别与下一个 PDB 的 GPU 前向重叠；两个 pending 配置限制尚未发布的大数组数量。
+
+`run_tune_stage()` 使用 `calibration.workers` 并行读取多个 PDB 的候选 NPZ 与 `ligand_area.npz`，`tune_centered_selection()` 使用同一线程数并行构造逐 PDB 事实、准备 Gaussian 原子项、计算 Gaussian 粗搜与细搜组合，以及计算最终 `min_voxels` 组合。basic 的实际分数阈值扫描保持串行，因为它按分数降序累计语义计数、覆盖状态和一对一增广匹配。全部异步任务句柄（`Future`）都按 PDB 清单或配置列表的原顺序读取，再用“目标值仅严格提升才替换”的规则选取参数；任务完成顺序不会改变包含端点、分数并列或参数并列的行为。标准输出分别记录输入加载、事实构造、basic 阈值扫描、Gaussian 原子项、粗搜索、细搜索和最终体素门槛搜索的耗时；这些运行时间不写入科学 JSON。
 
 正式 NPZ、JSON 和 JSONL 都在最终目录写临时文件，再用 `os.replace` 原子替换。`_COMPLETE` 只在对应科学 NPZ 已替换后建立，字段是 `output_role` 和 UTC 发布时间。完成标记不保存生产身份；默认用于同阶段跳过，`--overwrite` 只撤销并重算当前阶段。代码不计算摘要或哈希，也不建立 `_valid*` 校验层。
 

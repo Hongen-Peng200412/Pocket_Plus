@@ -16,7 +16,7 @@ stage1_v3.yaml
 | device | 字符串，cuda:0 | CLI 把 wrapper 移到该设备；probability 与正常 centered 的模型前向共用该设备 |
 | alpha | 浮点数，2.0 | blobs、centered、tune、evaluate 没有传 --alpha 时的值；路径标签为 F2 |
 | objective_beta | 浮点数，2.0 | tune 没有传 --objective-beta 时，三项选择目标共同使用的 F-beta 参数 |
-| blob_workers | 整数，8 | run_blobs_stage() 同时处理的 PDB 数 |
+| blob_workers | 整数，16 | run_blobs_stage() 同时处理的 PDB 数 |
 | publish_workers | 整数，2 | probability 和 centered 的字段打包、NPZ 压缩与发布线程数 |
 | pending_probability_pdbs | 整数，3 | GPU 已完成但 probability 尚未发布的完整图数量上限 |
 | pending_centered_pdbs | 整数，3 | GPU 已完成但 centered 尚未打包或发布的 PDB 数量上限 |
@@ -32,9 +32,9 @@ stage1_v3.yaml
 | stride_zyx | 三个整数，[30,30,30] | 完整图 ZYX 三轴的无 padding 80³ 滑窗步长；Python 函数不设默认值 |
 | gaussian_sigma | 浮点数，0.5 | 每轴规范化到 [-1,1] 后的 Gaussian 标准差，不是体素数 |
 | batch_size | 整数，A800/H100是16, A100是8 | 一次模型前向包含的 80³ 窗口数 |
-| workers | 整数，8 | CPU 请求物化线程数 |
-| prefetch_batches | 整数，3 | GPU 前方已经物化但尚未前向的 batch 数量上限 |
-| pending_fusion_batches | 整数，3 | GPU 后方等待 CPU 有序融合的 batch 数量上限 |
+| workers | 整数，12 | CPU 请求物化线程数；单卡 H100 的 16 个 CPU 中保留 4 个给融合、发布与主线程 |
+| prefetch_batches | 整数，12 | GPU 前方已经物化但尚未前向的 batch 数量上限 |
+| pending_fusion_batches | 整数，8 | GPU 后方等待 CPU 有序融合的 batch 数量上限 |
 | precision | 字符串，bf16 | bf16 或 float16 开启 CUDA autocast；float32 关闭 autocast |
 
 完整图配体概率不乘受体 hardmask。窗口按 ZYX 字典序融合，末窗贴完整图边界，Gaussian 累加保持 float32 固定顺序。
@@ -60,6 +60,7 @@ stage1_v3.yaml
 
 | 字段 | 类型 | 作用 |
 | --- | --- | --- |
+| workers | 整数，当前为 16 | tune 阶段并行加载候选与 occurrence 文件、构造逐 PDB 事实、归约 Gaussian 原子项并计算相互独立的参数组合 |
 | semantic_denominator | 整数 | 语义概率网格分母；网格编号 j 对应包含端点的阈值 j/denominator |
 | min_voxel_values | 整数列表 | basic 与 Gaussian 最后阶段依次扫描的来源 blob 最小体素数 |
 | gaussian_grid.tau_angstrom | 浮点数列表 | Gaussian 距离标准差粗网格，单位 Å |
@@ -69,7 +70,7 @@ stage1_v3.yaml
 | gaussian_refinement.lambda | 浮点数列表 | 分别乘到粗搜索最优正、负系数的细搜索乘数 |
 | gaussian_refinement.score_threshold | 浮点数列表 | 乘到粗搜索最优分数下限的细搜索乘数 |
 
-两种 tune 模式都要求命令显式提供 `prefiltered_min_voxel`。该值在任何参数尝试前固定，体素数不足的候选始终未入选，但 PDB 与真实 occurrence 仍保留在评估事实中。basic 随后按合格候选实际出现的 float32 来源平均概率降序扫描，只在目标值严格提升时替换阈值；非空候选的最佳目标仍为 0 时，保留高于最高分的空选择阈值。Gaussian 按粗网格、固定 tau 的细网格、最小体素数三个阶段执行。两种模式最后都扫描完整 `min_voxel_values`；搜索值不受 `prefiltered_min_voxel` 限制，完全并列时保留配置顺序中先出现的值。
+两种 tune 模式都要求命令显式提供 `prefiltered_min_voxel`。该值在任何参数尝试前固定，体素数不足的候选始终未入选，但 PDB 与真实 occurrence 仍保留在评估事实中。basic 随后按合格候选实际出现的 float32 来源平均概率降序串行扫描，因为每个阈值都在前一个阈值的累计候选与一对一匹配状态上继续更新；该扫描只在目标值严格提升时替换阈值，非空候选的最佳目标仍为 0 时保留高于最高分的空选择阈值。Gaussian 按粗网格、固定 tau 的细网格、最小体素数三个阶段执行。事实构造、Gaussian 原子项、相互独立的参数组合和最终 `min_voxel_values` 目标由 `workers` 外层并行；结果始终按配置原顺序读取后再执行严格提升规则，因此线程完成顺序不改变端点语义或参数并列时的首项获胜。`stage1_v3.sh` 继续把 OMP、MKL 与 OpenBLAS 的内部线程数固定为 1，避免外层并发再嵌套计算线程。
 
 ## `evaluation`
 
