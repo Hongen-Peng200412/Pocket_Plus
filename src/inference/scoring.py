@@ -31,7 +31,6 @@ def build_gaussian_distance_table(
         - A_distance_to_source: float32 `(N_atom,)`, A 原子到同一候选来源体素中心的最近世界距离, 单位 Å; 超过 5 Å 为 Inf.
         - A_probability: float32 `(N_atom,)`, 与距离逐原子对齐的模型概率.
     """
-
     # int64, (N_candidate + 1,), 以半开区间切分来源 blob 的局部 ZYX 体素表.
     voxel_offsets = np.asarray(centered["voxel_offsets"], dtype=np.int64)
     # int64, (N_candidate + 1,), 以半开区间同步切分 A 原子坐标, 距离和概率.
@@ -54,9 +53,7 @@ def build_gaussian_distance_table(
             int(atom_offsets[entry_index]), int(atom_offsets[entry_index + 1])
         )
         # float64, (K_source, 3), 来源体素中心相对 BOX 角点的世界 XYZ 坐标, 单位 Å.
-        source_xyz = (local_zyx[voxel_slice][:, [2, 1, 0]] + 0.5) * voxel_size_xyz[
-            entry_index
-        ][None, :]
+        source_xyz = (local_zyx[voxel_slice][:, [2, 1, 0]] + 0.5) * voxel_size_xyz[entry_index][None, :]
         # float64, (N_A_entry, 3), A 原子相对同一 BOX 角点的世界 XYZ 坐标, 单位 Å.
         receptor_xyz = atom_xyz[atom_slice] * voxel_size_xyz[entry_index][None, :]
         if receptor_xyz.shape[0]:
@@ -65,9 +62,7 @@ def build_gaussian_distance_table(
                 receptor_xyz,
                 k=1,
             )
-            distances[atom_slice] = np.where(distance <= 5.0, distance, np.inf).astype(
-                np.float32
-            )
+            distances[atom_slice] = np.where(distance <= 5.0, distance, np.inf).astype(np.float32)
     return {
         "A_offsets": atom_offsets,
         "A_distance_to_source": distances,
@@ -95,7 +90,6 @@ def sum_gaussian_atom_terms(
 
     权重和归约使用 float64, 每个候选的结果最后规范为 float32. Inf 距离不参与求和.
     """
-
     # int64, (N_candidate + 1,), 以半开区间同步切分 A 原子距离与概率.
     offsets = np.asarray(atom_offsets, dtype=np.int64)
     # float32, (N_atom,), A 原子到所属来源 blob 的最近距离, 单位 Å; Inf 不参与求和.
@@ -122,9 +116,7 @@ def sum_gaussian_atom_terms(
         # float32, (N_A_included,), 与 weight 逐原子对齐的模型概率.
         candidate_probability = probability[begin:end][included]
         positive[index] = np.sum(weight * candidate_probability, dtype=np.float64)
-        negative[index] = np.sum(
-            weight * (1.0 - candidate_probability), dtype=np.float64
-        )
+        negative[index] = np.sum(weight * (1.0 - candidate_probability), dtype=np.float64)
     return positive, negative
 
 
@@ -150,7 +142,6 @@ def score_centered_candidates(
     分数为 `source_mean + lambda_positive * positive - lambda_negative * negative`.
     正负项只累加 5 Å 内的 A 原子, 不按原子数归一化.
     """
-
     # float32, (N_candidate,), 每个来源 blob 在完整图概率图中的平均概率.
     source_mean = np.asarray(centered["source_probability_mean"], dtype=np.float32)
     if score_mode == "basic":

@@ -15,6 +15,7 @@
 - 语义 micro/macro、双向覆盖、一对一匹配下标和 top-K 获胜 rank/index；
 - Python 3.10 CLI、真正的 `ResolvedStage1Crop` Dataset 构造和重复 PDB 拒绝；
 - 动态 `F{alpha}` 路径标签、probability/centered 正式阶段和固定种子 3407 的随机分片；
+- evaluate 显式结果名、全候选不做二次打分，以及全候选与参数过滤结果并存；
 - centered 全模型前向、score-only 只替换两个选择字段，以及来源 blob 数严格大于 1000 时的 `_BLOB_EXCEED`；
 - 科学概率 NPZ 与性能 JSON 的字段隔离和原子完成标记。
 

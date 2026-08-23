@@ -36,8 +36,9 @@ def main() -> None:
     probability 和正常 centered 额外接收 checkpoint, resolved config 与模型
     代码来源. 可分片阶段先以固定随机种子 3407 打乱完整清单, 再按
     `[shard_index::shard_count]` 选择 0-based 分片. tune, evaluate 与语义拟合
-    始终消费完整清单; tune 还显式接收参数搜索前固定的来源体素数门槛.
-    CLI 不计算文件摘要, 不比较 producer 与训练配置.
+    始终消费完整清单; tune 显式接收参数搜索前固定的来源体素数门槛;
+    evaluate 显式接收结果名, 并在选择参数与全部候选之间二选一. CLI 不计算
+    文件摘要, 不比较 producer 与训练配置.
     """
 
     common = argparse.ArgumentParser(add_help=False)
@@ -105,7 +106,10 @@ def main() -> None:
     evaluate_parser.add_argument(
         "--artifact", choices=("blobs", "centered"), required=True
     )
-    evaluate_parser.add_argument("--selection-parameters", required=True)
+    evaluate_parser.add_argument("--evaluation-name", required=True)
+    evaluation_selection = evaluate_parser.add_mutually_exclusive_group(required=True)
+    evaluation_selection.add_argument("--selection-parameters")
+    evaluation_selection.add_argument("--all-candidates", action="store_true")
     evaluate_parser.add_argument("--data-root", required=True)
 
     arguments = parser.parse_args()
@@ -268,7 +272,8 @@ def main() -> None:
             Path(arguments.output_root),
             alpha,
             arguments.artifact,
-            selection,
+            arguments.evaluation_name,
+            None if arguments.all_candidates else selection,
         )
 
 

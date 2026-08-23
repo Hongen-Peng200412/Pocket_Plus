@@ -30,9 +30,7 @@
 │   └── geometry.json
 ├── blobs/F{alpha}_blobs.npz
 ├── centered/F{alpha}_centered.npz
-├── evaluation/F{alpha}_blobs_basic.npz
-├── evaluation/F{alpha}_centered_basic.npz
-├── evaluation/F{alpha}_centered_gaussian.npz
+├── evaluation/<evaluation-name>.npz
 └── status/
     ├── probability/
     │   ├── performance.json
@@ -201,7 +199,11 @@ $d_i$ 是 A 原子到同候选来源 blob 最近体素中心的世界距离，�
 
 ## 评估文件
 
-每个 PDB 的评估文件使用三种有效组合：`F{alpha}_blobs_basic.npz`、`F{alpha}_centered_basic.npz` 和 `F{alpha}_centered_gaussian.npz`。Gaussian 需要 Find centered 的 A 原子字段，因此不存在 blobs Gaussian 组合。字段为：
+每次 `evaluate` 必须显式提供 `--evaluation-name`，该名称直接决定每 PDB 的 `evaluation/<evaluation-name>.npz`、数据划分的 `evaluation/<evaluation-name>.jsonl` 和 `evaluation/<evaluation-name>.metrics.json`。不同选择参数使用不同名称即可并存；程序不对名称或参数生成摘要。
+
+候选范围必须二选一。`--selection-parameters <json>` 按 basic 或 Gaussian 参数重算 `score` 与 `selected`；有效组合是 blobs+basic、centered+basic 和 Find centered+Gaussian。`--all-candidates` 不执行二次打分，以 `source_probability_mean` 稳定排序，并把当前 blobs 或 centered 产物中全部候选的 `selected` 设为 True。blobs 的全部候选来自 `F{alpha}_blobs.npz`；centered 的全部候选只包括已经写入 `F{alpha}_centered.npz` 的候选。
+
+评估 NPZ 字段为：
 
 | 字段 | dtype 与形状 | 含义 |
 | --- | --- | --- |
@@ -209,8 +211,8 @@ $d_i$ 是 A 原子到同候选来源 blob 最近体素中心的世界距离，�
 | `topk_values` | `int32 (K,)` | top-K 数量轴 |
 | `occurrence_id` | `int32 (N_gt,)` | 真实 ligand occurrence 标识轴 |
 | `source_blob_index` | `int32 (N_pred,)` | 按分数稳定降序的来源 blob 编号 |
-| `candidate_score` | `float32 (N_pred,)` | 与候选轴对齐的最终分数 |
-| `candidate_selected` | `bool (N_pred,)` | 与候选轴对齐；True 表示达到分数和最小体素数下限，False 表示未达到 |
+| `candidate_score` | `float32 (N_pred,)` | 与候选轴对齐；参数过滤模式保存重算分数，全候选模式保存 `source_probability_mean` |
+| `candidate_selected` | `bool (N_pred,)` | 与候选轴对齐；参数过滤模式表示是否达到三个门槛，全候选模式全部为 True |
 | `intersections` | `int64 (N_pred,N_gt)` | 每对候选与 occurrence 的体素交集数 |
 | `pred_sizes` | `int64 (N_pred,)` | 每个候选的来源体素数 |
 | `gt_sizes` | `int64 (N_gt,)` | 每个 occurrence 的体素数 |
@@ -224,7 +226,7 @@ $d_i$ 是 A 原子到同候选来源 blob 最近体素中心的世界距离，�
 | `topk_winning_candidate_rank` | `int32 (K,T)` | 已选候选序列中首个获胜名次；未命中为 -1 |
 | `topk_winning_occurrence_index` | `int32 (K,T)` | 与获胜名次对齐的 occurrence 轴下标；未命中为 -1 |
 
-数据划分 `.jsonl` 每个已评估 PDB 一条 `pdb_id` 加指标映射；`.metrics.json` 保存同一公式的跨 PDB 汇总。固定键是 `pdb_count`、`semantic_tp`、`semantic_fp`、`semantic_fn`、`semantic_micro_f1`、`semantic_micro_f2`、`semantic_macro_f1`、`semantic_macro_f2` 与 `topk_eligible_pdb_count`。每个覆盖阈值标签 `{t}` 生成 `coverage_micro_precision_{t}`、`coverage_micro_recall_{t}`、`coverage_micro_f1_{t}`、`coverage_micro_f2_{t}`、`coverage_macro_f1_{t}`、`coverage_macro_f2_{t}`，以及同样六个 `one_to_one_*_{t}` 键。每个 top-K 值 `{k}` 与阈值标签 `{t}` 生成 `top{k}_success_count_{t}` 和 `top{k}_success_ratio_{t}`。阈值标签把小数点改为 `p`，例如 0.3 写成 `0p3`；任一分母为零时保存 0.0。
+数据划分 `.jsonl` 每个已评估 PDB 一条 `pdb_id` 加指标映射；`.metrics.json` 保存同一公式的跨 PDB 汇总。两者与逐 PDB NPZ 使用同一个显式 `evaluation-name`。固定键是 `pdb_count`、`semantic_tp`、`semantic_fp`、`semantic_fn`、`semantic_micro_f1`、`semantic_micro_f2`、`semantic_macro_f1`、`semantic_macro_f2` 与 `topk_eligible_pdb_count`。每个覆盖阈值标签 `{t}` 生成 `coverage_micro_precision_{t}`、`coverage_micro_recall_{t}`、`coverage_micro_f1_{t}`、`coverage_micro_f2_{t}`、`coverage_macro_f1_{t}`、`coverage_macro_f2_{t}`，以及同样六个 `one_to_one_*_{t}` 键。每个 top-K 值 `{k}` 与阈值标签 `{t}` 生成 `top{k}_success_count_{t}` 和 `top{k}_success_ratio_{t}`。阈值标签把小数点改为 `p`，例如 0.3 写成 `0p3`；任一分母为零时保存 0.0。
 
 ## 并行与发布
 

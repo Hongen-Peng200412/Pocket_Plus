@@ -78,7 +78,7 @@ stage1_v3.yaml
 | coverage_thresholds | 浮点数列表，[0.3,0.5,0.6] | 逐 PDB 评估 NPZ 的双向覆盖阈值轴；调参目标固定使用 0.3 |
 | topk_values | 整数列表，[3,4,5] | top-K 成功指标的 K 轴 |
 
-评估仍报告 semantic、双向 coverage、一对一最大匹配、top-K、跨 PDB micro 与 PDB 等权 macro 指标。配置不控制输出文件名。有效组合是 blobs+basic、centered+basic 和 Find centered+Gaussian；Gaussian 需要 centered A 原子字段，不能用于 blobs。
+评估仍报告 semantic、双向 coverage、一对一最大匹配、top-K、跨 PDB micro 与 PDB 等权 macro 指标。YAML 不控制输出文件名；`evaluate` 命令必须显式提供 `--evaluation-name`，并在 `--selection-parameters` 与 `--all-candidates` 之间二选一。前者支持 blobs+basic、centered+basic 和 Find centered+Gaussian；Gaussian 需要 centered A 原子字段，不能用于 blobs。后者不做二次打分，把 `--artifact` 指定候选文件中的全部候选纳入指标，并用 `source_probability_mean` 排序。
 
 ## 版本目录与复用
 

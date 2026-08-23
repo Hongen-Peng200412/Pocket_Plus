@@ -32,9 +32,8 @@ class CenteredCalibrationFacts:
         - atom_distance: float32 ``(N_atom,)``, A 原子到来源 blob 的最近世界距离; 超过 5 Å 为 ``Inf``.
         - atom_probability: float32 ``(N_atom,)``, 与距离逐项对齐的 A 原子概率.
 
-    非 Find producer 使用一个零 `atom_offsets` 以及空的 `atom_distance` 和
-    `atom_probability`. 大型 V/A/P 特征和
-    48³ 稠密数组不进入本对象.
+    非 Find producer 使用一个零 `atom_offsets` 以及空的 `atom_distance` 和 `atom_probability`.
+    大型 V/A/P 特征和 48³ 稠密数组不进入本对象.
     """
 
     evaluation: PdbEvaluation

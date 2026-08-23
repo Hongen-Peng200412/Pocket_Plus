@@ -47,6 +47,13 @@
 - Gaussian tune 在统一预过滤后保留粗搜索、固定 tau 的细搜索和最终最小体素数三个阶段。
 - tune 分别写 `F{alpha}_basic.json` 与 `F{alpha}_gaussian.json`。
 
+### 独立评估
+
+- `evaluate` 必须显式提供 `evaluation_name`，同一候选产物的不同参数结果以不同名称并存。
+- `--selection-parameters` 与 `--all-candidates` 必须二选一；前者重算 basic 或 Gaussian 分数并应用三个选择门槛，后者不执行二次打分并把当前 blobs 或 centered 产物的全部候选纳入指标。
+- 全候选模式使用 `source_probability_mean` 保持稳定排序。centered 的全部候选只指已经进入 centered 产物的候选，不补回未执行 centered 前向的 blobs。
+- 每 PDB NPZ、数据划分 JSONL 与 metrics JSON 共同使用显式评估名称；代码不生成参数摘要或身份标识。
+
 ### 语义阈值
 
 - blobs 阈值来源是 `--fit-semantic`、显式浮点值或已有 `F{alpha}_semantic.json` 三者之一。
@@ -167,8 +174,8 @@
 | `pipeline.py:run_centered_stage` | 正常 centered 或 score-only；CLI 调用 | 第三阶段；score-only 早返回，正常路径的 `_BLOB_EXCEED` 是 PDB 循环内单一短分支 | Docstring 逐参数说明两种模式、两个独立选择门槛、1000 上限和无返回值 |
 | `pipeline.py:publish_centered` | 等待打包、可选评分并发布性能与 centered | 必要局部回调；单个 selection 条件 | Docstring 说明 Future、性能和异常传播用途 |
 | `pipeline.py:run_tune_stage` | 读取 blobs/centered、传入固定预过滤并冻结选择 JSON；CLI 调用 | 第四阶段；basic/Gaussian 只在字段读取处分支，不裁剪 ragged 候选轴 | Docstring 逐参数说明固定门槛、目标、输入事实和返回 selection |
-| `pipeline.py:run_evaluate_stage` | 发布逐 PDB 事实和聚合指标；CLI 调用 | 第五阶段；blobs/centered 在一个循环中直接转换，不建立候选适配类 | Docstring 逐参数说明两个独立门槛、评估名、超量跳过和返回指标 |
-| `cli.py:main` | 定义五个命令、读取 JSON、固定分片、按需装配模型并直接调用阶段入口 | 唯一 CLI 函数；没有局部 helper，命令分派最多两层条件，避免 parse/build/dispatch 包装链 | Docstring 说明五阶段共同参数、tune 显式预过滤、分片、完整清单和无身份摘要 |
+| `pipeline.py:run_evaluate_stage` | 按显式名称发布逐 PDB 事实和聚合指标；CLI 调用 | 第五阶段；blobs/centered 与全候选/参数过滤都在一个循环中直接处理，不建立候选适配类 | Docstring 说明两种候选范围、显式评估名、超量跳过和返回指标 |
+| `cli.py:main` | 定义五个命令、读取 JSON、固定分片、按需装配模型并直接调用阶段入口 | 唯一 CLI 函数；没有局部 helper，命令分派最多两层条件，避免 parse/build/dispatch 包装链 | Docstring 说明五阶段共同参数、tune 显式预过滤、evaluate 二选一、分片、完整清单和无身份摘要 |
 
 `evaluation.py:aggregate_stage1_metrics` 是用户点名的可读性样例，本轮没有改变其计算。主代理仍重新检查了该函数：Docstring 已完整列出固定字段、按阈值生成的动态字段、top-K 字段与零分母语义；三组汇总数组均有形状注释，因此没有为改注释而制造无行为差异的补丁。
 
@@ -191,7 +198,9 @@
 | `test_cli_builds_current_dataset_without_hydra_dataclass_conversion` | 当前 Dataset 接收真实请求对象 | 最小 Dataset/wrapper 均有职责 Docstring |
 | `test_cli_rejects_duplicate_pdb_before_model_loading` | 重复 PDB 在模型恢复前失败 | 只观察 CLI 边界 |
 | `test_cli_uses_fixed_random_sharding_for_production_stage` | seed 3407 分片确定性 | 捕获正式阶段接收的 PDB 顺序 |
+| `test_cli_passes_explicit_all_candidate_evaluation_name` | evaluate 显式结果名与全候选范围 | 局部 `capture_evaluate_stage` 只记录正式阶段参数并有职责 Docstring；不构造文件身份 |
 | `test_f_alpha_tag_uses_readable_decimal_path_names` | 整数、小数 alpha 标签与相邻 Python float 不碰撞 | 三个直观标签和两组精度边界 |
+| `test_evaluate_keeps_raw_and_filtered_results_side_by_side` | 全候选不做二次打分，且与过滤结果并存 | 同一 blobs 产物以两个显式名称发布；局部 `reject_scoring` 只负责证明全候选分支不调用评分函数，并有职责 Docstring |
 | `test_centered_blob_limit_uses_strict_greater_than` | 1000 正常、1001 超量 | 同一参数化测试覆盖端点两侧 |
 | `test_centered_score_only_changes_two_fields` | score-only 保留其他数组 | 发布前后逐数组比较 |
 | `test_tune_prefilter_is_fixed_before_basic_parameter_search` | basic tune 先固定预过滤且不裁剪 min_voxels 搜索值 | 小型高分假阳性固定未入选，较低分真实候选仍得到满分目标 |

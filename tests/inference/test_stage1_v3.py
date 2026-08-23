@@ -40,6 +40,7 @@ from src.inference.full_map import (
 from src.inference.pipeline import (
     CENTERED_BLOB_LIMIT,
     run_centered_stage,
+    run_evaluate_stage,
     run_probability_stage,
 )
 from src.inference.scoring import (
@@ -816,6 +817,58 @@ def test_cli_uses_fixed_random_sharding_for_production_stage(
     assert captured["pdb_ids"] == tuple(expected[1::3])
 
 
+def test_cli_passes_explicit_all_candidate_evaluation_name(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """evaluate 必须显式接收结果名和全候选范围, 不隐式构造选择参数."""
+
+    config = tmp_path / "inference.yaml"
+    config.write_text("alpha: 2.0\n", encoding="utf-8")
+    pdb_json = tmp_path / "pdb.json"
+    pdb_json.write_text('["demo"]\n', encoding="utf-8")
+    captured: dict[str, tuple[object, ...]] = {}
+
+    def capture_evaluate_stage(*arguments: object) -> None:
+        """记录 CLI 交给正式评估阶段的位置参数."""
+
+        captured["arguments"] = arguments
+
+    monkeypatch.setattr(
+        cli_module,
+        "run_evaluate_stage",
+        capture_evaluate_stage,
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "stage1",
+            "evaluate",
+            "--config",
+            str(config),
+            "--producer",
+            "unet_c1",
+            "--pdb-json",
+            str(pdb_json),
+            "--split",
+            "validation",
+            "--output-root",
+            str(tmp_path / "output"),
+            "--data-root",
+            str(tmp_path / "data"),
+            "--artifact",
+            "blobs",
+            "--evaluation-name",
+            "raw_blobs",
+            "--all-candidates",
+        ],
+    )
+    cli_module.main()
+    assert captured["arguments"][8] == "raw_blobs"
+    assert captured["arguments"][9] is None
+
+
 def test_f_alpha_tag_uses_readable_decimal_path_names() -> None:
     """整数不保留小数点, 小数点改成 p, 相邻 Python float 不得碰撞."""
 
@@ -824,6 +877,92 @@ def test_f_alpha_tag_uses_readable_decimal_path_names() -> None:
     assert f_alpha_tag(1.5) == "F1p5"
     assert f_alpha_tag(1.0000001) != f_alpha_tag(1.0000002)
     assert f_alpha_tag(0.33333331) != f_alpha_tag(0.33333332)
+
+
+def test_evaluate_keeps_raw_and_filtered_results_side_by_side(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """全候选评估不得二次打分, 显式名称必须允许过滤结果并存."""
+
+    paths = Stage1ArtifactPaths(tmp_path, "unet_c1", "validation", "demo")
+    publish_stage1_artifact(
+        paths.artifact("F2_blobs"),
+        {
+            "blob_index": np.asarray([0, 1], dtype=np.int32),
+            "source_probability_mean": np.asarray([0.9, 0.4], dtype=np.float32),
+            "voxel_offsets": np.asarray([0, 1, 2], dtype=np.int64),
+            "voxel_index_global_zyx": np.asarray(
+                [[0, 0, 0], [1, 1, 1]], dtype=np.int32
+            ),
+        },
+        None,
+    )
+    ligand_area = tmp_path / "density" / "demo" / "ligand_area.npz"
+    ligand_area.parent.mkdir(parents=True)
+    np.savez_compressed(
+        ligand_area,
+        grid_shape_zyx=np.asarray([2, 2, 2], dtype=np.int32),
+        mask_7=np.asarray([[0, 0, 0]], dtype=np.int32),
+    )
+    config = OmegaConf.create(
+        {"evaluation": {"coverage_thresholds": [0.5], "topk_values": [1]}}
+    )
+    real_scorer = score_centered_candidates
+
+    def reject_scoring(*_args: object, **_kwargs: object) -> None:
+        """证明全候选分支不会进入 basic 或 Gaussian 打分."""
+
+        raise AssertionError("all-candidates must not call the scorer")
+
+    monkeypatch.setattr(
+        "src.inference.pipeline.score_centered_candidates", reject_scoring
+    )
+    run_evaluate_stage(
+        config,
+        tmp_path,
+        "unet_c1",
+        "validation",
+        ("demo",),
+        tmp_path,
+        2.0,
+        "blobs",
+        "raw_blobs",
+        None,
+    )
+    monkeypatch.setattr(
+        "src.inference.pipeline.score_centered_candidates", real_scorer
+    )
+    run_evaluate_stage(
+        config,
+        tmp_path,
+        "unet_c1",
+        "validation",
+        ("demo",),
+        tmp_path,
+        2.0,
+        "blobs",
+        "basic_strict",
+        {
+            "score_mode": "basic",
+            "score_parameters": {},
+            "score_threshold": 0.8,
+            "prefiltered_min_voxel": 1,
+            "min_voxels": 1,
+        },
+    )
+
+    raw = load_stage1_npz(
+        paths.pdb_root / "evaluation" / "raw_blobs.npz", None
+    )
+    filtered = load_stage1_npz(
+        paths.pdb_root / "evaluation" / "basic_strict.npz", None
+    )
+    assert raw["candidate_selected"].tolist() == [True, True]
+    assert filtered["candidate_selected"].tolist() == [True, False]
+    evaluation_root = tmp_path / "unet_c1" / "validation" / "evaluation"
+    assert (evaluation_root / "raw_blobs.metrics.json").is_file()
+    assert (evaluation_root / "basic_strict.metrics.json").is_file()
 
 
 @pytest.mark.parametrize(

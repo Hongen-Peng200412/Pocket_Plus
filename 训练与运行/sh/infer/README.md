@@ -132,7 +132,12 @@ bash 训练与运行/sh/infer/stage1_v3.sh tune \
 
 ## 5. 独立评估
 
-`evaluate` 显式选择 `--artifact blobs` 或 `--artifact centered`，并读取选择参数 JSON。有效组合是 blobs+basic、centered+basic 和 Find centered+Gaussian；Gaussian 需要 centered A 原子字段，不能用于 blobs。输出名同时编码 alpha、候选产物和打分模式，例如 `F2_blobs_basic` 或 `F2_centered_gaussian`。
+`evaluate` 必须显式提供 `--evaluation-name`，并从两种候选范围中选择一种：
+
+- `--selection-parameters <json>`：按 JSON 中的 basic 或 Gaussian 参数重算 `score` 与 `selected`，只让 `selected=true` 的候选进入语义、真实侧覆盖、一对一匹配和 top-K 指标。有效组合是 blobs+basic、centered+basic 和 Find centered+Gaussian；Gaussian 需要 centered A 原子字段，不能用于 blobs。
+- `--all-candidates`：不执行 basic 或 Gaussian 二次打分，把当前 blobs 或 centered 文件中的全部候选纳入指标；排序分数使用已有 `source_probability_mean`。centered 的“全部”只指已经进入 centered 文件的候选，不补回被 `forward_min_voxels`、80³ 容纳条件或 `_BLOB_EXCEED` 排除的 blobs。
+
+`evaluation-name` 直接成为 NPZ、JSONL 和 metrics JSON 的文件名主体。不同参数只要使用不同名称就能在同一输出目录并存，例如 `f2_centered_basic_recall` 与 `f2_centered_basic_precision`；代码不从参数内容生成摘要。
 
 ```bash
 bash 训练与运行/sh/infer/stage1_v3.sh evaluate \
@@ -142,7 +147,23 @@ bash 训练与运行/sh/infer/stage1_v3.sh evaluate \
   --output-root /storage/penghongen/AdaLigand_stage1_inference_v3/unet_c1_f2 \
   --alpha 2 \
   --artifact centered \
+  --evaluation-name f2_centered_basic_selected \
   --selection-parameters /绝对路径/F2_basic.json \
+  --data-root /storage/penghongen/AdaLigand/Ori_Data
+```
+
+不经过二次打分的 blobs 对照评估为：
+
+```bash
+bash 训练与运行/sh/infer/stage1_v3.sh evaluate \
+  --producer unet_c1 \
+  --pdb-json /绝对路径/validation.json \
+  --split validation \
+  --output-root /storage/penghongen/AdaLigand_stage1_inference_v3/unet_c1_f2 \
+  --alpha 2 \
+  --artifact blobs \
+  --evaluation-name f2_blobs_all \
+  --all-candidates \
   --data-root /storage/penghongen/AdaLigand/Ori_Data
 ```
 

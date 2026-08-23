@@ -594,13 +594,15 @@ def run_evaluate_stage(
     output_root: str | Path,
     alpha: float,
     artifact: str,
-    selection: Mapping[str, object],
+    evaluation_name: str,
+    selection: Mapping[str, object] | None,
 ) -> dict[str, object]:
-    """按显式 blobs/centered 与选择参数发布 Stage1 评估事实.
+    """按显式候选范围和评估名称发布 Stage1 评估事实.
 
-    blobs 评估使用完整图稀疏坐标和 basic 分数; centered 评估使用 80³ BOX
-    局部坐标, 并可按 basic 或 Gaussian 参数重算 `score` 与 `selected`. 评估名为
-    `F{alpha}_{artifact}_{score_mode}`. centered 文件因 `_BLOB_EXCEED` 缺失时
+    `selection` 为参数映射时按 basic 或 Gaussian 参数重算 `score` 与
+    `selected`; 显式为 ``None`` 时不做二次打分, 以来源概率均值稳定排序并把
+    当前 artifact 中的全部候选纳入指标. blobs 使用完整图稀疏坐标,
+    centered 使用 80³ BOX 局部坐标. centered 文件因 `_BLOB_EXCEED` 缺失时
     跳过该 PDB 并在标准输出说明原因; 不建立额外跳过清单或完成状态.
 
     输入参数:
@@ -610,18 +612,20 @@ def run_evaluate_stage(
         - split: str, 必须完整消费的数据划分名.
         - pdb_ids: Sequence[str], 按评估顺序排列的小写 PDB 标识.
         - output_root: str | Path, 输入候选和输出 evaluation 的共同根目录.
-        - alpha: float, 输入候选与评估文件名使用的 F-alpha 参数.
+        - alpha: float, 用于定位输入候选的 F-alpha 参数.
         - artifact: str, `blobs` 或 `centered`.
-        - selection: Mapping[str, object], 已冻结的评分参数、固定 `prefiltered_min_voxel` 和搜索所得 `min_voxels`.
+        - evaluation_name: str, 本次评估的显式文件名, 用于让不同参数结果并存.
+        - selection: Mapping[str, object] | None, 已冻结的评分参数与体素门槛; ``None`` 表示纳入 artifact 中的全部候选.
 
     返回值:
         - global_metrics: dict[str, object], 字段完整遵循 :func:`aggregate_stage1_metrics`, 对未跳过 PDB 聚合.
     """
 
     alpha_tag = f_alpha_tag(alpha)
-    score_mode = str(selection["score_mode"])
+    score_mode = (
+        "all_candidates" if selection is None else str(selection["score_mode"])
+    )
     role = f"{alpha_tag}_{artifact}"
-    evaluation_name = f"{alpha_tag}_{artifact}_{score_mode}"
     evaluations = []
     jsonl_rows = []
     for pdb_id in pdb_ids:
@@ -673,18 +677,27 @@ def run_evaluate_stage(
                     )
                 )
             candidate = load_stage1_npz(paths.artifact(role), fields)
-        score = score_centered_candidates(
-            candidate,
-            score_mode=score_mode,
-            score_parameters=selection["score_parameters"],
+        # float32, (N_candidate,), 全候选模式的稳定排序值; 参数过滤模式会在下方替换.
+        candidate["score"] = np.asarray(
+            candidate["source_probability_mean"], dtype=np.float32
         )
-        candidate["score"] = np.asarray(score, dtype=np.float32)
-        voxel_count = np.diff(np.asarray(candidate["voxel_offsets"], dtype=np.int64))
-        candidate["selected"] = (
-            (candidate["score"] >= np.float32(selection["score_threshold"]))
-            & (voxel_count >= int(selection["prefiltered_min_voxel"]))
-            & (voxel_count >= int(selection["min_voxels"]))
-        )
+        # bool, (N_candidate,), 全候选模式全部纳入; 参数过滤模式会在下方替换.
+        candidate["selected"] = np.ones(candidate["score"].shape, dtype=np.bool_)
+        if selection is not None:
+            score = score_centered_candidates(
+                candidate,
+                score_mode=score_mode,
+                score_parameters=selection["score_parameters"],
+            )
+            candidate["score"] = np.asarray(score, dtype=np.float32)
+            voxel_count = np.diff(
+                np.asarray(candidate["voxel_offsets"], dtype=np.int64)
+            )
+            candidate["selected"] = (
+                (candidate["score"] >= np.float32(selection["score_threshold"]))
+                & (voxel_count >= int(selection["prefiltered_min_voxel"]))
+                & (voxel_count >= int(selection["min_voxels"]))
+            )
         occurrence_id, occurrence_rows, full_shape = load_occurrence_voxels(
             Path(data_root) / "density" / pdb_id / "ligand_area.npz"
         )
