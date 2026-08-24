@@ -425,6 +425,9 @@ class Stage1Dataset(Dataset):
         - stage1_model_name: str；producer 身份名称；Find 名称决定是否附加受体原子字段，密度输入由 ``density_channel_config.enabled_channels`` 决定。
         - box_pool_root: str | None；包含 V3 ``manifest.json`` 和 validation selection 的 pool 根目录；内存请求序列可不提供。
         - density_channel_config: Mapping[str, Any]；密度裁剪、拟合和启用通道的配置映射。
+        - pdb_foreground_box_num: int; 每个 PDB 的目标 bias BOX 数量; 默认值为 25, 当前 Hydra 配置显式传入; 内存请求序列分支忽略该参数.
+        - pdb_foreground_fraction_target: float; bias BOX 占目标 bias 与 context BOX 总数的比例; 默认值为 0.5, 当前 Hydra 配置显式传入; 内存请求序列分支忽略该参数.
+        - pdb_occurrence_foreground_box_cap: int; 单个 occurrence 每个 epoch 的 bias BOX 数量上限; 默认值为 25, 当前 Hydra 配置显式传入; 内存请求序列分支忽略该参数.
         - atom_buffer_radius: float；核心 BOX 外选择受体原子的世界坐标缓冲半径，本 Dataset 固定为 ``8.0 Å``。
         - request_seed: int；训练请求层用于确定性展开的基准 seed。
         - cache_max_bytes: int；每个 DataLoader worker 的受体表、监督数组和完整图 LRU 缓存字节上限。
@@ -453,6 +456,9 @@ class Stage1Dataset(Dataset):
         stage1_model_name: str,
         box_pool_root: str | None,
         density_channel_config: Mapping[str, Any],
+        pdb_foreground_box_num: int = 25,
+        pdb_foreground_fraction_target: float = 0.5,
+        pdb_occurrence_foreground_box_cap: int = 25,
         atom_buffer_radius: float = 8.0,
         request_seed: int = 3407,
         cache_max_bytes: int = 536_870_912,
@@ -471,6 +477,9 @@ class Stage1Dataset(Dataset):
             - stage1_model_name: str；producer 身份名称；不限制 density-only producer 的密度通道组合。
             - box_pool_root: str | None；V3 pool 根目录；内存请求序列不需要该路径。
             - density_channel_config: Mapping[str, Any]；传给 ``DensityChannelConfig`` 的通道字段。
+            - pdb_foreground_box_num: int; 每个 PDB 的目标 bias BOX 数量; 训练目录分支在调用方省略时使用默认值 25, 当前 Hydra 配置显式传入; 内存请求序列分支忽略该参数.
+            - pdb_foreground_fraction_target: float; bias BOX 占目标 bias 与 context BOX 总数的比例; 训练目录分支在调用方省略时使用默认值 0.5, 当前 Hydra 配置显式传入; 内存请求序列分支忽略该参数.
+            - pdb_occurrence_foreground_box_cap: int; 单个 occurrence 每个 epoch 的 bias BOX 数量上限; 训练目录分支在调用方省略时使用默认值 25, 当前 Hydra 配置显式传入; 内存请求序列分支忽略该参数.
             - atom_buffer_radius: float；必须为 ``8.0``，用于局部受体原子选择。
             - request_seed: int；仅传给 ``build_request_source`` 生成训练周期请求。
             - cache_max_bytes: int; 当前 Dataset 实例的完整图和受体资产缓存上限.
@@ -500,7 +509,9 @@ class Stage1Dataset(Dataset):
             raise ValueError("AdaLigand Find Dataset 的 atom_buffer_radius 固定为 8.0 Å。")
         self.atom_buffer_radius = 8.0
         self.enable_random_rotation = bool(enable_random_rotation and self.mode == "train")
-        if isinstance(split_file, (list, tuple)) and all(isinstance(request, ResolvedStage1Crop) for request in split_file):
+        if isinstance(split_file, (list, tuple)) and all(
+            isinstance(request, ResolvedStage1Crop) for request in split_file
+        ):
             self.request_source = tuple(split_file)
             if not self.request_source:
                 raise ValueError("内存 Stage1 请求序列不能为空。")
@@ -510,6 +521,11 @@ class Stage1Dataset(Dataset):
                 mode=self.mode,
                 box_pool_root=box_pool_root,
                 seed=int(request_seed),
+                pdb_foreground_box_num=int(pdb_foreground_box_num),
+                pdb_foreground_fraction_target=float(pdb_foreground_fraction_target),
+                pdb_occurrence_foreground_box_cap=int(
+                    pdb_occurrence_foreground_box_cap
+                ),
             )
         # dict[str, Any]；从 Hydra dataset 配置读取的密度通道构造字段。
         channel_cfg = dict(density_channel_config)
