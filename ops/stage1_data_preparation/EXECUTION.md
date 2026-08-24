@@ -40,10 +40,11 @@
 ## 2026-08-24 PDB 中心验证选择
 
 - Pocket_Plus 实现分支 `codex/stage1-pdb-centric-sampling` 从 `Learn/CUMULATIVE@8561d2790614a0d92f0ad88ebce241a9f1c77ba3` 建立；首个稳定实现提交为 `ac53172`。
-- 最终代码安全同步后，服务器 `src/datasets/stage1_requests.py` 与冻结脚本的 SHA-256 分别为 `5937b59670732510171559ed1cfadb81c4ac9eae5e709bd8fd56750279e9cbc8` 与 `bb2ac6ab5d8b7b5f2cd8d44d94a0fd71bf5f0df3a7e105ec909a150f08d9f0ec`，与本地一致。
-- 正式命令为 `python -m ops.stage1_data_preparation.freeze_validation_selection_pdb_centric`。最终文件于 2026-08-24 23:29:39 +08:00 覆盖写入，保存从原 200 个 validation PDB 中按 seed 3407 无放回选出的 150 个身份，以及 3,750 个 bias、3,750 个 context 和 0 个 center 请求。
+- 最终代码安全同步后，服务器 `src/datasets/stage1_requests.py` 与冻结脚本的 SHA-256 分别为 `013ae573dc0520b3779e340020787919ee809e3289dca05c8f45fbabe01684ff` 与 `216dac8e1dd63f97d6e02c3bbe7dac4db11d7de7cf3d6ca66e6167ff43b52333`，与本地一致。
+- 正式命令为 `python -m ops.stage1_data_preparation.freeze_validation_selection_pdb_centric`。最终文件于 2026-08-24 23:54:40 +08:00 覆盖写入，保存从原 200 个 validation PDB 中按 `SeedSequence(3407, spawn_key=(2,))` 无放回选出的 150 个身份，以及 3,750 个 bias、3,750 个 context 和 0 个 center 请求。
 - 新文件精确包含八类既有索引数组与三个采样参数标量，共 11 个字段；逐字段 dtype、shape、候选索引范围和逐 PDB 计数均通过核验。150 个 PDB 都恰好包含 25 个 bias 与 25 个 context，PDB 身份按原 validation manifest 顺序保存。
-- 新文件大小为 71,150 字节，SHA-256 为 `364db41a70213ffb4be8fafe5f5f5e51d0449bb322840f7ae39fb7c35105c3ae`；重复执行正式命令后哈希不变。
+- 第三轮逻辑审查发现原 `SeedSequence([3407, 2])` 与第 3 个 manifest PDB 的 occurrence 排列随机状态碰撞。改用独立 `spawn_key` 后，最终集合相对碰撞版本保留 116 个身份并替换 34 个身份；该中间版本未用于训练。
+- 新文件大小为 71,150 字节，SHA-256 为 `546ebd3a1f07b230af42911b6740f466c6af289c8bff91a387c4eb8b1d69dd8e`；重复执行正式命令后哈希不变。
 - 原 `validation_selection.npz`、`manifest.json`、`config.json`、`summary.json` 与 `_COMPLETE` 的修改时间分别保持在 2026-08-18 或 2026-08-17；本次没有改写这些 V3 产物。对应 SHA-256 分别为 `91af9c01538e6da1a0a11d2109eeb28673b97cf4c89b1e7e813f7f2b843f5ac7`、`fcfa65c0ac58116eb1f65009baa0eb2e03df94f1306629ae9232a286b1041e2e`、`4fccabf4d75d40afc6e6dd8a13f7e5dd89d8d11576f77a5b31c7ee13723342de`、`2b49dfed736583ba8f7a81138e66ff0c9af7209a02216a783dd3acca487dc031` 与空文件哈希 `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`。
 - 本次没有提交、取消、重启或修改任何 GPU Job。
 

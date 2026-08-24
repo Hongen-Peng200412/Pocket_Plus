@@ -63,7 +63,7 @@ Dataset 以 `numpy.load(..., mmap_mode="r")` 打开完整图，只复制实际 8
 
 设一个 PDB 含 `O` 个 occurrence。该 PDB 在一个 epoch 的实际 bias 数量为 `min(25, 25O)`；正式 pool 的每个 PDB 至少含一个 occurrence，因此实际数量固定为 25。这些 bias 先尽可能均匀地分给全部 occurrence，不能整除的余数沿稳定 occurrence 排列逐 epoch 轮转。每个 occurrence 再从自己的 30 个 bias 候选中无放回选择所需数量。context 的目标数量由 `round(25 × (1 - 0.5) / 0.5)` 得到，同样固定为 25；候选从该 PDB 的 context 池中无放回选择。正式 train 与 validation 的每个 PDB 都有超过 25 个 context 候选，因此活动实现直接使用这一数据事实，不增加补抽、放回或回退分支。
 
-验证以 seed 3407 从 200 个 validation PDB 中无放回选择 150 个身份，保持 manifest 相对顺序，并把这 150 个 PDB 的 epoch 0 请求冻结到 `validation_selection_pdb_centric.npz`。该文件精确包含以下 11 个字段：
+验证以 `SeedSequence(3407, spawn_key=(2,))` 的独立随机域从 200 个 validation PDB 中无放回选择 150 个身份，保持 manifest 相对顺序，并把这 150 个 PDB 的 epoch 0 请求冻结到 `validation_selection_pdb_centric.npz`。该文件精确包含以下 11 个字段：
 
 | 字段 | dtype 与形状 | 含义 |
 | --- | --- | --- |
