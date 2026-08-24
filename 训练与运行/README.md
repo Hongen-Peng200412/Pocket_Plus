@@ -551,7 +551,7 @@ unet_base/unet_c1/unet_diff：8 BOX/卡 × 1 卡 = 8 BOX/前向；48 ÷ 8 = 累�
 `train.strict_global_batch_size=true` 会要求这个除法得到整数；
 `train.enable_batch_size_tuning=false` 会阻止程序自动改动这些基线数值。
 
-PDB 中心采样使每个 epoch 固定包含 685,850 个训练 BOX。Find_0 的 10 次与其他当前入口的 12 次 validation，使相邻验证事件之间的训练 BOX 数接近 cap 为 5 时的上一版实施稿；活动验证固定为 150 个 PDB、7,500 个 BOX。`max_epochs=70` 与 `warmup_ratio=0.005` 按最终训练决定保持不变。
+PDB 中心采样使每个 epoch 固定包含 685,850 个训练 BOX。Find_0 的 10 次 validation 对应相邻验证事件之间约 68,585 个训练 BOX，其他当前入口的 12 次对应约 57,154 个；活动验证固定为 150 个 PDB、7,500 个 BOX。`max_epochs=70` 与 `warmup_ratio=0.005` 按最终训练决定保持不变。
 
 ### 7.1 Find_0
 

@@ -137,7 +137,7 @@ python -m ops.stage1_data_preparation.freeze_validation_selection_pdb_centric
 - 数组迁移：22,381 个密度目录，89,524 个目标位置；89,442 个来源字段成功迁移，82 个目标位置没有来源文件。新发布 NPY 共 13,813,200,929,408 字节。
 - 冻结划分：train 13,717 PDB，validation 200 PDB，calibration 100 PDB，日期留出 2,497 PDB，缺日期隔离 357 PDB。
 - BOX pool：train 和 validation 分别发布 13,717 与 200 个 PDB NPZ；两者均无零 context PDB。2026-08-17 初次发布的验证选择包含 16,525 个 bias 与 16,525 个 context；2026-08-18 按历史 `0:1:1` 规则覆盖后的 `validation_selection.npz` 包含 3,305 个 bias 与 3,305 个 context。两份历史结果的 center 都为 0。
-- PDB 中心验证选择：2026-08-24 从既有 validation pool 冻结 200 个 PDB、3,950 个 bias、5,000 个 context 和 0 个 center 请求。`validation_selection_pdb_centric.npz` 为 83,350 字节，SHA-256 为 `449856108558e38755dae3eb840bef856a00613ff8439b58a9de63311d5f7092`；75 个 PDB 因 occurrence 上限得到少于 25 个 bias，所有 PDB 都得到 25 个 context。
+- PDB 中心验证选择：2026-08-24 从既有 200 个 validation PDB 中按 seed 3407 无放回冻结 150 个身份，以及 3,750 个 bias、3,750 个 context 和 0 个 center 请求。150 个 PDB 都恰好包含 25 个 bias 与 25 个 context，并按原 validation manifest 顺序保存。`validation_selection_pdb_centric.npz` 为 71,150 字节，SHA-256 为 `364db41a70213ffb4be8fafe5f5f5e51d0449bb322840f7ae39fb7c35105c3ae`。
 - Slurm 证据：迁移数组/复核为 Job `343572`/`343835`，划分为 Job `345237`，BOX pool 数组/复核为 Job `346035`/`346063`；全部以退出码 `0:0` 完成。
 - 第二版 `stage1_preparation_box_pool_2` 没有被读取或改写。详细计数、路径和审查结论见同目录 `EXECUTION.md`。
 
