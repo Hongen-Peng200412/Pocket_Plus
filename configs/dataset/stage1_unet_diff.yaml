@@ -9,12 +9,15 @@ name: stage1_unet_diff
 all_data_path: ${oc.env:ADALIGAND_DATA_ROOT,/storage/penghongen/AdaLigand/Ori_Data}
 box_pool_root: ${oc.env:ADALIGAND_STAGE1_PREPARATION_ROOT,/storage/penghongen/AdaLigand/Ori_Data/stage1_preparation_box_pool_3}/box_pool
 split_train: ${dataset.box_pool_root}/train
-split_val: ${dataset.box_pool_root}/validation_selection.npz
+split_val: ${dataset.box_pool_root}/validation_selection_pdb_centric.npz
 
 stage1_model_name: unet_diff  # str, 选择实验密度与差分密度双通道 producer 和无原子表输出。
 class_names: [background, foreground]
 atom_buffer_radius: 8.0             # 只用于构造 hardmask/voxel_label；原子表不返回给模型。
 request_seed: 3407
+pdb_foreground_box_num: 25                    # int, 每个 PDB 的目标 bias BOX 数量.
+pdb_foreground_fraction_target: 0.5           # float, bias BOX 占目标 bias 与 context BOX 总数的比例.
+pdb_occurrence_foreground_box_cap: 25         # int, 单个 occurrence 每个 epoch 的 bias BOX 数量上限; 正式值等于每 PDB 目标 bias 数量.
 cache_max_bytes: 34359738368  # int, 每个 worker 的 mmap 与小型资产 LRU 逻辑上限；不会预分配 32 GiB 内存。
 enable_random_rotation: true
 

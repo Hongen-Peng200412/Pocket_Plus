@@ -14,7 +14,7 @@ usage() {
     --sh Find_1.sh \
     --resource h100 \
     --gpus 2 \
-    --cpus 48 \
+    --cpus 64 \
     [资源选项] \
     [-- 传给任务脚本的参数]
 
@@ -46,8 +46,8 @@ usage() {
                          根目录解析；默认就是“训练与运行”的上一层。
 
 示例：
-  bash 训练与运行/submit_task.sh --sh Find_1.sh --resource h100 --gpus 2 --cpus 48
-  bash 训练与运行/submit_task.sh --sh unet_c1.sh --resource h100 --gpus 1 --cpus 24
+  bash 训练与运行/submit_task.sh --sh Find_1.sh --resource h100 --gpus 2 --cpus 64
+  bash 训练与运行/submit_task.sh --sh unet_c1.sh --resource h100 --gpus 1 --cpus 16
   bash 训练与运行/submit_task.sh --simple --task-root /项目根 --sh /项目根/ops/任务.sh --resource cpu --cpus 1
 EOF
 }
