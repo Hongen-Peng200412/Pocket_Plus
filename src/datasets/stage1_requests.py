@@ -301,7 +301,10 @@ class Stage1TrainingRequestSet:
         # tuple[_PdbPool, ...], 按 manifest 顺序保存每个 PDB 的 occurrence 与候选 BOX 起点.
         self._pools = tuple(
             _load_pdb_pool(path, expected_pdb_id=pdb_id)
-            for pdb_id, path in _load_manifest_pool_paths(pool_directory.parent, pool_directory.name)
+            for pdb_id, path in _load_manifest_pool_paths(
+                pool_directory.parent,
+                pool_directory.name,
+            )
         )
         # int, 每个 PDB 期望获得的 bias BOX 数量.
         self.pdb_foreground_box_num = int(pdb_foreground_box_num)

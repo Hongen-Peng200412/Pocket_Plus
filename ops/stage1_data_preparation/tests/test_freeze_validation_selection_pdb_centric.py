@@ -34,6 +34,7 @@ def test_hardcoded_freezer_writes_the_pdb_centric_validation_selection(
 
     _write_validation_pool(tmp_path, "1abc", occurrence_count=4)
     _write_validation_pool(tmp_path, "2def", occurrence_count=6)
+    _write_validation_pool(tmp_path, "3ghi", occurrence_count=1)
     assert freeze_validation_selection_pdb_centric.VALIDATION_PDB_NUM == 150
     manifest = {
         "schema_version": 1,
@@ -41,6 +42,7 @@ def test_hardcoded_freezer_writes_the_pdb_centric_validation_selection(
             "validation": [
                 {"pdb_id": "1abc", "path": "validation/1abc.npz"},
                 {"pdb_id": "2def", "path": "validation/2def.npz"},
+                {"pdb_id": "3ghi", "path": "validation/3ghi.npz"},
             ]
         },
     }
@@ -60,13 +62,16 @@ def test_hardcoded_freezer_writes_the_pdb_centric_validation_selection(
     monkeypatch.setattr(
         freeze_validation_selection_pdb_centric,
         "VALIDATION_PDB_NUM",
-        1,
+        2,
     )
 
     freeze_validation_selection_pdb_centric.main()
 
     with np.load(output_path, allow_pickle=False) as selection:
-        first_arrays = {field_name: selection[field_name].copy() for field_name in selection.files}
+        first_arrays = {
+            field_name: selection[field_name].copy()
+            for field_name in selection.files
+        }
         assert set(selection.files) == {
             "validation_pdb_id",
             "center_pdb_index",
@@ -81,29 +86,34 @@ def test_hardcoded_freezer_writes_the_pdb_centric_validation_selection(
             "pdb_occurrence_foreground_box_cap",
         }
         selected_pdb_ids = first_arrays["validation_pdb_id"]
-        assert selected_pdb_ids.tolist()[0] in {b"1abc", b"2def"}
+        manifest_pdb_ids = [b"1abc", b"2def", b"3ghi"]
+        selected_positions = [
+            manifest_pdb_ids.index(pdb_id) for pdb_id in selected_pdb_ids.tolist()
+        ]
+        assert selected_positions == sorted(selected_positions)
+        assert len(set(selected_pdb_ids.tolist())) == 2
         assert selection["validation_pdb_id"].dtype.kind == "S"
-        assert selection["validation_pdb_id"].shape == (1,)
+        assert selection["validation_pdb_id"].shape == (2,)
         assert selection["center_pdb_index"].dtype == np.dtype(np.int32)
         assert selection["center_pdb_index"].shape == (0,)
         assert selection["center_occurrence_id"].dtype == np.dtype(np.int32)
         assert selection["center_occurrence_id"].shape == (0,)
         assert selection["bias_pdb_index"].dtype == np.dtype(np.int32)
-        assert selection["bias_pdb_index"].shape == (25,)
+        assert selection["bias_pdb_index"].shape == (50,)
         assert selection["bias_occurrence_id"].dtype == np.dtype(np.int32)
-        assert selection["bias_occurrence_id"].shape == (25,)
+        assert selection["bias_occurrence_id"].shape == (50,)
         assert selection["bias_candidate_index"].dtype == np.dtype(np.int16)
-        assert selection["bias_candidate_index"].shape == (25,)
+        assert selection["bias_candidate_index"].shape == (50,)
         assert selection["context_pdb_index"].dtype == np.dtype(np.int32)
-        assert selection["context_pdb_index"].shape == (25,)
+        assert selection["context_pdb_index"].shape == (50,)
         assert selection["context_candidate_index"].dtype == np.dtype(np.int32)
-        assert selection["context_candidate_index"].shape == (25,)
+        assert selection["context_candidate_index"].shape == (50,)
         assert np.bincount(
-            selection["bias_pdb_index"], minlength=1
-        ).tolist() == [25]
+            selection["bias_pdb_index"], minlength=2
+        ).tolist() == [25, 25]
         assert np.bincount(
-            selection["context_pdb_index"], minlength=1
-        ).tolist() == [25]
+            selection["context_pdb_index"], minlength=2
+        ).tolist() == [25, 25]
         assert selection["bias_candidate_index"].min() >= 0
         assert selection["bias_candidate_index"].max() < 30
         assert selection["context_candidate_index"].min() >= 0

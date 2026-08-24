@@ -163,7 +163,7 @@ def test_current_stage1_models_select_checkpoints_by_ligand_prauc(experiment: st
 
 
 def test_find_models_only_change_voxel_receptor_construction() -> None:
-    """验证三个 Find 共享 point 配置, 仅 voxel receptor grid recipe 不同. """
+    """验证三个 Find 共享 point 配置, 仅 voxel receptor grid recipe 不同."""
 
     find0 = _compose("CPC1/Find_0")
     find1 = _compose("CPC1/Find_1")
@@ -205,7 +205,7 @@ def test_current_experiments_only_use_stage1_dataset_contract(experiment: str) -
 
 
 def test_cpc_stage_boundary_and_scheduler_contract() -> None:
-    """验证 CPC1 从头训练、CPC2 strict model-only 接续及冻结/loss 边界. """
+    """验证 CPC1 从头训练, CPC2 strict model-only 接续及冻结/loss 边界."""
 
     cpc1 = _compose("CPC1/Find_1")
     cpc2 = _compose("CPC2/Find_1")
@@ -233,7 +233,7 @@ def test_cpc_stage_boundary_and_scheduler_contract() -> None:
 
 
 def test_find2_cpc2_keeps_an_independent_checkpoint_lineage() -> None:
-    """验证 Find_2 CPC2 只从同名 CPC1 BEST 严格 model-only 初始化. """
+    """验证 Find_2 CPC2 只从同名 CPC1 BEST 严格 model-only 初始化."""
 
     cpc1 = _compose("CPC1/Find_2")
     cpc2 = _compose("CPC2/Find_2")

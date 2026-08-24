@@ -509,7 +509,9 @@ class Stage1Dataset(Dataset):
             raise ValueError("AdaLigand Find Dataset 的 atom_buffer_radius 固定为 8.0 Å。")
         self.atom_buffer_radius = 8.0
         self.enable_random_rotation = bool(enable_random_rotation and self.mode == "train")
-        if isinstance(split_file, (list, tuple)) and all(isinstance(request, ResolvedStage1Crop) for request in split_file):
+        if isinstance(split_file, (list, tuple)) and all(
+            isinstance(request, ResolvedStage1Crop) for request in split_file
+        ):
             self.request_source = tuple(split_file)
             if not self.request_source:
                 raise ValueError("内存 Stage1 请求序列不能为空。")
