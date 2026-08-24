@@ -30,7 +30,7 @@ class CenteredCalibrationFacts:
         - source_probability_mean: float32 ``(N_candidate,)``, 来源 blob 平均概率.
         - voxel_count: int64 ``(N_candidate,)``, 每个来源 blob 的体素数.
         - prefilter_eligible: bool ``(N_candidate,)``, True 表示候选达到 tune 前固定的来源 blob 体素数下限.
-        - coverage_adjacency: bool ``(N_candidate,N_gt)``, True 表示候选与 occurrence 的双向覆盖都达到固定校准阈值 0.3.
+        - coverage_adjacency: bool ``(N_candidate, N_gt)``, True 表示候选与 occurrence 的双向覆盖都达到固定校准阈值 0.3.
         - atom_offsets: int64 ``(N_candidate+1,)``, 以半开区间同时切分 `atom_distance` 和 `atom_probability`; 首值为 0, 末值为 N_atom.
         - atom_distance: float32 ``(N_atom,)``, A 原子到来源 blob 的最近世界距离; 超过 5 Å 为 ``Inf``.
         - atom_probability: float32 ``(N_atom,)``, 与距离逐项对齐的 A 原子概率.
@@ -185,11 +185,9 @@ def _scan_actual_score_thresholds(
             evaluation = facts.evaluation
             # 当前候选的语义 TP 是其体素与全部真实 occurrence 并集的交集数; 其余预测体素计为 FP.
             semantic_tp += int(evaluation.candidate_semantic_tp[candidate_index])
-            semantic_fp += int(
-                evaluation.pred_sizes[candidate_index]
-                - evaluation.candidate_semantic_tp[candidate_index]
-            )
+            semantic_fp += int(evaluation.pred_sizes[candidate_index] - evaluation.candidate_semantic_tp[candidate_index])
             selected_count += 1
+            # coverage_adjacency: bool ``(N_candidate, N_gt)``, True 表示候选与 occurrence 的双向覆盖都达到固定校准阈值 0.3.
             adjacency = facts.coverage_adjacency
             # int64, (N_neighbor,), 当前候选双向覆盖达到 0.3 的 occurrence 轴下标.
             neighbors = np.flatnonzero(adjacency[candidate_index])
@@ -306,7 +304,7 @@ def _gaussian_selection_objective(
     min_voxels: int,
     beta: float,
 ) -> float:
-    """计算一个 Gaussian 参数组合的冻结选择目标.
+    """计算一组 Gaussian 参数的得分: semantic, coverage@0.3 和 one-to-one@0.3 micro F-beta 之和.
 
     `terms_by_pdb` 的正项和负项数组都与对应 PDB 的候选轴对齐. 本函数保持原有
     float32 系数乘法和逐 PDB 目标计算, 作为粗搜索、细搜索与最终体素门槛搜索
@@ -436,13 +434,10 @@ def tune_centered_selection(
 ) -> dict[str, object]:
     """按冻结顺序搜索 centered 分数与最小体素数.
 
-    先固定 ``prefiltered_min_voxel``, 小于该值的候选在全部参数尝试中保持未入选.
-    basic 模式再在最小 ``min_voxels`` 下扫描实际出现的 float32 分数,
-    然后冻结分数阈值并扫描全部最小体素数.
-    Gaussian 模式第一阶段扫描 tau, 两个 lambda 和 ``gauss_score_min`` 的显式粗网格;
-    第二阶段固定 tau, 对第一阶段三个其余参数应用显式乘数;
-    第三阶段冻结 Gaussian 参数并只扫描 ``min_voxels``.
-    目标是 semantic, coverage@0.3 和 one-to-one@0.3 三个 micro F-beta 之和.
+    先固定 ``prefiltered_min_voxel``, 小于该值的候选在全部参数尝试中保持未入选. 
+    basic 模式再在最小 ``min_voxels`` 下扫描实际出现的 float32 分数, 然后冻结分数阈值并扫描全部最小体素数. 
+    Gaussian 模式第一阶段扫描 tau, 两个 lambda 和 ``gauss_score_min`` 的显式粗网格; 第二阶段固定 tau, 对第一阶段三个其余参数应用显式乘数; 第三阶段冻结 Gaussian 参数并只扫描 ``min_voxels``. 
+    目标是 semantic, coverage@0.3 和 one-to-one@0.3 三个 micro F-beta 之和. 
 
     输入参数:
         - centered_items.pdb_id: 字符串, 当前小写 PDB 标识.
@@ -455,14 +450,17 @@ def tune_centered_selection(
         - centered_items.centered.A_coord_local_xyz: Find Gaussian 专用 float32 `(N_A, 3)`, BOX 局部 XYZ 原子坐标.
         - centered_items.centered.A_probability: Find Gaussian 专用 float32 `(N_A,)`, A 原子概率.
         - centered_items.centered.voxel_size_world: Find Gaussian 专用 float32 `(N_candidate, 3)`, 世界 XYZ 体素尺寸.
+
         - ground_truth_by_pdb.occurrence_id: int32 `(N_gt,)`, 当前 PDB 的 ligand occurrence 标识.
         - ground_truth_by_pdb.occurrence_voxel_zyx: 长度 N_gt 的 int32 `(K_i, 3)` 序列, 每项保存一个 occurrence 的完整图 ZYX 体素.
         - ground_truth_by_pdb.full_shape_zyx: 三个整数, 当前 PDB 的完整图 ZYX 形状.
+
         - score_mode: 字符串, `basic` 或 `gaussian`.
         - score_parameter_grid.tau_angstrom: Sequence[float] 或 None, Gaussian 距离标准差粗网格.
         - score_parameter_grid.lambda_positive: Sequence[float] 或 None, Gaussian 正项系数粗网格.
         - score_parameter_grid.lambda_negative: Sequence[float] 或 None, Gaussian 负项系数粗网格.
         - score_parameter_grid.gauss_score_min: Sequence[float] 或 None, Gaussian 分数下限粗网格.
+
         - refinement_multipliers.lambda: Sequence[float] 或 None, Gaussian 正负系数的细网格乘数.
         - refinement_multipliers.score_threshold: Sequence[float] 或 None, Gaussian 分数下限的细网格乘数.
         - prefiltered_min_voxel: int, tune 开始前固定的来源 blob 体素数下限, 包含端点; 不限制 `min_voxel_values`.
@@ -667,6 +665,7 @@ def tune_centered_selection(
                 f"tau_count={len(terms_by_tau)}, seconds={perf_counter() - gaussian_terms_started:.3f}"
             )
 
+            # -------------- 第一阶段正式开始 --------------
             # Gaussian 粗网格 `Future` 按 tau、正项系数、负项系数和分数阈值的原嵌套顺序保存.
             coarse_started = perf_counter()
             coarse_futures: list[
@@ -723,10 +722,11 @@ def tune_centered_selection(
                 f"combination_count={len(coarse_futures)}, seconds={perf_counter() - coarse_started:.3f}"
             )
 
+            # -------------- 第二阶段 --------------
             # 细网格固定粗搜索获胜 tau, 并复用相同 tau 的 A 原子正负项.
             refined_started = perf_counter()
             tau = float(coarse_best["tau_angstrom"])
-            terms = next(values for candidate_tau, values in terms_by_tau if candidate_tau == tau)
+            terms = next(values for candidate_tau, values in terms_by_tau if candidate_tau == tau)   # 第二次细搜索不修改 tau 了
             refined_futures: list[
                 tuple[
                     float,
@@ -777,6 +777,8 @@ def tune_centered_selection(
                 f"combination_count={len(refined_futures)}, seconds={perf_counter() - refined_started:.3f}"
             )
 
+
+            # -------------- 第三阶段: 调 min_voxels --------------
             score_parameters = {
                 "tau_angstrom": float(refined_best["tau_angstrom"]),
                 "lambda_positive": float(refined_best["lambda_positive"]),

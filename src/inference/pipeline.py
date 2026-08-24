@@ -75,12 +75,8 @@ def run_probability_stage(
     overwrite: bool,
 ) -> None:
     """生成并异步发布一个 PDB 清单的完整图概率.
-
-    `dataset`, `collator` 和 `wrapper` 直接传给 `infer_full_map()`. `config.window`
-    显式提供 stride, Gaussian sigma, batch, 线程, 预取, 混合精度和融合队列.
-    每个 PDB 发布 `probability_map.npz`, `geometry.json`, `performance.json` 和
-    `status/probability/_COMPLETE`. 默认跳过已有完成标记; `overwrite=True` 只
-    撤销并重算 probability 阶段. 概率 NPZ 压缩与下一个 PDB 的 GPU 前向重叠.
+    每个 PDB 发布 `probability_map.npz`, `geometry.json`, `performance.json` 和 `status/probability/_COMPLETE`. 
+    默认跳过已有完成标记; `overwrite=True` 只撤销并重算 probability 阶段. 概率 NPZ 压缩与下一个 PDB 的 GPU 前向重叠.
 
     输入参数:
         - config: OmegaConf 配置, 读取 `window`, `publish_workers` 和 `pending_probability_pdbs`.
@@ -111,7 +107,6 @@ def run_probability_stage(
         - performance.materialize_wait_seconds: float, 等待 CPU 请求物化的累计秒数.
         - performance.fusion_wait_seconds: float, 等待 CPU 有序融合的累计秒数.
     """
-
     def publish_probability(
         paths: Stage1ArtifactPaths,
         arrays: Mapping[str, np.ndarray],
@@ -120,20 +115,14 @@ def run_probability_stage(
     ) -> None:
         """在线程池中发布一个 PDB 的几何, 性能, 概率 NPZ 和完成标记.
 
-        `paths` 决定同一 PDB 的全部目标路径. `arrays` 是概率 NPZ 的三个正式
-        数组 `probability_map`, `origin_xyz`, `voxel_size_xyz`. `geometry` 保存
-        完整图形状, 世界几何, 80³ 窗口, stride, Gaussian sigma 和窗口数;
+        `paths` 决定同一 PDB 的全部目标路径. 
+        `arrays` 是概率 NPZ 的三个正式数组 `probability_map`, `origin_xyz`, `voxel_size_xyz`. 
+        `geometry` 保存完整图形状, 世界几何, 80³ 窗口, stride, Gaussian sigma 和窗口数;
         `performance` 保存墙钟, 物化等待和融合等待秒数. 成功时无返回值.
         """
-
         publish_stage1_json(paths.pdb_root / "probability" / "geometry.json", geometry)
-        publish_stage1_json(
-            paths.pdb_root / "status" / "probability" / "performance.json",
-            performance,
-        )
-        publish_stage1_artifact(
-            paths.artifact("probability"), arrays, paths.complete("probability")
-        )
+        publish_stage1_json(paths.pdb_root / "status" / "probability" / "performance.json", performance,)
+        publish_stage1_artifact(paths.artifact("probability"), arrays, paths.complete("probability"))
 
     pending: deque[Future[None]] = deque()
     with ThreadPoolExecutor(
@@ -160,16 +149,12 @@ def run_probability_stage(
                 pending_fusion_batches=int(config.window.pending_fusion_batches),
             )
             arrays = {
-                "probability_map": result.probability_map.astype(
-                    np.float32, copy=False
-                ),
+                "probability_map": result.probability_map.astype(np.float32, copy=False),
                 "origin_xyz": result.origin_xyz.astype(np.float32, copy=False),
                 "voxel_size_xyz": result.voxel_size_xyz.astype(np.float32, copy=False),
             }
             geometry = {
-                "full_shape_zyx": [
-                    int(value) for value in result.probability_map.shape
-                ],
+                "full_shape_zyx": [int(value) for value in result.probability_map.shape],
                 "origin_xyz": [float(value) for value in result.origin_xyz],
                 "voxel_size_xyz": [float(value) for value in result.voxel_size_xyz],
                 "window_shape_zyx": [80, 80, 80],
@@ -182,11 +167,7 @@ def run_probability_stage(
                 "materialize_wait_seconds": float(result.materialize_wait_seconds),
                 "fusion_wait_seconds": float(result.fusion_wait_seconds),
             }
-            pending.append(
-                publisher.submit(
-                    publish_probability, paths, arrays, geometry, performance
-                )
-            )
+            pending.append(publisher.submit(publish_probability, paths, arrays, geometry, performance))
             if len(pending) >= int(config.pending_probability_pdbs):
                 pending.popleft().result()
         while pending:
@@ -207,11 +188,8 @@ def run_blobs_stage(
 ) -> dict[str, object] | None:
     """冻结或读取语义阈值, 再并行发布动态 F-alpha blobs.
 
-    `fit_semantic=True` 时逐 PDB 读取 probability 与 `union_mask.npy`, 按
-    calibration 全集 micro F-alpha 写出 `calibration/F{alpha}_semantic.json`
-    和 `F{alpha}_semantic_scan.npz`; `data_root` 此时是 Stage1 V3 数据根目录.
-    其他调用直接使用显式 `semantic_threshold`. 每个 PDB 的 blobs 文件保存
-    阈值下全部 26 邻域连通区域, 不应用最小体素数. 默认跳过已有角色完成标记;
+    `fit_semantic=True` 时逐 PDB 读取 probability 与 `union_mask.npy`, 按 calibration 全集 micro F-alpha 写出 `calibration/F{alpha}_semantic.json` 和 `F{alpha}_semantic_scan.npz`; `data_root` 此时是 Stage1 V3 数据根目录.
+    其他调用直接使用显式 `semantic_threshold`. 每个 PDB 的 blobs 文件保存阈值下全部 26 邻域连通区域, 不应用最小体素数. 默认跳过已有角色完成标记;
     `overwrite=True` 只重算当前 blobs 角色. 返回值只在本次拟合语义阈值时存在.
 
     输入参数:
@@ -229,7 +207,6 @@ def run_blobs_stage(
     返回值:
         - semantic_result: dict[str, object] | None, 本次拟合的阈值摘要; 直接使用已有阈值时为 None.
     """
-
     alpha_tag = f_alpha_tag(alpha)
     blob_role = f"{alpha_tag}_blobs"
     semantic_result: dict[str, object] | None = None
@@ -238,9 +215,7 @@ def run_blobs_stage(
         probability_and_target = (
             (
                 load_stage1_npz(
-                    Stage1ArtifactPaths(output_root, producer, split, pdb_id).artifact(
-                        "probability"
-                    ),
+                    Stage1ArtifactPaths(output_root, producer, split, pdb_id).artifact("probability"),
                     ("probability_map",),
                 )["probability_map"],
                 np.load(
