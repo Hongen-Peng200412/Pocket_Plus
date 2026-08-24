@@ -34,6 +34,7 @@ def test_hardcoded_freezer_writes_the_pdb_centric_validation_selection(
 
     _write_validation_pool(tmp_path, "1abc", occurrence_count=4)
     _write_validation_pool(tmp_path, "2def", occurrence_count=6)
+    assert freeze_validation_selection_pdb_centric.VALIDATION_PDB_NUM == 150
     manifest = {
         "schema_version": 1,
         "splits": {
@@ -56,10 +57,16 @@ def test_hardcoded_freezer_writes_the_pdb_centric_validation_selection(
         "OUTPUT_PATH",
         output_path,
     )
+    monkeypatch.setattr(
+        freeze_validation_selection_pdb_centric,
+        "VALIDATION_PDB_NUM",
+        1,
+    )
 
     freeze_validation_selection_pdb_centric.main()
 
     with np.load(output_path, allow_pickle=False) as selection:
+        first_arrays = {field_name: selection[field_name].copy() for field_name in selection.files}
         assert set(selection.files) == {
             "validation_pdb_id",
             "center_pdb_index",
@@ -73,14 +80,45 @@ def test_hardcoded_freezer_writes_the_pdb_centric_validation_selection(
             "pdb_foreground_fraction_target",
             "pdb_occurrence_foreground_box_cap",
         }
-        assert selection["validation_pdb_id"].tolist() == [b"1abc", b"2def"]
+        selected_pdb_ids = first_arrays["validation_pdb_id"]
+        assert selected_pdb_ids.tolist()[0] in {b"1abc", b"2def"}
+        assert selection["validation_pdb_id"].dtype.kind == "S"
+        assert selection["validation_pdb_id"].shape == (1,)
+        assert selection["center_pdb_index"].dtype == np.dtype(np.int32)
         assert selection["center_pdb_index"].shape == (0,)
+        assert selection["center_occurrence_id"].dtype == np.dtype(np.int32)
+        assert selection["center_occurrence_id"].shape == (0,)
+        assert selection["bias_pdb_index"].dtype == np.dtype(np.int32)
+        assert selection["bias_pdb_index"].shape == (25,)
+        assert selection["bias_occurrence_id"].dtype == np.dtype(np.int32)
+        assert selection["bias_occurrence_id"].shape == (25,)
+        assert selection["bias_candidate_index"].dtype == np.dtype(np.int16)
+        assert selection["bias_candidate_index"].shape == (25,)
+        assert selection["context_pdb_index"].dtype == np.dtype(np.int32)
+        assert selection["context_pdb_index"].shape == (25,)
+        assert selection["context_candidate_index"].dtype == np.dtype(np.int32)
+        assert selection["context_candidate_index"].shape == (25,)
         assert np.bincount(
-            selection["bias_pdb_index"], minlength=2
-        ).tolist() == [20, 25]
+            selection["bias_pdb_index"], minlength=1
+        ).tolist() == [25]
         assert np.bincount(
-            selection["context_pdb_index"], minlength=2
-        ).tolist() == [25, 25]
+            selection["context_pdb_index"], minlength=1
+        ).tolist() == [25]
+        assert selection["bias_candidate_index"].min() >= 0
+        assert selection["bias_candidate_index"].max() < 30
+        assert selection["context_candidate_index"].min() >= 0
+        assert selection["context_candidate_index"].max() < 30
+        assert selection["pdb_foreground_box_num"].dtype == np.dtype(np.int32)
+        assert selection["pdb_foreground_box_num"].shape == ()
         assert selection["pdb_foreground_box_num"].item() == 25
+        assert selection["pdb_foreground_fraction_target"].dtype == np.dtype(np.float64)
+        assert selection["pdb_foreground_fraction_target"].shape == ()
         assert selection["pdb_foreground_fraction_target"].item() == 0.5
-        assert selection["pdb_occurrence_foreground_box_cap"].item() == 5
+        assert selection["pdb_occurrence_foreground_box_cap"].dtype == np.dtype(np.int32)
+        assert selection["pdb_occurrence_foreground_box_cap"].shape == ()
+        assert selection["pdb_occurrence_foreground_box_cap"].item() == 25
+
+    freeze_validation_selection_pdb_centric.main()
+    with np.load(output_path, allow_pickle=False) as selection:
+        for field_name, expected in first_arrays.items():
+            assert np.array_equal(selection[field_name], expected)

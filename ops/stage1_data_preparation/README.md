@@ -96,13 +96,13 @@ BOX pool 根目录为 `/storage/penghongen/AdaLigand/Ori_Data/stage1_preparation
 
 - `pdb_foreground_box_num=25`：每个 PDB 的目标 bias BOX 数量。
 - `pdb_foreground_fraction_target=0.5`：bias BOX 占目标 bias 与 context BOX 总数的比例。
-- `pdb_occurrence_foreground_box_cap=5`：单个 occurrence 在一个 epoch 内最多获得的 bias BOX 数量。
+- `pdb_occurrence_foreground_box_cap=25`：单个 occurrence 在一个 epoch 内最多获得的 bias BOX 数量；该值等于每 PDB 的目标 bias 数量。
 
-设一个 PDB 含 `O` 个 occurrence，实际 bias 数量为 `min(25, 5O)`。bias 尽可能均匀地分给全部 occurrence，不能整除的余数沿稳定排列逐 epoch 轮转；context 数量固定为 25，不因实际 bias 不足而减少。正式 train 与 validation 的每个 PDB 都有超过 25 个 context 候选，选择时不需要放回或回退。
+设一个 PDB 含 `O` 个 occurrence，实际 bias 数量为 `min(25, 25O)`。正式 pool 的每个 PDB 至少含一个 occurrence，因此 bias 数量固定为 25；bias 尽可能均匀地分给全部 occurrence，不能整除的余数沿稳定排列逐 epoch 轮转。context 数量同样固定为 25。正式 train 与 validation 的每个 PDB 都有超过 25 个 context 候选，选择时不需要放回或回退。
 
 ## PDB 中心验证选择的一次性冻结
 
-`freeze_validation_selection_pdb_centric.py` 是保留在 `ops/stage1_data_preparation/` 中的硬编码生产脚本，不提供参数化命令行。脚本固定读取正式 validation pool，使用 seed 3407 和上述 `25/0.5/5` 参数生成 epoch 0 请求，并原子写入：
+`freeze_validation_selection_pdb_centric.py` 是保留在 `ops/stage1_data_preparation/` 中的硬编码生产脚本，不提供参数化命令行。脚本固定读取正式 validation pool，使用 seed 3407 从 200 个 PDB 中无放回选择 150 个身份，再以 `25/0.5/25` 参数生成 epoch 0 请求并原子写入：
 
 ```text
 /storage/penghongen/AdaLigand/Ori_Data/stage1_preparation_box_pool_3/box_pool/validation_selection_pdb_centric.npz
@@ -128,7 +128,7 @@ python -m ops.stage1_data_preparation.freeze_validation_selection_pdb_centric
 | `context_candidate_index` | `int32 (N_context,)` | 对应 PDB 的 `context_start_zyx` 候选编号 |
 | `pdb_foreground_box_num` | `int32` 标量 | 冻结时每个 PDB 的目标 bias BOX 数量，值为 25 |
 | `pdb_foreground_fraction_target` | `float64` 标量 | 冻结时 bias 占目标总 BOX 的比例，值为 0.5 |
-| `pdb_occurrence_foreground_box_cap` | `int32` 标量 | 冻结时单 occurrence 每个 epoch 的 bias 上限，值为 5 |
+| `pdb_occurrence_foreground_box_cap` | `int32` 标量 | 冻结时单 occurrence 每个 epoch 的 bias 上限，值为 25 |
 
 脚本不会修改逐 PDB NPZ、`manifest.json`、`validation_selection.npz`、`config.json`、`summary.json` 或 `_COMPLETE`。
 

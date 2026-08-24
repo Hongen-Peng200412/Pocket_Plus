@@ -6,7 +6,7 @@
 
 - 完整体数组改从 `exp.npy`、`sim.npy`、`union_mask.npy` 和 `ligand_dist.npy` 内存映射，NPZ 只保留小型元数据和稀疏字段。
 - Dataset 返回 49 维受体基础特征与独立 `is_backbone`；模型边界在需要 50 维时拼接。
-- V3 逐 PDB bias/context 几何候选池保持不变。活动训练按 `pdb_foreground_box_num=25`、`pdb_foreground_fraction_target=0.5`、`pdb_occurrence_foreground_box_cap=5` 动态选择；验证冻结相同规则的 epoch 0 到 `validation_selection_pdb_centric.npz`。原 `0:5:5`/`0:1:1` 文件只作为历史构建记录保留。
+- V3 逐 PDB bias/context 几何候选池保持不变。活动训练按 `pdb_foreground_box_num=25`、`pdb_foreground_fraction_target=0.5`、`pdb_occurrence_foreground_box_cap=25` 动态选择；验证以 seed 3407 从 200 个 validation PDB 中无放回选择 150 个身份，并冻结相同规则的 epoch 0 到 `validation_selection_pdb_centric.npz`。原 `0:5:5`/`0:1:1` 文件只作为历史构建记录保留。
 - 单卡 Stage1 入口使用 16 CPU/16 workers。双卡 Find_0 与 `unet_c1_no_mainchain` 总计 32 CPU、每个 DDP rank 16 workers；正式双卡 Find_1 总计 64 CPU、每个 DDP rank 30 workers。
 - DataLoader 使用 `prefetch_factor=4` 和 `persistent_workers=false`。
 - U-Net 主链版保留三类结构头和 0.05/0.05/0.3 损失；无主链版保留结构头，把前两项权重设为 0，双卡使用 unused-parameter 检查兼容配置。

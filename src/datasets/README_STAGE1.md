@@ -13,7 +13,7 @@ stage1_preparation_box_pool_3/box_pool/manifest.json
     → Find_0、Find_1、unet_base、unet_c1 或 unet_diff
 ```
 
-训练使用 `pdb_foreground_box_num=25`、`pdb_foreground_fraction_target=0.5` 与 `pdb_occurrence_foreground_box_cap=5`。每个 PDB 每个 epoch 目标为 25 个 bias 和 25 个 context；若 occurrence 数量不足以提供 25 个 bias，则实际 bias 数量为 occurrence 数量乘以 5，context 仍为 25。bias 尽可能均匀分到全部 occurrence，余数分配逐 epoch 轮转。验证使用相同规则冻结 epoch 0，并由所有当前模型共用 `validation_selection_pdb_centric.npz`。原 `0:5:5`/`0:1:1` 请求、旧版 `1:5:3`、`box_sample_fraction`、`src/datasets/ops/stage1_split.py` 与 `stage1_box_pool.py` 均已退出活动消费链，只能从现存历史产物或 Git 历史阅读。
+训练使用 `pdb_foreground_box_num=25`、`pdb_foreground_fraction_target=0.5` 与 `pdb_occurrence_foreground_box_cap=25`。正式 pool 的每个 PDB 至少含一个 occurrence，因此每个 PDB 每个 epoch 固定使用 25 个 bias 和 25 个 context；bias 尽可能均匀分到全部 occurrence，余数分配逐 epoch 轮转。验证以 seed 3407 从 200 个 validation PDB 中无放回选择 150 个身份，冻结同规则 epoch 0，并由所有当前模型共用 `validation_selection_pdb_centric.npz`。原 `0:5:5`/`0:1:1` 请求、旧版 `1:5:3`、`box_sample_fraction`、`src/datasets/ops/stage1_split.py` 与 `stage1_box_pool.py` 均已退出活动消费链，只能从现存历史产物或 Git 历史阅读。
 
 ## 阅读顺序
 

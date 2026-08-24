@@ -79,11 +79,11 @@ def test_training_launchers_use_v3_worker_and_scope_contracts() -> None:
         "unet_diff.sh": 16,
     }
     expected_validation = {
-        "Find_0.sh": 9,
-        "Find_1.sh": 11,
-        "unet_base.sh": 11,
-        "unet_c1.sh": 11,
-        "unet_diff.sh": 11,
+        "Find_0.sh": 10,
+        "Find_1.sh": 12,
+        "unet_base.sh": 12,
+        "unet_c1.sh": 12,
+        "unet_diff.sh": 12,
     }
     for launcher_name, num_workers in expected_workers.items():
         launcher_text = (shell_root / launcher_name).read_text(encoding="utf-8")
@@ -100,6 +100,14 @@ def test_training_launchers_use_v3_worker_and_scope_contracts() -> None:
         assert "+experiment=CPC1/" in launcher_text
         assert "+experiment=CPC2/" not in launcher_text
 
+    find1_text = (shell_root / "Find_1.sh").read_text(encoding="utf-8")
+    assert 'devices="${TASK_GPUS:-2}"' in find1_text
+    assert 'nnodes="${TASK_NNODES:-1}"' in find1_text
+    submit_text = (PROJECT_ROOT / "训练与运行" / "submit_task.sh").read_text(
+        encoding="utf-8"
+    )
+    assert "--sh Find_1.sh --resource h100 --gpus 2 --cpus 64" in submit_text
+
     unet_text = (shell_root / "unet_c1.sh").read_text(encoding="utf-8")
     no_mainchain_text = (shell_root / "unet_c1_no_mainchain.sh").read_text(
         encoding="utf-8"
@@ -112,7 +120,7 @@ def test_training_launchers_use_v3_worker_and_scope_contracts() -> None:
 
 @pytest.mark.parametrize("experiment", FIND_EXPERIMENTS)
 def test_find_configs_encode_common_stage1_contract(experiment: str) -> None:
-    """验证六份 Find 配置的公共结构、训练预算和 56D density 契约."""
+    """验证六份 Find 配置的公共结构, 训练预算和 56D density 契约."""
 
     cfg = _compose(experiment)
     model_name = Path(experiment).name
@@ -133,7 +141,7 @@ def test_find_configs_encode_common_stage1_contract(experiment: str) -> None:
     assert cfg.model.backbone.real_density_cube_cfg.chunk_size == 4096
     assert cfg.train.global_batch_size == 64
     assert cfg.train.max_epochs == 70
-    assert cfg.train.val_per_epoch == 11
+    assert cfg.train.val_per_epoch == 12
     assert cfg.train.optimizer.lr == pytest.approx(5.0e-5)
     assert cfg.train.scheduler.threshold == 0.003
     assert cfg.model.voxel_aux_loss_weight in {0.0, 0.1}
@@ -191,7 +199,7 @@ def test_current_experiments_only_use_stage1_dataset_contract(experiment: str) -
     assert cfg.dataset.split_val.endswith("/validation_selection_pdb_centric.npz")
     assert cfg.dataset.pdb_foreground_box_num == 25
     assert cfg.dataset.pdb_foreground_fraction_target == pytest.approx(0.5)
-    assert cfg.dataset.pdb_occurrence_foreground_box_cap == 5
+    assert cfg.dataset.pdb_occurrence_foreground_box_cap == 25
     assert "use_balanced_foreground_sampler" not in cfg.train
     assert "balanced_foreground_ratio" not in cfg.train
 
@@ -265,7 +273,7 @@ def test_unet_c1_config_is_density_only_and_exports_final_v_feature() -> None:
     assert "excluded_pdb_ids" not in cfg.dataset
     assert "excluded_pdb_ids" not in find1.dataset
     assert cfg.train.max_epochs == 70
-    assert cfg.train.val_per_epoch == 11
+    assert cfg.train.val_per_epoch == 12
 
 
 @pytest.mark.parametrize(
@@ -300,4 +308,4 @@ def test_unet_density_ablation_configs_keep_common_training_and_auxiliary_losses
     assert cfg.train.optimizer.lr == pytest.approx(1.0e-4)
     assert cfg.train.num_workers == 16
     assert cfg.train.max_epochs == 70
-    assert cfg.train.val_per_epoch == 11
+    assert cfg.train.val_per_epoch == 12

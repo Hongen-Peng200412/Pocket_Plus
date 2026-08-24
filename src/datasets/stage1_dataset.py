@@ -427,7 +427,7 @@ class Stage1Dataset(Dataset):
         - density_channel_config: Mapping[str, Any]；密度裁剪、拟合和启用通道的配置映射。
         - pdb_foreground_box_num: int; 每个 PDB 的目标 bias BOX 数量; 默认值 25 只供旧 resolved config 的内存推理请求兼容, 当前 Hydra 配置必须显式提供.
         - pdb_foreground_fraction_target: float; bias BOX 占目标 bias 与 context BOX 总数的比例; 默认值 0.5 只供旧 resolved config 的内存推理请求兼容.
-        - pdb_occurrence_foreground_box_cap: int; 单个 occurrence 每个 epoch 的 bias BOX 数量上限; 默认值 5 只供旧 resolved config 的内存推理请求兼容.
+        - pdb_occurrence_foreground_box_cap: int; 单个 occurrence 每个 epoch 的 bias BOX 数量上限; 默认值 25 只供旧 resolved config 的内存推理请求兼容.
         - atom_buffer_radius: float；核心 BOX 外选择受体原子的世界坐标缓冲半径，本 Dataset 固定为 ``8.0 Å``。
         - request_seed: int；训练请求层用于确定性展开的基准 seed。
         - cache_max_bytes: int；每个 DataLoader worker 的受体表、监督数组和完整图 LRU 缓存字节上限。
@@ -458,7 +458,7 @@ class Stage1Dataset(Dataset):
         density_channel_config: Mapping[str, Any],
         pdb_foreground_box_num: int = 25,
         pdb_foreground_fraction_target: float = 0.5,
-        pdb_occurrence_foreground_box_cap: int = 5,
+        pdb_occurrence_foreground_box_cap: int = 25,
         atom_buffer_radius: float = 8.0,
         request_seed: int = 3407,
         cache_max_bytes: int = 536_870_912,
@@ -479,7 +479,7 @@ class Stage1Dataset(Dataset):
             - density_channel_config: Mapping[str, Any]；传给 ``DensityChannelConfig`` 的通道字段。
             - pdb_foreground_box_num: int; 每个 PDB 的目标 bias BOX 数量; 默认值 25 只在旧 resolved config 构造内存推理请求时使用.
             - pdb_foreground_fraction_target: float; bias BOX 占目标 bias 与 context BOX 总数的比例; 旧 resolved config 的兼容默认值为 0.5.
-            - pdb_occurrence_foreground_box_cap: int; 单个 occurrence 每个 epoch 的 bias BOX 数量上限; 旧 resolved config 的兼容默认值为 5.
+            - pdb_occurrence_foreground_box_cap: int; 单个 occurrence 每个 epoch 的 bias BOX 数量上限; 旧 resolved config 的兼容默认值为 25.
             - atom_buffer_radius: float；必须为 ``8.0``，用于局部受体原子选择。
             - request_seed: int；仅传给 ``build_request_source`` 生成训练周期请求。
             - cache_max_bytes: int; 当前 Dataset 实例的完整图和受体资产缓存上限.

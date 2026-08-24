@@ -154,7 +154,7 @@ def _pdb_sampling_config() -> dict[str, object]:
     return {
         "pdb_foreground_box_num": 25,
         "pdb_foreground_fraction_target": 0.5,
-        "pdb_occurrence_foreground_box_cap": 5,
+        "pdb_occurrence_foreground_box_cap": 25,
     }
 
 
@@ -311,7 +311,7 @@ def test_density_only_ablation_reads_sim_and_returns_auxiliary_targets(
 
 
 def test_source_cache_remains_consistent_under_inference_threads(tmp_path: Path) -> None:
-    """推理线程共享 mmap LRU 时, 锁保持字节计数和条目映射一致."""
+    """推理线程共享 mmap LRU 时, 锁保证 ``_source_cache.current_bytes`` 等于 ``_source_cache.values`` 保存的资产字节数之和."""
 
     _write_upstream(tmp_path)
     dataset = Stage1Dataset(
@@ -475,22 +475,51 @@ def test_training_pool_rebuilds_deterministic_pdb_centric_epochs(tmp_path: Path)
     assert tuple(source_again.requests) == tuple(source.requests)
 
 
-def test_foreground_shortfall_keeps_the_pdb_context_target(tmp_path: Path) -> None:
-    """occurrence cap 使 bias 不足时仍保留每个 PDB 的 context 目标."""
+def test_single_occurrence_receives_the_full_foreground_target(tmp_path: Path) -> None:
+    """单个 occurrence 在 cap 为 25 时获得完整的 25 个 bias BOX."""
 
-    pool_root = _write_v3_pool(tmp_path, occurrence_count=4)
+    pool_root = _write_v3_pool(tmp_path, occurrence_count=1)
     source = Stage1TrainingRequestSet(
         pool_root / "train",
         seed=7,
         **_pdb_sampling_config(),
     )
     assert Counter(request.role for request in source.requests) == {
-        "bias": 20,
+        "bias": 25,
         "context": 25,
     }
     assert Counter(
         request.occurrence_id for request in source.requests if request.role == "bias"
-    ) == {0: 5, 1: 5, 2: 5, 3: 5}
+    ) == {0: 25}
+
+
+def test_foreground_remainder_rotates_between_occurrences(tmp_path: Path) -> None:
+    """六个 occurrence 均分 25 个 bias 时, 唯一余数随 epoch 轮转."""
+
+    pool_root = _write_v3_pool(tmp_path, occurrence_count=6)
+    source = Stage1TrainingRequestSet(
+        pool_root / "train",
+        seed=7,
+        **_pdb_sampling_config(),
+    )
+    epoch0_counts = Counter(
+        request.occurrence_id for request in source.requests if request.role == "bias"
+    )
+    source.set_epoch(1)
+    epoch1_counts = Counter(
+        request.occurrence_id for request in source.requests if request.role == "bias"
+    )
+
+    for counts in (epoch0_counts, epoch1_counts):
+        assert sum(counts.values()) == 25
+        assert max(counts.values()) <= 5
+        assert max(counts.values()) - min(counts.values()) <= 1
+        assert sorted(counts.values()) == [4, 4, 4, 4, 4, 5]
+    assert {
+        occurrence_id for occurrence_id, count in epoch0_counts.items() if count == 5
+    } != {
+        occurrence_id for occurrence_id, count in epoch1_counts.items() if count == 5
+    }
 
 
 def test_validation_selection_expands_pdb_centric_indices(tmp_path: Path) -> None:
@@ -510,7 +539,7 @@ def test_validation_selection_expands_pdb_centric_indices(tmp_path: Path) -> Non
         context_candidate_index=np.zeros(1, dtype=np.int32),
         pdb_foreground_box_num=np.asarray(25, dtype=np.int32),
         pdb_foreground_fraction_target=np.asarray(0.5, dtype=np.float64),
-        pdb_occurrence_foreground_box_cap=np.asarray(5, dtype=np.int32),
+        pdb_occurrence_foreground_box_cap=np.asarray(25, dtype=np.int32),
     )
     requests = load_validation_selection(
         pool_root / "validation_selection_pdb_centric.npz",

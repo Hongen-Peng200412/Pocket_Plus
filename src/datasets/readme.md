@@ -59,11 +59,11 @@ Dataset 以 `numpy.load(..., mmap_mode="r")` 打开完整图，只复制实际 8
 | `bias_start_zyx` | `int32 (O,30,3)` | 每个 occurrence 的 30 个 bias 候选 |
 | `context_start_zyx` | `int32 (C,3)` | PDB 级 context 候选 |
 
-所有起点都是完整图内 80³ BOX 的零基 ZYX corner index。当前训练使用三个显式参数：`pdb_foreground_box_num=25`、`pdb_foreground_fraction_target=0.5` 与 `pdb_occurrence_foreground_box_cap=5`。这里的 foreground 只表示 bias BOX，context BOX 仍沿用原名。
+所有起点都是完整图内 80³ BOX 的零基 ZYX corner index。当前训练使用三个显式参数：`pdb_foreground_box_num=25`、`pdb_foreground_fraction_target=0.5` 与 `pdb_occurrence_foreground_box_cap=25`。这里的 foreground 只表示 bias BOX，context BOX 仍沿用原名。
 
-设一个 PDB 含 `O` 个 occurrence。该 PDB 在一个 epoch 的实际 bias 数量为 `min(25, 5O)`；这些 bias 先尽可能均匀地分给全部 occurrence，不能整除的余数沿稳定 occurrence 排列逐 epoch 轮转。每个 occurrence 再从自己的 30 个 bias 候选中无放回选择所需数量。context 的目标数量由 `round(25 × (1 - 0.5) / 0.5)` 得到，固定为 25，不随实际 bias 数量不足而减少；候选从该 PDB 的 context 池中无放回选择。正式 train 与 validation 的每个 PDB 都有超过 25 个 context 候选，因此活动实现直接使用这一数据事实，不增加补抽、放回或回退分支。
+设一个 PDB 含 `O` 个 occurrence。该 PDB 在一个 epoch 的实际 bias 数量为 `min(25, 25O)`；正式 pool 的每个 PDB 至少含一个 occurrence，因此实际数量固定为 25。这些 bias 先尽可能均匀地分给全部 occurrence，不能整除的余数沿稳定 occurrence 排列逐 epoch 轮转。每个 occurrence 再从自己的 30 个 bias 候选中无放回选择所需数量。context 的目标数量由 `round(25 × (1 - 0.5) / 0.5)` 得到，同样固定为 25；候选从该 PDB 的 context 池中无放回选择。正式 train 与 validation 的每个 PDB 都有超过 25 个 context 候选，因此活动实现直接使用这一数据事实，不增加补抽、放回或回退分支。
 
-验证采用完全相同的规则和 seed 3407，把 epoch 0 的请求冻结到 `validation_selection_pdb_centric.npz`。该文件精确包含以下 11 个字段：
+验证以 seed 3407 从 200 个 validation PDB 中无放回选择 150 个身份，保持 manifest 相对顺序，并把这 150 个 PDB 的 epoch 0 请求冻结到 `validation_selection_pdb_centric.npz`。该文件精确包含以下 11 个字段：
 
 | 字段 | dtype 与形状 | 含义 |
 | --- | --- | --- |
@@ -77,7 +77,7 @@ Dataset 以 `numpy.load(..., mmap_mode="r")` 打开完整图，只复制实际 8
 | `context_candidate_index` | `int32 (N_context,)` | 对应 PDB 的 `context_start_zyx` 候选编号 |
 | `pdb_foreground_box_num` | `int32` 标量 | 冻结时每个 PDB 的目标 bias BOX 数量，值为 25 |
 | `pdb_foreground_fraction_target` | `float64` 标量 | 冻结时 bias 占目标总 BOX 的比例，值为 0.5 |
-| `pdb_occurrence_foreground_box_cap` | `int32` 标量 | 冻结时单 occurrence 每个 epoch 的 bias 上限，值为 5 |
+| `pdb_occurrence_foreground_box_cap` | `int32` 标量 | 冻结时单 occurrence 每个 epoch 的 bias 上限，值为 25 |
 
 Dataset 按文件顺序完整展开这些请求，不在验证期间重新抽样。三个采样参数标量只记录冻结契约；请求展开函数不读取或校验它们。
 

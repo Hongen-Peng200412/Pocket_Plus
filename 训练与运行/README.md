@@ -42,10 +42,10 @@ bash 训练与运行/submit_task.sh \
   --gpus 2 \
   --cpus 64
 
-# unet_base：一台节点、一张 H100。
+# unet_base：一台节点、一张 A800。
 bash 训练与运行/submit_task.sh \
   --sh unet_base.sh \
-  --resource h100 \
+  --resource a800 \
   --gpus 1 \
   --cpus 16
 
@@ -56,10 +56,10 @@ bash 训练与运行/submit_task.sh \
   --gpus 1 \
   --cpus 16
 
-# unet_diff：一台节点、一张 H100。
+# unet_diff：一台节点、一张 A800。
 bash 训练与运行/submit_task.sh \
   --sh unet_diff.sh \
-  --resource h100 \
+  --resource a800 \
   --gpus 1 \
   --cpus 16
 ```
@@ -457,7 +457,7 @@ Find 的完整链路：
 → 具体 PDB、BOX 起点、样本角色和监督开关
 ```
 
-它决定“从 A–G 完整图中切哪些 80³ BOX”，不是密度与标签本身的位置。活动 Dataset 配置同时固定 `pdb_foreground_box_num=25`、`pdb_foreground_fraction_target=0.5` 和 `pdb_occurrence_foreground_box_cap=5`：每个 PDB 目标为 25 个 bias 与 25 个 context；occurrence 数量不足时只减少 bias，context 仍为 25。验证文件冻结同一规则的 epoch 0。
+它决定“从 A–G 完整图中切哪些 80³ BOX”，不是密度与标签本身的位置。活动 Dataset 配置同时固定 `pdb_foreground_box_num=25`、`pdb_foreground_fraction_target=0.5` 和 `pdb_occurrence_foreground_box_cap=25`：正式 pool 的每个 PDB 至少含一个 occurrence，因此每个 PDB 固定使用 25 个 bias 与 25 个 context。验证文件以 seed 3407 从 200 个 validation PDB 中无放回选择 150 个身份，并冻结同一规则的 epoch 0。
 
 #### `EXPERIMENT_FEEDBACK_ROOT`
 
@@ -527,7 +527,7 @@ bash 训练与运行/submit_task.sh \
 
 | 参数 | Find_0 | Find_1 | unet_base | unet_c1 | unet_diff |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| 推荐 GPU | H100 × 2 | H100 × 2 | H100 × 1 | H100 × 1 | H100 × 1 |
+| 推荐 GPU | H100 × 2 | H100 × 2 | A800 × 1 | H100 × 1 | A800 × 1 |
 | Slurm CPU | 32 | 64 | 16 | 16 | 16 |
 | 每卡 batch | 8 | 6 | 8 | 8 | 8 |
 | 全局 batch | 48 | 48 | 48 | 48 | 48 |
@@ -537,7 +537,7 @@ bash 训练与运行/submit_task.sh \
 | CPC1/单阶段 warmup | `0.005` | `0.005` | `0.005` | `0.005` | `0.005` |
 | CPC1/单阶段 patience | 2 | 3 | 3 | 3 | 3 |
 | 最大 epoch | 70 | 70 | 70 | 70 | 70 |
-| 每 epoch 验证次数 | 9 | 11 | 11 | 11 | 11 |
+| 每 epoch 验证次数 | 10 | 12 | 12 | 12 | 12 |
 | W&B | online | online | online | online | online |
 
 梯度累积来自：
@@ -551,7 +551,7 @@ unet_base/unet_c1/unet_diff：8 BOX/卡 × 1 卡 = 8 BOX/前向；48 ÷ 8 = 累�
 `train.strict_global_batch_size=true` 会要求这个除法得到整数；
 `train.enable_batch_size_tuning=false` 会阻止程序自动改动这些基线数值。
 
-PDB 中心采样把每个 epoch 的训练 BOX 总数降到约 616,740。`max_epochs=70` 使计划训练总量与历史 20 epoch 的 `0:5:5` 训练相差约 0.4%；Find_0 的 9 次与其他当前入口的 11 次 validation 使相邻验证事件之间的训练 BOX 数尽量接近各入口旧值。`warmup_ratio=0.005` 保持不变，因此 warmup 期间处理的 BOX 数也随总训练量保持近似不变。
+PDB 中心采样使每个 epoch 固定包含 685,850 个训练 BOX。Find_0 的 10 次与其他当前入口的 12 次 validation，使相邻验证事件之间的训练 BOX 数接近 cap 为 5 时的上一版实施稿；活动验证固定为 150 个 PDB、7,500 个 BOX。`max_epochs=70` 与 `warmup_ratio=0.005` 按最终训练决定保持不变。
 
 ### 7.1 Find_0
 
@@ -708,7 +708,7 @@ bash 训练与运行/submit_task.sh \
   退出码以及“不创建 release/launch”；
 - 对脚本中的 Hydra 参数做静态对照。
 
-这些检查不代替真实 GPU smoke，但本目录的三个正式训练此前已经分别通过训练
+这些检查不代替真实 GPU smoke，但本目录的五个正式训练入口此前已经分别通过训练
 启动验证。本次整理不提交新 Job，也不接管正在运行的 allocation。
 
 ## 13. 与既有提交系统的关系
