@@ -40,7 +40,7 @@
 ## 2026-08-24 PDB 中心验证选择
 
 - Pocket_Plus 实现分支 `codex/stage1-pdb-centric-sampling` 从 `Learn/CUMULATIVE@8561d2790614a0d92f0ad88ebce241a9f1c77ba3` 建立；首个稳定实现提交为 `ac53172`。
-- 最终代码安全同步后，服务器 `src/datasets/stage1_requests.py` 与冻结脚本的 SHA-256 分别为 `013ae573dc0520b3779e340020787919ee809e3289dca05c8f45fbabe01684ff` 与 `4987560d4e19ba5df53b99e69dd81b49d79f4b4096adfb0900c6dd3203bdc318`，与本地一致。
+- 最终安全同步后，服务器 `src/datasets/stage1_requests.py` 与冻结脚本的文件 SHA-256 分别为 `de9621f1640567c9f3fc8fb31532619dd8e75f38e78b08dcdd75c39c248718b2` 与 `9a20a4744442f5f7e6ec6da0cb1db7218788de134f2c933a0779755259e950bd`，与 Windows 工作树字节一致。Git 以 LF 行尾保存的对应 blob 内容 SHA-256 分别为 `a31413473e1c539bc8398d84fd2531faaab232bb0e861bed6cf77ed76242e14c` 与 `4987560d4e19ba5df53b99e69dd81b49d79f4b4096adfb0900c6dd3203bdc318`；两组差异仅来自 CRLF/LF 行尾。
 - 正式命令为 `python -m ops.stage1_data_preparation.freeze_validation_selection_pdb_centric`。最终文件于 2026-08-25 00:02:04 +08:00 覆盖写入，保存从原 200 个 validation PDB 中按 `SeedSequence(3407, spawn_key=(2,))` 无放回选出的 150 个身份，以及 3,750 个 bias、3,750 个 context 和 0 个 center 请求。
 - 新文件精确包含八类既有索引数组与三个采样参数标量，共 11 个字段；逐字段 dtype、shape、候选索引范围和逐 PDB 计数均通过核验。150 个 PDB 都恰好包含 25 个 bias 与 25 个 context，PDB 身份按原 validation manifest 顺序保存。
 - 第三轮逻辑审查发现原 `SeedSequence([3407, 2])` 与第 3 个 manifest PDB 的 occurrence 排列随机状态碰撞。改用独立 `spawn_key` 后，最终集合相对碰撞版本保留 116 个身份并替换 34 个身份；该中间版本未用于训练。
