@@ -148,13 +148,23 @@ def _density_config(channels: list[str]) -> dict[str, object]:
     }
 
 
-def _write_v3_pool(root: Path) -> Path:
+def _pdb_sampling_config() -> dict[str, object]:
+    """返回当前 PDB 中心采样的正式参数."""
+
+    return {
+        "pdb_foreground_box_num": 25,
+        "pdb_foreground_fraction_target": 0.5,
+        "pdb_occurrence_foreground_box_cap": 25,
+    }
+
+
+def _write_v3_pool(root: Path, occurrence_count: int = 55) -> Path:
     """写入包含一个 train PDB 与一个 validation PDB 的 V3 请求池."""
 
     for split_name, pdb_id in (("train", "1abc"), ("validation", "2def")):
         pool_directory = root / split_name
         pool_directory.mkdir(parents=True, exist_ok=True)
-        occurrence_ids = np.arange(55, dtype=np.int32)
+        occurrence_ids = np.arange(occurrence_count, dtype=np.int32)
         centers = np.stack([occurrence_ids] * 3, axis=1)
         np.savez(
             pool_directory / f"{pdb_id}.npz",
@@ -162,7 +172,7 @@ def _write_v3_pool(root: Path) -> Path:
             occurrence_id=occurrence_ids,
             center_start_zyx=centers,
             bias_start_zyx=np.repeat(centers[:, None, :], 30, axis=1),
-            context_start_zyx=np.stack([np.arange(10)] * 3, axis=1).astype(np.int32),
+            context_start_zyx=np.stack([np.arange(30)] * 3, axis=1).astype(np.int32),
         )
     manifest = {
         "schema_version": 1,
@@ -197,6 +207,8 @@ def test_find_dataset_materializes_mmap_crop_and_separate_backbone_flag(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Find Dataset 现场裁块并独立返回 49 维特征与主链标志."""
+
     _write_upstream(tmp_path)
     monkeypatch.setattr(
         stage1_dataset_module,
@@ -212,6 +224,7 @@ def test_find_dataset_materializes_mmap_crop_and_separate_backbone_flag(
         stage1_model_name="Find_1",
         box_pool_root=None,
         density_channel_config=_density_config(list(ALL_CHANNEL_NAMES)),
+        **_pdb_sampling_config(),
         enable_random_rotation=False,
     )
 
@@ -284,6 +297,7 @@ def test_density_only_ablation_reads_sim_and_returns_auxiliary_targets(
         stage1_model_name=model_name,
         box_pool_root=None,
         density_channel_config=_density_config(channels),
+        **_pdb_sampling_config(),
         enable_random_rotation=False,
     )
 
@@ -297,7 +311,7 @@ def test_density_only_ablation_reads_sim_and_returns_auxiliary_targets(
 
 
 def test_source_cache_remains_consistent_under_inference_threads(tmp_path: Path) -> None:
-    """推理线程共享 mmap LRU 时, 锁必须保持字节计数和条目映射一致."""
+    """推理线程共享 mmap LRU 时, 锁保证 ``_source_cache.current_bytes`` 等于 ``_source_cache.values`` 保存的资产字节数之和."""
 
     _write_upstream(tmp_path)
     dataset = Stage1Dataset(
@@ -307,6 +321,7 @@ def test_source_cache_remains_consistent_under_inference_threads(tmp_path: Path)
         stage1_model_name="unet_c1",
         box_pool_root=None,
         density_channel_config=_density_config(["exp_clipnorm_nopost"]),
+        **_pdb_sampling_config(),
         enable_random_rotation=False,
     )
     with ThreadPoolExecutor(max_workers=4) as executor:
@@ -333,6 +348,7 @@ def test_distance_validation_reads_only_the_requested_crop(tmp_path: Path) -> No
         stage1_model_name="unet_c1",
         box_pool_root=None,
         density_channel_config=_density_config(["exp_clipnorm_nopost"]),
+        **_pdb_sampling_config(),
         enable_random_rotation=False,
     )
     dataset[0]
@@ -348,6 +364,8 @@ def test_repeated_windows_reuse_mmap_handles(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """同一 Dataset 的重复窗口复用已经打开的 mmap 句柄."""
+
     _write_upstream(tmp_path)
     read_count: Counter[str] = Counter()
     original_loader = stage1_dataset_module._load_mmap_array
@@ -371,6 +389,7 @@ def test_repeated_windows_reuse_mmap_handles(
         stage1_model_name="Find_1",
         box_pool_root=None,
         density_channel_config=_density_config(list(ALL_CHANNEL_NAMES)),
+        **_pdb_sampling_config(),
         cache_max_bytes=64 * 1024 * 1024,
         enable_random_rotation=False,
     )
@@ -420,24 +439,96 @@ def test_collator_keeps_backbone_flag_and_b_plus_one_offsets() -> None:
     assert batch["atom_is_backbone"].tolist() == [True, False]
 
 
-def test_training_pool_rebuilds_deterministic_zero_five_five_epochs(tmp_path: Path) -> None:
+def test_training_pool_rebuilds_deterministic_pdb_centric_epochs(tmp_path: Path) -> None:
+    """多 occurrence PDB 在相邻 epoch 轮换 bias, 且请求可确定复现."""
+
     pool_root = _write_v3_pool(tmp_path)
-    source = Stage1TrainingRequestSet(pool_root / "train", seed=7)
+    source = Stage1TrainingRequestSet(
+        pool_root / "train",
+        seed=7,
+        **_pdb_sampling_config(),
+    )
     epoch0 = tuple(source.requests)
-    assert len(epoch0) == 50 * 10
-    assert Counter(request.role for request in epoch0) == {"bias": 250, "context": 250}
+    assert len(epoch0) == 50
+    assert Counter(request.role for request in epoch0) == {"bias": 25, "context": 25}
+    epoch0_bias_occurrences = {
+        request.occurrence_id for request in epoch0 if request.role == "bias"
+    }
+    assert len(epoch0_bias_occurrences) == 25
+    assert all(
+        request.occurrence_id is None
+        for request in epoch0
+        if request.role == "context"
+    )
     source.set_epoch(1)
     assert tuple(source.requests) != epoch0
-    source_again = Stage1TrainingRequestSet(pool_root / "train", seed=7)
+    epoch1_bias_occurrences = {
+        request.occurrence_id for request in source.requests if request.role == "bias"
+    }
+    assert epoch0_bias_occurrences.isdisjoint(epoch1_bias_occurrences)
+    source_again = Stage1TrainingRequestSet(
+        pool_root / "train",
+        seed=7,
+        **_pdb_sampling_config(),
+    )
     source_again.set_epoch(1)
     assert tuple(source_again.requests) == tuple(source.requests)
 
 
-def test_validation_selection_expands_zero_one_one_indices(tmp_path: Path) -> None:
+def test_single_occurrence_receives_the_full_foreground_target(tmp_path: Path) -> None:
+    """单个 occurrence 在 cap 为 25 时获得完整的 25 个 bias BOX."""
+
+    pool_root = _write_v3_pool(tmp_path, occurrence_count=1)
+    source = Stage1TrainingRequestSet(
+        pool_root / "train",
+        seed=7,
+        **_pdb_sampling_config(),
+    )
+    assert Counter(request.role for request in source.requests) == {
+        "bias": 25,
+        "context": 25,
+    }
+    assert Counter(
+        request.occurrence_id for request in source.requests if request.role == "bias"
+    ) == {0: 25}
+
+
+def test_foreground_remainder_rotates_between_occurrences(tmp_path: Path) -> None:
+    """六个 occurrence 均分 25 个 bias 时, 唯一余数随 epoch 轮转."""
+
+    pool_root = _write_v3_pool(tmp_path, occurrence_count=6)
+    source = Stage1TrainingRequestSet(
+        pool_root / "train",
+        seed=7,
+        **_pdb_sampling_config(),
+    )
+    epoch0_counts = Counter(
+        request.occurrence_id for request in source.requests if request.role == "bias"
+    )
+    source.set_epoch(1)
+    epoch1_counts = Counter(
+        request.occurrence_id for request in source.requests if request.role == "bias"
+    )
+
+    for counts in (epoch0_counts, epoch1_counts):
+        assert sum(counts.values()) == 25
+        assert max(counts.values()) <= 5
+        assert max(counts.values()) - min(counts.values()) <= 1
+        assert sorted(counts.values()) == [4, 4, 4, 4, 4, 5]
+    assert {
+        occurrence_id for occurrence_id, count in epoch0_counts.items() if count == 5
+    } != {
+        occurrence_id for occurrence_id, count in epoch1_counts.items() if count == 5
+    }
+
+
+def test_validation_selection_expands_pdb_centric_indices(tmp_path: Path) -> None:
+    """活动 validation 文件按冻结索引展开 bias 与 PDB 级 context."""
+
     pool_root = _write_v3_pool(tmp_path)
     validation_ids = np.asarray([b"2def"], dtype="S4")
     np.savez(
-        pool_root / "validation_selection.npz",
+        pool_root / "validation_selection_pdb_centric.npz",
         validation_pdb_id=validation_ids,
         center_pdb_index=np.empty(0, dtype=np.int32),
         center_occurrence_id=np.empty(0, dtype=np.int32),
@@ -446,8 +537,14 @@ def test_validation_selection_expands_zero_one_one_indices(tmp_path: Path) -> No
         bias_candidate_index=np.zeros(1, dtype=np.int16),
         context_pdb_index=np.zeros(1, dtype=np.int32),
         context_candidate_index=np.zeros(1, dtype=np.int32),
+        pdb_foreground_box_num=np.asarray(25, dtype=np.int32),
+        pdb_foreground_fraction_target=np.asarray(0.5, dtype=np.float64),
+        pdb_occurrence_foreground_box_cap=np.asarray(25, dtype=np.int32),
     )
-    requests = load_validation_selection(pool_root / "validation_selection.npz", pool_root)
+    requests = load_validation_selection(
+        pool_root / "validation_selection_pdb_centric.npz",
+        pool_root,
+    )
     assert Counter(request.role for request in requests) == {"bias": 1, "context": 1}
 
 
