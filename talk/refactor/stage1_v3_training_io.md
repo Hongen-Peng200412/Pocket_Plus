@@ -6,7 +6,7 @@
 
 - 完整体数组改从 `exp.npy`、`sim.npy`、`union_mask.npy` 和 `ligand_dist.npy` 内存映射，NPZ 只保留小型元数据和稀疏字段。
 - Dataset 返回 49 维受体基础特征与独立 `is_backbone`；模型边界在需要 50 维时拼接。
-- 训练请求固定为 `center:bias:context = 0:5:5`，冻结验证请求固定为 `0:1:1`；不保留 fraction 参数或比例请求文件。
+- V3 逐 PDB bias/context 几何候选池保持不变。活动训练按 `pdb_foreground_box_num=25`、`pdb_foreground_fraction_target=0.5`、`pdb_occurrence_foreground_box_cap=5` 动态选择；验证冻结相同规则的 epoch 0 到 `validation_selection_pdb_centric.npz`。原 `0:5:5`/`0:1:1` 文件只作为历史构建记录保留。
 - 单卡使用 16 CPU/16 workers；双卡总计 32 CPU，每个 DDP rank 16 workers。
 - DataLoader 使用 `prefetch_factor=4` 和 `persistent_workers=false`。
 - U-Net 主链版保留三类结构头和 0.05/0.05/0.3 损失；无主链版保留结构头，把前两项权重设为 0，双卡使用 unused-parameter 检查兼容配置。
@@ -98,7 +98,7 @@
 | `configs/dataset/stage1_find.yaml` | Stage1 Dataset Hydra 配置 | src/train.py | 正式配置 | tests/test_adaligand_stage1_configs.py | 原位保留 | 修改 | 切换 V3 根目录并移除 fraction |
 | `configs/dataset/stage1_unet_c1.yaml` | Stage1 Dataset Hydra 配置 | src/train.py | 正式配置 | tests/test_adaligand_stage1_configs.py | 原位保留 | 修改 | 切换 V3 根目录并移除 fraction |
 | `configs/experiment/unet_c1.yaml` | U-Net 实验组合配置 | 训练脚本与 Hydra | 正式配置 | tests/test_adaligand_stage1_configs.py | 原位保留 | 修改 | 保留结构头并由脚本设置辅助损失权重 |
-| `configs/train/stage1_cpc1.yaml` | Stage1 DataLoader 与训练资源配置 | src/train.py | 正式配置 | tests/test_adaligand_stage1_configs.py | 原位保留 | 修改 | 固定每 rank 16 workers 与预取 4 |
+| `configs/train/stage1_cpc1.yaml` | Stage1 DataLoader 与训练资源配置 | src/train.py | 正式配置 | tests/test_adaligand_stage1_configs.py | 原位保留 | 修改 | 保持预取 4；Find_1 每 rank 30 workers，其他当前入口每 rank 16 workers |
 | `ops/box_pool_2/build_box_pool_2.py` | 第二版 split 或 BOX pool 构建 | 旧数据准备命令 | 历史代码 | 被 V3 数据准备测试取代 | 仅保留于 Git 历史 | 删除 | 正式消费者只读取已验收的 V3 产物 |
 | `ops/box_pool_2/build_box_pool_2.sh` | 第二版 split 或 BOX pool 构建 | 旧数据准备命令 | 历史代码 | 被 V3 数据准备测试取代 | 仅保留于 Git 历史 | 删除 | 正式消费者只读取已验收的 V3 产物 |
 | `ops/box_pool_2/finalize_box_pool_2.sh` | 第二版 split 或 BOX pool 构建 | 旧数据准备命令 | 历史代码 | 被 V3 数据准备测试取代 | 仅保留于 Git 历史 | 删除 | 正式消费者只读取已验收的 V3 产物 |
@@ -144,7 +144,7 @@
 | `src/datasets/readme.md` | 当前代码或数据契约说明 | 开发者与运维人员 | 活动文档 | 由 rg、审查与实现交叉核对 | 原位保留 | 修改 | 删除旧 NPZ、旧比例和旧入口陈述 |
 | `src/datasets/stage1_collate.py` | Stage1 batch 拼装 | DataLoader | 正式代码 | tests/datasets/test_stage1_dataset.py | 原位保留 | 修改 | 拼接独立 atom_is_backbone |
 | `src/datasets/stage1_dataset.py` | 统一训练与推理 80³ 物化 | src/train.py 与 src/inference | 正式代码 | tests/datasets/test_stage1_dataset.py | 原位保留 | 替换 | 使用 NPY mmap 并返回 49 维特征与主链标志 |
-| `src/datasets/stage1_requests.py` | V3 BOX 请求解析与每周期选择 | Stage1Dataset 与推理清单脚本 | 正式代码 | tests/datasets/test_stage1_dataset.py | 原位保留 | 替换 | 只支持 V3 0:5:5 请求和稳定 PDB 去重 |
+| `src/datasets/stage1_requests.py` | V3 BOX 请求解析与每周期选择 | Stage1Dataset 与推理清单脚本 | 正式代码 | tests/datasets/test_stage1_dataset.py | 原位保留 | 替换 | 按 PDB 分配 bias/context 请求，并稳定解析冻结验证索引 |
 | `src/inference/README.md` | 当前代码或数据契约说明 | 开发者与运维人员 | 活动文档 | 由 rg、审查与实现交叉核对 | 原位保留 | 修改 | 删除旧 NPZ、旧比例和旧入口陈述 |
 | `src/inference/assembly.py` | Stage1 推理数据装配 | src/inference/cli.py | 正式代码 | tests/inference/test_stage1_assembly_cli.py | 原位保留 | 修改 | 读取 union_mask.npy 并复用统一 Dataset |
 | `src/inference/utils/receptor_strip.py` | 推理受体裁剪工具 | 推理装配 | 正式代码 | 推理测试 | 原位保留 | 修改 | 移除已删除历史目录说明 |

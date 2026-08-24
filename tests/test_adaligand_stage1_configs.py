@@ -28,7 +28,7 @@ LIGAND_PRAUC_MONITORED_EXPERIMENTS = (
 
 
 def _compose(experiment: str):
-    """组合一份 AdaLigand Stage1 实验配置. """
+    """组合一份 AdaLigand Stage1 实验配置。"""
 
     hydra = pytest.importorskip("hydra")
     with hydra.initialize_config_dir(config_dir=str(CONFIG_ROOT), version_base=None):
@@ -37,14 +37,20 @@ def _compose(experiment: str):
 
 @pytest.mark.parametrize(
     ("experiment", "launcher_name"),
-    (("CPC1/Find_0", "Find_0.sh"), ("CPC1/Find_1", "Find_1.sh"), ("unet_c1", "unet_c1.sh")),
+    (
+        ("CPC1/Find_0", "Find_0.sh"),
+        ("CPC1/Find_1", "Find_1.sh"),
+        ("unet_base", "unet_base.sh"),
+        ("unet_c1", "unet_c1.sh"),
+        ("unet_diff", "unet_diff.sh"),
+    ),
 )
 def test_stage1_training_defaults_to_formal_preparation(
     experiment: str,
     launcher_name: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Dataset 配置和正式启动脚本默认读取同一份 Stage1 preparation. """
+    """Dataset 配置和正式启动脚本默认读取同一份 Stage1 preparation。"""
 
     monkeypatch.delenv("ADALIGAND_STAGE1_PREPARATION_ROOT", raising=False)
     cfg = _compose(experiment)
@@ -62,13 +68,33 @@ def test_stage1_training_defaults_to_formal_preparation(
 
 
 def test_training_launchers_use_v3_worker_and_scope_contracts() -> None:
-    """一键入口使用每个 rank 16 workers，Find 只执行 CPC1。"""
+    """一键入口保持正式 worker 数量，并使用新的训练与验证预算。"""
 
     shell_root = PROJECT_ROOT / "训练与运行" / "sh"
-    for launcher_name in ("Find_0.sh", "Find_1.sh", "unet_c1.sh"):
+    expected_workers = {
+        "Find_0.sh": 16,
+        "Find_1.sh": 30,
+        "unet_base.sh": 16,
+        "unet_c1.sh": 16,
+        "unet_diff.sh": 16,
+    }
+    expected_validation = {
+        "Find_0.sh": 9,
+        "Find_1.sh": 11,
+        "unet_base.sh": 11,
+        "unet_c1.sh": 11,
+        "unet_diff.sh": 11,
+    }
+    for launcher_name, num_workers in expected_workers.items():
         launcher_text = (shell_root / launcher_name).read_text(encoding="utf-8")
-        assert '"train.num_workers=16"' in launcher_text
+        assert f'"train.num_workers={num_workers}"' in launcher_text
         assert '"train.prefetch_factor=4"' in launcher_text
+        assert '"train.max_epochs=70"' in launcher_text
+        assert (
+            f'"train.val_per_epoch={expected_validation[launcher_name]}"'
+            in launcher_text
+        )
+        assert '"train.scheduler.warmup_ratio=0.005"' in launcher_text
     for launcher_name in ("Find_0.sh", "Find_1.sh"):
         launcher_text = (shell_root / launcher_name).read_text(encoding="utf-8")
         assert "+experiment=CPC1/" in launcher_text
@@ -86,7 +112,7 @@ def test_training_launchers_use_v3_worker_and_scope_contracts() -> None:
 
 @pytest.mark.parametrize("experiment", FIND_EXPERIMENTS)
 def test_find_configs_encode_common_stage1_contract(experiment: str) -> None:
-    """验证六份 Find 配置的公共结构、训练预算和 56D density 契约. """
+    """验证六份 Find 配置的公共结构、训练预算和 56D density 契约。"""
 
     cfg = _compose(experiment)
     model_name = Path(experiment).name
@@ -106,8 +132,8 @@ def test_find_configs_encode_common_stage1_contract(experiment: str) -> None:
     assert cfg.model.backbone.density_cube_cfg.chunk_size == 2048
     assert cfg.model.backbone.real_density_cube_cfg.chunk_size == 4096
     assert cfg.train.global_batch_size == 64
-    assert cfg.train.max_epochs == 20
-    assert cfg.train.val_per_epoch == 40
+    assert cfg.train.max_epochs == 70
+    assert cfg.train.val_per_epoch == 11
     assert cfg.train.optimizer.lr == pytest.approx(5.0e-5)
     assert cfg.train.scheduler.threshold == 0.003
     assert cfg.model.voxel_aux_loss_weight in {0.0, 0.1}
@@ -155,10 +181,14 @@ def test_find_models_only_change_voxel_receptor_construction() -> None:
 
 @pytest.mark.parametrize("experiment", (*FIND_EXPERIMENTS, "unet_c1"))
 def test_current_experiments_only_use_stage1_dataset_contract(experiment: str) -> None:
-    """验证当前实验只实例化 Stage1Dataset, 不再暴露旧 BOX 目录平衡采样入口. """
+    """验证当前实验只实例化 Stage1Dataset，不再暴露旧 BOX 目录平衡采样入口。"""
 
     cfg = _compose(experiment)
     assert cfg.dataset._target_ == "src.datasets.stage1_dataset.Stage1Dataset"
+    assert cfg.dataset.split_val.endswith("/validation_selection_pdb_centric.npz")
+    assert cfg.dataset.pdb_foreground_box_num == 25
+    assert cfg.dataset.pdb_foreground_fraction_target == pytest.approx(0.5)
+    assert cfg.dataset.pdb_occurrence_foreground_box_cap == 5
     assert "use_balanced_foreground_sampler" not in cfg.train
     assert "balanced_foreground_ratio" not in cfg.train
 
@@ -231,7 +261,8 @@ def test_unet_c1_config_is_density_only_and_exports_final_v_feature() -> None:
     assert cfg.train.prefetch_factor == 4
     assert "excluded_pdb_ids" not in cfg.dataset
     assert "excluded_pdb_ids" not in find1.dataset
-    assert cfg.train.val_per_epoch == 40
+    assert cfg.train.max_epochs == 70
+    assert cfg.train.val_per_epoch == 11
 
 
 @pytest.mark.parametrize(
@@ -265,4 +296,5 @@ def test_unet_density_ablation_configs_keep_common_training_and_auxiliary_losses
     assert cfg.model.nucleic_mainchain_loss_weight == pytest.approx(0.05)
     assert cfg.train.optimizer.lr == pytest.approx(1.0e-4)
     assert cfg.train.num_workers == 16
-    assert cfg.train.val_per_epoch == 40
+    assert cfg.train.max_epochs == 70
+    assert cfg.train.val_per_epoch == 11

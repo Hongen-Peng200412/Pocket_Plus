@@ -444,15 +444,15 @@ Find 的完整链路：
 → configs/dataset/stage1_find.yaml:11
 → dataset.box_pool_root=<变量>/box_pool
 → dataset.split_train=<box_pool>/train
-→ dataset.split_val=<box_pool>/validation_selection.npz
+→ dataset.split_val=<box_pool>/validation_selection_pdb_centric.npz
 → UnifiedDataModule.setup()
 → Stage1Dataset.__init__()
 → build_request_source()
-→ 训练请求或固定验证请求
+→ PDB 中心训练请求或同规则的固定验证请求
 → 具体 PDB、BOX 起点、样本角色和监督开关
 ```
 
-它决定“从 A–G 完整图中切哪些 80³ BOX”，不是密度与标签本身的位置。
+它决定“从 A–G 完整图中切哪些 80³ BOX”，不是密度与标签本身的位置。活动 Dataset 配置同时固定 `pdb_foreground_box_num=25`、`pdb_foreground_fraction_target=0.5` 和 `pdb_occurrence_foreground_box_cap=5`：每个 PDB 目标为 25 个 bias 与 25 个 context；occurrence 数量不足时只减少 bias，context 仍为 25。验证文件冻结同一规则的 epoch 0。
 
 #### `EXPERIMENT_FEEDBACK_ROOT`
 
@@ -526,12 +526,12 @@ bash 训练与运行/submit_task.sh \
 | 每卡 batch | 8 | 6 | 8 |
 | 全局 batch | 48 | 48 | 48 |
 | 梯度累积 | 3 | 4 | 6 |
-| DataLoader workers | 每 rank 16，总 32 | 每 rank 16，总 32 | 16 |
+| DataLoader workers | 每 rank 16，总 32 | 每 rank 30，总 60 | 16 |
 | 最大学习率 | `5e-5` | `5e-5` | `1e-4` |
 | CPC1/单阶段 warmup | `0.005` | `0.005` | `0.005` |
 | CPC1/单阶段 patience | 2 | 3 | 3 |
-| 最大 epoch | 20 | 20 | 20 |
-| 每 epoch 验证次数 | 30 | 40 | 40 |
+| 最大 epoch | 70 | 70 | 70 |
+| 每 epoch 验证次数 | 9 | 11 | 11 |
 | W&B | online | online | online |
 
 梯度累积来自：
@@ -544,6 +544,8 @@ unet_c1：8 BOX/卡 × 1 卡 = 8 BOX/前向；48 ÷ 8 = 累积 6 次
 
 `train.strict_global_batch_size=true` 会要求这个除法得到整数；
 `train.enable_batch_size_tuning=false` 会阻止程序自动改动这些基线数值。
+
+PDB 中心采样把每个 epoch 的训练 BOX 总数降到约 616,740。`max_epochs=70` 使计划训练总量与历史 20 epoch 的 `0:5:5` 训练相差约 0.4%；Find_0 的 9 次与其他当前入口的 11 次 validation 使相邻验证事件之间的训练 BOX 数尽量接近各入口旧值。`warmup_ratio=0.005` 保持不变，因此 warmup 期间处理的 BOX 数也随总训练量保持近似不变。
 
 ### 7.1 Find_0
 
