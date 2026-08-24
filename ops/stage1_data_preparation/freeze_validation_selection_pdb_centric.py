@@ -41,6 +41,7 @@ BOX_POOL_ROOT = Path(
 VALIDATION_POOL_DIRECTORY = BOX_POOL_ROOT / "validation"
 OUTPUT_PATH = BOX_POOL_ROOT / "validation_selection_pdb_centric.npz"
 REQUEST_SEED = 3407
+# tuple[int, ...], validation PDB 子集的 SeedSequence.spawn_key; 正式值 (2,) 隔离该随机域.
 VALIDATION_PDB_SELECTION_SPAWN_KEY = (2,)
 VALIDATION_PDB_NUM = 150
 PDB_FOREGROUND_BOX_NUM = 25
@@ -54,6 +55,7 @@ def main() -> None:
     输入:
         - ``VALIDATION_POOL_DIRECTORY``: Path; V3 validation PDB pool 目录.
         - ``REQUEST_SEED``: int; 与正式 Hydra Dataset 配置相同的确定性采样种子.
+        - ``VALIDATION_PDB_SELECTION_SPAWN_KEY``: tuple[int, ...]; 作为 ``SeedSequence.spawn_key`` 隔离 validation PDB 子集随机域, 正式值为 ``(2,)``.
         - ``VALIDATION_PDB_NUM``: int; 从 200 个 validation PDB 中无放回冻结的 PDB 数量.
         - ``PDB_FOREGROUND_BOX_NUM``: int; 每个 PDB 的目标 bias BOX 数量.
         - ``PDB_FOREGROUND_FRACTION_TARGET``: float; bias BOX 占目标总 BOX 数量的比例.
