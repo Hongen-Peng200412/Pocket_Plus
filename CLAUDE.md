@@ -26,11 +26,11 @@
 训练相关问题优先读：
 
 * `ops/stage1_data_preparation/README.md`
-  * 完整体数组 NPY 迁移、V3 split 与 0:5:5 BOX pool 的正式路径和执行证据。
+  * 完整体数组 NPY 迁移、V3 split、逐 PDB 几何候选池与当前 PDB 中心验证选择的正式路径和执行证据。
 * `src/model/notes_of_network.md`
   * Stage1 模型、wrapper、dataset、collate、loss 的阅读路径和检查点。
 * `src/datasets/README_STAGE1.md`
-  * AdaLigand Stage1 的 BOX pool、Dataset、请求比例与训练数据边界。
+  * AdaLigand Stage1 的 BOX pool、Dataset、PDB 中心请求与训练数据边界。
 
 关键代码入口通常包括：
 

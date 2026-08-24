@@ -6,14 +6,14 @@
 
 ```text
 stage1_preparation_box_pool_3/box_pool/manifest.json
-    → train/{pdb_id}.npz 或 validation_selection.npz
+    → train/{pdb_id}.npz 或 validation_selection_pdb_centric.npz
     → ResolvedStage1Crop(pdb_id, box_start_zyx, role, occurrence_id)
     → Stage1Dataset 从 exp/sim/union_mask/ligand_dist NPY 裁出 80³
     → Stage1BatchCollator
-    → Find_0、Find_1 或 unet_c1
+    → Find_0、Find_1、unet_base、unet_c1 或 unet_diff
 ```
 
-训练请求固定为 `0:5:5`：每个 epoch、每个 PDB 至多选择 50 个 occurrence，每个 occurrence 选择 5 个 bias 与 5 个 context。验证对相同上限内的冻结 occurrence 使用 `0:1:1`，即每个 occurrence 各选择 1 个 bias 与 1 个 context。旧版 `1:5:3`、`box_sample_fraction`、`src/datasets/ops/stage1_split.py` 与 `stage1_box_pool.py` 均已退出活动代码，只能从 Git 历史阅读。
+训练使用 `pdb_foreground_box_num=25`、`pdb_foreground_fraction_target=0.5` 与 `pdb_occurrence_foreground_box_cap=25`。正式 pool 的每个 PDB 至少含一个 occurrence，因此每个 PDB 每个 epoch 固定使用 25 个 bias 和 25 个 context；bias 尽可能均匀分到全部 occurrence，余数分配逐 epoch 轮转。验证以 seed 3407 从 200 个 validation PDB 中无放回选择 150 个身份，冻结同规则 epoch 0，并由所有当前模型共用 `validation_selection_pdb_centric.npz`。原 `0:5:5`/`0:1:1` 请求、旧版 `1:5:3`、`box_sample_fraction`、`src/datasets/ops/stage1_split.py` 与 `stage1_box_pool.py` 均已退出活动消费链，只能从现存历史产物或 Git 历史阅读。
 
 ## 阅读顺序
 
@@ -29,4 +29,4 @@ stage1_preparation_box_pool_3/box_pool/manifest.json
 - Dataset 返回 `atom_feat: float32 (N,49)` 与 `atom_is_backbone: bool (N,)`；模型需要 50 维时才在输入边界拼接。
 - 完整图不得为容纳 80³ 而补零；V3 split 已排除三轴任一长度小于 80 的 PDB。
 - DataLoader 必须使用 `persistent_workers=false`，否则 worker 会保留旧 epoch 的请求集。
-- 正式训练资源为单卡 16 CPU/16 workers，双卡总计 32 CPU/32 workers。
+- `Find_1.sh` 的双卡资源为 64 CPU、每个 rank 30 workers；其余当前 Stage1 入口每个 rank 使用 16 workers。

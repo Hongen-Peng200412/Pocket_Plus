@@ -1,6 +1,6 @@
 # Stage1 V3 Dataset 数据契约
 
-本文说明 `Stage1Dataset` 当前正式训练使用的 V3 数据位置、请求比例和运行时裁块边界。历史版本的 split、BOX pool 与比例抽样实现只通过 Git 阅读，不再属于活动代码。
+本文说明 `Stage1Dataset` 当前正式训练使用的 V3 数据位置、PDB 中心采样规则和运行时裁块边界。V3 逐 PDB 几何候选池保持不变；历史请求比例及其选择文件仍留在正式目录中供追溯，但不再决定新训练的样本集合。
 
 ## 正式位置
 
@@ -26,11 +26,12 @@ V3 split 与 BOX pool 根目录为：
     ├── validation/{pdb_id}.npz
     ├── manifest.json
     ├── validation_selection.npz
+    ├── validation_selection_pdb_centric.npz
     ├── config.json
     └── _COMPLETE
 ```
 
-`configs/dataset/stage1_find.yaml` 与 `stage1_unet_c1.yaml` 都指向上述位置。训练不扫描目录中的额外 PDB 文件，只读取 `manifest.json` 声明的文件。
+`configs/dataset/stage1_find.yaml`、`stage1_unet_base.yaml`、`stage1_unet_c1.yaml` 与 `stage1_unet_diff.yaml` 都指向上述位置。训练不扫描目录中的额外 PDB 文件，只读取 `manifest.json` 声明的文件。活动验证入口只读取 `validation_selection_pdb_centric.npz`；原 `validation_selection.npz` 与 `config.json::entry_ratio` 仅记录 V3 几何池的历史构建规则。
 
 ## 完整图资产
 
@@ -58,14 +59,33 @@ Dataset 以 `numpy.load(..., mmap_mode="r")` 打开完整图，只复制实际 8
 | `bias_start_zyx` | `int32 (O,30,3)` | 每个 occurrence 的 30 个 bias 候选 |
 | `context_start_zyx` | `int32 (C,3)` | PDB 级 context 候选 |
 
-所有起点都是完整图内 80³ BOX 的零基 ZYX corner index。训练每个 epoch、每个 PDB 至多选择 50 个 occurrence，并对每个 occurrence 选择 5 个 bias 与 5 个 context，请求比例固定为 `center:bias:context = 0:5:5`。验证对每个冻结 occurrence 使用 1 个 bias 与 1 个 context，请求比例为 `0:1:1`；Dataset 直接展开 `validation_selection.npz`，不重新随机选择。
+所有起点都是完整图内 80³ BOX 的零基 ZYX corner index。当前训练使用三个显式参数：`pdb_foreground_box_num=25`、`pdb_foreground_fraction_target=0.5` 与 `pdb_occurrence_foreground_box_cap=25`。这里的 foreground 只表示 bias BOX，context BOX 仍沿用原名。
 
-活动代码没有 `box_sample_fraction`，也不创建训练或验证比例请求文件。
+设一个 PDB 含 `O` 个 occurrence。该 PDB 在一个 epoch 的实际 bias 数量为 `min(25, 25O)`；正式 pool 的每个 PDB 至少含一个 occurrence，因此实际数量固定为 25。这些 bias 先尽可能均匀地分给全部 occurrence，不能整除的余数沿稳定 occurrence 排列逐 epoch 轮转。每个 occurrence 再从自己的 30 个 bias 候选中无放回选择所需数量。context 的目标数量由 `round(25 × (1 - 0.5) / 0.5)` 得到，同样固定为 25；候选从该 PDB 的 context 池中无放回选择。正式 train 与 validation 的每个 PDB 都有超过 25 个 context 候选，因此活动实现直接使用这一数据事实，不增加补抽、放回或回退分支。
+
+验证以 `SeedSequence(3407, spawn_key=(2,))` 的独立随机域从 200 个 validation PDB 中无放回选择 150 个身份，保持 manifest 相对顺序，并把这 150 个 PDB 的 epoch 0 请求冻结到 `validation_selection_pdb_centric.npz`。该文件精确包含以下 11 个字段：
+
+| 字段 | dtype 与形状 | 含义 |
+| --- | --- | --- |
+| `validation_pdb_id` | 定宽 bytes `(P,)` | PDB 身份表；三个 `*_pdb_index` 字段索引其第一维 |
+| `center_pdb_index` | `int32 (0,)` | center 请求所属 PDB；PDB 中心规则下为空 |
+| `center_occurrence_id` | `int32 (0,)` | center 请求所属 occurrence；PDB 中心规则下为空 |
+| `bias_pdb_index` | `int32 (N_bias,)` | bias 请求所属 PDB |
+| `bias_occurrence_id` | `int32 (N_bias,)` | bias 请求对应的真实配体 occurrence |
+| `bias_candidate_index` | `int16 (N_bias,)` | 对应 occurrence 的 `bias_start_zyx` 候选编号 |
+| `context_pdb_index` | `int32 (N_context,)` | context 请求所属 PDB |
+| `context_candidate_index` | `int32 (N_context,)` | 对应 PDB 的 `context_start_zyx` 候选编号 |
+| `pdb_foreground_box_num` | `int32` 标量 | 冻结时每个 PDB 的目标 bias BOX 数量，值为 25 |
+| `pdb_foreground_fraction_target` | `float64` 标量 | 冻结时 bias 占目标总 BOX 的比例，值为 0.5 |
+| `pdb_occurrence_foreground_box_cap` | `int32` 标量 | 冻结时单 occurrence 每个 epoch 的 bias 上限，值为 25 |
+
+Dataset 按文件顺序完整展开这些请求，不在验证期间重新抽样。三个采样参数标量只记录冻结契约；请求展开函数不读取或校验它们。
+
+活动代码没有 `box_sample_fraction`，也不为训练请求落盘额外选择文件。训练请求由 manifest 和当前 epoch 动态生成；验证只有上述一份新增冻结文件。
 
 ## DataLoader 边界
 
-- 单卡任务申请 16 CPU，并使用 16 个 DataLoader worker。
-- 双卡 DDP 任务总共申请 32 CPU，每个 rank 使用 16 个 worker，总计 32 个 worker。
+- `Find_1.sh` 的双卡任务申请 64 CPU，每个 rank 使用 30 个 DataLoader worker；其余当前 Stage1 入口每个 rank 使用 16 个 worker。
 - `prefetch_factor=4`、`pin_memory=true`、`persistent_workers=false`。
 - `persistent_workers=false` 是请求语义的一部分：主进程调用 `set_epoch` 后，新 worker 才能看到该 epoch 的请求序列。
 
