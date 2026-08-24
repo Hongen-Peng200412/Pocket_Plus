@@ -35,6 +35,8 @@ def test_hardcoded_freezer_writes_the_pdb_centric_validation_selection(
     _write_validation_pool(tmp_path, "1abc", occurrence_count=4)
     _write_validation_pool(tmp_path, "2def", occurrence_count=6)
     _write_validation_pool(tmp_path, "3ghi", occurrence_count=1)
+    _write_validation_pool(tmp_path, "4jkl", occurrence_count=2)
+    assert freeze_validation_selection_pdb_centric.REQUEST_SEED == 3407
     assert freeze_validation_selection_pdb_centric.VALIDATION_PDB_NUM == 150
     manifest = {
         "schema_version": 1,
@@ -43,6 +45,7 @@ def test_hardcoded_freezer_writes_the_pdb_centric_validation_selection(
                 {"pdb_id": "1abc", "path": "validation/1abc.npz"},
                 {"pdb_id": "2def", "path": "validation/2def.npz"},
                 {"pdb_id": "3ghi", "path": "validation/3ghi.npz"},
+                {"pdb_id": "4jkl", "path": "validation/4jkl.npz"},
             ]
         },
     }
@@ -86,7 +89,8 @@ def test_hardcoded_freezer_writes_the_pdb_centric_validation_selection(
             "pdb_occurrence_foreground_box_cap",
         }
         selected_pdb_ids = first_arrays["validation_pdb_id"]
-        manifest_pdb_ids = [b"1abc", b"2def", b"3ghi"]
+        assert selected_pdb_ids.tolist() == [b"3ghi", b"4jkl"]
+        manifest_pdb_ids = [b"1abc", b"2def", b"3ghi", b"4jkl"]
         selected_positions = [
             manifest_pdb_ids.index(pdb_id) for pdb_id in selected_pdb_ids.tolist()
         ]
@@ -132,3 +136,25 @@ def test_hardcoded_freezer_writes_the_pdb_centric_validation_selection(
     with np.load(output_path, allow_pickle=False) as selection:
         for field_name, expected in first_arrays.items():
             assert np.array_equal(selection[field_name], expected)
+
+
+def test_validation_pdb_selection_uses_an_independent_random_domain() -> None:
+    """PDB 子集随机域不复用任一正式 PDB 的 occurrence 或候选随机状态."""
+
+    spawn_key = (
+        freeze_validation_selection_pdb_centric.VALIDATION_PDB_SELECTION_SPAWN_KEY
+    )
+    assert spawn_key == (2,)
+    selection_state = np.random.SeedSequence(
+        freeze_validation_selection_pdb_centric.REQUEST_SEED,
+        spawn_key=spawn_key,
+    ).generate_state(8)
+    for pdb_index in range(200):
+        occurrence_state = np.random.SeedSequence(
+            [freeze_validation_selection_pdb_centric.REQUEST_SEED, pdb_index, 0]
+        ).generate_state(8)
+        candidate_state = np.random.SeedSequence(
+            [freeze_validation_selection_pdb_centric.REQUEST_SEED, pdb_index, 0, 1]
+        ).generate_state(8)
+        assert not np.array_equal(selection_state, occurrence_state)
+        assert not np.array_equal(selection_state, candidate_state)

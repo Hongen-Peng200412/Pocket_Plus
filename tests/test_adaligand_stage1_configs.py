@@ -107,6 +107,7 @@ def test_training_launchers_use_v3_worker_and_scope_contracts() -> None:
         encoding="utf-8"
     )
     assert "--sh Find_1.sh --resource h100 --gpus 2 --cpus 64" in submit_text
+    assert "--sh unet_c1.sh --resource h100 --gpus 1 --cpus 16" in submit_text
 
     unet_text = (shell_root / "unet_c1.sh").read_text(encoding="utf-8")
     no_mainchain_text = (shell_root / "unet_c1_no_mainchain.sh").read_text(

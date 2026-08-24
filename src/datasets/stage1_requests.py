@@ -355,7 +355,7 @@ class Stage1TrainingRequestSet:
                 foreground_box_num,
                 occurrence_count,
             )
-            # int32, (O_i,), 每个 occurrence 在当前 epoch 获得的 bias BOX 数量; 数值总和为 F_i.
+            # int32, (O_i,), 与 pool.occurrence_id 第一维逐 occurrence 对齐的 bias BOX 数量; 当前 epoch 的数值总和为 F_i.
             occurrence_foreground_box_num = np.full(
                 occurrence_count,
                 foreground_box_num_per_occurrence,
@@ -365,7 +365,7 @@ class Stage1TrainingRequestSet:
             occurrence_order = np.random.default_rng(
                 np.random.SeedSequence([self.seed, pdb_index, 0])
             ).permutation(occurrence_count)
-            # int64, (R_i,), 当前 epoch 额外获得一个 bias BOX 的循环位置; R_i 是 F_i 除以 O_i 的余数.
+            # int64, (R_i,), 索引 occurrence_order 第一维的循环位置; R_i 是 F_i 除以 O_i 的余数.
             rotating_position = (
                 int(epoch) * foreground_box_num
                 + np.arange(rotating_occurrence_num, dtype=np.int64)
@@ -382,7 +382,7 @@ class Stage1TrainingRequestSet:
             ):
                 # int, 当前 occurrence 在 pool.occurrence_id 中保存的正式编号.
                 occurrence_id = int(pool.occurrence_id[occurrence_row])
-                # int64, (F_occ,), 当前 occurrence 从 30 个 bias 起点中无放回抽中的候选编号; F_occ 是 occurrence_box_num 指定的 bias BOX 数量.
+                # int64, (F_occ,), 索引 pool.bias_start_zyx[occurrence_row] 候选维的无放回编号; F_occ 是 occurrence_box_num 指定的 bias BOX 数量.
                 bias_indices = candidate_rng.choice(
                     30,
                     size=int(occurrence_box_num),
@@ -451,7 +451,7 @@ def load_validation_selection(
         - box_pool_root: str | Path; V3 pool 根目录; 函数从其 validation manifest 找到每个 PDB 的 pool NPZ.
 
     形状符号:
-        - P: validation PDB 数量.
+        - P: ``validation_pdb_id`` 保存的冻结 validation PDB 数量; 正式值为 150.
         - N_center: center 请求数量.
         - N_bias: bias 请求数量.
         - N_context: context 请求数量.
