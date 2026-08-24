@@ -1,6 +1,6 @@
 # Stage1 v3 数据准备执行记录
 
-本文记录 `talk/global.md` 中“基础建设——数据”和“基础设施——划分”的一次性实现与服务器运行证据。本记录自身只覆盖完整体数组迁移、新 split 和第三版 BOX pool；后续 Dataset、模型与训练入口的消费适配另见 AdaLigand 的 `文档/exec_plan/Stage1第三版训练IO与入口实施.md`。
+本文记录 `talk/global.md` 中“基础建设——数据”和“基础设施——划分”的一次性实现与服务器运行证据。本记录覆盖完整体数组迁移、新 split、第三版 BOX 几何候选池，以及 2026-08-24 从既有候选池冻结的 PDB 中心 validation selection；Dataset、模型与训练入口的消费适配另见 AdaLigand 的对应执行记录。
 
 ## 实现基点与隔离边界
 
@@ -36,6 +36,16 @@
 - 中性差异：EMDB 发布时间先写入可续传 JSONL，再冻结 split；这不改变日期口径。
 - 有害差异：尚未发现。
 - 未完成范围：新版推理程序不在本轮数据准备范围内。Dataset、模型和训练入口后来已由独立训练 I/O 任务适配，但正式训练仍须等待用户明确授权。
+
+## 2026-08-24 PDB 中心验证选择
+
+- Pocket_Plus 实现分支 `codex/stage1-pdb-centric-sampling` 从 `Learn/CUMULATIVE@8561d2790614a0d92f0ad88ebce241a9f1c77ba3` 建立；首个稳定实现提交为 `ac53172`。
+- 正式运行前，`validation_selection_pdb_centric.npz` 不存在。安全同步后，服务器 `src/datasets/stage1_requests.py` 与冻结脚本的 SHA-256 分别为 `ec98e9744e77401ed2ae6b13e4466cde9c5c700897ebf4899dc11e75861b5982` 与 `b0841e97337f8e47ac7fe3034d6c470c8d8ed2fd3797c3ea9f44523d3a834298`，与本地一致。
+- 正式命令为 `python -m ops.stage1_data_preparation.freeze_validation_selection_pdb_centric`。它在 2026-08-24 22:09:01 +08:00 写入 200 个 PDB、3,950 个 bias、5,000 个 context 和 0 个 center 请求。
+- 新文件精确包含八类既有索引数组与三个采样参数标量，共 11 个字段；逐字段 dtype、shape、候选索引范围和逐 PDB 计数均通过核验。75 个 PDB 的 bias 少于目标 25，逐 PDB bias 范围为 5–25；每个 PDB 的 context 都是 25。
+- 新文件大小为 83,350 字节，SHA-256 为 `449856108558e38755dae3eb840bef856a00613ff8439b58a9de63311d5f7092`。
+- 原 `validation_selection.npz`、`manifest.json`、`config.json`、`summary.json` 与 `_COMPLETE` 的修改时间分别保持在 2026-08-18 或 2026-08-17；本次没有改写这些 V3 产物。对应 SHA-256 分别为 `91af9c01538e6da1a0a11d2109eeb28673b97cf4c89b1e7e813f7f2b843f5ac7`、`fcfa65c0ac58116eb1f65009baa0eb2e03df94f1306629ae9232a286b1041e2e`、`4fccabf4d75d40afc6e6dd8a13f7e5dd89d8d11576f77a5b31c7ee13723342de`、`2b49dfed736583ba8f7a81138e66ff0c9af7209a02216a783dd3acca487dc031` 与空文件哈希 `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`。
+- 本次没有提交、取消、重启或修改任何 GPU Job。
 
 ## 接续位置
 
