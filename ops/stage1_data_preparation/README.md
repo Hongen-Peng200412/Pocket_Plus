@@ -114,7 +114,23 @@ BOX pool 根目录为 `/storage/penghongen/AdaLigand/Ori_Data/stage1_preparation
 python -m ops.stage1_data_preparation.freeze_validation_selection_pdb_centric
 ```
 
-新 NPZ 保留既有 selection 的八类索引字段，并且只增加三个采样参数标量：`pdb_foreground_box_num`、`pdb_foreground_fraction_target` 与 `pdb_occurrence_foreground_box_cap`。脚本不会修改逐 PDB NPZ、`manifest.json`、`validation_selection.npz`、`config.json`、`summary.json` 或 `_COMPLETE`。
+新 NPZ 精确包含以下 11 个字段：
+
+| 字段 | dtype 与形状 | 含义 |
+| --- | --- | --- |
+| `validation_pdb_id` | 定宽 bytes `(P,)` | PDB 身份表；三个 `*_pdb_index` 字段索引其第一维 |
+| `center_pdb_index` | `int32 (0,)` | center 请求所属 PDB；PDB 中心规则下为空 |
+| `center_occurrence_id` | `int32 (0,)` | center 请求所属 occurrence；PDB 中心规则下为空 |
+| `bias_pdb_index` | `int32 (N_bias,)` | bias 请求所属 PDB |
+| `bias_occurrence_id` | `int32 (N_bias,)` | bias 请求对应的真实配体 occurrence |
+| `bias_candidate_index` | `int16 (N_bias,)` | 对应 occurrence 的 `bias_start_zyx` 候选编号 |
+| `context_pdb_index` | `int32 (N_context,)` | context 请求所属 PDB |
+| `context_candidate_index` | `int32 (N_context,)` | 对应 PDB 的 `context_start_zyx` 候选编号 |
+| `pdb_foreground_box_num` | `int32` 标量 | 冻结时每个 PDB 的目标 bias BOX 数量，值为 25 |
+| `pdb_foreground_fraction_target` | `float64` 标量 | 冻结时 bias 占目标总 BOX 的比例，值为 0.5 |
+| `pdb_occurrence_foreground_box_cap` | `int32` 标量 | 冻结时单 occurrence 每个 epoch 的 bias 上限，值为 5 |
+
+脚本不会修改逐 PDB NPZ、`manifest.json`、`validation_selection.npz`、`config.json`、`summary.json` 或 `_COMPLETE`。
 
 ## 2026-08-17 正式运行结果
 

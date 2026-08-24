@@ -149,7 +149,7 @@ def _density_config(channels: list[str]) -> dict[str, object]:
 
 
 def _pdb_sampling_config() -> dict[str, object]:
-    """返回当前 PDB 中心采样的正式参数。"""
+    """返回当前 PDB 中心采样的正式参数."""
 
     return {
         "pdb_foreground_box_num": 25,
@@ -207,7 +207,7 @@ def test_find_dataset_materializes_mmap_crop_and_separate_backbone_flag(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Find Dataset 现场裁块并独立返回 49 维特征与主链标志。"""
+    """Find Dataset 现场裁块并独立返回 49 维特征与主链标志."""
 
     _write_upstream(tmp_path)
     monkeypatch.setattr(
@@ -311,7 +311,7 @@ def test_density_only_ablation_reads_sim_and_returns_auxiliary_targets(
 
 
 def test_source_cache_remains_consistent_under_inference_threads(tmp_path: Path) -> None:
-    """推理线程共享 mmap LRU 时，锁保持字节计数和条目映射一致。"""
+    """推理线程共享 mmap LRU 时, 锁保持字节计数和条目映射一致."""
 
     _write_upstream(tmp_path)
     dataset = Stage1Dataset(
@@ -333,7 +333,7 @@ def test_source_cache_remains_consistent_under_inference_threads(tmp_path: Path)
 
 
 def test_distance_validation_reads_only_the_requested_crop(tmp_path: Path) -> None:
-    """裁块外的 Inf 不触发扫描，裁块内的 Inf 按 V3 数值契约拒绝。"""
+    """裁块外的 Inf 不触发扫描, 裁块内的 Inf 按 V3 数值契约拒绝."""
 
     shape = (100, 100, 100)
     _write_upstream(tmp_path, shape=shape)
@@ -364,7 +364,7 @@ def test_repeated_windows_reuse_mmap_handles(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """同一 Dataset 的重复窗口复用已经打开的 mmap 句柄。"""
+    """同一 Dataset 的重复窗口复用已经打开的 mmap 句柄."""
 
     _write_upstream(tmp_path)
     read_count: Counter[str] = Counter()
@@ -440,7 +440,7 @@ def test_collator_keeps_backbone_flag_and_b_plus_one_offsets() -> None:
 
 
 def test_training_pool_rebuilds_deterministic_pdb_centric_epochs(tmp_path: Path) -> None:
-    """多 occurrence PDB 在相邻 epoch 轮换 bias，且请求可确定复现。"""
+    """多 occurrence PDB 在相邻 epoch 轮换 bias, 且请求可确定复现."""
 
     pool_root = _write_v3_pool(tmp_path)
     source = Stage1TrainingRequestSet(
@@ -476,7 +476,7 @@ def test_training_pool_rebuilds_deterministic_pdb_centric_epochs(tmp_path: Path)
 
 
 def test_foreground_shortfall_keeps_the_pdb_context_target(tmp_path: Path) -> None:
-    """occurrence cap 使 bias 不足时仍保留每个 PDB 的 context 目标。"""
+    """occurrence cap 使 bias 不足时仍保留每个 PDB 的 context 目标."""
 
     pool_root = _write_v3_pool(tmp_path, occurrence_count=4)
     source = Stage1TrainingRequestSet(
@@ -494,7 +494,7 @@ def test_foreground_shortfall_keeps_the_pdb_context_target(tmp_path: Path) -> No
 
 
 def test_validation_selection_expands_pdb_centric_indices(tmp_path: Path) -> None:
-    """活动 validation 文件按冻结索引展开 bias 与 PDB 级 context。"""
+    """活动 validation 文件按冻结索引展开 bias 与 PDB 级 context."""
 
     pool_root = _write_v3_pool(tmp_path)
     validation_ids = np.asarray([b"2def"], dtype="S4")

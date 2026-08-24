@@ -10,7 +10,7 @@ stage1_preparation_box_pool_3/box_pool/manifest.json
     → ResolvedStage1Crop(pdb_id, box_start_zyx, role, occurrence_id)
     → Stage1Dataset 从 exp/sim/union_mask/ligand_dist NPY 裁出 80³
     → Stage1BatchCollator
-    → Find_0、Find_1 或 unet_c1
+    → Find_0、Find_1、unet_base、unet_c1 或 unet_diff
 ```
 
 训练使用 `pdb_foreground_box_num=25`、`pdb_foreground_fraction_target=0.5` 与 `pdb_occurrence_foreground_box_cap=5`。每个 PDB 每个 epoch 目标为 25 个 bias 和 25 个 context；若 occurrence 数量不足以提供 25 个 bias，则实际 bias 数量为 occurrence 数量乘以 5，context 仍为 25。bias 尽可能均匀分到全部 occurrence，余数分配逐 epoch 轮转。验证使用相同规则冻结 epoch 0，并由所有当前模型共用 `validation_selection_pdb_centric.npz`。原 `0:5:5`/`0:1:1` 请求、旧版 `1:5:3`、`box_sample_fraction`、`src/datasets/ops/stage1_split.py` 与 `stage1_box_pool.py` 均已退出活动消费链，只能从现存历史产物或 Git 历史阅读。

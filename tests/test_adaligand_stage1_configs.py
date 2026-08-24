@@ -28,7 +28,7 @@ LIGAND_PRAUC_MONITORED_EXPERIMENTS = (
 
 
 def _compose(experiment: str):
-    """组合一份 AdaLigand Stage1 实验配置。"""
+    """组合一份 AdaLigand Stage1 实验配置."""
 
     hydra = pytest.importorskip("hydra")
     with hydra.initialize_config_dir(config_dir=str(CONFIG_ROOT), version_base=None):
@@ -50,7 +50,7 @@ def test_stage1_training_defaults_to_formal_preparation(
     launcher_name: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Dataset 配置和正式启动脚本默认读取同一份 Stage1 preparation。"""
+    """Dataset 配置和正式启动脚本默认读取同一份 Stage1 preparation."""
 
     monkeypatch.delenv("ADALIGAND_STAGE1_PREPARATION_ROOT", raising=False)
     cfg = _compose(experiment)
@@ -68,7 +68,7 @@ def test_stage1_training_defaults_to_formal_preparation(
 
 
 def test_training_launchers_use_v3_worker_and_scope_contracts() -> None:
-    """一键入口保持正式 worker 数量，并使用新的训练与验证预算。"""
+    """一键入口保持正式 worker 数量, 并使用新的训练与验证预算."""
 
     shell_root = PROJECT_ROOT / "训练与运行" / "sh"
     expected_workers = {
@@ -112,7 +112,7 @@ def test_training_launchers_use_v3_worker_and_scope_contracts() -> None:
 
 @pytest.mark.parametrize("experiment", FIND_EXPERIMENTS)
 def test_find_configs_encode_common_stage1_contract(experiment: str) -> None:
-    """验证六份 Find 配置的公共结构、训练预算和 56D density 契约。"""
+    """验证六份 Find 配置的公共结构、训练预算和 56D density 契约."""
 
     cfg = _compose(experiment)
     model_name = Path(experiment).name
@@ -179,9 +179,12 @@ def test_find_models_only_change_voxel_receptor_construction() -> None:
     assert find2.model.backbone.embed_head.voxel_embed_as_tune is True
 
 
-@pytest.mark.parametrize("experiment", (*FIND_EXPERIMENTS, "unet_c1"))
+@pytest.mark.parametrize(
+    "experiment",
+    (*FIND_EXPERIMENTS, "unet_base", "unet_c1", "unet_diff"),
+)
 def test_current_experiments_only_use_stage1_dataset_contract(experiment: str) -> None:
-    """验证当前实验只实例化 Stage1Dataset，不再暴露旧 BOX 目录平衡采样入口。"""
+    """验证当前实验只实例化 Stage1Dataset, 不再暴露旧 BOX 目录平衡采样入口."""
 
     cfg = _compose(experiment)
     assert cfg.dataset._target_ == "src.datasets.stage1_dataset.Stage1Dataset"

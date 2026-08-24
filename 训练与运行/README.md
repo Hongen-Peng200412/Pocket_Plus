@@ -1,7 +1,6 @@
 # 训练与运行
 
-本目录提供一套通用的 Slurm 任务提交方式，以及三份可以直接阅读和修改的
-AdaLigand Stage1 正式训练脚本。
+本目录提供一套通用的 Slurm 任务提交方式，以及五份可以直接阅读和修改的 AdaLigand Stage1 正式训练脚本。
 
 日常使用只需要理解以下三层：
 
@@ -13,8 +12,7 @@ submit_task.sh
 
 - `submit_task.sh`：选择任务、GPU 类型、GPU 数、CPU 数和可选锁。
 - `sbatch/task.sbatch`：唯一真正交给 `sbatch` 的通用资源包装脚本。
-- `sh/Find_0.sh`、`sh/Find_1.sh`、`sh/unet_c1.sh`：直接决定具体训练
-  使用的数据、环境、experiment、Hydra 覆盖和正式产物位置。
+- `sh/Find_0.sh`、`sh/Find_1.sh`、`sh/unet_base.sh`、`sh/unet_c1.sh`、`sh/unet_diff.sh`：直接决定具体训练使用的数据、环境、experiment、Hydra 覆盖和正式产物位置。`sh/unet_c1_no_mainchain.sh` 是复用 `unet_c1.sh` 的辅助损失消融薄包装。
 
 release、launch 与四种锁控制的实现位于
 `训练与运行/runtime/`。这些文件主要供 AI 维护和审计；
@@ -25,7 +23,7 @@ release、launch 与四种锁控制的实现位于
 复制到 AdaLigand 等另一个项目后，提交器会默认冻结那个项目，不依赖
 `Pocket_Plus` 这个名称。
 
-## 1. 直接启动三项正式训练
+## 1. 直接启动五项正式训练
 
 在服务器 Pocket_Plus 项目根目录执行：
 
@@ -42,7 +40,14 @@ bash 训练与运行/submit_task.sh \
   --sh Find_1.sh \
   --resource h100 \
   --gpus 2 \
-  --cpus 32
+  --cpus 64
+
+# unet_base：一台节点、一张 H100。
+bash 训练与运行/submit_task.sh \
+  --sh unet_base.sh \
+  --resource h100 \
+  --gpus 1 \
+  --cpus 16
 
 # unet_c1 主链版：一台节点、一张 H100。
 bash 训练与运行/submit_task.sh \
@@ -51,13 +56,15 @@ bash 训练与运行/submit_task.sh \
   --gpus 1 \
   --cpus 16
 
-# unet_c1 无主链辅助损失版：一台节点、两张 H100。
+# unet_diff：一台节点、一张 H100。
 bash 训练与运行/submit_task.sh \
-  --sh unet_c1_no_mainchain.sh \
+  --sh unet_diff.sh \
   --resource h100 \
-  --gpus 2 \
-  --cpus 32
+  --gpus 1 \
+  --cpus 16
 ```
+
+`unet_c1_no_mainchain.sh` 复用 `unet_c1.sh` 并把 protein/nucleic 辅助损失权重设为 0；双卡提交时使用 32 CPU。
 
 每条命令只调用一次 `sbatch`。默认不创建 `pre_lock` 或 `try_lock`：作业获得资源后
 立即执行一次任务，任务结束后自动退出并释放资源。若希望先占有资源、再由人工决定何时开始，添加：
@@ -67,7 +74,7 @@ bash 训练与运行/submit_task.sh \
   --sh Find_1.sh \
   --resource h100 \
   --gpus 2 \
-  --cpus 32 \
+  --cpus 64 \
   --pre_hold
 ```
 
@@ -92,7 +99,7 @@ bash 训练与运行/submit_task.sh \
   --sh Find_1.sh \
   --resource h100 \
   --gpus 2 \
-  --cpus 32 \
+  --cpus 64 \
   --pre_hold \
   --after_hold \
   -- train.optimizer.weight_decay=0.02
@@ -107,7 +114,7 @@ sbatch
   --qos=h100g2
   --nodes=1
   --ntasks-per-node=1
-  --cpus-per-task=32
+  --cpus-per-task=64
   --gres=gpu:h100:2
   --output=/dev/null
   --error=/dev/null
@@ -120,7 +127,7 @@ sbatch
   --resource h100
   --gpus 2
   --nodes 1
-  --cpus 32
+  --cpus 64
   --
   train.optimizer.weight_decay=0.02
 ```
@@ -377,9 +384,9 @@ rm /home/penghongen/Feedback/Pocket_Plus/allocations/400001/after_lock_400001
 不要用 `scancel` 代替正常的 `after_lock` 释放，除非明确需要 Slurm 强制终止
 整个 Job。
 
-## 5. 三份训练脚本如何参与训练
+## 5. 五份训练脚本如何参与训练
 
-三个脚本都遵循同一阅读顺序：
+五个脚本都遵循同一阅读顺序：
 
 ```text
 定位本 release
@@ -422,9 +429,7 @@ Find_0.sh 或 Find_1.sh
 → 按 PDB 读取 A–G 的 density、parse、ligand、labels 和可用的 ligand_dist.npz
 ```
 
-`unet_c1.sh` 经 `configs/dataset/stage1_unet_c1.yaml:9` 进入同一个
-`Stage1Dataset`。它只把一个密度通道送入 U-Net，但仍读取受体原子和配体距离，
-用于生成三项新增辅助标签。
+`unet_base.sh`、`unet_c1.sh` 与 `unet_diff.sh` 分别经同名 Dataset 配置进入同一个 `Stage1Dataset`。三者只改变送入 U-Net 的密度通道，仍读取受体原子和配体距离以生成三项辅助标签。
 
 改变这个变量会改变训练读取的正式 A–G 数据集。它不是训练输出位置。
 
@@ -481,17 +486,17 @@ Find 的完整链路：
 
 ## 6. experiment 与 shell 覆盖怎样合并
 
-三个脚本首先选择完整 experiment：
+五个脚本首先选择完整 experiment：
 
-| 脚本 | 第一阶段或单阶段 | 第二阶段 |
+| 脚本 | 当前活动 experiment | 后续阶段 |
 | --- | --- | --- |
-| `Find_0.sh` | `+experiment=CPC1/Find_0` | `+experiment=CPC2/Find_0` |
-| `Find_1.sh` | `+experiment=CPC1/Find_1` | `+experiment=CPC2/Find_1` |
+| `Find_0.sh` | `+experiment=CPC1/Find_0` | 不自动启动 CPC2 |
+| `Find_1.sh` | `+experiment=CPC1/Find_1` | 不自动启动 CPC2 |
+| `unet_base.sh` | `+experiment=unet_base` | 无 |
 | `unet_c1.sh` | `+experiment=unet_c1` | 无 |
+| `unet_diff.sh` | `+experiment=unet_diff` | 无 |
 
-experiment 负责模型、Dataset、损失、冻结策略和常规训练制度。shell 不再建立
-另一套模型/Dataset/损失入口，只显式恢复这三项正式训练曾经使用、但当前公共
-YAML 可能发生变化的参数。
+experiment 负责模型、Dataset、损失、冻结策略和常规训练制度。shell 不再建立另一套模型/Dataset/损失入口，只显式恢复五项正式训练需要固定、但当前公共 YAML 可能发生变化的参数。
 
 优先级从低到高为：
 
@@ -509,7 +514,7 @@ bash 训练与运行/submit_task.sh \
   --sh Find_1.sh \
   --resource h100 \
   --gpus 2 \
-  --cpus 32 \
+  --cpus 64 \
   -- train.optimizer.lr=1.0e-5
 ```
 
@@ -518,28 +523,29 @@ bash 训练与运行/submit_task.sh \
 
 最终事实始终以新运行目录中的 `config.yaml` 为准，而不是只看 YAML 或 shell。
 
-## 7. 三项正式基线的具体数值
+## 7. 五项正式基线的具体数值
 
-| 参数 | Find_0 | Find_1 | unet_c1 |
-| --- | ---: | ---: | ---: |
-| 推荐 GPU | H100 × 2 | H100 × 2 | H100 × 1 |
-| 每卡 batch | 8 | 6 | 8 |
-| 全局 batch | 48 | 48 | 48 |
-| 梯度累积 | 3 | 4 | 6 |
-| DataLoader workers | 每 rank 16，总 32 | 每 rank 30，总 60 | 16 |
-| 最大学习率 | `5e-5` | `5e-5` | `1e-4` |
-| CPC1/单阶段 warmup | `0.005` | `0.005` | `0.005` |
-| CPC1/单阶段 patience | 2 | 3 | 3 |
-| 最大 epoch | 70 | 70 | 70 |
-| 每 epoch 验证次数 | 9 | 11 | 11 |
-| W&B | online | online | online |
+| 参数 | Find_0 | Find_1 | unet_base | unet_c1 | unet_diff |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 推荐 GPU | H100 × 2 | H100 × 2 | H100 × 1 | H100 × 1 | H100 × 1 |
+| Slurm CPU | 32 | 64 | 16 | 16 | 16 |
+| 每卡 batch | 8 | 6 | 8 | 8 | 8 |
+| 全局 batch | 48 | 48 | 48 | 48 | 48 |
+| 梯度累积 | 3 | 4 | 6 | 6 | 6 |
+| DataLoader workers | 每 rank 16，总 32 | 每 rank 30，总 60 | 16 | 16 | 16 |
+| 最大学习率 | `5e-5` | `5e-5` | `1e-4` | `1e-4` | `1e-4` |
+| CPC1/单阶段 warmup | `0.005` | `0.005` | `0.005` | `0.005` | `0.005` |
+| CPC1/单阶段 patience | 2 | 3 | 3 | 3 | 3 |
+| 最大 epoch | 70 | 70 | 70 | 70 | 70 |
+| 每 epoch 验证次数 | 9 | 11 | 11 | 11 | 11 |
+| W&B | online | online | online | online | online |
 
 梯度累积来自：
 
 ```text
 Find_0：8 BOX/卡 × 2 卡 = 16 BOX/前向；48 ÷ 16 = 累积 3 次
 Find_1：6 BOX/卡 × 2 卡 = 12 BOX/前向；48 ÷ 12 = 累积 4 次
-unet_c1：8 BOX/卡 × 1 卡 = 8 BOX/前向；48 ÷ 8 = 累积 6 次
+unet_base/unet_c1/unet_diff：8 BOX/卡 × 1 卡 = 8 BOX/前向；48 ÷ 8 = 累积 6 次
 ```
 
 `train.strict_global_batch_size=true` 会要求这个除法得到整数；
@@ -573,31 +579,19 @@ nucleic_mainchain       0.05
 训练脚本只解释这些最终值，不重复声明损失权重，因此修改损失仍应修改或选择
 experiment 所引用的损失配置。
 
-### 7.3 unet_c1
+### 7.3 三项 U-Net
 
-- 选择 density-only U-Net；没有 Find 点分支和密度—原子融合主干。
+- `unet_base` 使用完整 56 通道密度输入，`unet_c1` 只使用实验密度，`unet_diff` 使用实验密度与差分密度。
+- 三者都选择 density-only U-Net；没有 Find 点分支和密度—原子融合主干。
 - 输出头和五项体素监督与新版 Find_1 对齐。
 - 单卡批量 8、全局批量 48，因此每次优化器更新累积 6 个前向。
 - 只有一个阶段，不执行 CPC2。
 
-## 8. CPC1 怎样连接 CPC2
+## 8. CPC1 与 CPC2 的执行边界
 
-`Find_0.sh` 和 `Find_1.sh` 都执行：
+当前 `Find_0.sh` 和 `Find_1.sh` 只执行 CPC1，并在退出前检查本轮 `CPC1/checkpoints/BEST.ckpt`。CPC1 报错或没有产生 `BEST.ckpt` 时，脚本以失败状态返回 allocation 执行器。
 
-```text
-CPC1 src/train.py
-→ 检查本轮 CPC1/checkpoints/BEST.ckpt
-→ CPC2 init_from=<本轮 CPC1 BEST.ckpt>
-→ CPC2 src/train.py
-→ 检查本轮 CPC2/checkpoints/BEST.ckpt
-```
-
-如果 CPC1 报错或没有产生 `BEST.ckpt`，脚本不会启动 CPC2，并以失败状态返回
-allocation 执行器。启用 `--after_hold` 时，执行器随后创建 `try_lock`，允许修复代码后
-继续使用同一资源；没有启用时，Job 以失败状态结束并释放资源。
-
-`init_from` 是模型权重初始化，不是恢复旧训练目录后继续写入；CPC1 与 CPC2
-分别拥有独立的 `TASK_RUN_STAMP` 后缀和独立 logs 目录。
+CPC2 配置能力继续保留，但这两个正式入口不会自动串联 CPC2。未来若启动 CPC2，必须由独立任务显式选择 CPC2 experiment 并设置 `init_from=<CPC1 BEST.ckpt>`；`init_from` 表示模型权重初始化，不是继续写入原 CPC1 训练目录。
 
 ## 9. 通用资源参数
 

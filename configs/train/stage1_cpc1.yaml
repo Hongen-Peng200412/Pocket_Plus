@@ -22,8 +22,8 @@ data_fault_tolerance:
 max_epochs: 70
 precision: "bf16-mixed"
 gradient_clip_val: 0.5
-val_per_epoch: 11                    # int, 每个 epoch 等间隔执行 11 次完整 validation。
-                                     # → src/train.py: 映射为 val_check_interval=1/11。
+val_per_epoch: 11                    # int, 每个 epoch 等间隔执行 11 次完整 validation.
+                                     # → src/train.py: 映射为 val_check_interval=1/11.
 
 optimizer:
   _target_: torch.optim.AdamW

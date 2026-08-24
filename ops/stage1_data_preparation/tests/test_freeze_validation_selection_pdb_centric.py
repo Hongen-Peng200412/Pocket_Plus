@@ -10,7 +10,7 @@ from ops.stage1_data_preparation import freeze_validation_selection_pdb_centric
 
 
 def _write_validation_pool(root: Path, pdb_id: str, occurrence_count: int) -> None:
-    """写入一个具有正式候选维度的最小 validation PDB pool。"""
+    """写入一个具有正式候选维度的最小 validation PDB pool."""
 
     pool_directory = root / "validation"
     pool_directory.mkdir(parents=True, exist_ok=True)
@@ -30,7 +30,7 @@ def test_hardcoded_freezer_writes_the_pdb_centric_validation_selection(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """硬编码冻结入口只发布 PDB 中心索引及三个采样参数。"""
+    """硬编码冻结入口只发布 PDB 中心索引及三个采样参数."""
 
     _write_validation_pool(tmp_path, "1abc", occurrence_count=4)
     _write_validation_pool(tmp_path, "2def", occurrence_count=6)
