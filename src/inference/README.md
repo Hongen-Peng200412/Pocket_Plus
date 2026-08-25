@@ -12,7 +12,7 @@
 | 4 | `blobs.py` | `extract_probability_blobs()` 提取并稳定排序一个概率阈值下的全部 26 邻域连通区域 |
 | 5 | `centered.py` | `infer_centered_boxes()` 执行候选完整前向；`pack_centered_entries()` 组装共享 offsets 的正式数组 |
 | 6 | `scoring.py` | `score_centered_candidates()` 计算 basic 来源均值分数或 Find A 原子 Gaussian 分数 |
-| 7 | `evaluation.py` | `evaluate_centered_pdb()` 计算逐 PDB 交集事实；`aggregate_stage1_metrics()` 汇总 micro、macro 与 top-K 指标 |
+| 7 | `evaluation.py` | `semantic_prauc_histogram()` 流式累计完整图 PRAUC 事实；`aggregate_semantic_prauc()` 汇总 semantic micro/macro PRAUC；`evaluate_centered_pdb()` 计算逐 PDB 候选交集；`aggregate_stage1_metrics()` 汇总候选 micro/macro 与 top-K 指标 |
 | 8 | `calibration.py` | `calibrate_semantic_thresholds()` 拟合单个 alpha 语义阈值；`tune_centered_selection()` 按固定配置顺序并行调整 basic/Gaussian 选择参数 |
 | 9 | `pipeline.py` | 五个 `run_*_stage()` 直接编排跨 PDB 阶段、并行队列和文件发布 |
 | 10 | `cli.py` | `main()` 解析五个子命令、JSON 清单和固定随机分片；只在 GPU 阶段构造 Dataset/wrapper |
@@ -20,6 +20,31 @@
 `pipeline.py` 是生产流程的唯一编排文件，不再经过 `workflow.py`。局部嵌套函数只服务线程池回调；Dataset、collator、wrapper 和保存字段没有再被封装成顶层参数对象。
 
 ## 输出目录
+
+一个 producer 的正常目录同时容纳生产者级调参文件、多个数据划分的逐 PDB
+产物和各数据划分的评估结果：
+
+```text
+<output_root>/<producer>/
+├── tuning/
+│   ├── F{alpha}_semantic.json
+│   ├── F{alpha}_semantic_scan.npz
+│   ├── F{alpha}_basic.json
+│   └── F{alpha}_gaussian.json
+├── calibration/
+│   ├── <pdb_id>/...
+│   └── evaluation/<evaluation-name>.{jsonl,metrics.json}
+├── validation/
+│   ├── <pdb_id>/...
+│   └── evaluation/<evaluation-name>.{jsonl,metrics.json}
+└── <其他 split>/...
+```
+
+`tuning/` 只保存由完整调参清单共同产生的文件；`calibration/`、`validation/`
+等数据划分目录只保存逐 PDB 目录及该数据划分的 `evaluation/`。因此
+`F1_basic.json` 不会与 `calibration/9yq0/` 之类的逐 PDB 结果混放。
+basic 与 Gaussian 文件按实际调参模式出现，不要求四个文件同时存在。文件不保存
+checkpoint、resolved config、代码摘要或哈希。
 
 对于 producer、数据划分和 PDB 标识，逐 PDB 根目录为：
 
@@ -43,17 +68,6 @@
 ```
 
 `F{alpha}` 使用 Python float 的最短可往返十进制：删除整数末尾 `.0`，再把小数点改成 `p`。例如 2.0 写成 `F2`，0.5 写成 `F0p5`，1.5 写成 `F1p5`；不同 Python float 不因六位格式化而碰撞。同一 PDB 可以同时保存多个 alpha 的 blobs 与 centered，并共同复用 probability。
-
-producer 级 calibration 文件位于 `<output_root>/<producer>/calibration/`：
-
-```text
-F{alpha}_semantic.json
-F{alpha}_semantic_scan.npz
-F{alpha}_basic.json
-F{alpha}_gaussian.json
-```
-
-basic 与 Gaussian 文件按实际调参模式出现，不要求四个文件同时存在。文件不保存 checkpoint、resolved config、代码摘要或哈希。
 
 数据划分级评估位于 `<output_root>/<producer>/<split>/evaluation/`，每个评估名称同时保存 `.jsonl` 与 `.metrics.json`。
 
@@ -143,7 +157,8 @@ A 表只保留核心 80³ BOX 内且到来源 blob 最近体素中心不超过 1
 
 ## `_BLOB_EXCEED`
 
-`run_centered_stage()` 在读取 blobs 后立即检查 `blob_index` 长度。长度严格大于全局常量 1000 时，当前 PDB 不进入 Dataset 或 GPU，写出：
+`run_centered_stage()` 在读取 blobs 后立即检查 `blob_index` 长度。长度严格大于
+全局常量 1000 时总是写出：
 
 | 字段 | 类型 | 含义 |
 | --- | --- | --- |
@@ -152,9 +167,13 @@ A 表只保留核心 80³ BOX 内且到来源 blob 最近体素中心不超过 1
 | `source_blob_count` | 整数 | 来源 blobs 文件中的总 blob 数 |
 | `limit` | 整数 | 固定为 1000 |
 
-该标记只说明本次跳过原因。代码不删除旧标记、不自动覆盖 centered、不建立恢复清单，也不产生 centered `_COMPLETE`。tune/evaluate 遇到“centered 缺失且该标记存在”时在标准输出说明原因并跳过 PDB。
+默认行为仍是写标记后跳过当前 PDB，不产生 centered `_COMPLETE`。命令显式提供
+`--continue-on-blob-exceed` 时，该文件只作为超量提示，当前 PDB 继续生成 centered
+NPZ 与 `_COMPLETE`；后续 tune/evaluate 按已有 centered 产物正常读取，不检查该
+提示标记。代码不删除旧标记、不建立恢复清单，也不增加独立状态机。未生成
+centered 的旧式超量 PDB 仍由 tune/evaluate 在标准输出说明后跳过。
 
-## calibration 文件
+## tuning 文件
 
 ### `F{alpha}_semantic.json`
 
@@ -162,14 +181,23 @@ A 表只保留核心 80³ BOX 内且到来源 blob 最近体素中心不超过 1
 | --- | --- | --- |
 | `alpha` | 浮点数 | 当前语义 F-alpha 参数 |
 | `denominator` | 整数 | 阈值网格分母 |
+| `pdb_count` | 整数 | 参与 PDB 等权 macro 平均的 calibration PDB 数量 |
 | `positive_voxel_count` | 整数 | calibration 全集真实配体体素数 |
 | `negative_voxel_count` | 整数 | calibration 全集真实背景体素数 |
-| `threshold_grid_index` | 整数 | 首个达到最大 micro F-alpha 的网格编号 |
+| `threshold_grid_index` | 整数 | 首个达到最大 PDB 等权 macro F-alpha 的网格编号 |
 | `threshold_value` | 浮点数 | `threshold_grid_index/denominator` 得到的概率阈值 |
-| `micro_f_beta` | 浮点数 | 获胜阈值的 micro F-alpha |
-| `tp/fp/fn` | 整数 | 获胜阈值的跨 PDB 体素计数 |
+| `macro_f_beta` | 浮点数 | 获胜阈值的 PDB 等权 macro F-alpha |
+| `tp/fp/fn` | 整数 | 获胜阈值下跨 PDB 汇总的诊断体素计数，不参与阈值选择 |
 
-`F{alpha}_semantic_scan.npz` 保存 `denominator` int32 标量、`alpha` float64 标量、`threshold_grid_index` int32 `(denominator+1,)`、`f_beta_curve` float64 `(denominator+1,)` 和同形 int64 `tp/fp/fn`。`np.argmax` 在并列时选择最低网格编号。
+每个 calibration PDB 先在同一概率网格独立计算 F-alpha；任一 PDB 的指标分母
+为零时，该网格位置记为 0.0。随后对调参清单中的全部 PDB 等权平均，并用
+`np.argmax` 选择首个最大值。因此并列时仍选择最低网格编号，PDB 的体素数量
+不会改变其权重。
+
+`F{alpha}_semantic_scan.npz` 保存 `denominator` int32 标量、`alpha` float64
+标量、`threshold_grid_index` int32 `(denominator+1,)`、
+`macro_f_beta_curve` float64 `(denominator+1,)` 和同形 int64 `tp/fp/fn`。
+后三项是跨 PDB 汇总的诊断计数。
 
 ### `F{alpha}_basic.json` 与 `F{alpha}_gaussian.json`
 
@@ -178,7 +206,7 @@ A 表只保留核心 80³ BOX 内且到来源 blob 最近体素中心不超过 1
 | 字段 | 类型 | 含义 |
 | --- | --- | --- |
 | `alpha` | 浮点数 | 文件标签对应的语义 F-alpha 参数 |
-| `objective` | 浮点数 | 最终 semantic、coverage@0.3 与 one-to-one@0.3 三项 micro F-beta 之和 |
+| `objective` | 浮点数 | semantic macro F-beta、coverage@0.3 macro F-beta 与 one-to-one@0.3 macro F-beta 之和 |
 | `objective_beta` | 浮点数 | 上述三项选择目标共同使用的 beta |
 | `score_mode` | 字符串 | `basic` 或 `gaussian` |
 | `score_parameters` | JSON 对象 | basic 为空对象；Gaussian 含三个下述浮点字段 |
@@ -194,6 +222,11 @@ s = \bar{p}_{blob} + \lambda_{+}\sum_i w_i p_i - \lambda_{-}\sum_i w_i(1-p_i), \
 $$
 
 $d_i$ 是 A 原子到同候选来源 blob 最近体素中心的世界距离，单位 Å；仅 $d_i\le 5$ Å 的原子参与求和。basic 分数就是 $\bar{p}_{blob}$。
+
+三项目标保持 1:1:1 等权，共用 `objective_beta`。每一项都先在单个 PDB 内由
+该 PDB 的体素、候选或 ligand occurrence 计算 F-beta，再对调参清单中的全部
+PDB 取算术平均；局部分母为零时该 PDB 对应项记为 0.0。候选数、体素数和真实
+occurrence 数量均不会改变 PDB 权重。
 
 `prefiltered_min_voxel` 由 tune 命令显式提供，与最终搜索出的 `min_voxels` 独立；代码不裁剪后者的搜索列表。basic 按预过滤合格候选实际出现的 float32 来源平均概率降序扫描，只在目标值严格提升时替换阈值；非空候选的最佳目标仍为 0 时，保留高于最高分的空选择阈值。basic 的 `stages.score_threshold` 含 `objective` 与 `score_threshold`，`stages.min_voxels` 含 `objective` 与 `min_voxels`。Gaussian 的 `stages.coarse` 与 `stages.refined` 都含 `objective`、`tau_angstrom`、`lambda_positive`、`lambda_negative` 和 `score_threshold`；`stages.min_voxels` 同样只含 `objective` 与 `min_voxels`。score-only 与 evaluate 按选择 JSON 同时应用两个体素数门槛。
 
@@ -226,7 +259,9 @@ $d_i$ 是 A 原子到同候选来源 blob 最近体素中心的世界距离，�
 | `topk_winning_candidate_rank` | `int32 (K,T)` | 已选候选序列中首个获胜名次；未命中为 -1 |
 | `topk_winning_occurrence_index` | `int32 (K,T)` | 与获胜名次对齐的 occurrence 轴下标；未命中为 -1 |
 
-数据划分 `.jsonl` 每个已评估 PDB 一条 `pdb_id` 加指标映射；`.metrics.json` 保存同一公式的跨 PDB 汇总。两者与逐 PDB NPZ 使用同一个显式 `evaluation-name`。固定键是 `pdb_count`、`semantic_tp`、`semantic_fp`、`semantic_fn`、`semantic_micro_f1`、`semantic_micro_f2`、`semantic_macro_f1`、`semantic_macro_f2` 与 `topk_eligible_pdb_count`。每个覆盖阈值标签 `{t}` 生成 `coverage_micro_precision_{t}`、`coverage_micro_recall_{t}`、`coverage_micro_f1_{t}`、`coverage_micro_f2_{t}`、`coverage_macro_f1_{t}`、`coverage_macro_f2_{t}`，以及同样六个 `one_to_one_*_{t}` 键。每个 top-K 值 `{k}` 与阈值标签 `{t}` 生成 `top{k}_success_count_{t}` 和 `top{k}_success_ratio_{t}`。阈值标签把小数点改为 `p`，例如 0.3 写成 `0p3`；任一分母为零时保存 0.0。
+数据划分 `.jsonl` 每个已评估 PDB 一条 `pdb_id` 加指标映射；`.metrics.json` 保存同一公式的跨 PDB 汇总。两者与逐 PDB NPZ 使用同一个显式 `evaluation-name`。固定键是 `pdb_count`、`semantic_tp`、`semantic_fp`、`semantic_fn`、`semantic_micro_f1`、`semantic_micro_f2`、`semantic_macro_f1`、`semantic_macro_f2`、`semantic_micro_prauc`、`semantic_macro_prauc` 与 `topk_eligible_pdb_count`。每个覆盖阈值标签 `{t}` 生成 `coverage_micro_precision_{t}`、`coverage_micro_recall_{t}`、`coverage_micro_f1_{t}`、`coverage_micro_f2_{t}`、`coverage_macro_f1_{t}`、`coverage_macro_f2_{t}`，以及同样六个 `one_to_one_*_{t}` 键。每个 top-K 值 `{k}` 与阈值标签 `{t}` 生成 `top{k}_success_count_{t}` 和 `top{k}_success_ratio_{t}`。阈值标签把小数点改为 `p`，例如 0.3 写成 `0p3`；任一分母为零时保存 0.0。
+
+`semantic_micro_prauc` 和 `semantic_macro_prauc` 使用本次实际完成候选评估的 PDB 完整图 `probability_map` 与 `union_mask`。同一批已评估 PDB 内，改变 blobs、centered 或候选选择参数不会改变 PRAUC；centered 因默认 `_BLOB_EXCEED` 行为缺失时，该 PDB 连同候选指标一起跳过。阈值精确定义为 `t_j = torch.linspace(0,1,1024,dtype=torch.float32)[j]`，其中 `j=0,...,1023`，并以 `p >= t_j` 作为阳性预测。令该阈值的精确率和召回率为 `precision_j` 与 `recall_j`，则 `AP = sum((recall_j - recall_{j+1}) * precision_j)`，并规定 `recall_1024=0`；任一比率分母为零时该比率取 0，没有正体素时 AP 取 0。micro 先合并全部已评估 PDB 的正负体素计数再计算 AP；macro 先逐 PDB 计算 AP，再按 PDB 等权平均。
 
 ## 并行与发布
 

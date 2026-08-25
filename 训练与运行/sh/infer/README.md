@@ -56,7 +56,7 @@ bash 训练与运行/submit_task.sh \
 
 `blobs` 必须从以下三种阈值来源中选择一种：
 
-- `--fit-semantic --data-root <Stage1数据根>`：读取当前完整 calibration 清单的 probability 与 `union_mask.npy`，拟合 micro F-alpha 阈值，并写 `F{alpha}_semantic.json` 与 `F{alpha}_semantic_scan.npz`。
+- `--fit-semantic --data-root <Stage1数据根>`：读取当前完整 calibration 清单的 probability 与 `union_mask.npy`，拟合 PDB 等权 macro F-alpha 阈值，并把 `F{alpha}_semantic.json` 与 `F{alpha}_semantic_scan.npz` 写入 producer 的 `tuning/`。
 - `--semantic-threshold <数值>`：直接使用显式概率阈值。
 - `--semantic-parameters <JSON>`：读取另一条命令已经写出的 `threshold_value`。
 
@@ -90,9 +90,12 @@ bash 训练与运行/sh/infer/stage1_v3.sh centered \
   --forward-min-voxels 8
 ```
 
-所有 producer 都执行完整前向并保存 `voxel_final`。`unet_*` 只保存 centered 共同字段与 `voxel_final`；`Find_*` 另外保存辅助受体体素、A/P 表和三张 48³ 稠密数组。alpha 不改变字段集合。
+所有 producer 都执行完整前向，并共同保存 `voxel_final`、辅助受体体素与三张 48³ 稠密数组。`Find_*` 另外保存 A/P 表。alpha 不改变字段集合。
 
-若来源 `F{alpha}_blobs.npz:blob_index` 的长度严格大于 1000，当前 PDB 立即写 `status/F{alpha}_centered/_BLOB_EXCEED` 并跳过 centered。该标记不拥有覆盖、恢复或自动清理机制。
+若来源 `F{alpha}_blobs.npz:blob_index` 的长度严格大于 1000，当前 PDB 总是写
+`status/F{alpha}_centered/_BLOB_EXCEED`。默认随后跳过 centered；显式增加
+`--continue-on-blob-exceed` 时保留该提示标记并继续生成 centered。该开关不增加
+覆盖、恢复、自动清理或独立状态管理机制。
 
 传入 `--selection-parameters` 时，首次 centered 发布就增加 `score` 与 `selected`。已存在 centered 时也可以只在 CPU 上更新这两个字段：
 
@@ -111,9 +114,9 @@ bash 训练与运行/sh/infer/stage1_v3.sh centered \
 
 ## 4. 调整选择参数
 
-`tune --score-mode basic` 直接读取 blobs，以来源平均概率为分数；候选事实仍包含 `fits_centered_box=false` 的 blob。命令显式给出的 `--prefiltered-min-voxel` 在任何参数尝试前固定，体素数低于该值的候选在全部组合中保持未入选。输出为 `calibration/F{alpha}_basic.json`。
+`tune --score-mode basic` 直接读取 blobs，以来源平均概率为分数；候选事实仍包含 `fits_centered_box=false` 的 blob。命令显式给出的 `--prefiltered-min-voxel` 在任何参数尝试前固定，体素数低于该值的候选在全部组合中保持未入选。输出为 `tuning/F{alpha}_basic.json`。
 
-`tune --score-mode gaussian` 对 Find centered 应用同一预过滤，再读取 A 原子表并依次执行 Gaussian 粗搜索、细搜索和最小体素数搜索。输出为 `calibration/F{alpha}_gaussian.json`。
+`tune --score-mode gaussian` 对 Find centered 应用同一预过滤，再读取 A 原子表并依次执行 Gaussian 粗搜索、细搜索和最小体素数搜索。输出为 `tuning/F{alpha}_gaussian.json`。
 
 两个模式都读取 `configs/inference/stage1_v3.yaml:calibration.workers`。当前值 16 同时用于候选/occurrence 文件读取、逐 PDB 事实构造和相互独立的参数目标计算；basic 的实际 float32 分数阈值扫描仍按降序串行累计。脚本把 OMP、MKL 与 OpenBLAS 内部线程固定为 1，由调参线程池提供外层并发。并发结果按 YAML 列表原顺序收集，目标并列时仍由原列表中的首项获胜。
 
@@ -130,7 +133,7 @@ bash 训练与运行/sh/infer/stage1_v3.sh tune \
   --data-root /storage/penghongen/AdaLigand/Ori_Data
 ```
 
-`prefiltered_min_voxel` 与最终搜索出的 `min_voxels` 是两个独立门槛，不要求前者小于、等于或大于配置中的搜索值。最终 score-only 与 evaluate 同时应用两者。`objective_beta` 与 alpha 相互独立；未传 `--objective-beta` 时读取配置中的 2.0。调参目标仍是 semantic、coverage@0.3 和 one-to-one@0.3 三项 micro F-beta 之和。
+`prefiltered_min_voxel` 与最终搜索出的 `min_voxels` 是两个独立门槛，不要求前者小于、等于或大于配置中的搜索值。最终 score-only 与 evaluate 同时应用两者。`objective_beta` 与 alpha 相互独立；未传 `--objective-beta` 时读取配置中的 2.0。调参目标是 semantic、coverage@0.3 和 one-to-one@0.3 三项 PDB 等权 macro F-beta 之和；三项 1:1:1 等权，任一 PDB 的局部分母为零时该项记为 0.0。
 
 ## 5. 独立评估
 
@@ -169,7 +172,9 @@ bash 训练与运行/sh/infer/stage1_v3.sh evaluate \
   --data-root /storage/penghongen/AdaLigand/Ori_Data
 ```
 
-若 centered 因 `_BLOB_EXCEED` 缺失，tune/evaluate 只在标准输出说明该原因并跳过该 PDB，不写另一套跳过状态。
+若 centered 因默认 `_BLOB_EXCEED` 行为而缺失，tune/evaluate 只在标准输出说明该原因并跳过该 PDB，不写另一套跳过状态。提示模式已经生成 centered 时，tune/evaluate 直接消费 centered，不读取 `_BLOB_EXCEED`。
+
+`evaluate` 还会从每个实际完成候选评估的 PDB 完整图 `probability_map` 与 `union_mask` 发布 `semantic_micro_prauc` 和 `semantic_macro_prauc`。两项都沿用训练的 1024 阈值 AP 口径；macro 先算每个 PDB 再等权平均，micro 先合并所有已评估 PDB 的体素计数。精确阈值、包含端点与阶梯积分公式见 `src/inference/README.md` 的评估字段说明。
 
 ## 发布与复用
 

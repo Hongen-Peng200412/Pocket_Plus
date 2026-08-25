@@ -6,7 +6,7 @@
 stage1_v3.yaml
 → src.inference.cli.main
 → src.inference.pipeline.run_*_stage
-→ full_map / blobs / centered / calibration / evaluation
+→ full_map / blobs / centered / tuning / evaluation
 ```
 
 ## 顶层字段
@@ -15,7 +15,7 @@ stage1_v3.yaml
 | --- | --- | --- |
 | device | 字符串，cuda:0 | CLI 把 wrapper 移到该设备；probability 与正常 centered 的模型前向共用该设备 |
 | alpha | 浮点数，2.0 | blobs、centered、tune、evaluate 没有传 --alpha 时的值；路径标签为 F2 |
-| objective_beta | 浮点数，2.0 | tune 没有传 --objective-beta 时，三项选择目标共同使用的 F-beta 参数 |
+| objective_beta | 浮点数，2.0 | tune 没有传 --objective-beta 时，三项 PDB 等权 macro 选择目标共同使用的 F-beta 参数 |
 | blob_workers | 整数，16 | run_blobs_stage() 同时处理的 PDB 数 |
 | publish_workers | 整数，2 | probability 和 centered 的字段打包、NPZ 压缩与发布线程数 |
 | pending_probability_pdbs | 整数，3 | GPU 已完成但 probability 尚未发布的完整图数量上限 |
@@ -58,6 +58,10 @@ stage1_v3.yaml
 
 ## `calibration`
 
+配置节继续命名为 `calibration`，因为这些网格只在 calibration PDB 清单上拟合；
+拟合结果则写入 producer 的 `tuning/`，不与 `calibration/<pdb_id>/` 混放。正式
+调参固定使用 PDB 等权 macro，不提供 micro/macro 模式开关。
+
 | 字段 | 类型 | 作用 |
 | --- | --- | --- |
 | workers | 整数，当前为 16 | tune 阶段并行加载候选与 occurrence 文件、构造逐 PDB 事实、归约 Gaussian 原子项并计算相互独立的参数组合 |
@@ -79,7 +83,7 @@ stage1_v3.yaml
 | coverage_thresholds | 浮点数列表，[0.3,0.5,0.6] | 逐 PDB 评估 NPZ 的双向覆盖阈值轴；调参目标固定使用 0.3 |
 | topk_values | 整数列表，[3,4,5] | top-K 成功指标的 K 轴 |
 
-评估仍报告 semantic、双向 coverage、一对一最大匹配、top-K、跨 PDB micro 与 PDB 等权 macro 指标。YAML 不控制输出文件名；`evaluate` 命令必须显式提供 `--evaluation-name`，并在 `--selection-parameters` 与 `--all-candidates` 之间二选一。前者支持 blobs+basic、centered+basic 和 Find centered+Gaussian；Gaussian 需要 centered A 原子字段，不能用于 blobs。后者不做二次打分，把 `--artifact` 指定候选文件中的全部候选纳入指标，并用 `source_probability_mean` 排序。
+评估仍报告 semantic、双向 coverage、一对一最大匹配、top-K、跨 PDB micro 与 PDB 等权 macro 指标。语义指标另外固定发布 `semantic_micro_prauc` 和 `semantic_macro_prauc`：实际完成候选评估的 PDB 完整图 `probability_map` 对 `union_mask` 按训练同款 1024 阈值 AP 口径计算，macro 以 PDB 为等权单位；精确公式见 `src/inference/README.md`。该阈值数不是运行参数，YAML 不增加开关。YAML 不控制输出文件名；`evaluate` 命令必须显式提供 `--evaluation-name`，并在 `--selection-parameters` 与 `--all-candidates` 之间二选一。前者支持 blobs+basic、centered+basic 和 Find centered+Gaussian；Gaussian 需要 centered A 原子字段，不能用于 blobs。后者不做二次打分，把 `--artifact` 指定候选文件中的全部候选纳入指标，并用 `source_probability_mean` 排序。
 
 ## 版本目录与复用
 
