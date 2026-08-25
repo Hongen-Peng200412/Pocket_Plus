@@ -37,8 +37,9 @@ def main() -> None:
     代码来源. 可分片阶段先以固定随机种子 3407 打乱完整清单, 再按
     `[shard_index::shard_count]` 选择 0-based 分片. tune, evaluate 与语义拟合
     始终消费完整清单; tune 显式接收参数搜索前固定的来源体素数门槛;
-    evaluate 显式接收结果名, 并在选择参数与全部候选之间二选一. CLI 不计算
-    文件摘要, 不比较 producer 与训练配置.
+    centered 可显式把 `_BLOB_EXCEED` 改为提示后继续; evaluate 显式接收结果名,
+    并在选择参数与全部候选之间二选一. CLI 不计算文件摘要, 不比较 producer
+    与训练配置.
     """
 
     common = argparse.ArgumentParser(add_help=False)
@@ -82,6 +83,10 @@ def main() -> None:
     centered_parser.add_argument("--alpha", type=float)
     centered_parser.add_argument("--forward-min-voxels", type=int)
     centered_parser.add_argument("--selection-parameters")
+    centered_parser.add_argument(
+        "--continue-on-blob-exceed",
+        action="store_true",
+    )
     centered_mode = centered_parser.add_mutually_exclusive_group()
     centered_mode.add_argument("--overwrite", action="store_true")
     centered_mode.add_argument("--score-only", action="store_true")
@@ -244,6 +249,7 @@ def main() -> None:
             selection,
             bool(arguments.overwrite),
             bool(arguments.score_only),
+            bool(arguments.continue_on_blob_exceed),
         )
     elif arguments.command == "tune":
         run_tune_stage(
