@@ -12,14 +12,18 @@
 - 5 Å Find Gaussian 纳入端点与 10 Å Find A 表保留端点；
 - calibration 与正式 Find Gaussian 的逐位数值同源；
 - basic 与 Gaussian 在参数搜索前固定同一个预过滤门槛，且该值不限制最终 `min_voxels` 搜索列表；
-- 语义 micro/macro、双向覆盖、一对一匹配下标和 top-K 获胜 rank/index；
+- 不均衡 PDB 规模下的语义 macro 阈值选择，以及 evaluate 同时发布三类 micro/macro F-beta 与完整图 semantic micro/macro PRAUC；PRAUC 另以相邻 float32 端点证明 1024 个阈值与训练 TorchMetrics 一致；
 - Python 3.10 CLI、真正的 `ResolvedStage1Crop` Dataset 构造和重复 PDB 拒绝；
 - 动态 `F{alpha}` 路径标签、probability/centered 正式阶段和固定种子 3407 的随机分片；
 - evaluate 显式结果名、全候选不做二次打分，以及全候选与参数过滤结果并存；
-- centered 全模型前向、score-only 只替换两个选择字段，以及来源 blob 数严格大于 1000 时的 `_BLOB_EXCEED`；
+- centered 全模型前向、score-only 只替换两个选择字段，以及来源 blob 数严格大于 1000 时的默认跳过和显式提示模式；
 - 科学概率 NPZ 与性能 JSON 的字段隔离和原子完成标记。
 
 `test_calibration_parallel.py` 另外覆盖：
+
+- basic 实际分数扫描、Gaussian 粗搜、细搜和最小体素数搜索使用同一个 PDB 等权 macro 三项目标；
+- 大体积与小体积 PDB 对阈值意见相反时，basic 和 Gaussian 都不退回 micro 选择；
+- 数学上并列的 basic macro 目标不被浮点差量累计破坏，仍保留先遇到的高分阈值；
 
 - `workers=1` 与 `workers>1` 的 basic 完整选择 JSON 逐字段相等，并用同步屏障证明最终 `min_voxels` 目标确实由多个线程重叠计算；
 - `workers=1` 与 `workers>1` 的 Gaussian 粗搜、细搜和最终体素门槛结果逐字段相等；
