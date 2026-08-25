@@ -12,7 +12,7 @@
 4. `tune`：从 blobs 调整 basic 参数，或从 centered 调整 Gaussian 参数。
 5. `evaluate`：独立评估 blobs 或 centered。
 
-五个阶段共用 `训练与运行/sh/infer/stage1_v3.sh` 和 `configs/inference/stage1_v3.yaml`。本轮不改 Dataset、模型、训练脚本或 Matcher，也不提交服务器正式推理任务。
+五个阶段共用 `训练与运行/sh/infer/stage1_v3.sh` 和 `configs/inference/stage1_v3.yaml`。实现范围不改 Dataset、模型、训练脚本或 Matcher。实现与独立审查收口后，用户另行授权了 unet_c1 F1/F2 的服务器 CPU 正式重算。
 
 ## 冻结契约
 
@@ -257,4 +257,6 @@
 
 上一轮 Stage1 V3 基础设施已完成 34 项 CPU 回归、2 项 Windows RTX CUDA smoke 与三类三轮独立审查；该结论只表达当时的基础版收口。
 
-当前 PDB 等权 macro、`tuning/` 目录、`_BLOB_EXCEED` 提示模式与 semantic micro/macro PRAUC 属于新一轮扩展。第二轮独立审查报告的并列阈值浮点漂移已修正；第三轮逻辑审查发现的 NumPy/PyTorch float32 阈值轴差异也已改为训练同款 `torch.linspace` 并由相邻 1 ULP 测试锁定。主代理两遍自查、本地回归及代码布局、注释文档、科学逻辑三路第三轮全面审查和后续窄口径复核均已批准。Git 双线与服务器 CPU 重算尚未完成。
+当前 PDB 等权 macro、`tuning/` 目录、`_BLOB_EXCEED` 提示模式与 semantic micro/macro PRAUC 属于新一轮扩展。第二轮独立审查报告的并列阈值浮点漂移已修正；第三轮逻辑审查发现的 NumPy/PyTorch float32 阈值轴差异也已改为训练同款 `torch.linspace` 并由相邻 1 ULP 测试锁定。主代理两遍自查、本地回归及代码布局、注释文档、科学逻辑三路第三轮全面审查和后续窄口径复核均已批准。Pocket Plus 与 AdaLigand 的 Git 双线已经完成等价核验。
+
+服务器 Job `356881`、`356883` 和 `356884` 均以 `COMPLETED/0:0` 收口。正式结果复用历史 probability，在 calibration 100 个与 validation 200 个 PDB 上完成 F1/F2 semantic、blobs、basic 和 evaluate；没有生成 centered，也没有使用 GPU。validation 的 `semantic_macro_prauc=0.4572529597`，`semantic_micro_prauc=0.5080070029`。完整启动命令、checkpoint 与 probability 来源、异常恢复、参数和结果记录在 AdaLigand `文档/exec_plan/Stage1_PDB等权macro调参与unet_c1重算实施.md`。
