@@ -28,7 +28,7 @@ export ADALIGAND_STAGE1_PREPARATION_ROOT="${ADALIGAND_STAGE1_PREPARATION_ROOT:-/
 
 devices="${TASK_GPUS:-2}"
 nnodes="${TASK_NNODES:-1}"
-experiment_group="AdaLigand_Stage1/Find_1/CPC1"
+experiment_group="AdaLigand_Stage1_pdb_centric/Find_1/CPC1"
 tag="Find_1/CPC1"
 run_stamp="${TASK_RUN_STAMP:-$(date '+%Y%m%dT%H%M%S')}_CPC1"
 formal_run="${EXPERIMENT_FEEDBACK_ROOT}/logs/${experiment_group//\//-}/${tag//\//-}____${run_stamp}"
@@ -46,7 +46,7 @@ overrides=(
     "train.batch_size=6"
     "train.strict_global_batch_size=true"
     "train.enable_batch_size_tuning=false"
-    "train.num_workers=30"
+    "train.num_workers=24"
     "train.prefetch_factor=4"
     "train.max_epochs=70"
     "train.val_per_epoch=12"
@@ -57,7 +57,7 @@ overrides=(
     "model.backbone.real_density_cube_cfg.cube_size=9"
     "train.scheduler.warmup_ratio=0.005"
     "train.scheduler.patience=3"
-    "train.scheduler.stop_after_lr_reductions=3"
+    "train.scheduler.stop_after_lr_reductions=2"
     "train.gradient_clip_val=0.5"
     "offline=false"
 )

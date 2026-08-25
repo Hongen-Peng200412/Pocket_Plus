@@ -61,7 +61,7 @@ overrides=(
     "train.optimizer.lr=1.0e-4"
     "train.scheduler.warmup_ratio=0.005"
     "train.scheduler.patience=3"
-    "train.scheduler.stop_after_lr_reductions=3"
+    "train.scheduler.stop_after_lr_reductions=2"
     "offline=false"
 )
 

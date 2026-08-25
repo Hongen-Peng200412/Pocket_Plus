@@ -35,9 +35,7 @@ from ops.stage1_data_preparation.atomic_io import atomic_save_npz
 from src.datasets.stage1_requests import Stage1TrainingRequestSet
 
 
-BOX_POOL_ROOT = Path(
-    "/storage/penghongen/AdaLigand/Ori_Data/stage1_preparation_box_pool_3/box_pool"
-)
+BOX_POOL_ROOT = Path("/storage/penghongen/AdaLigand/Ori_Data/stage1_preparation_box_pool_3/box_pool")
 VALIDATION_POOL_DIRECTORY = BOX_POOL_ROOT / "validation"
 OUTPUT_PATH = BOX_POOL_ROOT / "validation_selection_pdb_centric.npz"
 REQUEST_SEED = 3407

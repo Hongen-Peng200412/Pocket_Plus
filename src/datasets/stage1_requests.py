@@ -284,17 +284,29 @@ class Stage1TrainingRequestSet:
         pdb_foreground_fraction_target: float,
         pdb_occurrence_foreground_box_cap: int,
     ) -> None:
-        """读取一个 manifest split 的 PDB pool, 并立即生成 epoch 0 请求.
+        """按 epoch 从一个 V3 split pool 生成确定性的 PDB 中心 BOX 请求.
 
-        参数:
-            - pool_directory: str | Path; 已发布的 V3 ``train`` 或 ``validation`` 目录; 父目录必须包含 ``_COMPLETE`` 和 ``manifest.json``.
-            - seed: int; 请求抽样种子; 与 manifest PDB 编号和 epoch 共同决定 occurrence 轮转及候选选择.
-            - pdb_foreground_box_num: int; 每个 PDB 的目标 bias BOX 数量.
-            - pdb_foreground_fraction_target: float; bias BOX 占目标总 BOX 数量的比例.
-            - pdb_occurrence_foreground_box_cap: int; 单个 occurrence 每个 epoch 的 bias BOX 数量上限.
+        构造参数:
+            - pool_directory: str | Path; ``stage1_preparation_box_pool_3/box_pool`` 下的 ``train`` 或 ``validation`` 目录; 父目录提供 ``_COMPLETE`` 和 ``manifest.json``.
+            - seed: int; 请求抽样种子; 相同 seed, epoch 和 manifest 顺序得到相同请求.
+            - pdb_foreground_box_num: int; 每个 PDB 的目标 bias BOX 数量; 当前正式值为 25.
+            - pdb_foreground_fraction_target: float; bias BOX 占目标总 BOX 数量的比例; 当前正式值为 0.5.
+            - pdb_occurrence_foreground_box_cap: int; 单个 occurrence 每个 epoch 最多获得的 bias BOX 数量; 当前正式值为 25.
 
-        状态变化:
-            - 读取 manifest 声明的 occurrence, bias 和 context 起点数组, 保存显式采样参数, 并调用 :meth:`set_epoch(0)` 初始化 ``requests``.
+        生成规则:
+            - 第 ``i`` 个 PDB 含 ``O_i`` 个 occurrence 时, 实际 bias 数量为 ``min(pdb_foreground_box_num, O_i * pdb_occurrence_foreground_box_cap)``.
+            - 当前正式参数为 ``25/0.5/25``, 且每个 PDB 至少含一个 occurrence, 因此每个 PDB 的实际 bias 数量都是 25.
+            - bias 数量先整除分配给全部 occurrence, 余数沿稳定 occurrence 排列按 epoch 循环移动; 单个 occurrence 的数量不超过 cap.
+            - context 目标数量按 ``round(pdb_foreground_box_num * (1 - fraction) / fraction)`` 计算, 不因实际 bias 数量不足而减少.
+            - 每个 occurrence 从 30 个 bias 候选中无放回选择分配数量; 每个 PDB 从正式 context 候选池中无放回选择目标数量.
+            - 请求顺序保持 manifest PDB 顺序; 每个 PDB 先按 pool occurrence 顺序排列 bias, 再排列 PDB 级 context.
+
+        生命周期:
+            - ``set_epoch`` 只在 epoch 改变时重建 ``requests``; 训练 DataLoader 不应使用常驻 worker, 否则主进程更新的 epoch 请求不会同步到旧 Dataset 副本.
+
+        公开属性:
+            - requests: tuple[ResolvedStage1Crop, ...]; 当前 epoch 的不可变请求序列.
+            - pdb_context_box_num: int; 每个 PDB 固定抽取的 context BOX 数量; 当前三个正式参数对应 25.
         """
         # Path, 当前请求集合对应的 train 或 validation pool 目录.
         pool_directory = Path(pool_directory)
@@ -362,24 +374,15 @@ class Stage1TrainingRequestSet:
                 dtype=np.int32,
             )
             # int64, (O_i,), 当前 PDB 的稳定 occurrence 排列; 数值索引 pool.occurrence_id 第一维; SeedSequence 尾项 0 隔离稳定排列随机流.
-            occurrence_order = np.random.default_rng(
-                np.random.SeedSequence([self.seed, pdb_index, 0])
-            ).permutation(occurrence_count)
+            occurrence_order = np.random.default_rng(np.random.SeedSequence([self.seed, pdb_index, 0])).permutation(occurrence_count)
             # int64, (R_i,), 索引 occurrence_order 第一维的循环位置; R_i 是 F_i 除以 O_i 的余数.
-            rotating_position = (
-                int(epoch) * foreground_box_num
-                + np.arange(rotating_occurrence_num, dtype=np.int64)
-            ) % occurrence_count
+            rotating_position = (int(epoch) * foreground_box_num + np.arange(rotating_occurrence_num, dtype=np.int64)) % occurrence_count   # 这一步保证了在occurrence较多时, 每个 epoch 的 occurrencea "尽可能选取的不同"
             # int64, (R_i,), 当前 epoch 额外获得一个 bias BOX 的 occurrence 在 pool.occurrence_id 第一维中的位置编号.
             rotating_occurrence_index = occurrence_order[rotating_position]
             occurrence_foreground_box_num[rotating_occurrence_index] += 1
             # Generator, 当前 PDB 和 epoch 专属的 bias/context 候选随机流; SeedSequence 尾项 1 将它与稳定 occurrence 排列随机流隔离.
-            candidate_rng = np.random.default_rng(
-                np.random.SeedSequence([self.seed, pdb_index, int(epoch), 1])
-            )
-            for occurrence_row, occurrence_box_num in enumerate(
-                occurrence_foreground_box_num.tolist()
-            ):
+            candidate_rng = np.random.default_rng(np.random.SeedSequence([self.seed, pdb_index, int(epoch), 1]))
+            for occurrence_row, occurrence_box_num in enumerate(occurrence_foreground_box_num.tolist()):
                 # int, 当前 occurrence 在 pool.occurrence_id 中保存的正式编号.
                 occurrence_id = int(pool.occurrence_id[occurrence_row])
                 # int64, (F_occ,), 索引 pool.bias_start_zyx[occurrence_row] 候选维的无放回编号; F_occ 是 occurrence_box_num 指定的 bias BOX 数量.
@@ -515,9 +518,8 @@ def load_validation_selection(
 
     # list[ResolvedStage1Crop], 按 center, bias, context 顺序累积冻结请求.
     requests: list[ResolvedStage1Crop] = []
-    for pdb_index, occurrence_id in zip(
-        arrays["center_pdb_index"], arrays["center_occurrence_id"]
-    ):
+
+    for pdb_index, occurrence_id in zip(arrays["center_pdb_index"], arrays["center_occurrence_id"]):  # 没有！
         # str, 当前 center 索引对应的 PDB 身份.
         pdb_id = pdb_ids[int(pdb_index)]
         # int, 当前 occurrence 在 pool.occurrence_id 第一维中的位置; 同一位置索引 center_start_zyx 第一维.
@@ -531,6 +533,7 @@ def load_validation_selection(
                 int(occurrence_id),
             )
         )
+
     for pdb_index, occurrence_id, candidate_index in zip(
         arrays["bias_pdb_index"],
         arrays["bias_occurrence_id"],
@@ -552,6 +555,7 @@ def load_validation_selection(
                 candidate_index,
             )
         )
+
     for pdb_index, candidate_index in zip(
         arrays["context_pdb_index"], arrays["context_candidate_index"]
     ):
