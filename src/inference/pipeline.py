@@ -11,7 +11,8 @@ probability NPZ 的三个字段由 :func:`run_probability_stage` 列出; blobs �
 沿用 :func:`extract_probability_blobs`; centered 字段沿用
 :func:`infer_centered_boxes` 与 :func:`pack_centered_entries`; selection 字段沿用
 :func:`tune_centered_selection`; 评估字段沿用 :func:`evaluate_centered_pdb` 和
-:func:`aggregate_stage1_metrics`.
+:func:`aggregate_stage1_metrics`, 完整图 PRAUC 沿用
+:func:`semantic_prauc_histogram` 和 :func:`aggregate_semantic_prauc`.
 """
 
 from __future__ import annotations
@@ -36,9 +37,11 @@ from .blobs import extract_probability_blobs
 from .calibration import calibrate_semantic_thresholds, tune_centered_selection
 from .centered import infer_centered_boxes
 from .evaluation import (
+    aggregate_semantic_prauc,
     aggregate_stage1_metrics,
     evaluate_centered_pdb,
     load_occurrence_voxels,
+    semantic_prauc_histogram,
 )
 from .full_map import infer_full_map
 from .scoring import score_centered_candidates
@@ -75,7 +78,7 @@ def run_probability_stage(
     overwrite: bool,
 ) -> None:
     """生成并异步发布一个 PDB 清单的完整图概率.
-    每个 PDB 发布 `probability_map.npz`, `geometry.json`, `performance.json` 和 `status/probability/_COMPLETE`. 
+    每个 PDB 发布 `probability_map.npz`, `geometry.json`, `performance.json` 和 `status/probability/_COMPLETE`.
     默认跳过已有完成标记; `overwrite=True` 只撤销并重算 probability 阶段. 概率 NPZ 压缩与下一个 PDB 的 GPU 前向重叠.
 
     输入参数:
@@ -107,6 +110,7 @@ def run_probability_stage(
         - performance.materialize_wait_seconds: float, 等待 CPU 请求物化的累计秒数.
         - performance.fusion_wait_seconds: float, 等待 CPU 有序融合的累计秒数.
     """
+
     def publish_probability(
         paths: Stage1ArtifactPaths,
         arrays: Mapping[str, np.ndarray],
@@ -115,14 +119,19 @@ def run_probability_stage(
     ) -> None:
         """在线程池中发布一个 PDB 的几何, 性能, 概率 NPZ 和完成标记.
 
-        `paths` 决定同一 PDB 的全部目标路径. 
-        `arrays` 是概率 NPZ 的三个正式数组 `probability_map`, `origin_xyz`, `voxel_size_xyz`. 
+        `paths` 决定同一 PDB 的全部目标路径.
+        `arrays` 是概率 NPZ 的三个正式数组 `probability_map`, `origin_xyz`, `voxel_size_xyz`.
         `geometry` 保存完整图形状, 世界几何, 80³ 窗口, stride, Gaussian sigma 和窗口数;
         `performance` 保存墙钟, 物化等待和融合等待秒数. 成功时无返回值.
         """
         publish_stage1_json(paths.pdb_root / "probability" / "geometry.json", geometry)
-        publish_stage1_json(paths.pdb_root / "status" / "probability" / "performance.json", performance,)
-        publish_stage1_artifact(paths.artifact("probability"), arrays, paths.complete("probability"))
+        publish_stage1_json(
+            paths.pdb_root / "status" / "probability" / "performance.json",
+            performance,
+        )
+        publish_stage1_artifact(
+            paths.artifact("probability"), arrays, paths.complete("probability")
+        )
 
     pending: deque[Future[None]] = deque()
     with ThreadPoolExecutor(
@@ -149,12 +158,16 @@ def run_probability_stage(
                 pending_fusion_batches=int(config.window.pending_fusion_batches),
             )
             arrays = {
-                "probability_map": result.probability_map.astype(np.float32, copy=False),
+                "probability_map": result.probability_map.astype(
+                    np.float32, copy=False
+                ),
                 "origin_xyz": result.origin_xyz.astype(np.float32, copy=False),
                 "voxel_size_xyz": result.voxel_size_xyz.astype(np.float32, copy=False),
             }
             geometry = {
-                "full_shape_zyx": [int(value) for value in result.probability_map.shape],
+                "full_shape_zyx": [
+                    int(value) for value in result.probability_map.shape
+                ],
                 "origin_xyz": [float(value) for value in result.origin_xyz],
                 "voxel_size_xyz": [float(value) for value in result.voxel_size_xyz],
                 "window_shape_zyx": [80, 80, 80],
@@ -167,7 +180,11 @@ def run_probability_stage(
                 "materialize_wait_seconds": float(result.materialize_wait_seconds),
                 "fusion_wait_seconds": float(result.fusion_wait_seconds),
             }
-            pending.append(publisher.submit(publish_probability, paths, arrays, geometry, performance))
+            pending.append(
+                publisher.submit(
+                    publish_probability, paths, arrays, geometry, performance
+                )
+            )
             if len(pending) >= int(config.pending_probability_pdbs):
                 pending.popleft().result()
         while pending:
@@ -188,7 +205,9 @@ def run_blobs_stage(
 ) -> dict[str, object] | None:
     """冻结或读取语义阈值, 再并行发布动态 F-alpha blobs.
 
-    `fit_semantic=True` 时逐 PDB 读取 probability 与 `union_mask.npy`, 按 calibration 全集 micro F-alpha 写出 `calibration/F{alpha}_semantic.json` 和 `F{alpha}_semantic_scan.npz`; `data_root` 此时是 Stage1 V3 数据根目录.
+    `fit_semantic=True` 时逐 PDB 读取 probability 与 `union_mask.npy`, 按 PDB
+    等权 macro F-alpha 写出 `tuning/F{alpha}_semantic.json` 和
+    `F{alpha}_semantic_scan.npz`; `data_root` 此时是 Stage1 V3 数据根目录.
     其他调用直接使用显式 `semantic_threshold`. 每个 PDB 的 blobs 文件保存阈值下全部 26 邻域连通区域, 不应用最小体素数. 默认跳过已有角色完成标记;
     `overwrite=True` 只重算当前 blobs 角色. 返回值只在本次拟合语义阈值时存在.
 
@@ -205,17 +224,35 @@ def run_blobs_stage(
         - overwrite: bool, 是否重算已有 blobs 完成标记的 PDB.
 
     返回值:
-        - semantic_result: dict[str, object] | None, 本次拟合的阈值摘要; 直接使用已有阈值时为 None.
+        - semantic_result.alpha: float, 本次拟合的 F-alpha 参数.
+        - semantic_result.denominator: int, 闭区间语义概率网格分母.
+        - semantic_result.pdb_count: int, 参与 PDB 等权 macro 平均的 PDB 数量.
+        - semantic_result.positive_voxel_count: int, 全部 calibration PDB 的真实配体体素数.
+        - semantic_result.negative_voxel_count: int, 全部 calibration PDB 的背景体素数.
+        - semantic_result.threshold_grid_index: int, 首个最优阈值的整数网格位置.
+        - semantic_result.threshold_value: float, 最终包含端点概率阈值.
+        - semantic_result.macro_f_beta: float, 获胜阈值的 PDB 等权 macro F-alpha.
+        - semantic_result.tp: int, 获胜阈值下跨 PDB 汇总的诊断 TP.
+        - semantic_result.fp: int, 获胜阈值下跨 PDB 汇总的诊断 FP.
+        - semantic_result.fn: int, 获胜阈值下跨 PDB 汇总的诊断 FN.
+
+    拟合时返回上述字典, 并已把完整 `scan` 分离到 `tuning/F{alpha}_semantic_scan.npz`. 直接使用显式阈值时返回 None.
     """
+    # alpha_tag 决定本次语义摘要, blobs 和后续选择文件的共同可读前缀.
     alpha_tag = f_alpha_tag(alpha)
+    # blob_role 是每个 PDB 的动态连通区域角色, 例如 F1_blobs.
     blob_role = f"{alpha_tag}_blobs"
+    # semantic_result 只在当前调用拟合语义阈值时保存 JSON 摘要.
     semantic_result: dict[str, object] | None = None
+    # threshold 是本次全部 PDB 共享的包含端点概率下限.
     threshold = semantic_threshold
     if fit_semantic:
         probability_and_target = (
             (
                 load_stage1_npz(
-                    Stage1ArtifactPaths(output_root, producer, split, pdb_id).artifact("probability"),
+                    Stage1ArtifactPaths(output_root, producer, split, pdb_id).artifact(
+                        "probability"
+                    ),
                     ("probability_map",),
                 )["probability_map"],
                 np.load(
@@ -231,14 +268,14 @@ def run_blobs_stage(
             denominator=int(config.calibration.semantic_denominator),
             alpha=float(alpha),
         )
+        # scan 保存完整 macro 曲线和诊断计数, 与 JSON 摘要分开发布.
         scan = semantic_result.pop("scan")
-        calibration_root = Path(output_root) / producer / "calibration"
+        # tuning_root 只保存生产者级调参文件, 不属于任何单个 PDB 目录.
+        tuning_root = Path(output_root) / producer / "tuning"
         publish_stage1_artifact(
-            calibration_root / f"{alpha_tag}_semantic_scan.npz", scan, None
+            tuning_root / f"{alpha_tag}_semantic_scan.npz", scan, None
         )
-        publish_stage1_json(
-            calibration_root / f"{alpha_tag}_semantic.json", semantic_result
-        )
+        publish_stage1_json(tuning_root / f"{alpha_tag}_semantic.json", semantic_result)
         threshold = float(semantic_result["threshold_value"])
 
     def publish_blobs(pdb_id: str) -> None:
@@ -290,14 +327,16 @@ def run_centered_stage(
     selection: Mapping[str, object] | None,
     overwrite: bool,
     score_only: bool,
+    continue_on_blob_exceed: bool,
 ) -> None:
     """生成动态 F-alpha centered, 或只更新已有文件的选择字段.
 
     正常模式读取 `F{alpha}_blobs.npz`, 对 `fits_centered_box=True` 且来源体素数
     达到 `forward_min_voxels` 的候选执行完整模型前向. 所有 producer 保存共同
     字段, `voxel_final`, auxiliary 和三张 48³ 稠密数组; Find 另外保存 A/P 表. 来源
-    `blob_index` 数量严格大于 `CENTERED_BLOB_LIMIT` 时只写 `_BLOB_EXCEED` 并
-    跳过当前 PDB. `selection` 存在时首次发布即写入 `score` 与 `selected`.
+    `blob_index` 数量严格大于 `CENTERED_BLOB_LIMIT` 时总是写 `_BLOB_EXCEED`.
+    `continue_on_blob_exceed=False` 时跳过当前 PDB; 显式为 True 时继续生成
+    centered. `selection` 存在时首次发布即写入 `score` 与 `selected`.
 
     `score_only=True` 时不读取 Dataset 或 wrapper, 只重用已有 centered 数组并
     替换 `score` 与 `selected`; 其他字段, 候选轴和 offsets 保持不变. 默认正常
@@ -318,11 +357,12 @@ def run_centered_stage(
         - selection: Mapping[str, object] | None, 可选 basic 或 Gaussian 冻结参数; 分别含固定 `prefiltered_min_voxel` 和搜索所得 `min_voxels`.
         - overwrite: bool, 正常模式是否重算已有 centered 完成标记.
         - score_only: bool, 是否只替换已有 centered 的 `score` 和 `selected`.
+        - continue_on_blob_exceed: bool, 来源 blob 超过 1000 时是否保留提示标记并继续生成 centered.
 
-    本阶段成功时无返回值. 来源 blob 数严格大于 1000 的 PDB 只发布
-    `_BLOB_EXCEED`, 不发布 centered NPZ 或 `_COMPLETE`.
+    本阶段成功时无返回值. 提示模式不改变 centered 的字段或完成标记契约.
     """
 
+    # alpha_tag 同时决定来源 blobs 和目标 centered 的动态角色名.
     alpha_tag = f_alpha_tag(alpha)
     blob_role = f"{alpha_tag}_blobs"
     centered_role = f"{alpha_tag}_centered"
@@ -402,6 +442,7 @@ def run_centered_stage(
                 continue
             paths.complete(centered_role).unlink(missing_ok=True)
             blobs = load_stage1_npz(paths.artifact(blob_role), _CENTERED_BLOB_FIELDS)
+            # source_blob_count 是阈值下全部连通区域数量, 包括不能容纳 80³ BOX 的区域.
             source_blob_count = int(np.asarray(blobs["blob_index"]).size)
             if source_blob_count > CENTERED_BLOB_LIMIT:
                 publish_stage1_json(
@@ -413,7 +454,8 @@ def run_centered_stage(
                         "limit": CENTERED_BLOB_LIMIT,
                     },
                 )
-                continue
+                if not continue_on_blob_exceed:
+                    continue
             probability = load_stage1_npz(
                 paths.artifact("probability"),
                 ("probability_map", "origin_xyz", "voxel_size_xyz"),
@@ -465,7 +507,8 @@ def run_tune_stage(
     的候选在所有参数组合中保持未入选. `score_mode='gaussian'` 读取动态 centered
     的 A 原子表; 只有 `_BLOB_EXCEED` 而没有 centered 的 PDB 被直接跳过并在
     标准输出说明原因. 目标是 semantic, coverage@0.3 和 one-to-one@0.3 三项
-    micro F-beta 之和. 返回映射同时原子发布到 `calibration/F{alpha}_{mode}.json`.
+    PDB 等权 macro F-beta 之和. 返回映射同时原子发布到
+    `tuning/F{alpha}_{mode}.json`.
 
     输入参数:
         - config: OmegaConf 配置, 读取 Gaussian 网格, 最小体素数和评估阈值.
@@ -473,7 +516,7 @@ def run_tune_stage(
         - producer: str, 当前模型产物目录名.
         - split: str, 必须完整消费的数据划分名.
         - pdb_ids: Sequence[str], 按评估顺序排列的小写 PDB 标识.
-        - output_root: str | Path, blobs/centered 与 calibration JSON 的共同根目录.
+        - output_root: str | Path, blobs/centered 与 tuning JSON 的共同根目录.
         - alpha: float, 输入产物和输出参数文件使用的 F-alpha 参数.
         - score_mode: str, `basic` 或 `gaussian`.
         - objective_beta: float, 三项评估目标共同使用的 F-beta 参数.
@@ -486,6 +529,7 @@ def run_tune_stage(
         - 标准输出记录候选 NPZ 与 `ligand_area.npz` 的并行加载耗时; 该时间不写入选择参数 JSON.
     """
 
+    # alpha_tag 把输入候选与同一科学配置的 producer 级选择文件对齐.
     alpha_tag = f_alpha_tag(alpha)
     blob_role = f"{alpha_tag}_blobs"
     centered_role = f"{alpha_tag}_centered"
@@ -546,7 +590,9 @@ def run_tune_stage(
             )
 
         items: list[tuple[str, Mapping[str, np.ndarray]]] = []
-        ground_truth: dict[str, tuple[np.ndarray, Sequence[np.ndarray], Sequence[int]]] = {}
+        ground_truth: dict[
+            str, tuple[np.ndarray, Sequence[np.ndarray], Sequence[int]]
+        ] = {}
         for pdb_id, candidate_future, ground_truth_future in pending_inputs:
             loaded_candidate = candidate_future.result()
             if score_mode == "basic":
@@ -597,7 +643,7 @@ def run_tune_stage(
     )
     selection = {"alpha": float(alpha), **selection}
     publish_stage1_json(
-        Path(output_root) / producer / "calibration" / f"{alpha_tag}_{score_mode}.json",
+        Path(output_root) / producer / "tuning" / f"{alpha_tag}_{score_mode}.json",
         selection,
     )
     return selection
@@ -625,7 +671,7 @@ def run_evaluate_stage(
 
     输入参数:
         - config: OmegaConf 配置, 读取 coverage 阈值和 top-K 列表.
-        - data_root: str | Path, 读取每个 PDB `ligand_area.npz` 的数据根目录.
+        - data_root: str | Path, 读取每个 PDB `ligand_area.npz` 与 `union_mask.npy` 的数据根目录.
         - producer: str, 当前模型产物目录名.
         - split: str, 必须完整消费的数据划分名.
         - pdb_ids: Sequence[str], 按评估顺序排列的小写 PDB 标识.
@@ -636,15 +682,17 @@ def run_evaluate_stage(
         - selection: Mapping[str, object] | None, 已冻结的评分参数与体素门槛; ``None`` 表示纳入 artifact 中的全部候选.
 
     返回值:
-        - global_metrics: dict[str, object], 字段完整遵循 :func:`aggregate_stage1_metrics`, 对未跳过 PDB 聚合.
+        - global_metrics: dict[str, object], 包含 :func:`aggregate_stage1_metrics` 的候选指标, 以及完整概率图的 `semantic_micro_prauc` 和 `semantic_macro_prauc`.
     """
 
     alpha_tag = f_alpha_tag(alpha)
-    score_mode = (
-        "all_candidates" if selection is None else str(selection["score_mode"])
-    )
+    score_mode = "all_candidates" if selection is None else str(selection["score_mode"])
     role = f"{alpha_tag}_{artifact}"
+    # evaluations: 按未跳过 PDB 顺序保存的候选语义与实例事实.
     evaluations = []
+    # prauc_histograms: 与 evaluations 一一对齐的 int64 `(2, 1024)` 完整图语义计数.
+    prauc_histograms = []
+    # jsonl_rows: 按评估顺序保存的逐 PDB 指标映射.
     jsonl_rows = []
     for pdb_id in pdb_ids:
         paths = Stage1ArtifactPaths(output_root, producer, split, pdb_id)
@@ -716,8 +764,9 @@ def run_evaluate_stage(
                 & (voxel_count >= int(selection["prefiltered_min_voxel"]))
                 & (voxel_count >= int(selection["min_voxels"]))
             )
+        density_root = Path(data_root) / "density" / pdb_id
         occurrence_id, occurrence_rows, full_shape = load_occurrence_voxels(
-            Path(data_root) / "density" / pdb_id / "ligand_area.npz"
+            density_root / "ligand_area.npz"
         )
         evaluation = evaluate_centered_pdb(
             pdb_id=pdb_id,
@@ -729,6 +778,20 @@ def run_evaluate_stage(
             topk_values=config.evaluation.topk_values,
         )
         evaluations.append(evaluation)
+        # probability: float32, (D, H, W), 当前 PDB 的完整图配体区域概率.
+        probability = load_stage1_npz(
+            paths.artifact("probability"),
+            ("probability_map",),
+        )["probability_map"]
+        # union_mask: bool, (D, H, W), 同一完整图的 ligand occurrence 体素并集.
+        union_mask = np.load(
+            density_root / "union_mask.npy",
+            mmap_mode="r",
+            allow_pickle=False,
+        )[0]
+        # int64, (2, 1024), 当前 PDB 完整图的负体素和正体素概率分箱计数.
+        prauc_histogram = semantic_prauc_histogram(probability, union_mask)
+        prauc_histograms.append(prauc_histogram)
         publish_stage1_artifact(
             paths.pdb_root / "evaluation" / f"{evaluation_name}.npz",
             {
@@ -760,12 +823,14 @@ def run_evaluate_stage(
             coverage_thresholds=config.evaluation.coverage_thresholds,
             topk_values=config.evaluation.topk_values,
         )
+        single_metrics.update(aggregate_semantic_prauc((prauc_histogram,)))
         jsonl_rows.append({"pdb_id": pdb_id, **single_metrics})
     global_metrics = aggregate_stage1_metrics(
         evaluations,
         coverage_thresholds=config.evaluation.coverage_thresholds,
         topk_values=config.evaluation.topk_values,
     )
+    global_metrics.update(aggregate_semantic_prauc(prauc_histograms))
     evaluation_root = Path(output_root) / producer / split / "evaluation"
     publish_stage1_jsonl(evaluation_root / f"{evaluation_name}.jsonl", jsonl_rows)
     publish_stage1_json(

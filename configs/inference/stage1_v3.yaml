@@ -3,7 +3,7 @@
 
 device: cuda:0  # str, probability 与正常 centered 的唯一模型设备
 alpha: 2.0  # float, 未传 --alpha 时使用的语义 F-alpha 与文件标签参数
-objective_beta: 2.0  # float, 未传 --objective-beta 时 centered 调参目标使用的 F-beta 参数
+objective_beta: 2.0  # float, 未传 --objective-beta 时三项 PDB 等权 macro 调参目标共用的 F-beta 参数
 blob_workers: 16  # int, blobs 阶段并行处理的 PDB 数
 publish_workers: 2  # int, probability 与 centered 的 NPZ 压缩线程数
 pending_probability_pdbs: 3  # int, 尚未完成 probability 发布的完整图数量上限
