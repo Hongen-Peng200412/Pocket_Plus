@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
-"""计算 Stage1 候选与真实 ligand occurrence 的语义和实例指标.
+"""计算 Stage1 完整图语义 PRAUC, 候选语义和实例指标.
 
-主要入口 :func:`evaluate_centered_pdb` 生成逐 PDB 交集矩阵和计数,
-:func:`aggregate_stage1_metrics` 生成跨 PDB micro 与 PDB 等权 macro 报告.
+主要入口 :func:`semantic_prauc_histogram` 和 :func:`aggregate_semantic_prauc`
+生成完整图 PRAUC, :func:`evaluate_centered_pdb` 和
+:func:`aggregate_stage1_metrics` 生成候选交集事实及跨 PDB 汇总.
 """
 
 from __future__ import annotations
@@ -13,6 +14,20 @@ from typing import Mapping, Sequence
 
 import numpy as np
 from scipy.optimize import linear_sum_assignment
+import torch
+
+
+# 语义 PRAUC 使用与 dense ligand 训练指标相同的均匀阈值数量.
+SEMANTIC_PRAUC_THRESHOLD_COUNT = 1024
+# float32, (1024,), 直接复用训练指标生成阈值的 PyTorch 数值路径.
+_SEMANTIC_PRAUC_THRESHOLDS = torch.linspace(
+    0.0,
+    1.0,
+    SEMANTIC_PRAUC_THRESHOLD_COUNT,
+    dtype=torch.float32,
+).numpy()
+# 每次最多量化该数量的体素, 避免完整图分箱产生大型临时索引.
+_PRAUC_VOXEL_CHUNK_SIZE = 8_000_000
 
 
 @dataclass(frozen=True)
@@ -114,6 +129,55 @@ def load_occurrence_voxels(
     return occurrence_id, rows, shape
 
 
+def semantic_prauc_histogram(
+    probability_map: np.ndarray,
+    union_mask: np.ndarray,
+) -> np.ndarray:
+    """把一个 PDB 的完整图语义概率压缩为 PRAUC 正负体素计数.
+
+    输入参数:
+        - probability_map: float32 ``(D, H, W)``, 完整图 ZYX 配体区域概率; D, H, W 依次对应 Z, Y, X.
+        - union_mask: bool ``(D, H, W)``, 同一完整图的 ligand occurrence 体素并集; True 表示配体体素, False 表示背景体素.
+
+    返回值:
+        - histogram: int64 ``(2, 1024)``, 第一轴依次是负体素和正体素; 第 j 个概率档保存最高通过阈值为 ``t_j`` 的体素数.
+
+    ``t_j`` 是 ``torch.linspace(0, 1, 1024, dtype=torch.float32)[j]``, 包含
+    0 和 1 两个端点; ``probability_map >= t_j`` 记为该阈值下的阳性预测.
+    概率分块处理, 不在内存中构造 ``N_voxel x 1024`` 的阈值判定矩阵.
+    """
+
+    # probability: float32, (N_voxel,), 当前 PDB 的完整图概率.
+    probability = np.asarray(probability_map, dtype=np.float32).reshape(-1)
+    # target: bool, (N_voxel,), True 表示体素属于真实 ligand occurrence 并集.
+    target = np.asarray(union_mask, dtype=np.bool_).reshape(-1)
+    # int64, (2, 1024), 第一轴依次累计负体素和正体素, 第二维是与 _SEMANTIC_PRAUC_THRESHOLDS 对齐的升序阈值概率档.
+    histogram = np.zeros((2, SEMANTIC_PRAUC_THRESHOLD_COUNT), dtype=np.int64)
+    for begin in range(0, probability.size, _PRAUC_VOXEL_CHUNK_SIZE):
+        # begin, end: 当前展平概率分块的半开区间端点.
+        end = min(begin + _PRAUC_VOXEL_CHUNK_SIZE, probability.size)
+        # int32, (N_chunk,), 每个概率在 _SEMANTIC_PRAUC_THRESHOLDS 中所能通过的最高包含端点阈值下标, 用于累计 histogram 第二维.
+        threshold_index = (
+            np.searchsorted(
+                _SEMANTIC_PRAUC_THRESHOLDS,
+                probability[begin:end],
+                side="right",
+            ).astype(np.int32, copy=False)
+            - 1
+        )
+        # bool, (N_chunk,), 与 threshold_index 对齐的当前分块语义真值.
+        target_chunk = target[begin:end]
+        histogram[0] += np.bincount(
+            threshold_index[~target_chunk],
+            minlength=SEMANTIC_PRAUC_THRESHOLD_COUNT,
+        )
+        histogram[1] += np.bincount(
+            threshold_index[target_chunk],
+            minlength=SEMANTIC_PRAUC_THRESHOLD_COUNT,
+        )
+    return histogram
+
+
 # ================================================================================================
 
 
@@ -167,7 +231,6 @@ def evaluate_centered_pdb(
         global_zyx = local_rows[begin:end] + box_starts[entry_index][None, :]
         pred_linear.append(np.unique(np.ravel_multi_index(global_zyx.T, shape)))
 
-
     # gt_linear: 长度 N_gt 的列表; 第 j 项是 occurrence_id[j] 的唯一 C-order 线性体素编号.
     gt_linear = [
         np.unique(np.ravel_multi_index(np.asarray(rows, dtype=np.int64).T, shape))
@@ -194,12 +257,14 @@ def evaluate_centered_pdb(
     # int64, (K_pred_union,), 全部已选候选的唯一 C-order 线性体素并集.
     pred_union = (
         np.unique(np.concatenate(selected_pred_linear))
-        if selected_pred_linear else np.empty(0, dtype=np.int64)
+        if selected_pred_linear
+        else np.empty(0, dtype=np.int64)
     )
     # int64, (K_gt_union,), 全部真实 occurrence 的唯一 C-order 线性体素并集.
     gt_union = (
         np.unique(np.concatenate(gt_linear))
-        if gt_linear else np.empty(0, dtype=np.int64)
+        if gt_linear
+        else np.empty(0, dtype=np.int64)
     )
     # int64, (N_pred,), 每个候选与真实 occurrence 总并集的交集体素数.
     candidate_semantic_tp = np.asarray(
@@ -231,7 +296,9 @@ def evaluate_centered_pdb(
     # thresholds: 长度 N_threshold 的双向覆盖阈值轴, 保持调用方顺序.
     thresholds = tuple(float(value) for value in coverage_thresholds)
     # bool, (N_threshold, N_pred), 每个候选是否与任一 occurrence 达到双向覆盖阈值.
-    coverage_pred_hit_mask = np.zeros((len(thresholds), len(pred_linear)), dtype=np.bool_)
+    coverage_pred_hit_mask = np.zeros(
+        (len(thresholds), len(pred_linear)), dtype=np.bool_
+    )
     # bool, (N_threshold, N_gt), 每个 occurrence 是否被任一已选候选达到双向覆盖阈值.
     coverage_gt_hit_mask = np.zeros((len(thresholds), len(gt_linear)), dtype=np.bool_)
     # match_pred_rows: 长度 N_threshold 的列表; 每项保存该阈值一对一匹配的候选轴下标.
@@ -244,10 +311,12 @@ def evaluate_centered_pdb(
         coverage_pred_hit_mask[threshold_row] = valid.any(axis=1)
         # bool, (N_selected, N_gt), 只保留已选候选后的有效匹配边.
         selected_valid = valid[selected_rows]
-        coverage_gt_hit_mask[threshold_row] = selected_valid.any(axis=0)   # 如果某个pred_blob没被打分选中(selected=False), 那么它无法hit gt
+        coverage_gt_hit_mask[threshold_row] = selected_valid.any(axis=0)
         if selected_valid.size:
             # matched_pred, matched_gt: int64, (N_assignment,), Hungarian 返回的已选候选轴与 occurrence 轴下标.
-            matched_pred, matched_gt = linear_sum_assignment(-selected_valid.astype(np.int8))
+            matched_pred, matched_gt = linear_sum_assignment(
+                -selected_valid.astype(np.int8)
+            )
             # bool, (N_assignment,), True 表示 Hungarian 返回的候选-occurrence 配对确实达到双向覆盖阈值.
             keep = selected_valid[matched_pred, matched_gt]
             match_pred_rows.append(selected_rows[matched_pred[keep]].astype(np.int32))
@@ -276,7 +345,9 @@ def evaluate_centered_pdb(
         top_candidate_rows = selected_rows[: int(topk)]
         for threshold_row, threshold in enumerate(thresholds):
             # bool, (min(K, N_selected), N_gt), top-K 候选与 occurrence 的双向覆盖命中表.
-            valid = (pred_cover[top_candidate_rows] >= threshold) & (gt_cover[top_candidate_rows] >= threshold)
+            valid = (pred_cover[top_candidate_rows] >= threshold) & (
+                gt_cover[top_candidate_rows] >= threshold
+            )
             # int64, (N_winner, 2), 命中表中按 C-order 排列的候选名次与 occurrence 轴下标.
             winners = np.argwhere(valid)
             if winners.size:
@@ -286,7 +357,9 @@ def evaluate_centered_pdb(
     return PdbEvaluation(
         pdb_id=str(pdb_id).lower(),
         occurrence_id=np.asarray(occurrence_id, dtype=np.int32),
-        source_blob_index=np.asarray(centered["source_blob_index"], dtype=np.int32)[order],
+        source_blob_index=np.asarray(centered["source_blob_index"], dtype=np.int32)[
+            order
+        ],
         candidate_score=score.astype(np.float32),
         candidate_selected=candidate_selected,
         intersections=intersections,
@@ -298,18 +371,22 @@ def evaluate_centered_pdb(
         semantic_fn=semantic_fn,
         coverage_thresholds=np.asarray(thresholds, dtype=np.float32),
         topk_values=np.asarray(topk_values, dtype=np.int32),
-        coverage_pred_hit_mask=coverage_pred_hit_mask,   # 如果pred_blob没被打分选中(selected=False), 那么在下面第2行不会计入得分
-        coverage_gt_hit_mask=coverage_gt_hit_mask, # 如果某个pred_blob没被打分选中(selected=False), 那么它无法hit gt
-        coverage_pred_hit=coverage_pred_hit_mask[:, selected_rows].sum(axis=1, dtype=np.int64),   # 如果pred_blob没被打分选中(selected=False), 那么不计入得分
+        coverage_pred_hit_mask=coverage_pred_hit_mask,
+        coverage_gt_hit_mask=coverage_gt_hit_mask,
+        coverage_pred_hit=coverage_pred_hit_mask[:, selected_rows].sum(
+            axis=1, dtype=np.int64
+        ),
         coverage_gt_hit=coverage_gt_hit_mask.sum(axis=1, dtype=np.int64),
         one_to_one_match_offsets=match_offsets,
         one_to_one_match_pred_index=(
             np.concatenate(match_pred_rows)
-            if match_pred_rows else np.empty(0, dtype=np.int32)
+            if match_pred_rows
+            else np.empty(0, dtype=np.int32)
         ),
         one_to_one_match_gt_index=(
             np.concatenate(match_gt_rows)
-            if match_gt_rows else np.empty(0, dtype=np.int32)
+            if match_gt_rows
+            else np.empty(0, dtype=np.int32)
         ),
         one_to_one_tp=one_to_one_tp,
         topk_success=topk_success,
@@ -373,7 +450,9 @@ def aggregate_stage1_metrics(
         semantic = np.zeros((0, 3), dtype=np.int64)
     # total_tp, total_fp, total_fn: 跨 PDB 汇总的语义体素计数.
     total_tp, total_fp, total_fn = semantic.sum(axis=0, dtype=np.int64).tolist()
-    semantic_precision = (total_tp / (total_tp + total_fp) if total_tp + total_fp else 0.0)
+    semantic_precision = (
+        total_tp / (total_tp + total_fp) if total_tp + total_fp else 0.0
+    )
     semantic_recall = total_tp / (total_tp + total_fn) if total_tp + total_fn else 0.0
     # report: 最终写入数据划分级 global_metrics.json 的标量字段映射.
     report: dict[str, object] = {
@@ -387,7 +466,8 @@ def aggregate_stage1_metrics(
         denominator = beta2 * semantic_precision + semantic_recall
         report[f"semantic_micro_f{int(beta)}"] = (
             (1.0 + beta2) * semantic_precision * semantic_recall / denominator
-            if denominator else 0.0
+            if denominator
+            else 0.0
         )
         # per_pdb: 长度 N_pdb 的语义 F-beta, 用于 PDB 等权 macro 平均.
         per_pdb = []
@@ -397,7 +477,9 @@ def aggregate_stage1_metrics(
                 numerator + beta2 * float(item.semantic_fn) + float(item.semantic_fp)
             )
             per_pdb.append(numerator / local_denominator if local_denominator else 0.0)
-        report[f"semantic_macro_f{int(beta)}"] = (float(np.mean(per_pdb)) if per_pdb else 0.0)
+        report[f"semantic_macro_f{int(beta)}"] = (
+            float(np.mean(per_pdb)) if per_pdb else 0.0
+        )
 
     # pred_total: 全部 PDB 的已选候选总数, 是预测侧 micro precision 的分母.
     pred_total = sum(int(item.candidate_selected.sum()) for item in evaluations)
@@ -406,17 +488,20 @@ def aggregate_stage1_metrics(
     # int64, (N_threshold,), 各阈值下达到多对多覆盖条件的已选候选总数.
     coverage_pred = (
         np.sum(np.stack([item.coverage_pred_hit for item in evaluations]), axis=0)
-        if evaluations else np.zeros(len(thresholds), dtype=np.int64)
+        if evaluations
+        else np.zeros(len(thresholds), dtype=np.int64)
     )
     # int64, (N_threshold,), 各阈值下被已选候选覆盖的真实 occurrence 总数.
     coverage_gt = (
         np.sum(np.stack([item.coverage_gt_hit for item in evaluations]), axis=0)
-        if evaluations else np.zeros(len(thresholds), dtype=np.int64)
+        if evaluations
+        else np.zeros(len(thresholds), dtype=np.int64)
     )
     # int64, (N_threshold,), 各阈值下最大一对一匹配的总数.
     one_to_one = (
         np.sum(np.stack([item.one_to_one_tp for item in evaluations]), axis=0)
-        if evaluations else np.zeros(len(thresholds), dtype=np.int64)
+        if evaluations
+        else np.zeros(len(thresholds), dtype=np.int64)
     )
 
     for row, threshold in enumerate(thresholds):
@@ -435,7 +520,8 @@ def aggregate_stage1_metrics(
                 denominator = beta2 * precision + recall
                 report[f"{name}_micro_f{int(beta)}_{tag}"] = (
                     (1.0 + beta2) * precision * recall / denominator
-                    if denominator else 0.0
+                    if denominator
+                    else 0.0
                 )
 
             # per_pdb_f1: 长度 N_pdb 的当前指标 F1, 用于 PDB 等权 macro 平均.
@@ -449,17 +535,26 @@ def aggregate_stage1_metrics(
                 else:
                     local_pred_hit = local_gt_hit = int(item.one_to_one_tp[row])
                 local_pred_count = int(item.candidate_selected.sum())
-                local_precision = (local_pred_hit / local_pred_count if local_pred_count else 0.0)
-                local_recall = (local_gt_hit / item.gt_sizes.size if item.gt_sizes.size else 0.0)
+                local_precision = (
+                    local_pred_hit / local_pred_count if local_pred_count else 0.0
+                )
+                local_recall = (
+                    local_gt_hit / item.gt_sizes.size if item.gt_sizes.size else 0.0
+                )
                 for beta, target in ((1.0, per_pdb_f1), (2.0, per_pdb_f2)):
                     beta2 = beta * beta
                     denominator = beta2 * local_precision + local_recall
                     target.append(
                         (1.0 + beta2) * local_precision * local_recall / denominator
-                        if denominator else 0.0
+                        if denominator
+                        else 0.0
                     )
-            report[f"{name}_macro_f1_{tag}"] = (float(np.mean(per_pdb_f1)) if per_pdb_f1 else 0.0)
-            report[f"{name}_macro_f2_{tag}"] = (float(np.mean(per_pdb_f2)) if per_pdb_f2 else 0.0)
+            report[f"{name}_macro_f1_{tag}"] = (
+                float(np.mean(per_pdb_f1)) if per_pdb_f1 else 0.0
+            )
+            report[f"{name}_macro_f2_{tag}"] = (
+                float(np.mean(per_pdb_f2)) if per_pdb_f2 else 0.0
+            )
 
     # 只有含真实 occurrence 的 PDB 进入 top-K 成功比例分母.
     eligible_pdb = sum(int(item.gt_sizes.size > 0) for item in evaluations)
@@ -467,11 +562,90 @@ def aggregate_stage1_metrics(
     for topk_row, topk in enumerate(topk_values):
         # int64, (N_threshold,), 当前 K 下至少命中一个 occurrence 的 PDB 数量.
         successes = (
-            np.sum(np.stack([item.topk_success[topk_row] for item in evaluations]), axis=0)
-            if evaluations else np.zeros(len(thresholds), dtype=np.int64)
+            np.sum(
+                np.stack([item.topk_success[topk_row] for item in evaluations]), axis=0
+            )
+            if evaluations
+            else np.zeros(len(thresholds), dtype=np.int64)
         )
         for threshold_row, threshold in enumerate(thresholds):
             tag = f"{threshold:.3f}".rstrip("0").rstrip(".").replace(".", "p")
-            report[f"top{int(topk)}_success_count_{tag}"] = int(successes[threshold_row])
-            report[f"top{int(topk)}_success_ratio_{tag}"] = (float(successes[threshold_row]) / eligible_pdb if eligible_pdb else 0.0)
+            report[f"top{int(topk)}_success_count_{tag}"] = int(
+                successes[threshold_row]
+            )
+            report[f"top{int(topk)}_success_ratio_{tag}"] = (
+                float(successes[threshold_row]) / eligible_pdb if eligible_pdb else 0.0
+            )
     return report
+
+
+def aggregate_semantic_prauc(
+    histograms: Sequence[np.ndarray],
+) -> dict[str, float]:
+    """从逐 PDB 体素直方图计算语义 micro 与 PDB 等权 macro PRAUC.
+
+    输入参数:
+        - histograms: Sequence[np.ndarray], 每项是 :func:`semantic_prauc_histogram` 返回的 int64 ``(2, 1024)`` 计数.
+
+    返回字段:
+        - semantic_micro_prauc: float, 先合并全部 PDB 体素计数, 再按 1024 阈值 ``BinaryAveragePrecision`` 公式计算的 AP.
+        - semantic_macro_prauc: float, 逐 PDB 计算同口径 AP 后的算术平均, 每个 PDB 权重相同.
+
+    对升序阈值 ``t_j`` 计算 ``precision_j`` 与 ``recall_j``, 再以
+    ``sum((recall_j - recall_{j+1}) * precision_j)`` 得到 AP, 其中
+    ``recall_1024 = 0``. precision 或 recall 分母为零时相应值记为 0;
+    空数据划分和没有正体素的单个 PDB 都返回 0.0.
+    """
+
+    if not histograms:
+        return {"semantic_micro_prauc": 0.0, "semantic_macro_prauc": 0.0}
+    # int64, (N_pdb, 2, 1024), 三轴依次是 PDB, 负/正体素和升序阈值概率档.
+    per_pdb_histogram = np.stack(histograms).astype(np.int64, copy=False)
+    # int64, (N_pdb + 1, 2, 1024), 第 0 项为 micro 总计数, 后续各项为单个 PDB; 末两轴仍是负/正体素与升序阈值概率档.
+    combined_histogram = np.concatenate(
+        (
+            per_pdb_histogram.sum(axis=0, dtype=np.int64)[None, ...],
+            per_pdb_histogram,
+        ),
+        axis=0,
+    )
+    # int64, (N_pdb + 1, 1024), 每个阈值下概率大于等于该阈值的真阳性体素数.
+    true_positive = np.cumsum(
+        combined_histogram[:, 1, ::-1],
+        axis=1,
+        dtype=np.int64,
+    )[:, ::-1]
+    # int64, (N_pdb + 1, 1024), 每个阈值下概率大于等于该阈值的假阳性体素数.
+    false_positive = np.cumsum(
+        combined_histogram[:, 0, ::-1],
+        axis=1,
+        dtype=np.int64,
+    )[:, ::-1]
+    # float64, (N_pdb + 1, 1024), 按阈值升序排列的 precision.
+    precision = np.divide(
+        true_positive,
+        true_positive + false_positive,
+        out=np.zeros(true_positive.shape, dtype=np.float64),
+        where=(true_positive + false_positive) > 0,
+    )
+    # int64, (N_pdb + 1, 1), micro 总体与每个 PDB 的正体素数.
+    positive_count = combined_histogram[:, 1].sum(
+        axis=1,
+        dtype=np.int64,
+    )[:, None]
+    # float64, (N_pdb + 1, 1024), 按阈值升序排列的 recall.
+    recall = np.divide(
+        true_positive,
+        positive_count,
+        out=np.zeros(true_positive.shape, dtype=np.float64),
+        where=positive_count > 0,
+    )
+    # float64, (N_pdb + 1, 1024), 相邻阈值之间的 recall 下降量, 末项与 TorchMetrics 追加的 recall=0 端点对齐.
+    recall_drop = recall.copy()
+    recall_drop[:, :-1] -= recall[:, 1:]
+    # float64, (N_pdb + 1,), 第 0 项是 micro AP, 后续各项是逐 PDB AP.
+    prauc = np.sum(recall_drop * precision, axis=1, dtype=np.float64)
+    return {
+        "semantic_micro_prauc": float(prauc[0]),
+        "semantic_macro_prauc": float(np.mean(prauc[1:])),
+    }
