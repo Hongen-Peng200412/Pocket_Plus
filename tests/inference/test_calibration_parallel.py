@@ -72,6 +72,67 @@ def _build_parallel_tuning_case() -> tuple[
     return (("first", first), ("second", second)), ground_truth
 
 
+def _build_imbalanced_macro_tuning_case() -> tuple[
+    tuple[tuple[str, dict[str, np.ndarray]], ...],
+    dict[str, tuple[np.ndarray, tuple[np.ndarray, ...], tuple[int, int, int]]],
+]:
+    """构造一个大 PDB 与一个小 PDB 对最佳 basic 阈值意见相反的事实.
+
+    large 的高分候选命中 100 个真实体素, 低分候选增加 900 个假阳性体素;
+    small 只有一个低分真阳性候选. 返回的候选同时含空 A 表, 因此 basic 与
+    Gaussian 可以在完全相同的候选分数上比较 macro 目标.
+    """
+
+    # int16, (100, 3), large 高分候选与唯一真实 occurrence 完全重合的 ZYX 体素.
+    large_true = np.asarray(
+        [[0, 0, index] for index in range(100)],
+        dtype=np.int16,
+    )
+    # int16, (900, 3), large 低分候选中全部位于真实 occurrence 外的 ZYX 体素.
+    large_false = np.asarray(
+        [[0, 0, index] for index in range(100, 1000)],
+        dtype=np.int16,
+    )
+    # large 含一个 0.9 真阳性候选和一个 0.8 假阳性候选.
+    large = {
+        "source_blob_index": np.asarray([0, 1], dtype=np.int32),
+        "source_probability_mean": np.asarray([0.9, 0.8], dtype=np.float32),
+        "voxel_offsets": np.asarray([0, 100, 1000], dtype=np.int64),
+        "voxel_index_local_zyx": np.concatenate((large_true, large_false)),
+        "box_start_zyx": np.zeros((2, 3), dtype=np.int32),
+        "voxel_size_world": np.ones((2, 3), dtype=np.float32),
+        "A_offsets": np.zeros(3, dtype=np.int64),
+        "A_coord_local_xyz": np.empty((0, 3), dtype=np.float32),
+        "A_probability": np.empty(0, dtype=np.float32),
+    }
+    # small 含一个 0.8 真阳性候选, 对低阈值方案投出与 large 等权的一票.
+    small = {
+        "source_blob_index": np.asarray([0], dtype=np.int32),
+        "source_probability_mean": np.asarray([0.8], dtype=np.float32),
+        "voxel_offsets": np.asarray([0, 1], dtype=np.int64),
+        "voxel_index_local_zyx": np.asarray([[0, 0, 0]], dtype=np.int16),
+        "box_start_zyx": np.zeros((1, 3), dtype=np.int32),
+        "voxel_size_world": np.ones((1, 3), dtype=np.float32),
+        "A_offsets": np.zeros(2, dtype=np.int64),
+        "A_coord_local_xyz": np.empty((0, 3), dtype=np.float32),
+        "A_probability": np.empty(0, dtype=np.float32),
+    }
+    # ground_truth 为两个 PDB 各保存一个 ligand occurrence, 但体素规模相差 100 倍.
+    ground_truth = {
+        "large": (
+            np.asarray([1], dtype=np.int32),
+            (large_true.astype(np.int32),),
+            (1, 1, 1000),
+        ),
+        "small": (
+            np.asarray([1], dtype=np.int32),
+            (np.asarray([[0, 0, 0]], dtype=np.int32),),
+            (1, 1, 1),
+        ),
+    }
+    return (("large", large), ("small", small)), ground_truth
+
+
 def test_basic_parallel_result_is_exact_and_uses_multiple_workers(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -107,7 +168,9 @@ def test_basic_parallel_result_is_exact_and_uses_multiple_workers(
             first_two_tasks.wait(timeout=5.0)
         return original_objective(*args, **kwargs)
 
-    monkeypatch.setattr(calibration_module, "_selection_objective", synchronized_objective)
+    monkeypatch.setattr(
+        calibration_module, "_selection_objective", synchronized_objective
+    )
     parallel = tune_centered_selection(**arguments, workers=4)
 
     assert parallel == serial
@@ -115,7 +178,7 @@ def test_basic_parallel_result_is_exact_and_uses_multiple_workers(
 
 
 def test_gaussian_parallel_result_is_exact() -> None:
-    """Gaussian 粗搜、细搜和最终体素门槛的并发结果必须逐字段等于串行结果."""
+    """Gaussian 粗搜, 细搜和最终体素门槛的并发结果必须逐字段等于串行结果."""
     centered_items, ground_truth = _build_parallel_tuning_case()
     arguments = {
         "centered_items": centered_items,
@@ -142,6 +205,129 @@ def test_gaussian_parallel_result_is_exact() -> None:
     parallel = tune_centered_selection(**arguments, workers=4)
 
     assert parallel == serial
+
+
+def test_basic_and_gaussian_searches_use_same_macro_objective() -> None:
+    """basic 与 Gaussian 的全部阶段必须选择同一 PDB 等权 macro 三项目标."""
+
+    centered_items, ground_truth = _build_imbalanced_macro_tuning_case()
+    common = {
+        "centered_items": centered_items,
+        "ground_truth_by_pdb": ground_truth,
+        "prefiltered_min_voxel": 1,
+        "min_voxel_values": [1],
+        "objective_beta": 1.0,
+        "coverage_thresholds": [0.3, 0.5, 0.6],
+        "topk_values": [3, 4, 5],
+        "workers": 1,
+    }
+    # large 的三项 F1 为 2/11, 2/3, 2/3; small 的三项 F1 均为 1.
+    expected_objective = ((2.0 / 11.0) + (2.0 / 3.0) * 2.0 + 3.0) / 2.0
+    basic = tune_centered_selection(
+        **common,
+        score_mode="basic",
+        score_parameter_grid=None,
+        refinement_multipliers=None,
+    )
+    gaussian = tune_centered_selection(
+        **common,
+        score_mode="gaussian",
+        score_parameter_grid={
+            "tau_angstrom": [1.0],
+            "lambda_positive": [0.0],
+            "lambda_negative": [0.0],
+            "gauss_score_min": [0.9, 0.8],
+        },
+        refinement_multipliers={
+            "lambda": [1.0],
+            "score_threshold": [1.0],
+        },
+    )
+
+    assert basic["score_threshold"] == pytest.approx(0.8)
+    assert basic["stages"]["score_threshold"]["objective"] == pytest.approx(
+        expected_objective
+    )
+    assert basic["stages"]["min_voxels"]["objective"] == pytest.approx(
+        expected_objective
+    )
+    assert gaussian["score_threshold"] == pytest.approx(0.8)
+    for stage in ("coarse", "refined", "min_voxels"):
+        assert gaussian["stages"][stage]["objective"] == pytest.approx(
+            expected_objective
+        )
+
+
+def test_basic_exact_objective_tie_keeps_higher_score_threshold() -> None:
+    """数学上严格并列的 macro 目标必须保留先遇到的高分阈值."""
+
+    # int16, (7, 3), first 的真实 ligand occurrence 体素.
+    first_ground_truth = np.asarray(
+        [[0, 0, index] for index in range(7)],
+        dtype=np.int16,
+    )
+    # first 的高分候选含 7 TP 和 28 FP, 低分候选再增加 42 FP.
+    first = {
+        "source_blob_index": np.asarray([0, 1], dtype=np.int32),
+        "source_probability_mean": np.asarray([0.9, 0.8], dtype=np.float32),
+        "voxel_offsets": np.asarray([0, 35, 77], dtype=np.int64),
+        "voxel_index_local_zyx": np.asarray(
+            [[0, 0, index] for index in range(77)],
+            dtype=np.int16,
+        ),
+        "box_start_zyx": np.zeros((2, 3), dtype=np.int32),
+    }
+    # int16, (17, 3), second 的真实 ligand occurrence 体素.
+    second_ground_truth = np.asarray(
+        [[0, 0, index] for index in range(17)],
+        dtype=np.int16,
+    )
+    # second 的高分候选含 3 TP 和 34 FP, 低分候选再增加 12 TP 和 42 FP.
+    second_high = np.asarray(
+        [[0, 0, index] for index in range(3)]
+        + [[0, 0, index] for index in range(17, 51)],
+        dtype=np.int16,
+    )
+    second_low = np.asarray(
+        [[0, 0, index] for index in range(3, 15)]
+        + [[0, 0, index] for index in range(51, 93)],
+        dtype=np.int16,
+    )
+    second = {
+        "source_blob_index": np.asarray([0, 1], dtype=np.int32),
+        "source_probability_mean": np.asarray([0.9, 0.8], dtype=np.float32),
+        "voxel_offsets": np.asarray([0, 37, 91], dtype=np.int64),
+        "voxel_index_local_zyx": np.concatenate((second_high, second_low)),
+        "box_start_zyx": np.zeros((2, 3), dtype=np.int32),
+    }
+    # result 应保留先扫描到的 0.9, 两个阈值的精确 macro 目标均为 2/9.
+    result = tune_centered_selection(
+        centered_items=(("first", first), ("second", second)),
+        ground_truth_by_pdb={
+            "first": (
+                np.asarray([1], dtype=np.int32),
+                (first_ground_truth.astype(np.int32),),
+                (1, 1, 100),
+            ),
+            "second": (
+                np.asarray([1], dtype=np.int32),
+                (second_ground_truth.astype(np.int32),),
+                (1, 1, 100),
+            ),
+        },
+        score_mode="basic",
+        score_parameter_grid=None,
+        refinement_multipliers=None,
+        prefiltered_min_voxel=1,
+        min_voxel_values=[1],
+        objective_beta=1.0,
+        coverage_thresholds=[0.3, 0.5, 0.6],
+        topk_values=[3, 4, 5],
+        workers=1,
+    )
+
+    assert result["score_threshold"] == pytest.approx(0.9)
+    assert result["stages"]["score_threshold"]["objective"] == pytest.approx(2.0 / 9.0)
 
 
 def test_run_tune_stage_parallel_loads_both_modes_and_publishes_json(
@@ -196,7 +382,9 @@ def test_run_tune_stage_parallel_loads_both_modes_and_publishes_json(
             basic_paths.artifact("F1_blobs"),
             {
                 "blob_index": np.asarray([index], dtype=np.int32),
-                "source_probability_mean": np.asarray([0.8 - 0.2 * index], dtype=np.float32),
+                "source_probability_mean": np.asarray(
+                    [0.8 - 0.2 * index], dtype=np.float32
+                ),
                 "voxel_offsets": np.asarray([0, 2], dtype=np.int64),
                 "voxel_index_global_zyx": voxel_rows[pdb_id],
             },
@@ -212,12 +400,15 @@ def test_run_tune_stage_parallel_loads_both_modes_and_publishes_json(
             gaussian_paths.artifact("F2_centered"),
             {
                 "source_blob_index": np.asarray([index], dtype=np.int32),
-                "source_probability_mean": np.asarray([0.8 - 0.2 * index], dtype=np.float32),
+                "source_probability_mean": np.asarray(
+                    [0.8 - 0.2 * index], dtype=np.float32
+                ),
                 "voxel_offsets": np.asarray([0, 2], dtype=np.int64),
                 "voxel_index_local_zyx": voxel_rows[pdb_id].astype(np.int16),
                 "box_start_zyx": np.zeros((1, 3), dtype=np.int32),
                 "A_offsets": np.asarray([0, 1], dtype=np.int64),
-                "A_coord_local_xyz": voxel_rows[pdb_id][:1, ::-1].astype(np.float32) + 0.5,
+                "A_coord_local_xyz": voxel_rows[pdb_id][:1, ::-1].astype(np.float32)
+                + 0.5,
                 "A_probability": np.asarray([0.75], dtype=np.float32),
                 "voxel_size_world": np.ones((1, 3), dtype=np.float32),
             },
@@ -311,10 +502,12 @@ def test_run_tune_stage_parallel_loads_both_modes_and_publishes_json(
     assert observed_calls[1]["pdb_ids"] == pdb_ids
     assert observed_calls[1]["workers"] == 2
     assert "A_offsets" in observed_calls[1]["first_fields"]
-    basic_json = output_root / "unet_c1" / "calibration" / "F1_basic.json"
-    gaussian_json = output_root / "Find_0" / "calibration" / "F2_gaussian.json"
+    basic_json = output_root / "unet_c1" / "tuning" / "F1_basic.json"
+    gaussian_json = output_root / "Find_0" / "tuning" / "F2_gaussian.json"
     assert json.loads(basic_json.read_text(encoding="utf-8")) == basic
     assert json.loads(gaussian_json.read_text(encoding="utf-8")) == gaussian
+    assert not (output_root / "unet_c1" / "calibration" / "F1_basic.json").exists()
+    assert not (output_root / "Find_0" / "calibration" / "F2_gaussian.json").exists()
 
 
 def test_gaussian_out_of_order_completion_keeps_first_tied_configuration(
@@ -362,7 +555,9 @@ def test_gaussian_out_of_order_completion_keeps_first_tied_configuration(
     search_call_count = 0
     state_lock = threading.Lock()
 
-    def synchronized_atom_terms(*args: object, **kwargs: object) -> tuple[np.ndarray, np.ndarray]:
+    def synchronized_atom_terms(
+        *args: object, **kwargs: object
+    ) -> tuple[np.ndarray, np.ndarray]:
         nonlocal atom_call_count
         with state_lock:
             current_call = atom_call_count
@@ -437,8 +632,12 @@ def test_gaussian_out_of_order_completion_keeps_first_tied_configuration(
             release_first_configuration[stage].set()
         return objective
 
-    monkeypatch.setattr(calibration_module, "sum_gaussian_atom_terms", synchronized_atom_terms)
-    monkeypatch.setattr(calibration_module, "_gaussian_selection_objective", delayed_gaussian_objective)
+    monkeypatch.setattr(
+        calibration_module, "sum_gaussian_atom_terms", synchronized_atom_terms
+    )
+    monkeypatch.setattr(
+        calibration_module, "_gaussian_selection_objective", delayed_gaussian_objective
+    )
     parallel = tune_centered_selection(**arguments, workers=4)
 
     assert parallel == serial

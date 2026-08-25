@@ -14,6 +14,7 @@ import numpy as np
 from omegaconf import OmegaConf
 import pytest
 import torch
+from torchmetrics.classification import BinaryAveragePrecision
 
 import src.inference.cli as cli_module
 from src.inference.blobs import extract_probability_blobs
@@ -29,8 +30,10 @@ from src.inference.calibration import (
 )
 from src.inference.centered import infer_centered_boxes, pack_centered_entries
 from src.inference.evaluation import (
+    aggregate_semantic_prauc,
     aggregate_stage1_metrics,
     evaluate_centered_pdb,
+    semantic_prauc_histogram,
 )
 from src.inference.full_map import (
     FullMapResult,
@@ -39,9 +42,11 @@ from src.inference.full_map import (
 )
 from src.inference.pipeline import (
     CENTERED_BLOB_LIMIT,
+    run_blobs_stage,
     run_centered_stage,
     run_evaluate_stage,
     run_probability_stage,
+    run_tune_stage,
 )
 from src.inference.scoring import (
     score_centered_candidates,
@@ -69,9 +74,9 @@ def test_inference_shell_pins_nested_numeric_threads_to_one() -> None:
     """外层推理与调参并发启用时, shell 必须覆盖继承环境并把数值库线程固定为 1."""
 
     project_root = Path(__file__).resolve().parents[2]
-    shell_text = (project_root / "训练与运行" / "sh" / "infer" / "stage1_v3.sh").read_text(
-        encoding="utf-8"
-    )
+    shell_text = (
+        project_root / "训练与运行" / "sh" / "infer" / "stage1_v3.sh"
+    ).read_text(encoding="utf-8")
     for variable_name in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS"):
         assert f"export {variable_name}=1" in shell_text
         assert f"{variable_name}:-1" not in shell_text
@@ -192,7 +197,7 @@ def test_centered_cpu_arranger_accepts_bfloat16_output(tmp_path: Path) -> None:
             return {"hardmask": hardmask}
 
     class Wrapper:
-        """返回 BF16 ligand、auxiliary logits 与 voxel_final 的最小 wrapper."""
+        """返回 BF16 ligand, auxiliary logits 与 voxel_final 的最小 wrapper."""
 
         def __call__(self, batch):
             """按输入 batch 大小构造共同 centered 字段所需的 BF16 模型输出."""
@@ -325,7 +330,7 @@ def test_find_centered_keeps_atom_at_ten_angstrom_boundary(tmp_path: Path) -> No
         """返回位于来源体素中心 10 Å 处的单个 Find A 原子."""
 
         def __call__(self, batch):
-            """构造一个候选所需的体素、A 原子与空 P 点输出."""
+            """构造一个候选所需的体素, A 原子与空 P 点输出."""
 
             batch_size = int(batch["hardmask"].shape[0])
             box_shape = (batch_size, 1, 80, 80, 80)
@@ -433,22 +438,221 @@ def test_find_gaussian_score_reuses_calibration_numeric_terms_exactly() -> None:
     np.testing.assert_array_equal(actual, expected)
 
 
-def test_semantic_and_instance_metrics_follow_micro_contract() -> None:
-    """阈值扫描,coverage 和 Hungarian 均使用固定的全局计数定义."""
+def test_semantic_threshold_uses_pdb_equal_macro_curve() -> None:
+    """PDB 等权语义目标不能被大体积 PDB 的 micro 计数主导."""
 
+    # float32 与 bool, (1, 1, 1000), large 完整图的 ZYX 概率与逐体素语义真值.
+    large_probability = np.concatenate(
+        (
+            np.full(100, 0.8, dtype=np.float32),
+            np.full(900, 0.2, dtype=np.float32),
+        )
+    ).reshape(1, 1, 1000)
+    large_target = np.concatenate(
+        (
+            np.ones(100, dtype=np.bool_),
+            np.zeros(900, dtype=np.bool_),
+        )
+    ).reshape(1, 1, 1000)
+    # float32 与 bool, (1, 1, 1), small 完整图的 ZYX 概率与逐体素语义真值.
+    small_probability = np.asarray([[[0.2]]], dtype=np.float32)
+    small_target = np.asarray([[[True]]], dtype=np.bool_)
     semantic = calibrate_semantic_thresholds(
         [
-            (
-                np.asarray([0.9, 0.8, 0.2, 0.1], dtype=np.float32),
-                np.asarray([True, True, False, False]),
-            )
+            (large_probability, large_target),
+            (small_probability, small_target),
         ],
         denominator=10,
-        alpha=2.0,
+        alpha=1.0,
     )
-    assert semantic["threshold_grid_index"] == 3
+    assert semantic["pdb_count"] == 2
+    assert semantic["threshold_grid_index"] == 0
     assert semantic["scan"]["tp"].shape == (11,)
-    assert semantic["scan"]["f_beta_curve"].shape == (11,)
+    assert semantic["scan"]["macro_f_beta_curve"].shape == (11,)
+    assert "f_beta_curve" not in semantic["scan"]
+    assert "micro_f_beta" not in semantic
+    assert semantic["macro_f_beta"] == pytest.approx((2.0 / 11.0 + 1.0) / 2.0)
+
+    # 同一汇总计数若按旧 micro 口径选择, 最优网格会落在 0.3 而不是 0.0.
+    tp = semantic["scan"]["tp"].astype(np.float64)
+    fp = semantic["scan"]["fp"].astype(np.float64)
+    fn = semantic["scan"]["fn"].astype(np.float64)
+    micro_curve = np.divide(
+        2.0 * tp,
+        2.0 * tp + fp + fn,
+        out=np.zeros_like(tp),
+        where=(2.0 * tp + fp + fn) > 0,
+    )
+    assert int(np.argmax(micro_curve)) == 3
+
+
+def test_semantic_tuning_files_are_separate_from_pdb_split(
+    tmp_path: Path,
+) -> None:
+    """生产者级语义文件必须进入 tuning, calibration 只保留逐 PDB 目录."""
+
+    paths = Stage1ArtifactPaths(tmp_path, "unet_c1", "calibration", "demo")
+    publish_stage1_artifact(
+        paths.artifact("probability"),
+        {"probability_map": np.asarray([[[0.8, 0.2]]], dtype=np.float32)},
+        paths.complete("probability"),
+    )
+    density_root = tmp_path / "data" / "density" / "demo"
+    density_root.mkdir(parents=True)
+    np.save(
+        density_root / "union_mask.npy",
+        np.asarray([[[[True, False]]]], dtype=np.bool_),
+    )
+    result = run_blobs_stage(
+        config=OmegaConf.create(
+            {
+                "blob_workers": 1,
+                "calibration": {"semantic_denominator": 10},
+            }
+        ),
+        data_root=tmp_path / "data",
+        producer="unet_c1",
+        split="calibration",
+        pdb_ids=("demo",),
+        output_root=tmp_path,
+        alpha=1.0,
+        semantic_threshold=None,
+        fit_semantic=True,
+        overwrite=False,
+    )
+
+    assert result is not None
+    tuning_root = tmp_path / "unet_c1" / "tuning"
+    assert (tuning_root / "F1_semantic.json").is_file()
+    assert (tuning_root / "F1_semantic_scan.npz").is_file()
+    assert {entry.name for entry in paths.pdb_root.parent.iterdir()} == {"demo"}
+
+
+def test_evaluate_reports_distinct_micro_and_macro_metrics() -> None:
+    """评估必须同时发布三类指标的 micro 与 PDB 等权 macro 结果."""
+
+    # int16, (10, 3), large 的十个单体素候选分别命中十个真实 occurrence.
+    large_coordinates = np.asarray(
+        [[0, 0, index] for index in range(10)],
+        dtype=np.int16,
+    )
+    # large 的三类 F1 均为 1, 并在 micro 计数中贡献十个命中.
+    large = evaluate_centered_pdb(
+        pdb_id="large",
+        centered={
+            "selected": np.ones(10, dtype=np.bool_),
+            "score": np.linspace(1.0, 0.1, 10, dtype=np.float32),
+            "source_blob_index": np.arange(10, dtype=np.int32),
+            "voxel_offsets": np.arange(11, dtype=np.int64),
+            "voxel_index_local_zyx": large_coordinates,
+            "box_start_zyx": np.zeros((10, 3), dtype=np.int32),
+        },
+        occurrence_id=np.arange(10, dtype=np.int32),
+        occurrence_voxel_zyx=tuple(
+            large_coordinates[index : index + 1].astype(np.int32) for index in range(10)
+        ),
+        full_shape_zyx=(1, 1, 10),
+        coverage_thresholds=(0.3, 0.5, 0.6),
+        topk_values=(3, 4, 5),
+    )
+    # small 的单个候选与单个 occurrence 不相交, 因而三类 F1 均为 0.
+    small = evaluate_centered_pdb(
+        pdb_id="small",
+        centered={
+            "selected": np.asarray([True]),
+            "score": np.asarray([1.0], dtype=np.float32),
+            "source_blob_index": np.asarray([0], dtype=np.int32),
+            "voxel_offsets": np.asarray([0, 1], dtype=np.int64),
+            "voxel_index_local_zyx": np.asarray([[0, 0, 0]], dtype=np.int16),
+            "box_start_zyx": np.zeros((1, 3), dtype=np.int32),
+        },
+        occurrence_id=np.asarray([0], dtype=np.int32),
+        occurrence_voxel_zyx=(np.asarray([[0, 0, 1]], dtype=np.int32),),
+        full_shape_zyx=(1, 1, 2),
+        coverage_thresholds=(0.3, 0.5, 0.6),
+        topk_values=(3, 4, 5),
+    )
+    # 两个 PDB 等权 macro 为 0.5, 而按 11 个预测候选与 11 个真实 occurrence 汇总的 micro 为 10/11.
+    metrics = aggregate_stage1_metrics(
+        (large, small),
+        coverage_thresholds=(0.3, 0.5, 0.6),
+        topk_values=(3, 4, 5),
+    )
+    assert metrics["semantic_micro_f1"] == pytest.approx(10.0 / 11.0)
+    assert metrics["semantic_macro_f1"] == pytest.approx(0.5)
+    assert metrics["coverage_micro_f1_0p3"] == pytest.approx(10.0 / 11.0)
+    assert metrics["coverage_macro_f1_0p3"] == pytest.approx(0.5)
+    assert metrics["one_to_one_micro_f1_0p3"] == pytest.approx(10.0 / 11.0)
+    assert metrics["one_to_one_macro_f1_0p3"] == pytest.approx(0.5)
+
+
+def test_semantic_prauc_keeps_voxel_micro_and_pdb_equal_macro_distinct() -> None:
+    """语义 PRAUC 的 macro 必须让不同体素规模的 PDB 等权.
+
+    large 含 100 个正体素和 100 个负体素, 排序完全正确.
+    small 只含一对正负体素, 但排序完全相反. macro 因此是
+    ``(1.0 + 0.5) / 2``, micro 则仍由 large 的 200 个体素主导.
+    """
+
+    # float32, (1, 1, 200), large 的正体素概率为 1, 负体素概率为 0.
+    large_probability = np.concatenate(
+        (
+            np.ones(100, dtype=np.float32),
+            np.zeros(100, dtype=np.float32),
+        )
+    ).reshape(1, 1, 200)
+    # bool, (1, 1, 200), large 的前 100 个体素是 ligand 并集.
+    large_target = np.concatenate(
+        (
+            np.ones(100, dtype=np.bool_),
+            np.zeros(100, dtype=np.bool_),
+        )
+    ).reshape(1, 1, 200)
+    # float32 与 bool, (1, 1, 2), small 的负体素概率高于正体素.
+    small_probability = np.asarray([[[0.0, 1.0]]], dtype=np.float32)
+    small_target = np.asarray([[[True, False]]], dtype=np.bool_)
+    # 长度 2 的元组; 每项是一个 PDB 的 int64 (2, 1024) 正负体素计数.
+    histograms = (
+        semantic_prauc_histogram(large_probability, large_target),
+        semantic_prauc_histogram(small_probability, small_target),
+    )
+
+    metrics = aggregate_semantic_prauc(histograms)
+
+    assert metrics["semantic_macro_prauc"] == pytest.approx(0.75)
+    assert metrics["semantic_micro_prauc"] == pytest.approx(
+        0.5 / 101.0 + (100.0 / 101.0) ** 2
+    )
+
+
+def test_semantic_prauc_uses_training_float32_threshold_axis() -> None:
+    """PRAUC 分箱必须复现训练指标在相邻 float32 上的端点语义."""
+
+    # float32 标量, 下标 17 的内部训练阈值及其朝负无穷方向的相邻浮点数.
+    training_threshold = torch.linspace(0.0, 1.0, 1024, dtype=torch.float32)[17]
+    lower_probability = np.nextafter(
+        np.float32(training_threshold.item()),
+        np.float32(-np.inf),
+    )
+    # float32 与 bool, (1, 1, 2), 正体素恰好达到训练阈值, 负体素低 1 ULP.
+    probability = np.asarray(
+        [[[lower_probability, training_threshold.item()]]],
+        dtype=np.float32,
+    )
+    target = np.asarray([[[False, True]]], dtype=np.bool_)
+    metrics = aggregate_semantic_prauc((semantic_prauc_histogram(probability, target),))
+    expected = BinaryAveragePrecision(thresholds=1024)(
+        torch.from_numpy(probability.reshape(-1)),
+        torch.from_numpy(target.reshape(-1)),
+    )
+
+    assert metrics["semantic_micro_prauc"] == float(expected)
+    assert metrics["semantic_macro_prauc"] == float(expected)
+    assert float(expected) == 1.0
+
+
+def test_single_pdb_instance_metrics_keep_existing_contract() -> None:
+    """单 PDB 的 coverage, Hungarian 与 top-K 事实保持原有定义."""
 
     centered = {
         "selected": np.asarray([True, True]),
@@ -644,6 +848,7 @@ def test_centered_selection_is_written_before_first_formal_completion(
         },
         overwrite=True,
         score_only=False,
+        continue_on_blob_exceed=False,
     )
     arrays = load_stage1_npz(paths.artifact("F2_centered"), None)
     assert captured["forward_min_voxels"] == 9
@@ -881,6 +1086,61 @@ def test_cli_passes_explicit_all_candidate_evaluation_name(
     assert captured["arguments"][9] is None
 
 
+def test_cli_passes_blob_exceed_advisory_flag(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """centered 的显式提示模式开关必须原样传给正式阶段."""
+
+    config = tmp_path / "inference.yaml"
+    config.write_text("device: cpu\nalpha: 2.0\n", encoding="utf-8")
+    pdb_json = tmp_path / "pdb.json"
+    pdb_json.write_text('["demo"]\n', encoding="utf-8")
+    selection = tmp_path / "selection.json"
+    selection.write_text(
+        json.dumps(
+            {
+                "score_mode": "basic",
+                "score_parameters": {},
+                "score_threshold": 0.5,
+                "prefiltered_min_voxel": 1,
+                "min_voxels": 1,
+            }
+        ),
+        encoding="utf-8",
+    )
+    captured: dict[str, tuple[object, ...]] = {}
+    monkeypatch.setattr(
+        cli_module,
+        "run_centered_stage",
+        lambda *arguments: captured.update(arguments=arguments),
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "stage1",
+            "centered",
+            "--config",
+            str(config),
+            "--producer",
+            "unet_c1",
+            "--pdb-json",
+            str(pdb_json),
+            "--split",
+            "validation",
+            "--output-root",
+            str(tmp_path / "output"),
+            "--selection-parameters",
+            str(selection),
+            "--score-only",
+            "--continue-on-blob-exceed",
+        ],
+    )
+    cli_module.main()
+    assert captured["arguments"][-1] is True
+
+
 def test_f_alpha_tag_uses_readable_decimal_path_names() -> None:
     """整数不保留小数点, 小数点改成 p, 相邻 Python float 不得碰撞."""
 
@@ -895,7 +1155,7 @@ def test_evaluate_keeps_raw_and_filtered_results_side_by_side(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    """全候选评估不得二次打分, 显式名称必须允许过滤结果并存."""
+    """全候选与过滤结果必须并存, 完整图 PRAUC 不随候选选择改变."""
 
     paths = Stage1ArtifactPaths(tmp_path, "unet_c1", "validation", "demo")
     publish_stage1_artifact(
@@ -910,6 +1170,19 @@ def test_evaluate_keeps_raw_and_filtered_results_side_by_side(
         },
         None,
     )
+    publish_stage1_artifact(
+        paths.artifact("probability"),
+        {
+            "probability_map": np.asarray(
+                [
+                    [[0.9, 0.1], [0.1, 0.1]],
+                    [[0.1, 0.1], [0.1, 0.4]],
+                ],
+                dtype=np.float32,
+            )
+        },
+        paths.complete("probability"),
+    )
     ligand_area = tmp_path / "density" / "demo" / "ligand_area.npz"
     ligand_area.parent.mkdir(parents=True)
     np.savez_compressed(
@@ -917,6 +1190,10 @@ def test_evaluate_keeps_raw_and_filtered_results_side_by_side(
         grid_shape_zyx=np.asarray([2, 2, 2], dtype=np.int32),
         mask_7=np.asarray([[0, 0, 0]], dtype=np.int32),
     )
+    # bool, (1, 2, 2, 2), 首轴是数据文件保留的通道轴, 后三轴是完整图 ZYX.
+    union_mask = np.zeros((1, 2, 2, 2), dtype=np.bool_)
+    union_mask[0, 0, 0, 0] = True
+    np.save(ligand_area.parent / "union_mask.npy", union_mask)
     config = OmegaConf.create(
         {"evaluation": {"coverage_thresholds": [0.5], "topk_values": [1]}}
     )
@@ -930,7 +1207,8 @@ def test_evaluate_keeps_raw_and_filtered_results_side_by_side(
     monkeypatch.setattr(
         "src.inference.pipeline.score_centered_candidates", reject_scoring
     )
-    run_evaluate_stage(
+    # raw_metrics 保存同一完整图下全部 blobs 的候选指标与 PRAUC.
+    raw_metrics = run_evaluate_stage(
         config,
         tmp_path,
         "unet_c1",
@@ -942,10 +1220,9 @@ def test_evaluate_keeps_raw_and_filtered_results_side_by_side(
         "raw_blobs",
         None,
     )
-    monkeypatch.setattr(
-        "src.inference.pipeline.score_centered_candidates", real_scorer
-    )
-    run_evaluate_stage(
+    monkeypatch.setattr("src.inference.pipeline.score_centered_candidates", real_scorer)
+    # filtered_metrics 使用严格候选选择, 但完整图 PRAUC 应与 raw_metrics 相同.
+    filtered_metrics = run_evaluate_stage(
         config,
         tmp_path,
         "unet_c1",
@@ -964,33 +1241,31 @@ def test_evaluate_keeps_raw_and_filtered_results_side_by_side(
         },
     )
 
-    raw = load_stage1_npz(
-        paths.pdb_root / "evaluation" / "raw_blobs.npz", None
-    )
-    filtered = load_stage1_npz(
-        paths.pdb_root / "evaluation" / "basic_strict.npz", None
-    )
+    raw = load_stage1_npz(paths.pdb_root / "evaluation" / "raw_blobs.npz", None)
+    filtered = load_stage1_npz(paths.pdb_root / "evaluation" / "basic_strict.npz", None)
     assert raw["candidate_selected"].tolist() == [True, True]
     assert filtered["candidate_selected"].tolist() == [True, False]
+    assert raw_metrics["semantic_micro_prauc"] == 1.0
+    assert raw_metrics["semantic_macro_prauc"] == 1.0
+    assert filtered_metrics["semantic_micro_prauc"] == 1.0
+    assert filtered_metrics["semantic_macro_prauc"] == 1.0
     evaluation_root = tmp_path / "unet_c1" / "validation" / "evaluation"
     assert (evaluation_root / "raw_blobs.metrics.json").is_file()
     assert (evaluation_root / "basic_strict.metrics.json").is_file()
 
 
-@pytest.mark.parametrize(
-    ("source_blob_count", "expect_exceed"),
-    ((CENTERED_BLOB_LIMIT, False), (CENTERED_BLOB_LIMIT + 1, True)),
-)
-def test_centered_blob_limit_uses_strict_greater_than(
+def _run_empty_blob_limit_case(
     tmp_path: Path,
     source_blob_count: int,
-    expect_exceed: bool,
-) -> None:
-    """1000 个来源 blob 仍完成空候选归档, 1001 个只写 `_BLOB_EXCEED`."""
+    continue_on_blob_exceed: bool,
+) -> tuple[Stage1ArtifactPaths, object, Path]:
+    """建立空候选输入并执行一次 Find centered 超量边界案例."""
 
-    paths = Stage1ArtifactPaths(tmp_path, "unet_base", "train", "demo")
+    # paths 指向本案例唯一 PDB 的 probability, blobs, centered 和状态目录.
+    paths = Stage1ArtifactPaths(tmp_path, "Find_0", "train", "demo")
     density_root = tmp_path / "density" / "demo"
     density_root.mkdir(parents=True)
+    # float32, (1, 80, 80, 80), 空密度只为零候选 centered 物化提供正式输入文件.
     density = np.zeros((1, 80, 80, 80), dtype=np.float32)
     np.save(density_root / "exp.npy", density)
     np.save(density_root / "sim.npy", density)
@@ -1031,6 +1306,24 @@ def test_centered_blob_limit_uses_strict_greater_than(
                 "prefetch_batches": 1,
                 "pending_cpu_batches": 1,
             },
+            "calibration": {
+                "workers": 1,
+                "min_voxel_values": [1],
+                "gaussian_grid": {
+                    "tau_angstrom": [1.0],
+                    "lambda_positive": [0.0],
+                    "lambda_negative": [0.0],
+                    "gauss_score_min": [0.0],
+                },
+                "gaussian_refinement": {
+                    "lambda": [1.0],
+                    "score_threshold": [1.0],
+                },
+            },
+            "evaluation": {
+                "coverage_thresholds": [0.3, 0.5, 0.6],
+                "topk_values": [3, 4, 5],
+            },
         }
     )
     run_centered_stage(
@@ -1039,7 +1332,7 @@ def test_centered_blob_limit_uses_strict_greater_than(
         None,
         None,
         "cpu",
-        "unet_base",
+        "Find_0",
         "train",
         ("demo",),
         tmp_path,
@@ -1048,6 +1341,37 @@ def test_centered_blob_limit_uses_strict_greater_than(
         None,
         False,
         False,
+        continue_on_blob_exceed,
+    )
+    return paths, config, density_root
+
+
+@pytest.mark.parametrize(
+    (
+        "source_blob_count",
+        "continue_on_blob_exceed",
+        "expect_exceed",
+        "expect_centered",
+    ),
+    (
+        (CENTERED_BLOB_LIMIT, False, False, True),
+        (CENTERED_BLOB_LIMIT + 1, False, True, False),
+        (CENTERED_BLOB_LIMIT + 1, True, True, True),
+    ),
+)
+def test_centered_blob_limit_uses_strict_greater_than(
+    tmp_path: Path,
+    source_blob_count: int,
+    continue_on_blob_exceed: bool,
+    expect_exceed: bool,
+    expect_centered: bool,
+) -> None:
+    """1000 为正常上限, 1001 总写标记并服从显式继续开关."""
+
+    paths, _, _ = _run_empty_blob_limit_case(
+        tmp_path,
+        source_blob_count,
+        continue_on_blob_exceed,
     )
     if expect_exceed:
         marker = json.loads(
@@ -1055,11 +1379,70 @@ def test_centered_blob_limit_uses_strict_greater_than(
         )
         assert marker["source_blob_count"] == source_blob_count
         assert marker["limit"] == CENTERED_BLOB_LIMIT
-        assert not paths.artifact("F2_centered").exists()
     else:
+        assert not paths.blob_exceed("F2_centered").exists()
+    if expect_centered:
         assert paths.artifact("F2_centered").is_file()
         assert paths.complete("F2_centered").is_file()
-        assert not paths.blob_exceed("F2_centered").exists()
+    else:
+        assert not paths.artifact("F2_centered").exists()
+
+
+def test_blob_exceed_advisory_mode_completes_tune_and_evaluate(
+    tmp_path: Path,
+) -> None:
+    """超量提示模式生成的 centered 必须被 tune 与 evaluate 正常消费."""
+
+    paths, config, density_root = _run_empty_blob_limit_case(
+        tmp_path,
+        CENTERED_BLOB_LIMIT + 1,
+        True,
+    )
+    np.savez(
+        density_root / "ligand_area.npz",
+        grid_shape_zyx=np.asarray([80, 80, 80], dtype=np.int32),
+        mask_1=np.asarray([[0, 0, 0]], dtype=np.int32),
+    )
+    # bool, (1, 80, 80, 80), 唯一正体素与 ligand_area.npz 的 mask_1 对齐.
+    union_mask = np.zeros((1, 80, 80, 80), dtype=np.bool_)
+    union_mask[0, 0, 0, 0] = True
+    np.save(density_root / "union_mask.npy", union_mask)
+    selection = run_tune_stage(
+        config=config,
+        data_root=tmp_path,
+        producer="Find_0",
+        split="train",
+        pdb_ids=("demo",),
+        output_root=tmp_path,
+        alpha=2.0,
+        score_mode="gaussian",
+        objective_beta=2.0,
+        prefiltered_min_voxel=1,
+    )
+    metrics = run_evaluate_stage(
+        config=config,
+        data_root=tmp_path,
+        producer="Find_0",
+        split="train",
+        pdb_ids=("demo",),
+        output_root=tmp_path,
+        alpha=2.0,
+        artifact="centered",
+        evaluation_name="blob_exceed_continue",
+        selection=selection,
+    )
+
+    assert paths.blob_exceed("F2_centered").is_file()
+    assert paths.complete("F2_centered").is_file()
+    assert metrics["pdb_count"] == 1
+    assert (tmp_path / "Find_0" / "tuning" / "F2_gaussian.json").is_file()
+    assert (
+        tmp_path
+        / "Find_0"
+        / "train"
+        / "evaluation"
+        / "blob_exceed_continue.metrics.json"
+    ).is_file()
 
 
 def test_centered_score_only_changes_two_fields(tmp_path: Path) -> None:
@@ -1098,6 +1481,7 @@ def test_centered_score_only_changes_two_fields(tmp_path: Path) -> None:
         },
         False,
         True,
+        False,
     )
     arrays = load_stage1_npz(paths.artifact("F2_centered"), None)
     assert arrays["score"].tolist() == pytest.approx([0.8, 0.4])
