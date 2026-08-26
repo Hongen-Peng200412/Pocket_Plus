@@ -219,6 +219,11 @@
       "date": "2026-08-21",
       "summary": "Stage1 V3 已增量加入显式 PDB 级 split 补建入口：仅从五份 occurrence JSON 提取、规范化、去重并排序 pdb_id，写出五份纯列表 JSON；不新增 summary、完成标记或额外审计，定向测试 2 passed，尚未操作 Git 或服务器。",
       "handoff": "CLAUDE/memory/handoffs/2026-08-21-stage1-pdb-split-minimal-publication.md"
+    },
+    {
+      "date": "2026-08-26",
+      "summary": "Stage1 F2 blobs 的 beta=1 basic 增量实验完成：Job 356956 复用既有 F2 blobs，在 calibration 拟合绝对分数阈值并冻结评估 validation；100/200 个逐 PDB 结果和 micro、macro、PRAUC 汇总均闭合，原 beta=2 参数未被覆盖，全部本地改动保持 unstaged。",
+      "handoff": "CLAUDE/memory/handoffs/2026-08-26-stage1-f2-blobs-beta1-trial.md"
     }
   ],
   "blockers": [
