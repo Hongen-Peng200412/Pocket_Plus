@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
-"""计算任意 F-alpha 候选的 basic 或 Gaussian 分数.
+"""计算候选的 basic/Gaussian 分数并执行实验性逐 PDB 比例选择.
 
-主要入口 :func:`score_centered_candidates` 直接返回每个 centered 条目的
-float32 分数. 最终 `score` 和 `selected` 由单 PDB 发布事务直接写入.
+主要入口 :func:`score_centered_candidates` 返回每个候选的 float32 分数,
+:func:`select_score_ratio_candidates` 在固定预过滤总体中返回 top-ratio 选择.
+最终 `score` 和 `selected` 由调用方发布.
 """
 
 from __future__ import annotations
@@ -120,6 +121,51 @@ def sum_gaussian_atom_terms(
     return positive, negative
 
 
+def select_score_ratio_candidates(
+    scores: np.ndarray,
+    prefilter_eligible: np.ndarray,
+    score_ratio_threshold: float,
+) -> np.ndarray:
+    """从固定预过滤总体中保留分数最高的一定比例候选.
+
+    输入参数:
+        - scores: float32 ``(N_candidate,)``, 当前 PDB 的候选分数.
+        - prefilter_eligible: bool ``(N_candidate,)``, 固定来源体素数预过滤结果.
+        - score_ratio_threshold: float, 当前 PDB 需要保留的候选比例.
+
+    返回值:
+        - selected: bool ``(N_candidate,)``, 恰有 ``floor(N*r+0.5)`` 个 True;
+          ``N`` 是固定预过滤通过数, ``r`` 是 `score_ratio_threshold`.
+
+    分数降序并列时保持候选原顺序. 本函数只实现比例选择; 最终
+    ``min_voxels`` 在调用位置独立应用, 不改变比例总体和保留数量.
+    """
+    # float32, (N_candidate,), 当前 PDB 的候选排序分数.
+    candidate_scores = np.asarray(scores, dtype=np.float32)
+    # int64, (N_eligible,), 固定预过滤通过候选在原候选轴上的下标.
+    eligible_indices = np.flatnonzero(
+        np.asarray(prefilter_eligible, dtype=np.bool_)
+    )
+    # selected 与原候选轴对齐; 比例为零或没有合格候选时保持全 False.
+    selected = np.zeros(candidate_scores.shape, dtype=np.bool_)
+    # keep_count 按 half-up 最近整数规则由固定总体大小和比例共同确定.
+    keep_count = int(
+        np.floor(eligible_indices.size * float(score_ratio_threshold) + 0.5)
+    )
+    keep_count = min(max(keep_count, 0), int(eligible_indices.size))
+    if keep_count == 0:
+        return selected
+    # stable_order 在分数并列时保留 eligible_indices 的原候选顺序.
+    stable_order = np.argsort(
+        -candidate_scores[eligible_indices],
+        kind="stable",
+    )
+    # int64, (keep_count,), 当前 PDB 固定总体中正式保留的原候选下标.
+    kept_indices = eligible_indices[stable_order[:keep_count]]
+    selected[kept_indices] = True
+    return selected
+
+
 # ================================================================================================
 
 
@@ -132,7 +178,7 @@ def score_centered_candidates(
 
     输入参数:
         - centered: centered 产物字段映射; `source_probability_mean` 是 float32 `(N_candidate,)` 来源 blob 平均概率.
-        - score_mode: 字符串; `basic` 使用来源平均概率, `gaussian` 叠加 A 原子 Gaussian 正负项.
+        - score_mode: 字符串; `basic` 与实验性 `basic_ratio` 使用来源平均概率, `gaussian` 叠加 A 原子 Gaussian 正负项.
         - score_parameters: 浮点数映射; Find 模式读取 tau 和两个 lambda, 来源均值模式不读取字段.
 
     返回值:
@@ -144,7 +190,7 @@ def score_centered_candidates(
     """
     # float32, (N_candidate,), 每个来源 blob 在完整图概率图中的平均概率.
     source_mean = np.asarray(centered["source_probability_mean"], dtype=np.float32)
-    if score_mode == "basic":
+    if score_mode in {"basic", "basic_ratio"}:
         return source_mean.copy()
     tau_angstrom = float(score_parameters["tau_angstrom"])
     lambda_positive = float(score_parameters["lambda_positive"])

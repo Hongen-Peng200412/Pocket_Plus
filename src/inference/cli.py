@@ -16,6 +16,7 @@ import random
 from omegaconf import OmegaConf
 import torch
 
+from .artifacts import f_alpha_tag
 from .checkpoint import load_stage1_wrapper
 from .pipeline import (
     run_blobs_stage,
@@ -276,7 +277,7 @@ def main() -> None:
             arguments.split,
             pdb_ids,
             Path(arguments.output_root),
-            alpha,
+            f"{f_alpha_tag(alpha)}_{arguments.artifact}",
             arguments.artifact,
             arguments.evaluation_name,
             None if arguments.all_candidates else selection,

@@ -44,7 +44,7 @@ from .evaluation import (
     semantic_prauc_histogram,
 )
 from .full_map import infer_full_map
-from .scoring import score_centered_candidates
+from .scoring import score_centered_candidates, select_score_ratio_candidates
 
 
 CENTERED_BLOB_LIMIT = 1000
@@ -656,7 +656,7 @@ def run_evaluate_stage(
     split: str,
     pdb_ids: Sequence[str],
     output_root: str | Path,
-    alpha: float,
+    role: str,
     artifact: str,
     evaluation_name: str,
     selection: Mapping[str, object] | None,
@@ -676,7 +676,7 @@ def run_evaluate_stage(
         - split: str, 必须完整消费的数据划分名.
         - pdb_ids: Sequence[str], 按评估顺序排列的小写 PDB 标识.
         - output_root: str | Path, 输入候选和输出 evaluation 的共同根目录.
-        - alpha: float, 用于定位输入候选的 F-alpha 参数.
+        - role: str, 输入候选角色, 例如 `F2_blobs` 或实验性 `Li_blobs`.
         - artifact: str, `blobs` 或 `centered`.
         - evaluation_name: str, 本次评估的显式文件名, 用于让不同参数结果并存.
         - selection: Mapping[str, object] | None, 已冻结的评分参数与体素门槛; ``None`` 表示纳入 artifact 中的全部候选.
@@ -685,9 +685,7 @@ def run_evaluate_stage(
         - global_metrics: dict[str, object], 包含 :func:`aggregate_stage1_metrics` 的候选指标, 以及完整概率图的 `semantic_micro_prauc` 和 `semantic_macro_prauc`.
     """
 
-    alpha_tag = f_alpha_tag(alpha)
     score_mode = "all_candidates" if selection is None else str(selection["score_mode"])
-    role = f"{alpha_tag}_{artifact}"
     # evaluations: 按未跳过 PDB 顺序保存的候选语义与实例事实.
     evaluations = []
     # prauc_histograms: 与 evaluations 一一对齐的 int64 `(2, 1024)` 完整图语义计数.
@@ -759,11 +757,22 @@ def run_evaluate_stage(
             voxel_count = np.diff(
                 np.asarray(candidate["voxel_offsets"], dtype=np.int64)
             )
-            candidate["selected"] = (
-                (candidate["score"] >= np.float32(selection["score_threshold"]))
-                & (voxel_count >= int(selection["prefiltered_min_voxel"]))
-                & (voxel_count >= int(selection["min_voxels"]))
+            # prefilter_eligible 固定 basic_ratio 的逐 PDB 候选总体; 其他模式也复用同一来源体素预过滤.
+            prefilter_eligible = voxel_count >= int(
+                selection["prefiltered_min_voxel"]
             )
+            if score_mode == "basic_ratio":
+                candidate["selected"] = select_score_ratio_candidates(
+                    candidate["score"],
+                    prefilter_eligible,
+                    float(selection["score_ratio_threshold"]),
+                ) & (voxel_count >= int(selection["min_voxels"]))
+            else:
+                candidate["selected"] = (
+                    (candidate["score"] >= np.float32(selection["score_threshold"]))
+                    & prefilter_eligible
+                    & (voxel_count >= int(selection["min_voxels"]))
+                )
         density_root = Path(data_root) / "density" / pdb_id
         occurrence_id, occurrence_rows, full_shape = load_occurrence_voxels(
             density_root / "ligand_area.npz"

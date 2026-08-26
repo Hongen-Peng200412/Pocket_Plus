@@ -2,15 +2,16 @@
 """冻结单个 F-alpha 语义阈值和 centered 选择参数.
 
 主要入口 :func:`calibrate_semantic_thresholds` 返回单个 alpha 的语义阈值摘要与完整扫描数组,
-:func:`tune_centered_selection` 返回 basic 或 Gaussian 评分参数, 分数阈值
-和最小体素数. centered 校准先把候选与真实 occurrence 的交集压成小型事实表,
-再执行来源均值阈值搜索或 Find Gaussian 三阶段搜索.
+:func:`tune_centered_selection` 返回 basic、实验性 basic_ratio 或 Gaussian 选择
+参数和最小体素数. centered 校准先把候选与真实 occurrence 的交集压成小型事实
+表, 再执行来源均值阈值、精确候选比例或 Find Gaussian 三阶段搜索.
 """
 
 from __future__ import annotations
 
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
+from fractions import Fraction
 from time import perf_counter
 from typing import Iterable, Mapping, Sequence
 
@@ -18,7 +19,11 @@ import numpy as np
 from scipy.optimize import linear_sum_assignment
 
 from .evaluation import PdbEvaluation, evaluate_centered_pdb
-from .scoring import build_gaussian_distance_table, sum_gaussian_atom_terms
+from .scoring import (
+    build_gaussian_distance_table,
+    select_score_ratio_candidates,
+    sum_gaussian_atom_terms,
+)
 
 
 @dataclass(frozen=True)
@@ -271,21 +276,92 @@ def _scan_actual_score_thresholds(
     return best
 
 
+def _build_score_ratio_axes(
+    facts_by_pdb: Mapping[str, CenteredCalibrationFacts],
+) -> tuple[dict[str, np.ndarray], dict[float, float]]:
+    """把逐 PDB half-up 比例变化点编码为可复用的精确分数轴.
+
+    输入参数:
+        - facts_by_pdb: 以小写 PDB 标识为键的校准事实; 来源均值负责排序,
+          `prefilter_eligible` 固定每个 PDB 的比例总体.
+
+    返回值:
+        - ratio_scores_by_pdb: 以 PDB 标识为键的 float64
+          ``(N_candidate,)`` 人工分数; 同一精确比例边界具有相同分数, 较小边界
+          具有较高分数.
+        - ratio_by_score: 人工分数到公开 `score_ratio_threshold` 的映射;
+          公开值向 1.0 取相邻浮点数, 使运行时 half-up 计算稳定包含当前边界.
+
+    固定总体含 N 个候选时, 第 k 个候选在 ``(k-0.5)/N`` 进入选择集合.
+    `Fraction` 只在这里建立精确全局边界顺序; 参数扫描继续复用实际分数轴的
+    增量 macro 目标计算.
+    """
+    # events_by_pdb 保存每个 PDB 候选下标及其进入 top-ratio 集合的精确比例边界.
+    events_by_pdb: dict[str, list[tuple[int, Fraction]]] = {}
+    # ratio_boundaries 汇总全部 PDB 的精确候选数变化点, 相等分数只保留一次.
+    ratio_boundaries: set[Fraction] = set()
+    for pdb_id, facts in facts_by_pdb.items():
+        # int64, (N_eligible,), 当前 PDB 固定预过滤总体在原候选轴上的下标.
+        eligible_indices = np.flatnonzero(facts.prefilter_eligible)
+        # stable_order 按来源均值降序排列固定总体, 分数并列时保持原候选顺序.
+        stable_order = np.argsort(
+            -facts.source_probability_mean[eligible_indices],
+            kind="stable",
+        )
+        # ranked_indices 是比例从 0 增长到 1 时依次进入选择集合的原候选下标.
+        ranked_indices = eligible_indices[stable_order]
+        # candidate_count 是当前 PDB 固定预过滤总体大小, 也是比例分母 N.
+        candidate_count = int(ranked_indices.size)
+        # pdb_events 按候选分数顺序保存原候选下标与精确进入边界.
+        pdb_events: list[tuple[int, Fraction]] = []
+        for rank, candidate_index in enumerate(ranked_indices, start=1):
+            # boundary 精确表示 floor(N*r+0.5) 首次达到 rank 的最小比例.
+            boundary = Fraction(2 * rank - 1, 2 * candidate_count)
+            pdb_events.append((int(candidate_index), boundary))
+            ratio_boundaries.add(boundary)
+        events_by_pdb[pdb_id] = pdb_events
+
+    # ordered_boundaries 是跨 PDB 全部候选数变化状态的严格升序轴.
+    ordered_boundaries = sorted(ratio_boundaries)
+    # score_by_boundary 把较小比例边界映射到较大整数分数, 供现有降序扫描复用.
+    score_by_boundary = {
+        boundary: float(len(ordered_boundaries) - index)
+        for index, boundary in enumerate(ordered_boundaries)
+    }
+    # ratio_by_score 把获胜人工分数还原为运行时可稳定包含端点的公开比例.
+    ratio_by_score = {
+        score_by_boundary[boundary]: float(np.nextafter(float(boundary), 1.0))
+        for boundary in ordered_boundaries
+    }
+    # 每个数组与原候选轴对齐; 固定预过滤未通过项保持 0 且不会进入扫描.
+    ratio_scores_by_pdb: dict[str, np.ndarray] = {}
+    for pdb_id, facts in facts_by_pdb.items():
+        scores = np.zeros(facts.voxel_count.shape, dtype=np.float64)
+        for candidate_index, boundary in events_by_pdb[pdb_id]:
+            scores[candidate_index] = score_by_boundary[boundary]
+        ratio_scores_by_pdb[pdb_id] = scores
+    return ratio_scores_by_pdb, ratio_by_score
+
+
 def _selection_objective(
     facts_by_pdb: Mapping[str, CenteredCalibrationFacts],
     scores_by_pdb: Mapping[str, np.ndarray],
-    score_threshold: float,
+    selection_threshold: float,
     min_voxels: int,
     beta: float,
+    selection_mode: str,
 ) -> float:
     """计算固定选择组合的三项 PDB 等权 macro F-beta 之和.
 
     输入参数:
         - facts_by_pdb: 以小写 PDB 标识为键的 centered 校准事实; `prefilter_eligible` 已在参数搜索前固定.
         - scores_by_pdb: 以同一 PDB 标识为键的 float32 `(N_candidate,)` 分数; 候选轴与对应事实对齐.
-        - score_threshold: float, 候选分数下限, 包含端点.
+        - selection_threshold: float, `threshold` 模式的包含端点分数下限,
+          或 `ratio` 模式的逐 PDB 保留比例.
         - min_voxels: int, 来源 blob 最小体素数, 包含端点.
         - beta: float, 三项逐 PDB F-beta 共同使用的 beta.
+        - selection_mode: str, `threshold` 按绝对分数过滤, `ratio` 从固定预过滤
+          总体中按分数保留 ``floor(N*r+0.5)`` 个候选.
 
     返回值:
         - objective: float, semantic, coverage@0.3 与 one-to-one@0.3 三项 macro F-beta 之和.
@@ -295,9 +371,20 @@ def _selection_objective(
     # objective_sum 累加各 PDB 的三项局部 F-beta, 循环结束后统一除以 PDB 数量.
     objective_sum = 0.0
     for pdb_id, facts in facts_by_pdb.items():
+        # bool, (N_candidate,), 当前选择阈值通过的候选; 最终体素门槛尚未应用.
+        if selection_mode == "ratio":
+            score_selected = select_score_ratio_candidates(
+                scores_by_pdb[pdb_id],
+                facts.prefilter_eligible,
+                selection_threshold,
+            )
+        else:
+            score_selected = np.asarray(
+                scores_by_pdb[pdb_id]
+            ) >= np.float32(selection_threshold)
         # int64, (N_selected,), 当前 PDB 内通过分数, 固定预过滤和体素数下限的候选下标; 数值索引 evaluation 的第一维候选轴.
         selected = np.flatnonzero(
-            (np.asarray(scores_by_pdb[pdb_id]) >= np.float32(score_threshold))
+            score_selected
             & facts.prefilter_eligible
             & (facts.voxel_count >= int(min_voxels))
         )
@@ -398,6 +485,7 @@ def _gaussian_selection_objective(
         score_threshold,
         min_voxels,
         beta,
+        "threshold",
     )
 
 
@@ -539,8 +627,12 @@ def tune_centered_selection(
     """按冻结顺序搜索 centered 分数与最小体素数.
 
     先固定 ``prefiltered_min_voxel``, 小于该值的候选在全部参数尝试中保持未入选.
-    basic 模式再在最小 ``min_voxels`` 下扫描实际出现的 float32 分数, 然后冻结分数阈值并扫描全部最小体素数.
-    Gaussian 模式第一阶段扫描 tau, 两个 lambda 和 ``gauss_score_min`` 的显式粗网格; 第二阶段固定 tau, 对第一阶段三个其余参数应用显式乘数; 第三阶段冻结 Gaussian 参数并只扫描 ``min_voxels``.
+    basic 模式再在最小 ``min_voxels`` 下扫描实际出现的 float32 分数, 然后冻结
+    分数阈值并扫描全部最小体素数. 实验性 basic_ratio 模式精确扫描所有 PDB 的
+    half-up 候选数变化点, 冻结逐 PDB 保留比例后再独立扫描全部最小体素数.
+    Gaussian 模式第一阶段扫描 tau, 两个 lambda 和 ``gauss_score_min`` 的显式粗
+    网格; 第二阶段固定 tau, 对第一阶段三个其余参数应用显式乘数; 第三阶段冻结
+    Gaussian 参数并只扫描 ``min_voxels``.
     目标是 semantic, coverage@0.3 和 one-to-one@0.3 三个 PDB 等权 macro F-beta 之和.
 
     输入参数:
@@ -559,7 +651,7 @@ def tune_centered_selection(
         - ground_truth_by_pdb.occurrence_voxel_zyx: 长度 N_gt 的 int32 `(K_i, 3)` 序列, 每项保存一个 occurrence 的完整图 ZYX 体素.
         - ground_truth_by_pdb.full_shape_zyx: 三个整数, 当前 PDB 的完整图 ZYX 形状.
 
-        - score_mode: 字符串, `basic` 或 `gaussian`.
+        - score_mode: 字符串, `basic`, 实验性 `basic_ratio` 或 `gaussian`.
         - score_parameter_grid.tau_angstrom: Sequence[float] 或 None, Gaussian 距离标准差粗网格.
         - score_parameter_grid.lambda_positive: Sequence[float] 或 None, Gaussian 正项系数粗网格.
         - score_parameter_grid.lambda_negative: Sequence[float] 或 None, Gaussian 负项系数粗网格.
@@ -577,16 +669,22 @@ def tune_centered_selection(
     返回字段:
         - objective: float, 最终最小体素数对应的三项 macro F-beta 之和.
         - objective_beta: float, tune 命令显式采用的三项 F-beta 参数.
-        - score_mode: str, `basic` 或 `gaussian`.
+        - score_mode: str, `basic`, `basic_ratio` 或 `gaussian`.
         - score_parameters.tau_angstrom: float, Gaussian 距离标准差; 来源均值模式无此字段.
         - score_parameters.lambda_positive: float, Gaussian 正项系数; 来源均值模式无此字段.
         - score_parameters.lambda_negative: float, Gaussian 负项系数; 来源均值模式无此字段.
-        - score_threshold: float, 冻结分数下限, 包含端点.
+        - score_threshold: float, basic/Gaussian 冻结分数下限, 包含端点;
+          `basic_ratio` 不返回该字段.
+        - score_ratio_threshold: float, `basic_ratio` 逐 PDB 固定预过滤总体的冻结保留比例;
+          basic/Gaussian 不返回该字段.
         - prefiltered_min_voxel: int, tune 前固定的来源 blob 体素数下限, 包含端点.
         - min_voxels: int, 冻结的来源 blob 最小体素数, 包含端点.
 
         - stages.score_threshold.objective: float, 来源均值实际分数扫描的最优目标值.
         - stages.score_threshold.score_threshold: float, 来源均值实际分数扫描的最优阈值.
+
+        - stages.score_ratio_threshold.objective: float, 比例变化点精确扫描的最优目标值.
+        - stages.score_ratio_threshold.score_ratio_threshold: float, 最优逐 PDB 保留比例.
 
         - stages.coarse.objective: float, Gaussian 粗网格最优目标值.
         - stages.coarse.tau_angstrom: float, Gaussian 粗网格最优距离标准差.
@@ -693,35 +791,70 @@ def tune_centered_selection(
 
         # 第一和第二阶段统一使用最宽松的体素下限, 最终阶段才单独冻结 min_voxels.
         initial_min_voxels = min(int(value) for value in min_voxel_values)
-        if score_mode == "basic":
-            # basic 的实际 float32 分数扫描保持串行, 因为候选必须按分数组累计更新匹配状态.
+        if score_mode in {"basic", "basic_ratio"}:
+            # scores 是各 PDB 的 float32 来源平均概率; basic 用于阈值扫描, basic_ratio 用于比例内排序.
             scores = {
                 pdb_id: facts.source_probability_mean
                 for pdb_id, facts in facts_by_pdb.items()
             }
             score_scan_started = perf_counter()
-            first_stage = _scan_actual_score_thresholds(
-                facts_by_pdb,
-                scores,
-                initial_min_voxels,
-                objective_beta,
-            )
-            print(
-                "[Stage1 tune] basic 实际分数阈值扫描完成: "
-                f"seconds={perf_counter() - score_scan_started:.3f}"
-            )
+            # score_parameters 在两个来源均值模式中都为空; 候选分数不读取额外参数.
             score_parameters: dict[str, float] = {}
-            score_threshold = float(first_stage["score_threshold"])
-            stages: dict[str, object] = {"score_threshold": first_stage}
+            if score_mode == "basic":
+                first_stage = _scan_actual_score_thresholds(
+                    facts_by_pdb,
+                    scores,
+                    initial_min_voxels,
+                    objective_beta,
+                )
+                # 三个变量分别冻结公开阈值、最终体素搜索的选择方式和 JSON 字段名.
+                selection_threshold = float(first_stage["score_threshold"])
+                selection_mode = "threshold"
+                threshold_field = "score_threshold"
+                stages: dict[str, object] = {threshold_field: first_stage}
+                print(
+                    "[Stage1 tune] basic 实际分数阈值扫描完成: "
+                    f"seconds={perf_counter() - score_scan_started:.3f}"
+                )
+            else:
+                # ratio_scores 使用精确比例边界的整数序号, 只供增量扫描确定最优状态.
+                ratio_scores, ratio_by_score = _build_score_ratio_axes(facts_by_pdb)
+                ratio_stage = _scan_actual_score_thresholds(
+                    facts_by_pdb,
+                    ratio_scores,
+                    initial_min_voxels,
+                    objective_beta,
+                )
+                # selection_threshold 是正式运行时比例; 全零目标保持空选择, 非零目标对应实际变化点.
+                selection_threshold = (
+                    ratio_by_score[float(ratio_stage["score_threshold"])]
+                    if float(ratio_stage["objective"]) > 0.0
+                    else 0.0
+                )
+                # selection_mode 控制最终体素搜索使用比例, threshold_field 控制公开字段名.
+                selection_mode = "ratio"
+                threshold_field = "score_ratio_threshold"
+                # first_stage 去除内部人工分数, 只发布正式 macro 目标与公开比例.
+                first_stage = {
+                    "objective": float(ratio_stage["objective"]),
+                    threshold_field: selection_threshold,
+                }
+                stages = {threshold_field: first_stage}
+                print(
+                    "[Stage1 tune] basic_ratio 精确比例扫描完成: "
+                    f"state_count={len(ratio_by_score)}, "
+                    f"seconds={perf_counter() - score_scan_started:.3f}"
+                )
             minimum_started = perf_counter()
             minimum_futures = [
                 executor.submit(
                     _selection_objective,
                     facts_by_pdb,
                     scores,
-                    score_threshold,
+                    selection_threshold,
                     int(min_voxels),
                     objective_beta,
+                    selection_mode,
                 )
                 for min_voxels in min_voxel_values
             ]
@@ -910,7 +1043,8 @@ def tune_centered_selection(
                 "lambda_positive": float(refined_best["lambda_positive"]),
                 "lambda_negative": float(refined_best["lambda_negative"]),
             }
-            score_threshold = float(refined_best["score_threshold"])
+            selection_threshold = float(refined_best["score_threshold"])
+            threshold_field = "score_threshold"
             stages = {"coarse": coarse_best, "refined": refined_best}
             minimum_started = perf_counter()
             minimum_futures = [
@@ -920,7 +1054,7 @@ def tune_centered_selection(
                     terms,
                     score_parameters["lambda_positive"],
                     score_parameters["lambda_negative"],
-                    score_threshold,
+                    selection_threshold,
                     int(min_voxels),
                     objective_beta,
                 )
@@ -943,13 +1077,15 @@ def tune_centered_selection(
     if minimum_best is None:
         raise RuntimeError("min_voxel_values 没有产生参数组合.")
     stages["min_voxels"] = minimum_best
-    return {
+    # selection 保存两类共有字段; 冻结阈值按当前模式的公开字段名在末尾加入.
+    selection = {
         "objective": float(minimum_best["objective"]),
         "objective_beta": float(objective_beta),
         "score_mode": score_mode,
         "score_parameters": score_parameters,
-        "score_threshold": score_threshold,
         "prefiltered_min_voxel": int(prefiltered_min_voxel),
         "min_voxels": int(minimum_best["min_voxels"]),
         "stages": stages,
     }
+    selection[threshold_field] = selection_threshold
+    return selection

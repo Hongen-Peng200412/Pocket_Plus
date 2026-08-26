@@ -1,14 +1,84 @@
 # -*- coding: utf-8 -*-
-"""从完整概率图提取单个 F-alpha 阈值的 26-连通区域.
+"""从完整概率图计算可选 Li 阈值并提取单阈值 26 连通区域.
 
-主要入口 :func:`extract_probability_blobs` 返回全部区域的稳定稀疏表. 文件发布
-由 `pipeline.run_blobs_stage()` 负责. 本模块不按 `min_voxels` 删除区域.
+主要入口 :func:`li_probability_threshold` 返回逐 PDB Li 阈值,
+:func:`extract_probability_blobs` 返回任意显式阈值的全部区域稳定稀疏表. 文件
+发布由调用方负责. 本模块不按 `min_voxels` 删除区域.
 """
 
 from __future__ import annotations
 
 import numpy as np
 from scipy import ndimage
+
+
+def li_probability_threshold(
+    probability_map: np.ndarray,
+    denominator: int,
+) -> tuple[float, int, float]:
+    """计算逐 PDB Li 阈值并向上量化到显式概率网格.
+
+    输入参数:
+        - probability_map: 数值数组 ``(D, H, W)``, 完整图 ZYX 配体概率.
+        - denominator: 正整数, 概率网格分母; 本次实验传入 32768.
+
+    返回值:
+        - raw_threshold: float, 以完整图均值初始化并迭代得到的 Li 最小交叉熵阈值.
+        - grid_index: int, ``ceil(raw_threshold * denominator)`` 对应的网格编号.
+        - applied_threshold: float, ``grid_index / denominator``; 连通区域提取包含该端点.
+
+    每轮把 ``probability <= threshold`` 视为背景, 其余体素视为前景. 迭代容差
+    固定为 ``1e-5``, 最多更新 100 次. 向上量化保证实际截断不会纳入低于 Li
+    原始阈值的体素.
+    """
+    # float64, (D, H, W), 当前 PDB 的完整图概率; Li 均值和对数迭代均使用 float64.
+    probability = np.asarray(probability_map, dtype=np.float64)
+    # float64, (D*H*W,), 完整图概率的一维视图; 背景和前景按当前阈值反复切分.
+    values = probability.reshape(-1)
+    # raw_threshold 从全图均值开始; 常数图会在首次切分时直接结束.
+    raw_threshold = float(values.mean())
+    # minimum 和 maximum 限制迭代阈值始终落在当前完整图的实际概率范围内.
+    minimum = float(values.min())
+    maximum = float(values.max())
+    # tiny 防止均值为零时执行 log(0); 它只参与 Li 公式的数值计算.
+    tiny = np.finfo(np.float64).tiny
+    for _ in range(100):
+        # float64, (N_background,), 当前阈值端点及以下的背景概率.
+        background = values[values <= raw_threshold]
+        # float64, (N_foreground,), 严格高于当前阈值的前景概率.
+        foreground = values[values > raw_threshold]
+        if background.size == 0 or foreground.size == 0:
+            break
+        # 两侧均值是 Li 最小交叉熵更新式的唯一统计量.
+        mean_background = max(float(background.mean()), tiny)
+        mean_foreground = max(float(foreground.mean()), tiny)
+        # logarithm_difference 是两侧均值对数之差, 对应 Li 更新式的分母.
+        logarithm_difference = np.log(mean_background) - np.log(mean_foreground)
+        if logarithm_difference == 0.0:
+            break
+        # updated_threshold 是本轮 Li 更新值, 再限制到完整图实际概率范围内.
+        updated_threshold = float(
+            np.clip(
+                (mean_background - mean_foreground) / logarithm_difference,
+                minimum,
+                maximum,
+            )
+        )
+        if abs(updated_threshold - raw_threshold) <= 1e-5:
+            raw_threshold = updated_threshold
+            break
+        raw_threshold = updated_threshold
+    # grid_index 向上取整, 使应用阈值不低于 raw_threshold.
+    grid_index = int(
+        np.clip(
+            np.ceil(raw_threshold * int(denominator)),
+            0,
+            int(denominator),
+        )
+    )
+    # applied_threshold 是后续 ``probability >= threshold`` 实际使用的概率端点.
+    applied_threshold = float(grid_index) / float(denominator)
+    return raw_threshold, grid_index, applied_threshold
 
 
 # ================================================================================================

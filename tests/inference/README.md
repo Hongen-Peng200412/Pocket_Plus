@@ -1,6 +1,6 @@
 # Stage1 V3 推理测试
 
-本目录验证 `src/inference/` 的正式科学和执行契约。`test_stage1_v3.py` 运行 CPU 科学契约测试，`test_calibration_parallel.py` 验证 basic/Gaussian 外层并发与串行结果等价，`test_stage1_cuda.py` 在可用 GPU 上运行真实 CUDA 异步 smoke；旧 Selector、组件森林、CLG、Li、固定 `F1_basic/F3_centered` 和 `calibrate/run` 流程的专项测试已经删除，历史行为只通过 Git 查阅。
+本目录验证 `src/inference/` 的正式科学和执行契约。`test_stage1_v3.py` 运行 CPU 科学契约测试，`test_calibration_parallel.py` 验证 basic/Gaussian 外层并发与串行结果等价，`test_stage1_li_ratio_trial.py` 验证当前独立 Li 与 basic_ratio 实验，`test_stage1_cuda.py` 在可用 GPU 上运行真实 CUDA 异步 smoke；旧 Selector、组件森林、CLG、固定 `F1_basic/F3_centered` 和 `calibrate/run` 流程的专项测试已经删除，历史行为只通过 Git 查阅。
 
 `test_stage1_v3.py` 覆盖以下边界：
 
@@ -30,10 +30,19 @@
 - 用线程事件分别阻塞粗搜、细搜和最终体素门槛的首个参数任务，并让全部目标值并列，证明三个阶段乱序完成时仍按配置原顺序保留首项；
 - `run_tune_stage()` 以两个 worker 并行读取临时正式 NPZ，保持 PDB 清单顺序，完成 basic 字段改名、Gaussian A 原子字段读取和两类 JSON 发布。
 
+`test_stage1_li_ratio_trial.py` 另外覆盖：
+
+- 历史 Li 均值初始化、背景包含端点、`1e-5` 收敛容差和 1/32768 向上量化；
+- 固定预过滤总体中的 half-up 候选数与分数并列稳定顺序；
+- 候选数不同的 PDB 共享精确比例变化轴，比例扫描和最终 `min_voxels` 阶段使用同一 macro 三项目标；
+- `workers=1` 与 `workers>1` 的 basic_ratio 选择 JSON 逐字段相同；
+- 小型端到端流程在 calibration 发布 `Li_blobs` 与 F1/F2 比例参数，再证明
+  validation 冻结复用参数并发布含 micro、macro、PRAUC 的评估文件。
+
 运行命令：
 
 ```powershell
-D:\Anaconda\envs\Pocket_Plus_windows\python.exe -m pytest -q tests/inference/test_stage1_v3.py tests/inference/test_calibration_parallel.py
+D:\Anaconda\envs\Pocket_Plus_windows\python.exe -m pytest -q tests/inference/test_stage1_li_ratio_trial.py tests/inference/test_stage1_v3.py tests/inference/test_calibration_parallel.py
 ```
 
 测试使用 CPU 构造最小数组和临时目录，不需要正式 checkpoint。真实 checkpoint、CUDA 显存和 GPU 利用率属于 `ops/stage1_inference_benchmark/` 的实战验证。

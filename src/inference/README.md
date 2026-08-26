@@ -230,6 +230,20 @@ occurrence 数量均不会改变 PDB 权重。
 
 `prefiltered_min_voxel` 由 tune 命令显式提供，与最终搜索出的 `min_voxels` 独立；代码不裁剪后者的搜索列表。basic 按预过滤合格候选实际出现的 float32 来源平均概率降序扫描，只在目标值严格提升时替换阈值；非空候选的最佳目标仍为 0 时，保留高于最高分的空选择阈值。basic 的 `stages.score_threshold` 含 `objective` 与 `score_threshold`，`stages.min_voxels` 含 `objective` 与 `min_voxels`。Gaussian 的 `stages.coarse` 与 `stages.refined` 都含 `objective`、`tau_angstrom`、`lambda_positive`、`lambda_negative` 和 `score_threshold`；`stages.min_voxels` 同样只含 `objective` 与 `min_voxels`。score-only 与 evaluate 按选择 JSON 同时应用两个体素数门槛。
 
+### Li `basic_ratio` 实验接口
+
+`ops/stage1_li_ratio_trial/` 在独立实验中复用本目录的科学函数。它为每个 PDB
+计算 Li 阈值并发布 `Li_blobs`，再以 `score_mode=basic_ratio` 搜索逐 PDB 候选
+保留比例。比例总体先由 `prefiltered_min_voxel` 固定，保留数是
+`floor(N*r+0.5)`；最终 `min_voxels` 只作后过滤。调参精确扫描跨 PDB 的全部
+候选数变化点，目标并列时保留较小比例。选择 JSON 使用
+`score_ratio_threshold`，不同时保存 `score_threshold`。
+
+正式 Stage1 CLI 的 `basic`、`gaussian` 与动态 F-alpha 路径保持不变。
+`run_evaluate_stage()` 接收显式候选角色，因此实验可以直接评估 `Li_blobs`，不把
+它重命名为 F-alpha 产物。完整实验契约、字段和服务器入口见
+`ops/stage1_li_ratio_trial/README.md`。
+
 ## 评估文件
 
 每次 `evaluate` 必须显式提供 `--evaluation-name`，该名称直接决定每 PDB 的 `evaluation/<evaluation-name>.npz`、数据划分的 `evaluation/<evaluation-name>.jsonl` 和 `evaluation/<evaluation-name>.metrics.json`。不同选择参数使用不同名称即可并存；程序不对名称或参数生成摘要。

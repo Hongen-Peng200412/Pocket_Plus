@@ -219,6 +219,11 @@
       "date": "2026-08-21",
       "summary": "Stage1 V3 已增量加入显式 PDB 级 split 补建入口：仅从五份 occurrence JSON 提取、规范化、去重并排序 pdb_id，写出五份纯列表 JSON；不新增 summary、完成标记或额外审计，定向测试 2 passed，尚未操作 Git 或服务器。",
       "handoff": "CLAUDE/memory/handoffs/2026-08-21-stage1-pdb-split-minimal-publication.md"
+    },
+    {
+      "date": "2026-08-26",
+      "summary": "Stage1 Li 阈值隔离实验完成：calibration 100 个与 validation 200 个 PDB 均发布逐 PDB Li blobs，并冻结复用 F1/F2 basic_ratio 参数完成 micro、macro 与 PRAUC 评估。联合分析显示 Li 的 macro 三项目标明显低于经典方案；全部实验代码保持 unstaged，等待用户决定是否提交。",
+      "handoff": "CLAUDE/memory/handoffs/2026-08-26-stage1-li-threshold-ratio-trial.md"
     }
   ],
   "blockers": [
