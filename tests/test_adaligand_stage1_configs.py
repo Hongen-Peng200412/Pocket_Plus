@@ -71,29 +71,23 @@ def test_training_launchers_use_v3_worker_and_scope_contracts() -> None:
     """一键入口保持正式 worker 数量, 并使用新的训练与验证预算."""
 
     shell_root = PROJECT_ROOT / "训练与运行" / "sh"
-    expected_workers = {
-        "Find_0.sh": 16,
-        "Find_1.sh": 30,
-        "unet_base.sh": 16,
-        "unet_c1.sh": 16,
-        "unet_diff.sh": 16,
+    expected_training_scope = {
+        "Find_0.sh": (16, 70, 10),
+        "Find_1.sh": (24, 70, 12),
+        "unet_base.sh": (16, 70, 12),
+        "unet_c1.sh": (30, 110, 8),
+        "unet_diff.sh": (16, 70, 12),
     }
-    expected_validation = {
-        "Find_0.sh": 10,
-        "Find_1.sh": 12,
-        "unet_base.sh": 12,
-        "unet_c1.sh": 12,
-        "unet_diff.sh": 12,
-    }
-    for launcher_name, num_workers in expected_workers.items():
+    for launcher_name, (
+        num_workers,
+        max_epochs,
+        val_per_epoch,
+    ) in expected_training_scope.items():
         launcher_text = (shell_root / launcher_name).read_text(encoding="utf-8")
         assert f'"train.num_workers={num_workers}"' in launcher_text
         assert '"train.prefetch_factor=4"' in launcher_text
-        assert '"train.max_epochs=70"' in launcher_text
-        assert (
-            f'"train.val_per_epoch={expected_validation[launcher_name]}"'
-            in launcher_text
-        )
+        assert f'"train.max_epochs={max_epochs}"' in launcher_text
+        assert f'"train.val_per_epoch={val_per_epoch}"' in launcher_text
         assert '"train.scheduler.warmup_ratio=0.005"' in launcher_text
     for launcher_name in ("Find_0.sh", "Find_1.sh"):
         launcher_text = (shell_root / launcher_name).read_text(encoding="utf-8")
@@ -107,14 +101,14 @@ def test_training_launchers_use_v3_worker_and_scope_contracts() -> None:
         encoding="utf-8"
     )
     assert "--sh Find_1.sh --resource h100 --gpus 2 --cpus 64" in submit_text
-    assert "--sh unet_c1.sh --resource h100 --gpus 1 --cpus 16" in submit_text
+    assert "--sh unet_c1.sh --resource h100 --gpus 1 --cpus 32" in submit_text
 
     unet_text = (shell_root / "unet_c1.sh").read_text(encoding="utf-8")
     no_mainchain_text = (shell_root / "unet_c1_no_mainchain.sh").read_text(
         encoding="utf-8"
     )
-    assert 'protein_mainchain_weight="0.0"' in unet_text
-    assert 'nucleic_mainchain_weight="0.0"' in unet_text
+    assert 'protein_mainchain_weight="0.05"' in unet_text
+    assert 'nucleic_mainchain_weight="0.05"' in unet_text
     assert "UNET_C1_VARIANT=no_mainchain" in no_mainchain_text
     assert 'TASK_GPUS="${TASK_GPUS:-2}"' in no_mainchain_text
 
@@ -190,10 +184,10 @@ def test_find_models_only_change_voxel_receptor_construction() -> None:
 
 @pytest.mark.parametrize(
     "experiment",
-    (*FIND_EXPERIMENTS, "unet_base", "unet_c1", "unet_diff"),
+    (*FIND_EXPERIMENTS, "unet_base", "unet_diff"),
 )
-def test_current_experiments_only_use_stage1_dataset_contract(experiment: str) -> None:
-    """验证当前实验只实例化 Stage1Dataset, 不再暴露旧 BOX 目录平衡采样入口."""
+def test_method_two_experiments_keep_the_v1_dataset_contract(experiment: str) -> None:
+    """验证方式二实验继续使用 V1 冻结文件与 25/0.5/25 参数."""
 
     cfg = _compose(experiment)
     assert cfg.dataset._target_ == "src.datasets.stage1_dataset.Stage1Dataset"
@@ -250,6 +244,13 @@ def test_unet_c1_config_is_density_only_and_exports_final_v_feature() -> None:
 
     cfg = _compose("unet_c1")
     find1 = _compose("CPC1/Find_1")
+    assert cfg.dataset._target_ == "src.datasets.stage1_dataset.Stage1Dataset"
+    assert cfg.dataset.split_val.endswith(
+        "/validation_selection_pdb_centric_v2.npz"
+    )
+    assert cfg.dataset.pdb_foreground_box_num == 50
+    assert cfg.dataset.pdb_foreground_fraction_target == pytest.approx(25 / 33)
+    assert cfg.dataset.pdb_occurrence_foreground_box_cap == 1
     assert cfg.dataset.stage1_model_name == "unet_c1"
     assert list(cfg.dataset.density_channel_config.enabled_channels) == ["exp_clipnorm_nopost"]
     assert cfg.model.backbone.point_backbone is None

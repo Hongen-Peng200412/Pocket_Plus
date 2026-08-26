@@ -1,6 +1,6 @@
 # Stage1 V3 Dataset 数据契约
 
-本文说明 `Stage1Dataset` 当前正式训练使用的 V3 数据位置、PDB 中心采样规则和运行时裁块边界。V3 逐 PDB 几何候选池保持不变；历史请求比例及其选择文件仍留在正式目录中供追溯，但不再决定新训练的样本集合。
+本文说明 `Stage1Dataset` 当前正式训练使用的 V3 数据位置、两套 PDB 中心采样规则和运行时裁块边界。V3 逐 PDB 几何候选池保持不变；V1 与 V2 验证文件独立共存，并分别服务采样方式二与采样方式三。
 
 ## 正式位置
 
@@ -27,11 +27,12 @@ V3 split 与 BOX pool 根目录为：
     ├── manifest.json
     ├── validation_selection.npz
     ├── validation_selection_pdb_centric.npz
+    ├── validation_selection_pdb_centric_v2.npz
     ├── config.json
     └── _COMPLETE
 ```
 
-`configs/dataset/stage1_find.yaml`、`stage1_unet_base.yaml`、`stage1_unet_c1.yaml` 与 `stage1_unet_diff.yaml` 都指向上述位置。训练不扫描目录中的额外 PDB 文件，只读取 `manifest.json` 声明的文件。活动验证入口只读取 `validation_selection_pdb_centric.npz`；原 `validation_selection.npz` 与 `config.json::entry_ratio` 仅记录 V3 几何池的历史构建规则。
+`configs/dataset/stage1_find.yaml`、`stage1_unet_base.yaml`、`stage1_unet_c1.yaml` 与 `stage1_unet_diff.yaml` 都指向上述位置。训练不扫描目录中的额外 PDB 文件，只读取 `manifest.json` 声明的文件。Find、unet_base 与 unet_diff 读取 V1 `validation_selection_pdb_centric.npz`；unet_c1 读取 V2 `validation_selection_pdb_centric_v2.npz`。原 `validation_selection.npz` 与 `config.json::entry_ratio` 仅记录 V3 几何池的历史构建规则。
 
 ## 完整图资产
 
@@ -59,11 +60,11 @@ Dataset 以 `numpy.load(..., mmap_mode="r")` 打开完整图，只复制实际 8
 | `bias_start_zyx` | `int32 (O,30,3)` | 每个 occurrence 的 30 个 bias 候选 |
 | `context_start_zyx` | `int32 (C,3)` | PDB 级 context 候选 |
 
-所有起点都是完整图内 80³ BOX 的零基 ZYX corner index。当前训练使用三个显式参数：`pdb_foreground_box_num=25`、`pdb_foreground_fraction_target=0.5` 与 `pdb_occurrence_foreground_box_cap=25`。这里的 foreground 只表示 bias BOX，context BOX 仍沿用原名。
+所有起点都是完整图内 80³ BOX 的零基 ZYX corner index。训练配置用 `pdb_foreground_box_num`、`pdb_foreground_fraction_target` 与 `pdb_occurrence_foreground_box_cap` 三个参数定义请求；这里的 foreground 只表示 bias BOX，context BOX 仍沿用原名。
 
-设一个 PDB 含 `O` 个 occurrence。该 PDB 在一个 epoch 的实际 bias 数量为 `min(25, 25O)`；正式 pool 的每个 PDB 至少含一个 occurrence，因此实际数量固定为 25。这些 bias 先尽可能均匀地分给全部 occurrence，不能整除的余数沿稳定 occurrence 排列逐 epoch 轮转。每个 occurrence 再从自己的 30 个 bias 候选中无放回选择所需数量。context 的目标数量由 `round(25 × (1 - 0.5) / 0.5)` 得到，同样固定为 25；候选从该 PDB 的 context 池中无放回选择。正式 train 与 validation 的每个 PDB 都有超过 25 个 context 候选，因此活动实现直接使用这一数据事实，不增加补抽、放回或回退分支。
+V1 使用 `25/0.5/25`：每个 PDB 固定抽取 25 个 bias 与 25 个 context，bias 尽可能均匀分给全部 occurrence，不能整除的余数逐 epoch 轮转。V2 使用 `50/0.7575757575757576/1`：一个含 `O` 个 occurrence 的 PDB 抽取 `min(O,50)` 个 bias，每个 occurrence 最多一个；context 目标数量由 `round(50 × (1 - 25/33) / (25/33))` 得到，固定为 16。两种规则都从既有候选中无放回抽取；正式 pool 的 context 候选数满足这两个目标数量。
 
-验证以 `SeedSequence(3407, spawn_key=(2,))` 的独立随机域从 200 个 validation PDB 中无放回选择 150 个身份，保持 manifest 相对顺序，并把这 150 个 PDB 的 epoch 0 请求冻结到 `validation_selection_pdb_centric.npz`。该文件精确包含以下 11 个字段：
+V1 以 `SeedSequence(3407, spawn_key=(2,))` 的独立随机域从 200 个 validation PDB 中选择 150 个身份，并把方式二的 epoch 0 请求冻结到 `validation_selection_pdb_centric.npz`。V2 使用全部 200 个 validation PDB，并把方式三的 epoch 0 请求冻结到 `validation_selection_pdb_centric_v2.npz`。两个文件都精确包含以下 11 个字段：
 
 | 字段 | dtype 与形状 | 含义 |
 | --- | --- | --- |
@@ -75,17 +76,17 @@ Dataset 以 `numpy.load(..., mmap_mode="r")` 打开完整图，只复制实际 8
 | `bias_candidate_index` | `int16 (N_bias,)` | 对应 occurrence 的 `bias_start_zyx` 候选编号 |
 | `context_pdb_index` | `int32 (N_context,)` | context 请求所属 PDB |
 | `context_candidate_index` | `int32 (N_context,)` | 对应 PDB 的 `context_start_zyx` 候选编号 |
-| `pdb_foreground_box_num` | `int32` 标量 | 冻结时每个 PDB 的目标 bias BOX 数量，值为 25 |
-| `pdb_foreground_fraction_target` | `float64` 标量 | 冻结时 bias 占目标总 BOX 的比例，值为 0.5 |
-| `pdb_occurrence_foreground_box_cap` | `int32` 标量 | 冻结时单 occurrence 每个 epoch 的 bias 上限，值为 25 |
+| `pdb_foreground_box_num` | `int32` 标量 | 冻结时每个 PDB 的目标 bias BOX 数量；V1 为 25，V2 为 50 |
+| `pdb_foreground_fraction_target` | `float64` 标量 | 冻结时 bias 占目标总 BOX 的比例；V1 为 0.5，V2 为 0.7575757575757576 |
+| `pdb_occurrence_foreground_box_cap` | `int32` 标量 | 冻结时单 occurrence 每个 epoch 的 bias 上限；V1 为 25，V2 为 1 |
 
 Dataset 按文件顺序完整展开这些请求，不在验证期间重新抽样。三个采样参数标量只记录冻结契约；请求展开函数不读取或校验它们。
 
-活动代码没有 `box_sample_fraction`，也不为训练请求落盘额外选择文件。训练请求由 manifest 和当前 epoch 动态生成；验证只有上述一份新增冻结文件。
+活动代码没有 `box_sample_fraction`，也不为训练请求落盘额外选择文件。训练请求由 manifest 和当前 epoch 动态生成；验证只接受上述两个精确文件名，不搜索或展开其他 NPZ。
 
 ## DataLoader 边界
 
-- `Find_1.sh` 的双卡任务申请 64 CPU，每个 rank 使用 30 个 DataLoader worker；其余当前 Stage1 入口每个 rank 使用 16 个 worker。
+- `Find_1.sh` 的双卡任务申请 64 CPU，每个 rank 使用 24 个 DataLoader worker；`unet_c1.sh` 的单卡任务申请 32 CPU，使用 30 个 worker；其余当前 Stage1 入口每个 rank 使用 16 个 worker。
 - `prefetch_factor=4`、`pin_memory=true`、`persistent_workers=false`。
 - `persistent_workers=false` 是请求语义的一部分：主进程调用 `set_epoch` 后，新 worker 才能看到该 epoch 的请求序列。
 

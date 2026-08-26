@@ -49,12 +49,13 @@ bash 训练与运行/submit_task.sh \
   --gpus 1 \
   --cpus 16
 
-# unet_c1 主链版：一台节点、一张 H100。
+# unet_c1 采样方式三主链版：一台节点、一张 H100；退出后保留 allocation。
 bash 训练与运行/submit_task.sh \
   --sh unet_c1.sh \
   --resource h100 \
   --gpus 1 \
-  --cpus 16
+  --cpus 32 \
+  --after_hold
 
 # unet_diff：一台节点、一张 A800。
 bash 训练与运行/submit_task.sh \
@@ -414,7 +415,7 @@ rm /home/penghongen/Feedback/Pocket_Plus/allocations/400001/after_lock_400001
 /storage/penghongen/AdaLigand/Ori_Data
 ```
 
-Find 的完整链路：
+Find、unet_base 与 unet_diff 的采样方式二链路：
 
 ```text
 Find_0.sh 或 Find_1.sh
@@ -446,18 +447,27 @@ Find 的完整链路：
 ```text
 训练脚本
 → export ADALIGAND_STAGE1_PREPARATION_ROOT
-→ configs/dataset/stage1_find.yaml:11
+→ 对应的 Dataset 配置
 → dataset.box_pool_root=<变量>/box_pool
 → dataset.split_train=<box_pool>/train
 → dataset.split_val=<box_pool>/validation_selection_pdb_centric.npz
 → UnifiedDataModule.setup()
 → Stage1Dataset.__init__()
 → build_request_source()
-→ PDB 中心训练请求或同规则的固定验证请求
+→ 采样方式二的 PDB 中心训练请求或 V1 固定验证请求
 → 具体 PDB、BOX 起点、样本角色和监督开关
 ```
 
-它决定“从 A–G 完整图中切哪些 80³ BOX”，不是密度与标签本身的位置。活动 Dataset 配置同时固定 `pdb_foreground_box_num=25`、`pdb_foreground_fraction_target=0.5` 和 `pdb_occurrence_foreground_box_cap=25`：正式 pool 的每个 PDB 至少含一个 occurrence，因此每个 PDB 固定使用 25 个 bias 与 25 个 context。验证文件以 seed 3407 从 200 个 validation PDB 中无放回选择 150 个身份，并冻结同一规则的 epoch 0。
+`unet_c1.sh` 使用同一 BOX pool，但 Dataset 配置独立指向采样方式三的 V2 验证文件：
+
+```text
+configs/dataset/stage1_unet_c1.yaml
+→ dataset.split_train=<box_pool>/train
+→ dataset.split_val=<box_pool>/validation_selection_pdb_centric_v2.npz
+→ 采样方式三的动态训练请求或 V2 固定验证请求
+```
+
+这些路径决定“从 A–G 完整图中切哪些 80³ BOX”，不是密度与标签本身的位置。方式二固定 `25/0.5/25`，每个 PDB 使用 25 个 bias 与 25 个 context；V1 以 seed 3407 从 200 个 validation PDB 中冻结 150 个身份。方式三固定 `50/0.7575757575757576/1`，每个 occurrence 最多贡献一个 bias，并为每个 PDB 抽取 16 个 context；V2 冻结全部 200 个 validation PDB。
 
 #### `EXPERIMENT_FEEDBACK_ROOT`
 
@@ -528,16 +538,16 @@ bash 训练与运行/submit_task.sh \
 | 参数 | Find_0 | Find_1 | unet_base | unet_c1 | unet_diff |
 | --- | ---: | ---: | ---: | ---: | ---: |
 | 推荐 GPU | H100 × 2 | H100 × 2 | A800 × 1 | H100 × 1 | A800 × 1 |
-| Slurm CPU | 32 | 64 | 16 | 16 | 16 |
+| Slurm CPU | 32 | 64 | 16 | 32 | 16 |
 | 每卡 batch | 8 | 6 | 8 | 8 | 8 |
 | 全局 batch | 48 | 48 | 48 | 48 | 48 |
 | 梯度累积 | 3 | 4 | 6 | 6 | 6 |
-| DataLoader workers | 每 rank 16，总 32 | 每 rank 30，总 60 | 16 | 16 | 16 |
+| DataLoader workers | 每 rank 16，总 32 | 每 rank 24，总 48 | 16 | 30 | 16 |
 | 最大学习率 | `5e-5` | `5e-5` | `1e-4` | `1e-4` | `1e-4` |
 | CPC1/单阶段 warmup | `0.005` | `0.005` | `0.005` | `0.005` | `0.005` |
 | CPC1/单阶段 patience | 2 | 3 | 3 | 3 | 3 |
-| 最大 epoch | 70 | 70 | 70 | 70 | 70 |
-| 每 epoch 验证次数 | 10 | 12 | 12 | 12 | 12 |
+| 最大 epoch | 70 | 70 | 70 | 110 | 70 |
+| 每 epoch 验证次数 | 10 | 12 | 12 | 8 | 12 |
 | W&B | online | online | online | online | online |
 
 梯度累积来自：
@@ -551,7 +561,9 @@ unet_base/unet_c1/unet_diff：8 BOX/卡 × 1 卡 = 8 BOX/前向；48 ÷ 8 = 累�
 `train.strict_global_batch_size=true` 会要求这个除法得到整数；
 `train.enable_batch_size_tuning=false` 会阻止程序自动改动这些基线数值。
 
-PDB 中心采样使每个 epoch 固定包含 685,850 个训练 BOX。Find_0 的 10 次 validation 对应相邻验证事件之间约 68,585 个训练 BOX，其他当前入口的 12 次对应约 57,154 个；活动验证固定为 150 个 PDB、7,500 个 BOX。`max_epochs=70` 与 `warmup_ratio=0.005` 按最终训练决定保持不变。
+Find、unet_base 与 unet_diff 继续使用采样方式二：每个 epoch 固定包含 685,850 个训练 BOX，V1 验证固定为 150 个 PDB、7,500 个 BOX。Find_0 的 10 次 validation 对应相邻验证事件之间约 68,585 个训练 BOX，其余方式二入口的 12 次对应约 57,154 个。
+
+`unet_c1` 使用采样方式三：每个 epoch 包含 216,739 个 bias 和 219,472 个 context，共 436,211 个训练 BOX；`val_per_epoch=8` 对应相邻验证事件之间约 54,526 个训练 BOX。V2 验证固定全部 200 个 validation PDB，包含 3,305 个 bias 和 3,200 个 context，共 6,505 个 BOX。`max_epochs=110` 与 `warmup_ratio=0.005` 使 warmup 期间经过的 BOX 数量与方式二近似一致。
 
 ### 7.1 Find_0
 
@@ -586,6 +598,7 @@ experiment 所引用的损失配置。
 - 输出头和五项体素监督与新版 Find_1 对齐。
 - 单卡批量 8、全局批量 48，因此每次优化器更新累积 6 个前向。
 - 只有一个阶段，不执行 CPC2。
+- `unet_base` 与 `unet_diff` 保持采样方式二；本轮 `unet_c1` 独立使用采样方式三和 V2 验证文件。三种 `unet_c1` 采样实验最终仍须在同一 complete-map 数据与指标契约下比较，不直接以各自 BOX validation 分数决定胜负。
 
 ## 8. CPC1 与 CPC2 的执行边界
 

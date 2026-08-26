@@ -60,8 +60,8 @@ else
     ddp_find_unused_parameters=false
 fi
 
-formal_experiment_group="AdaLigand_Stage1/unet_c1/${variant}"
-formal_tag="unet_c1_${variant}"
+formal_experiment_group="AdaLigand_Stage1_pdb_centric_2/unet_c1/${variant}"
+formal_tag="unet_c1_${variant}_pdb_centric_2"
 run_stamp_base="${TASK_RUN_STAMP:-$(date '+%Y%m%dT%H%M%S')}"
 formal_stamp="${run_stamp_base}_formal"
 formal_run="${EXPERIMENT_FEEDBACK_ROOT}/logs/${formal_experiment_group//\//-}/${formal_tag//\//-}____${formal_stamp}"
@@ -79,10 +79,10 @@ training_overrides=(
     "train.batch_size=8"
     "train.strict_global_batch_size=true"
     "train.enable_batch_size_tuning=false"
-    "train.num_workers=16"
+    "train.num_workers=30"
     "train.prefetch_factor=4"
-    "train.max_epochs=70"
-    "train.val_per_epoch=12"
+    "train.max_epochs=110"
+    "train.val_per_epoch=8"
     "train.optimizer.lr=1.0e-4"
     "train.scheduler.warmup_ratio=0.005"
     "train.scheduler.patience=3"

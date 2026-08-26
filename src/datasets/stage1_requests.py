@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """定义并展开 Stage1 V3 几何池中的 80³ BOX 请求.
 
-主要入口是 :class:`Stage1TrainingRequestSet`, :func:`load_validation_selection` 和 :func:`build_request_source`. 训练请求按 PDB 分配 bias 与 context BOX, 验证请求从 ``validation_selection_pdb_centric.npz`` 读取冻结索引. 本模块返回带有完整图 ZYX 起点的请求, 不读取密度, 受体原子或监督数组.
+主要入口是 :class:`Stage1TrainingRequestSet`, :func:`load_validation_selection` 和 :func:`build_request_source`. 训练请求按 PDB 分配 bias 与 context BOX, 验证请求从 V1 ``validation_selection_pdb_centric.npz`` 或 V2 ``validation_selection_pdb_centric_v2.npz`` 读取冻结索引. 本模块返回带有完整图 ZYX 起点的请求, 不读取密度, 受体原子或监督数组.
 
 V3 pool 的顶层文件是 ``manifest.json``, ``_COMPLETE`` 和历史构建配置 ``config.json``. 每个 split 目录保存一个 PDB 一个 NPZ, NPZ 字段由 :class:`_PdbPool` 说明. 活动训练参数由 Hydra Dataset 配置提供, 不读取 ``config.json::entry_ratio``.
 """
@@ -18,6 +18,10 @@ import numpy as np
 
 STAGE1_BOX_SHAPE_ZYX = (80, 80, 80)
 BOX_POOL_MANIFEST_FILENAME = "manifest.json"
+_VALIDATION_SELECTION_FILENAMES = (
+    "validation_selection_pdb_centric.npz",
+    "validation_selection_pdb_centric_v2.npz",
+)
 _VALID_ROLES = {"center", "bias", "context", "sliding", "centered"}
 
 
@@ -256,13 +260,13 @@ class Stage1TrainingRequestSet:
     构造参数:
         - pool_directory: str | Path; ``stage1_preparation_box_pool_3/box_pool`` 下的 ``train`` 或 ``validation`` 目录; 父目录提供 ``_COMPLETE`` 和 ``manifest.json``.
         - seed: int; 请求抽样种子; 相同 seed, epoch 和 manifest 顺序得到相同请求.
-        - pdb_foreground_box_num: int; 每个 PDB 的目标 bias BOX 数量; 当前正式值为 25.
-        - pdb_foreground_fraction_target: float; bias BOX 占目标总 BOX 数量的比例; 当前正式值为 0.5.
-        - pdb_occurrence_foreground_box_cap: int; 单个 occurrence 每个 epoch 最多获得的 bias BOX 数量; 当前正式值为 25.
+        - pdb_foreground_box_num: int; 每个 PDB 的目标 bias BOX 数量; 由 Dataset 配置传入.
+        - pdb_foreground_fraction_target: float; bias BOX 占目标总 BOX 数量的比例; 由 Dataset 配置传入.
+        - pdb_occurrence_foreground_box_cap: int; 单个 occurrence 每个 epoch 最多获得的 bias BOX 数量; 由 Dataset 配置传入.
 
     生成规则:
         - 第 ``i`` 个 PDB 含 ``O_i`` 个 occurrence 时, 实际 bias 数量为 ``min(pdb_foreground_box_num, O_i * pdb_occurrence_foreground_box_cap)``.
-        - 当前正式参数为 ``25/0.5/25``, 且每个 PDB 至少含一个 occurrence, 因此每个 PDB 的实际 bias 数量都是 25.
+        - V1 使用 ``25/0.5/25``; V2 unet_c1 使用 ``50/0.7575757575757576/1``，使 occurrence 最多贡献一个 bias BOX，并为每个 PDB 固定抽取 16 个 context BOX.
         - bias 数量先整除分配给全部 occurrence, 余数沿稳定 occurrence 排列按 epoch 循环移动; 单个 occurrence 的数量不超过 cap.
         - context 目标数量按 ``round(pdb_foreground_box_num * (1 - fraction) / fraction)`` 计算, 不因实际 bias 数量不足而减少.
         - 每个 occurrence 从 30 个 bias 候选中无放回选择分配数量; 每个 PDB 从正式 context 候选池中无放回选择目标数量.
@@ -273,7 +277,7 @@ class Stage1TrainingRequestSet:
 
     公开属性:
         - requests: tuple[ResolvedStage1Crop, ...]; 当前 epoch 的不可变请求序列.
-        - pdb_context_box_num: int; 每个 PDB 固定抽取的 context BOX 数量; 当前三个正式参数对应 25.
+        - pdb_context_box_num: int; 每个 PDB 固定抽取的 context BOX 数量; V1 为 25，V2 为 16.
     """
 
     def __init__(
@@ -289,13 +293,13 @@ class Stage1TrainingRequestSet:
         构造参数:
             - pool_directory: str | Path; ``stage1_preparation_box_pool_3/box_pool`` 下的 ``train`` 或 ``validation`` 目录; 父目录提供 ``_COMPLETE`` 和 ``manifest.json``.
             - seed: int; 请求抽样种子; 相同 seed, epoch 和 manifest 顺序得到相同请求.
-            - pdb_foreground_box_num: int; 每个 PDB 的目标 bias BOX 数量; 当前正式值为 25.
-            - pdb_foreground_fraction_target: float; bias BOX 占目标总 BOX 数量的比例; 当前正式值为 0.5.
-            - pdb_occurrence_foreground_box_cap: int; 单个 occurrence 每个 epoch 最多获得的 bias BOX 数量; 当前正式值为 25.
+            - pdb_foreground_box_num: int; 每个 PDB 的目标 bias BOX 数量; 由 Dataset 配置传入.
+            - pdb_foreground_fraction_target: float; bias BOX 占目标总 BOX 数量的比例; 由 Dataset 配置传入.
+            - pdb_occurrence_foreground_box_cap: int; 单个 occurrence 每个 epoch 最多获得的 bias BOX 数量; 由 Dataset 配置传入.
 
         生成规则:
             - 第 ``i`` 个 PDB 含 ``O_i`` 个 occurrence 时, 实际 bias 数量为 ``min(pdb_foreground_box_num, O_i * pdb_occurrence_foreground_box_cap)``.
-            - 当前正式参数为 ``25/0.5/25``, 且每个 PDB 至少含一个 occurrence, 因此每个 PDB 的实际 bias 数量都是 25.
+            - V1 使用 ``25/0.5/25``; V2 unet_c1 使用 ``50/0.7575757575757576/1``，使 occurrence 最多贡献一个 bias BOX，并为每个 PDB 固定抽取 16 个 context BOX.
             - bias 数量先整除分配给全部 occurrence, 余数沿稳定 occurrence 排列按 epoch 循环移动; 单个 occurrence 的数量不超过 cap.
             - context 目标数量按 ``round(pdb_foreground_box_num * (1 - fraction) / fraction)`` 计算, 不因实际 bias 数量不足而减少.
             - 每个 occurrence 从 30 个 bias 候选中无放回选择分配数量; 每个 PDB 从正式 context 候选池中无放回选择目标数量.
@@ -306,7 +310,7 @@ class Stage1TrainingRequestSet:
 
         公开属性:
             - requests: tuple[ResolvedStage1Crop, ...]; 当前 epoch 的不可变请求序列.
-            - pdb_context_box_num: int; 每个 PDB 固定抽取的 context BOX 数量; 当前三个正式参数对应 25.
+            - pdb_context_box_num: int; 每个 PDB 固定抽取的 context BOX 数量; V1 为 25，V2 为 16.
         """
         # Path, 当前请求集合对应的 train 或 validation pool 目录.
         pool_directory = Path(pool_directory)
@@ -324,7 +328,7 @@ class Stage1TrainingRequestSet:
         self.pdb_foreground_fraction_target = float(pdb_foreground_fraction_target)
         # int, 单个 occurrence 在一个 epoch 内最多获得的 bias BOX 数量.
         self.pdb_occurrence_foreground_box_cap = int(pdb_occurrence_foreground_box_cap)
-        # int, 按目标 bias 数量与目标前景比例计算的 PDB 级 context BOX 数量; 正式值为 25.
+        # int, 按目标 bias 数量与目标前景比例计算的 PDB 级 context BOX 数量; V1 为 25，V2 为 16.
         self.pdb_context_box_num = int(
             round(
                 self.pdb_foreground_box_num
@@ -450,11 +454,11 @@ def load_validation_selection(
     """把冻结的 validation selection NPZ 展开为固定 BOX 请求.
 
     输入参数:
-        - selection_path: str | Path; ``validation_selection_pdb_centric.npz`` 路径; 该文件只保存 PDB/occurrence/candidate 索引与三个 PDB 中心采样参数, 不复制 BOX 起点数组.
+        - selection_path: str | Path; V1 ``validation_selection_pdb_centric.npz`` 或 V2 ``validation_selection_pdb_centric_v2.npz`` 路径; 两个文件都只保存 PDB/occurrence/candidate 索引与三个 PDB 中心采样参数, 不复制 BOX 起点数组.
         - box_pool_root: str | Path; V3 pool 根目录; 函数从其 validation manifest 找到每个 PDB 的 pool NPZ.
 
     形状符号:
-        - P: ``validation_pdb_id`` 保存的冻结 validation PDB 数量; 正式值为 150.
+        - P: ``validation_pdb_id`` 保存的冻结 validation PDB 数量; V1 为 150，V2 为 200.
         - N_center: center 请求数量.
         - N_bias: bias 请求数量.
         - N_context: context 请求数量.
@@ -468,9 +472,9 @@ def load_validation_selection(
         - ``bias_candidate_index``: int16, ``(N_bias,)``; 与前两个 bias 字段对齐, 定位 occurrence 的 30 个 bias 起点中的一个候选.
         - ``context_pdb_index``: int32, ``(N_context,)``; 定位每个 context 请求所属的 PDB.
         - ``context_candidate_index``: int32, ``(N_context,)``; 与 ``context_pdb_index`` 对齐, 定位 PDB 级 context 起点.
-        - ``pdb_foreground_box_num``: int32 标量; 每个 PDB 的目标 bias BOX 数量; 正式值为 25.
-        - ``pdb_foreground_fraction_target``: float64 标量; bias BOX 占目标总 BOX 数量的比例; 正式值为 0.5.
-        - ``pdb_occurrence_foreground_box_cap``: int32 标量; 单个 occurrence 每个 epoch 的 bias BOX 数量上限; 正式值为 25.
+        - ``pdb_foreground_box_num``: int32 标量; 每个 PDB 的目标 bias BOX 数量; V1 为 25，V2 为 50.
+        - ``pdb_foreground_fraction_target``: float64 标量; bias BOX 占目标总 BOX 数量的比例; V1 为 0.5，V2 为 0.7575757575757576.
+        - ``pdb_occurrence_foreground_box_cap``: int32 标量; 单个 occurrence 每个 epoch 的 bias BOX 数量上限; V1 为 25，V2 为 1.
 
     字段使用边界:
         - 本函数只读取 PDB 身份和七个请求索引字段来展开请求; 三个采样参数标量只记录冻结契约, 本函数不读取或校验它们.
@@ -482,7 +486,7 @@ def load_validation_selection(
         - requests: list[ResolvedStage1Crop]; 按全部 center, 全部 bias, 全部 context 的固定顺序展开; 函数只按已冻结索引查找, 不重新随机抽样, 也不读取密度或受体数组.
     """
 
-    # Path, 当前活动 validation selection NPZ 路径.
+    # Path, 调用方指定的 V1 或 V2 validation selection NPZ 路径.
     source = Path(selection_path)
     # dict[str, Path], validation PDB 身份到 manifest 声明 pool 文件的映射.
     manifest_paths = dict(_load_manifest_pool_paths(box_pool_root, "validation"))
@@ -604,7 +608,7 @@ def build_request_source(
     """根据路径形态创建 V3 动态训练请求集或固定 validation 请求列表.
 
     输入参数:
-        - split_file: str | Path; V3 ``train`` 目录或名为 ``validation_selection_pdb_centric.npz`` 的冻结选择文件.
+        - split_file: str | Path; V3 ``train`` 目录，或文件名精确为 ``validation_selection_pdb_centric.npz``、``validation_selection_pdb_centric_v2.npz`` 的冻结选择文件.
         - mode: str; 请求模式; 目录来源只允许 ``train``, 冻结 validation 文件不依赖该模式重新抽样.
         - box_pool_root: str | Path | None; validation selection 所属的 V3 pool 根目录; 读取冻结文件时必须提供.
         - seed: int; 只供训练目录分支传给 :class:`Stage1TrainingRequestSet`; 冻结 validation 分支忽略该参数.
@@ -616,10 +620,10 @@ def build_request_source(
         - source: Stage1TrainingRequestSet | list[ResolvedStage1Crop]; 目录来源返回按 epoch 更新的训练请求集, 冻结文件来源返回固定请求列表.
 
     路径分支:
-        - 仅接受 V3 train 目录和 ``validation_selection_pdb_centric.npz``; 其他路径不执行旧版 split, fraction 或隐式搜索回退.
+        - 仅接受 V3 train 目录和两个正式 validation selection 文件名; 其他路径不执行旧版 split, fraction 或隐式搜索回退.
     """
 
-    # Path, 训练 pool 目录或当前活动 validation selection 文件.
+    # Path, 训练 pool 目录或调用方指定的正式 validation selection 文件.
     source = Path(split_file)
     if source.is_dir():
         if str(mode).lower() != "train":
@@ -631,8 +635,9 @@ def build_request_source(
             pdb_foreground_fraction_target=pdb_foreground_fraction_target,
             pdb_occurrence_foreground_box_cap=pdb_occurrence_foreground_box_cap,
         )
-    if source.name == "validation_selection_pdb_centric.npz" and box_pool_root is not None:
+    if source.name in _VALIDATION_SELECTION_FILENAMES and box_pool_root is not None:
         return load_validation_selection(source, box_pool_root)
     raise ValueError(
-        "Stage1 请求来源必须是 V3 train 目录或 validation_selection_pdb_centric.npz。"
+        "Stage1 请求来源必须是 V3 train 目录、validation_selection_pdb_centric.npz "
+        "或 validation_selection_pdb_centric_v2.npz。"
     )

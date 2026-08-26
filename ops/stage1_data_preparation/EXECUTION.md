@@ -51,6 +51,14 @@
 - 代码布局与 Git、中文注释、科学逻辑三类独立审查各完成三轮全面核查；第三轮整改后的三类窄口径复核均为 `APPROVED`。最终冻结脚本使用的验证 PDB 随机域、资源说明、配置测试、函数布局、Docstring 和字段注释均已纳入复核。
 - 本次没有提交、取消、重启或修改任何 GPU Job。
 
+## 2026-08-26 采样方式三 V2 验证选择
+
+- 新增的硬编码生产入口为 `python -m ops.stage1_data_preparation.freeze_validation_selection_pdb_centric_2`。入口读取 validation manifest 的全部 200 个 PDB，以 `50/0.7575757575757576/1` 参数冻结 epoch 0，只写 `/storage/penghongen/AdaLigand/Ori_Data/stage1_preparation_box_pool_3/box_pool/validation_selection_pdb_centric_v2.npz`。
+- V2 产物保存 200 个 PDB、3,305 个 bias、3,200 个 context 和 0 个 center 请求，共 6,505 个 BOX。11 个字段的名称、顺序、dtype 与形状均通过一次性服务器核验；七组索引均落在对应 PDB、occurrence 和候选范围内，三个采样标量分别为 `50`、`0.7575757575757576` 和 `1`。生产请求展开结果同样为 3,305 个 bias 与 3,200 个 context。
+- V2 文件的实际 SHA-256 为 `0c92a731a7676f8083a250ff54e13dd2356e2cc462e383f6ad45c4c30de5fda2`。该哈希只作为本次执行证据记录，没有写入 Python、YAML、shell 或测试代码。
+- 运行冻结入口前后，V1 `validation_selection_pdb_centric.npz` 的 SHA-256 均为 `546ebd3a1f07b230af42911b6740f466c6af289c8bff91a387c4eb8b1d69dd8e`，证明 V2 生产没有读取后改写、删除或覆盖 V1。
+- Windows 本地定向回归 52 项通过，数据准备目录回归 10 项通过；Hydra 组合得到 V2 路径与 `50/0.7575757575757576/1`，Python AST、`unet_c1.sh` 与 `submit_task.sh` 的 `bash -n`、`git diff --check` 均通过。本轮保持进入任务前的暂存区索引不变，没有暂存或提交实现。
+
 ## 接续位置
 
 后续训练 I/O 适配不得重复构造 split 或 BOX pool，也不得重新写入迁移后的 NPZ。当前第三版产物和下一轮实施停点记录在 AdaLigand 的 `文档/exec_plan/Stage1第三版训练IO与入口实施.md`；完整接手信息记录在 `CLAUDE/memory/handoffs/2026-08-17-stage1-v3数据准备完成与训练IO接续.md`。

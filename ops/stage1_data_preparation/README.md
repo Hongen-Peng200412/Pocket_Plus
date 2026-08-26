@@ -1,6 +1,6 @@
 # Stage1 v3 数据准备工具
 
-本目录保存第三版数据准备的完整生产入口：把四个完整体数组从压缩 NPZ 迁移到同目录 NPY；按 EMDB 首次发布时间、质量和资产契约冻结 Stage1 v3 划分；生成逐 PDB bias/context 几何候选池；从既有候选池一次性冻结当前 PDB 中心验证选择。最后一步不重建或改写 V3 候选池，也不修改原 `validation_selection.npz`。
+本目录保存第三版数据准备的完整生产入口：把四个完整体数组从压缩 NPZ 迁移到同目录 NPY；按 EMDB 首次发布时间、质量和资产契约冻结 Stage1 v3 划分；生成逐 PDB bias/context 几何候选池；从既有候选池分别冻结采样方式二和方式三的 PDB 中心验证选择。最后两项冻结都不重建或改写 V3 候选池，也不修改原 `validation_selection.npz`；V2 产物不会覆盖 V1。
 
 ## 目录与稳定入口
 
@@ -11,6 +11,7 @@ ops/stage1_data_preparation/
 ├── freeze_split.py
 ├── build_box_pool_3.py
 ├── freeze_validation_selection_pdb_centric.py
+├── freeze_validation_selection_pdb_centric_2.py
 ├── utils/
 │   ├── __init__.py
 │   └── box_pool.py
@@ -92,17 +93,25 @@ BOX pool 根目录为 `/storage/penghongen/AdaLigand/Ori_Data/stage1_preparation
 
 根目录还包含 `manifest.json`、`validation_selection.npz`、`config.json`、`summary.json` 和最后发布的 `_COMPLETE`。这些文件与逐 PDB NPZ 共同构成已经验收的 V3 几何池；其中 `config.json::entry_ratio` 和原 `validation_selection.npz` 记录历史 `0:5:5`/`0:1:1` 请求规则，不再决定新训练的样本集合。
 
-当前活动训练直接复用上述逐 PDB候选数组，并由 Dataset 配置提供三个参数：
+当前训练直接复用上述逐 PDB 候选数组，并由 Dataset 配置提供三个参数。采样方式二由 Find、unet_base 与 unet_diff 使用：
 
 - `pdb_foreground_box_num=25`：每个 PDB 的目标 bias BOX 数量。
 - `pdb_foreground_fraction_target=0.5`：bias BOX 占目标 bias 与 context BOX 总数的比例。
 - `pdb_occurrence_foreground_box_cap=25`：单个 occurrence 在一个 epoch 内最多获得的 bias BOX 数量；该值等于每 PDB 的目标 bias 数量。
 
-设一个 PDB 含 `O` 个 occurrence，实际 bias 数量为 `min(25, 25O)`。正式 pool 的每个 PDB 至少含一个 occurrence，因此 bias 数量固定为 25；bias 尽可能均匀地分给全部 occurrence，不能整除的余数沿稳定排列逐 epoch 轮转。context 数量同样固定为 25。正式 train 与 validation 的每个 PDB 都有超过 25 个 context 候选，选择时不需要放回或回退。
+设一个 PDB 含 `O` 个 occurrence，方式二的实际 bias 数量为 `min(25, 25O)`。正式 pool 的每个 PDB 至少含一个 occurrence，因此 bias 数量固定为 25；bias 尽可能均匀地分给全部 occurrence，不能整除的余数沿稳定排列逐 epoch 轮转。context 数量同样固定为 25。
+
+采样方式三只由本轮 unet_c1 使用：
+
+- `pdb_foreground_box_num=50`：每个 PDB 的目标 bias BOX 数量。
+- `pdb_foreground_fraction_target=0.7575757575757576`：等于 `25/33`，使每个 PDB 固定抽取 16 个 context BOX。
+- `pdb_occurrence_foreground_box_cap=1`：单个 occurrence 每个 epoch 最多贡献一个 bias BOX。
+
+方式三的实际 bias 数量为 `min(O,50)`，不因 bias 数量不足而减少 16 个 context。正式 train 的 13,717 个 PDB 每个 epoch 产生 216,739 个 bias 与 219,472 个 context，共 436,211 个请求。正式 train 与 validation 的每个 PDB 都有足够的 context 候选；两种方式都从候选池中无放回选择，不需要补抽、放回或回退。
 
 ## PDB 中心验证选择的一次性冻结
 
-`freeze_validation_selection_pdb_centric.py` 是保留在 `ops/stage1_data_preparation/` 中的硬编码生产脚本，不提供参数化命令行。脚本固定读取正式 validation pool，使用 `SeedSequence(3407, spawn_key=(2,))` 的独立随机域从 200 个 PDB 中无放回选择 150 个身份，再以 `25/0.5/25` 参数生成 epoch 0 请求并原子写入：
+V1 脚本 `freeze_validation_selection_pdb_centric.py` 是保留在 `ops/stage1_data_preparation/` 中的硬编码生产入口，不提供参数化命令行。它固定读取正式 validation pool，使用 `SeedSequence(3407, spawn_key=(2,))` 的独立随机域从 200 个 PDB 中无放回选择 150 个身份，再以 `25/0.5/25` 参数生成 epoch 0 请求并原子写入：
 
 ```text
 /storage/penghongen/AdaLigand/Ori_Data/stage1_preparation_box_pool_3/box_pool/validation_selection_pdb_centric.npz
@@ -113,6 +122,20 @@ BOX pool 根目录为 `/storage/penghongen/AdaLigand/Ori_Data/stage1_preparation
 ```bash
 python -m ops.stage1_data_preparation.freeze_validation_selection_pdb_centric
 ```
+
+V2 脚本 `freeze_validation_selection_pdb_centric_2.py` 同样是硬编码生产入口。它读取 validation manifest 的全部 200 个 PDB，以 `50/0.7575757575757576/1` 参数冻结 epoch 0，请求并原子写入独立文件：
+
+```text
+/storage/penghongen/AdaLigand/Ori_Data/stage1_preparation_box_pool_3/box_pool/validation_selection_pdb_centric_v2.npz
+```
+
+准确运行命令为：
+
+```bash
+python -m ops.stage1_data_preparation.freeze_validation_selection_pdb_centric_2
+```
+
+V2 保存 200 个 PDB、3,305 个 bias、3,200 个 context 和 0 个 center 请求。该脚本只写 V2，不读取、删除或覆盖 V1 `validation_selection_pdb_centric.npz`。
 
 新 NPZ 精确包含以下 11 个字段：
 
@@ -126,11 +149,11 @@ python -m ops.stage1_data_preparation.freeze_validation_selection_pdb_centric
 | `bias_candidate_index` | `int16 (N_bias,)` | 对应 occurrence 的 `bias_start_zyx` 候选编号 |
 | `context_pdb_index` | `int32 (N_context,)` | context 请求所属 PDB |
 | `context_candidate_index` | `int32 (N_context,)` | 对应 PDB 的 `context_start_zyx` 候选编号 |
-| `pdb_foreground_box_num` | `int32` 标量 | 冻结时每个 PDB 的目标 bias BOX 数量，值为 25 |
-| `pdb_foreground_fraction_target` | `float64` 标量 | 冻结时 bias 占目标总 BOX 的比例，值为 0.5 |
-| `pdb_occurrence_foreground_box_cap` | `int32` 标量 | 冻结时单 occurrence 每个 epoch 的 bias 上限，值为 25 |
+| `pdb_foreground_box_num` | `int32` 标量 | 冻结时每个 PDB 的目标 bias BOX 数量；V1 为 25，V2 为 50 |
+| `pdb_foreground_fraction_target` | `float64` 标量 | 冻结时 bias 占目标总 BOX 的比例；V1 为 0.5，V2 为 0.7575757575757576 |
+| `pdb_occurrence_foreground_box_cap` | `int32` 标量 | 冻结时单 occurrence 每个 epoch 的 bias 上限；V1 为 25，V2 为 1 |
 
-脚本不会修改逐 PDB NPZ、`manifest.json`、`validation_selection.npz`、`config.json`、`summary.json` 或 `_COMPLETE`。
+两个脚本都不会修改逐 PDB NPZ、`manifest.json`、`validation_selection.npz`、`config.json`、`summary.json` 或 `_COMPLETE`；两者的输出路径彼此独立。
 
 ## 2026-08-17 正式运行结果
 
@@ -138,6 +161,7 @@ python -m ops.stage1_data_preparation.freeze_validation_selection_pdb_centric
 - 冻结划分：train 13,717 PDB，validation 200 PDB，calibration 100 PDB，日期留出 2,497 PDB，缺日期隔离 357 PDB。
 - BOX pool：train 和 validation 分别发布 13,717 与 200 个 PDB NPZ；两者均无零 context PDB。2026-08-17 初次发布的验证选择包含 16,525 个 bias 与 16,525 个 context；2026-08-18 按历史 `0:1:1` 规则覆盖后的 `validation_selection.npz` 包含 3,305 个 bias 与 3,305 个 context。两份历史结果的 center 都为 0。
 - PDB 中心验证选择：2026-08-24 从既有 200 个 validation PDB 中按 `SeedSequence(3407, spawn_key=(2,))` 无放回冻结 150 个身份，以及 3,750 个 bias、3,750 个 context 和 0 个 center 请求。150 个 PDB 都恰好包含 25 个 bias 与 25 个 context，并按原 validation manifest 顺序保存。`validation_selection_pdb_centric.npz` 为 71,150 字节，SHA-256 为 `546ebd3a1f07b230af42911b6740f466c6af289c8bff91a387c4eb8b1d69dd8e`。
+- 采样方式三 V2 验证选择：2026-08-26 从同一 validation manifest 冻结全部 200 个 PDB，以及 3,305 个 bias、3,200 个 context 和 0 个 center 请求。V2 只写 `validation_selection_pdb_centric_v2.npz`；生产前后的 V1 哈希一致。V2 的实际哈希与逐字段验收证据见同目录 `EXECUTION.md`。
 - Slurm 证据：迁移数组/复核为 Job `343572`/`343835`，划分为 Job `345237`，BOX pool 数组/复核为 Job `346035`/`346063`；全部以退出码 `0:0` 完成。
 - 第二版 `stage1_preparation_box_pool_2` 没有被读取或改写。详细计数、路径和审查结论见同目录 `EXECUTION.md`。
 
@@ -165,4 +189,4 @@ python -m pytest -q ops/stage1_data_preparation/tests
 
 ## 训练消费状态
 
-第三版产物现在由唯一的 `src/datasets/stage1_dataset.py::Stage1Dataset` 直接消费。四个完整体 NPY 以只读 mmap 延迟打开；训练按 PDB 动态生成 `25` 个目标 bias 与 `25` 个固定 context 请求，验证展开 `validation_selection_pdb_centric.npz`。`utils/box_pool.py` 只供原 V3 构建入口复用，集中 occurrence mask、确定性 PDB seed、bias/context 起点和历史 validation selection 冻结逻辑；当前 PDB 中心选择由正式请求模块 `src/datasets/stage1_requests.py` 定义，一次性脚本只调用该生产逻辑并保存 epoch 0。
+第三版产物由唯一的 `src/datasets/stage1_dataset.py::Stage1Dataset` 直接消费。四个完整体 NPY 以只读 mmap 延迟打开；Find、unet_base 与 unet_diff 按方式二动态生成请求并展开 V1，unet_c1 按方式三动态生成请求并展开 V2。`utils/box_pool.py` 只供原 V3 构建入口复用，集中 occurrence mask、确定性 PDB seed、bias/context 起点和历史 validation selection 冻结逻辑；当前 PDB 中心选择由正式请求模块 `src/datasets/stage1_requests.py` 定义，两份一次性脚本都只调用该生产逻辑并保存 epoch 0。

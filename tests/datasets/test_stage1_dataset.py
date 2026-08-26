@@ -20,10 +20,10 @@ from src.datasets.stage1_dataset import Stage1Dataset
 from src.datasets.stage1_requests import (
     ResolvedStage1Crop,
     Stage1TrainingRequestSet,
+    build_request_source,
     centered_start_from_centroid_zyx,
     centered_start_from_sparse_mask,
     load_split_pdb_ids,
-    load_validation_selection,
     resolve_stage1_start,
 )
 
@@ -522,13 +522,23 @@ def test_foreground_remainder_rotates_between_occurrences(tmp_path: Path) -> Non
     }
 
 
-def test_validation_selection_expands_pdb_centric_indices(tmp_path: Path) -> None:
-    """活动 validation 文件按冻结索引展开 bias 与 PDB 级 context."""
+@pytest.mark.parametrize(
+    "selection_filename",
+    (
+        "validation_selection_pdb_centric.npz",
+        "validation_selection_pdb_centric_v2.npz",
+    ),
+)
+def test_validation_selection_expands_both_formal_file_names(
+    tmp_path: Path,
+    selection_filename: str,
+) -> None:
+    """V1 与 V2 文件名共用冻结索引展开逻辑."""
 
     pool_root = _write_v3_pool(tmp_path)
     validation_ids = np.asarray([b"2def"], dtype="S4")
     np.savez(
-        pool_root / "validation_selection_pdb_centric.npz",
+        pool_root / selection_filename,
         validation_pdb_id=validation_ids,
         center_pdb_index=np.empty(0, dtype=np.int32),
         center_occurrence_id=np.empty(0, dtype=np.int32),
@@ -541,11 +551,28 @@ def test_validation_selection_expands_pdb_centric_indices(tmp_path: Path) -> Non
         pdb_foreground_fraction_target=np.asarray(0.5, dtype=np.float64),
         pdb_occurrence_foreground_box_cap=np.asarray(25, dtype=np.int32),
     )
-    requests = load_validation_selection(
-        pool_root / "validation_selection_pdb_centric.npz",
-        pool_root,
+    requests = build_request_source(
+        pool_root / selection_filename,
+        mode="val",
+        box_pool_root=pool_root,
+        seed=3407,
+        **_pdb_sampling_config(),
     )
     assert Counter(request.role for request in requests) == {"bias": 1, "context": 1}
+
+
+def test_validation_selection_rejects_other_npz_file_names(tmp_path: Path) -> None:
+    """请求入口不把任意 NPZ 误识别为正式 validation selection."""
+
+    pool_root = _write_v3_pool(tmp_path)
+    with pytest.raises(ValueError, match="validation_selection_pdb_centric_v2"):
+        build_request_source(
+            pool_root / "validation_selection_pdb_centric_copy.npz",
+            mode="val",
+            box_pool_root=pool_root,
+            seed=3407,
+            **_pdb_sampling_config(),
+        )
 
 
 def test_context_and_bias_generators_remain_deterministic() -> None:
