@@ -224,6 +224,16 @@
       "date": "2026-08-26",
       "summary": "Stage1 F2 blobs 的 beta=1 basic 增量实验完成：Job 356956 复用既有 F2 blobs，在 calibration 拟合绝对分数阈值并冻结评估 validation；100/200 个逐 PDB 结果和 micro、macro、PRAUC 汇总均闭合，原 beta=2 参数未被覆盖，全部本地改动保持 unstaged。",
       "handoff": "CLAUDE/memory/handoffs/2026-08-26-stage1-f2-blobs-beta1-trial.md"
+    },
+    {
+      "date": "2026-08-31",
+      "summary": "Stage1 采样方式三的 V2 验证产物和 unet_c1 正式入口已验收；Job 358384 使用单 H100、32 CPU、30 workers 在 hnode01 稳定训练，生产请求数为训练 436211、验证 6505。W&B run 9dsi7i9w 已完成十七次完整验证并处于 epoch 2；第十七次配体体素 PRAUC 为 0.5449、受体 PRAUC 创新高至 0.6181，当前配体体素最佳仍为第十六次的 0.5507；任务继续推进且无显式错误。",
+      "handoff": "CLAUDE/memory/handoffs/2026-08-28-stage1-pdb-centric-v2-unet-c1-running.md"
+    },
+    {
+      "date": "2026-08-31",
+      "summary": "Stage1 密度通道消融 Job 350302（unet_base）在实际学习率衰减 3 次后按配置正常结束，最终 global step 39508，checkpoint 已写入并进入 try_lock；after_hold 资源和全部锁保持原状。Job 350305（unet_diff）继续正常训练。",
+      "handoff": "CLAUDE/memory/handoffs/2026-08-21-unet-density-ablation-guard.md"
     }
   ],
   "blockers": [

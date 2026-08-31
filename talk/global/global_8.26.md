@@ -13,7 +13,7 @@ AI agent应该自己先仔细了解我们整体项目的坐标：已经做了什
 - "C:\Users\15919\Desktop\Builder"(stage3)
 
 
-——————————————————————————————————————————————————— 以下写于 8.19 日, 注意日期，注意可能的过时风险 ———————————————————————————————————————————————————
+——————————————————————————————————————————————————— 以下写于 8.26 日, 注意日期，注意可能的过时风险 ———————————————————————————————————————————————————
 
 
 # Stage1:
@@ -89,10 +89,7 @@ unet_c1: pencounkdual-111/AdaLigand_Stage1/6uuzdbgs
 
 1. `C:\Users\15919\Desktop\Pocket_Plus\ops\stage1_data_preparation\freeze_validation_selection_pdb_centric_2.py` 使用全部 200 个 validation PDB，并采用方式三的三个采样参数。脚本只生成独立的 `validation_selection_pdb_centric_v2.npz`，不读取、删除或覆盖方式二的 V1 文件。
 
-2.
-C:\Users\15919\Desktop\Pocket_Plus\configs\dataset\stage1_unet_c1.yaml
-C:\Users\15919\Desktop\Pocket_Plus\训练与运行\sh\unet_c1.sh
-中的方式三参数已经在本地确定，具体数值和推导见下文；新训练尚未提交。
+2. `C:\Users\15919\Desktop\Pocket_Plus\configs\dataset\stage1_unet_c1.yaml` 与 `C:\Users\15919\Desktop\Pocket_Plus\训练与运行\sh\unet_c1.sh` 中的方式三参数已经确定。正式训练 Job `358384` 于 2026-08-28 09:31:26 +08:00 在 `hnode01` 启动，当前处于稳定训练状态；实际路径和运行证据见下文。
 
 3.总体想法很简单：先用unet_c1训完三种采样模式，在complete map级别表现最好的采样模式，用来训Find_1.
 
@@ -121,6 +118,18 @@ C:\Users\15919\Desktop\Pocket_Plus\训练与运行\sh\unet_c1.sh
 若方式三只冻结 150 个 PDB，预计共有 4,871 个验证 BOX，比方式二的 7,500 个少 35.05%。因此方式三改用 validation manifest 的全部 200 个 PDB：冻结 3,305 个 bias BOX 和 3,200 个 context BOX，共 6,505 个 BOX，仍比方式二少 13.27%。候选选择固定使用 `request_seed=3407`。
 
 正式训练由 `训练与运行/sh/unet_c1.sh` 启动，固定使用 1 张 H100、32 CPU、30 个 DataLoader workers、每卡 batch 8、全局 batch 48、学习率 `1e-4`、`max_epochs=110`、`val_per_epoch=8` 和 `warmup_ratio=0.005`。提交时使用 `--after_hold`，不使用 `pre_hold`。三种 unet_c1 采样实验最终只在同一 complete-map 数据与指标契约下比较，不直接以各自 BOX validation 分数决定胜负。
+
+### 方式三正式训练坐标
+
+- Slurm Job：`358384`，单节点、1 张 H100、32 CPU；`pre_hold=0`、`after_hold=1`。
+- 启动留证：`/home/penghongen/Feedback/Pocket_Plus/launches/358384/unet_c1_job358384_20260828T093205_a1/launch.json`
+- 训练所用 release：`/home/penghongen/Feedback/Pocket_Plus/releases/Pocket_Plus_58b27dd765ed/Pocket_Plus`
+- 正式运行目录：`/home/penghongen/Feedback/Pocket_Plus/logs/AdaLigand_Stage1_pdb_centric_2-unet_c1-mainchain/unet_c1_mainchain_pdb_centric_2____unet_c1_job358384_20260828T093205_a1_formal`
+- 训练所用源码快照：`/home/penghongen/Feedback/Pocket_Plus/logs/AdaLigand_Stage1_pdb_centric_2-unet_c1-mainchain/unet_c1_mainchain_pdb_centric_2____unet_c1_job358384_20260828T093205_a1_formal/src_snapshot/src`
+- 训练所用配置：`/home/penghongen/Feedback/Pocket_Plus/logs/AdaLigand_Stage1_pdb_centric_2-unet_c1-mainchain/unet_c1_mainchain_pdb_centric_2____unet_c1_job358384_20260828T093205_a1_formal/config.yaml`
+- W&B run：`pencounkdual-111/AdaLigand_Stage1/9dsi7i9w`
+
+启动验收已从 release 的生产请求入口重新确认每个 epoch 共有 436,211 个训练 BOX，V2 共有 6,505 个验证 BOX。前十七次完整 validation 均已结束，任务处于 epoch 2；第十七次验证总损失为 `0.2076540`，配体体素 PRAUC 为 `0.5448655`，受体 PRAUC 创新高至 `0.6180575`。当前配体体素最佳仍为第十六次的 `0.5507095`；`TOP_epoch_02_score_0.5449.ckpt` 与更新后的 `last.ckpt` 已生成，`BEST.ckpt` 已更新为第十六次的 `0.5507` 检查点。任务继续训练且未发现显式错误。
 
 
 

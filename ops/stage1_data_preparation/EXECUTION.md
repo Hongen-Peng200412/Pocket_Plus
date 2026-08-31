@@ -59,6 +59,37 @@
 - 运行冻结入口前后，V1 `validation_selection_pdb_centric.npz` 的 SHA-256 均为 `546ebd3a1f07b230af42911b6740f466c6af289c8bff91a387c4eb8b1d69dd8e`，证明 V2 生产没有读取后改写、删除或覆盖 V1。
 - Windows 本地定向回归 52 项通过，数据准备目录回归 10 项通过；Hydra 组合得到 V2 路径与 `50/0.7575757575757576/1`，Python AST、`unet_c1.sh` 与 `submit_task.sh` 的 `bash -n`、`git diff --check` 均通过。本轮保持进入任务前的暂存区索引不变，没有暂存或提交实现。
 
+## 2026-08-28 采样方式三 unet_c1 正式训练
+
+- 正式提交 Job 为 `358384`。提交资源为单节点、1 张 H100 和 32 CPU，`pre_hold=0`、`after_hold=1`；Job 于 2026-08-28 09:31:26 +08:00 在 `hnode01` 启动，`after_lock_358384` 保持存在。
+- 启动留证为 `/home/penghongen/Feedback/Pocket_Plus/launches/358384/unet_c1_job358384_20260828T093205_a1/launch.json`，release 为 `/home/penghongen/Feedback/Pocket_Plus/releases/Pocket_Plus_58b27dd765ed/Pocket_Plus`。
+- 正式运行目录为 `/home/penghongen/Feedback/Pocket_Plus/logs/AdaLigand_Stage1_pdb_centric_2-unet_c1-mainchain/unet_c1_mainchain_pdb_centric_2____unet_c1_job358384_20260828T093205_a1_formal`；W&B run 为 `pencounkdual-111/AdaLigand_Stage1/9dsi7i9w`。
+- 最终 `config.yaml` 已核对：`devices=1`、`nnodes=1`、`num_workers=30`、V2 验证文件、训练采样参数 `50/0.7575757575757576/1`、`max_epochs=110`、`val_per_epoch=8`、`warmup_ratio=0.005`、每卡 batch 8、全局 batch 48、学习率 `1e-4`，蛋白与核酸主链损失权重均为 `0.05`。
+- 从该 release 的生产请求入口重新展开得到每个 epoch 436,211 个训练 BOX，其中 bias 为 216,739 个、context 为 219,472 个；V2 验证请求为 6,505 个 BOX，其中 bias 为 3,305 个、context 为 3,200 个。
+- release 与运行目录冻结快照中的 `src/datasets/stage1_requests.py` SHA-256 均为 `74ffcbbf916d0758b64da084312932db93b1e93b7b2f69648955b62df4bfe514`，证明正在训练的请求逻辑来自本次 release。
+- 稳定性验收期间，W&B 摘要从 `trainer/global_step=200` 推进到 `278`；训练总损失与受体、配体体素、蛋白主链、核酸主链和配体距离损失均为有限数值。H100 抽样利用率为 89%，显存使用量为 79,848/81,559 MiB；未发现 traceback、CUDA OOM、DataLoader 失败或非有限值错误。
+- 2026-08-28 14:12 +08:00，首次完整 validation 已结束。验证总损失为 `0.3082846`，配体体素 PRAUC 为 `0.2585518`，受体 PRAUC 为 `0.2138680`；受体、配体体素、蛋白主链、核酸主链和配体距离验证损失均为有限数值。
+- 首次 validation 生成 `checkpoints/TOP_epoch_00_score_0.2586.ckpt` 与 `checkpoints/last.ckpt`，文件大小均约 499.7 MB。任务随后继续推进到 `trainer/global_step=1304`，没有发现 traceback、CUDA OOM、DataLoader 失败或非有限值错误。
+- 2026-08-28 18:50 +08:00，第二次完整 validation 已结束。验证总损失降至 `0.2699645`，配体体素 PRAUC 升至 `0.3804999`，受体 PRAUC 升至 `0.3469226`；新的 `TOP_epoch_00_score_0.3805.ckpt` 与更新后的 `last.ckpt` 已生成，任务继续推进到 `trainer/global_step=2288`。
+- 2026-08-28 23:30 +08:00，第三次完整 validation 已结束。验证总损失为 `0.2663394`，配体体素 PRAUC 为 `0.4109082`，受体 PRAUC 为 `0.3935394`；新的 `TOP_epoch_00_score_0.4109.ckpt` 与更新后的 `last.ckpt` 已生成，任务继续推进到 `trainer/global_step=3686`。
+- 第三次 validation 后，稳定别名 `BEST.ckpt` 已从首次 TOP 刷新为第二次的 `TOP_epoch_00_score_0.3805.ckpt`，说明训练中的别名比最新 TOP 晚一个 validation 回调。最新高分模型始终明确保存在独立 TOP 文件中；最终退出验收必须确认 `BEST.ckpt` 已追上最终最佳模型，当前不需要停止训练或改写 checkpoint。
+- 2026-08-29 04:05 +08:00，第四次完整 validation 已结束。验证总损失降至 `0.2514138`，配体体素 PRAUC 升至 `0.4482627`，受体 PRAUC 升至 `0.4602929`；新的 `TOP_epoch_00_score_0.4483.ckpt` 与更新后的 `last.ckpt` 已生成，任务继续推进到 `trainer/global_step=4673`。`BEST.ckpt` 同步刷新为上一轮的 `TOP_epoch_00_score_0.4109.ckpt`，别名时序与前述结论一致。
+- 2026-08-29 08:39 +08:00，第五次完整 validation 已结束。验证总损失降至 `0.2458982`，配体体素 PRAUC 升至 `0.4758326`，受体 PRAUC 升至 `0.4872300`；新的 `TOP_epoch_00_score_0.4758.ckpt` 与更新后的 `last.ckpt` 已生成，任务继续推进到 `trainer/global_step=5957`。`BEST.ckpt` 已刷新为第四次的 `TOP_epoch_00_score_0.4483.ckpt`。
+- 2026-08-29 13:15 +08:00，第六次完整 validation 已结束。验证总损失降至 `0.2383705`，配体体素 PRAUC 为 `0.4785158`，受体 PRAUC 升至 `0.5158617`；新的 `TOP_epoch_00_score_0.4785.ckpt` 与更新后的 `last.ckpt` 已生成，任务继续推进到 `trainer/global_step=7307`。`BEST.ckpt` 已刷新为第五次的 `TOP_epoch_00_score_0.4758.ckpt`，未发现 traceback、CUDA OOM、NCCL、DataLoader 失败或非有限值错误。
+- 2026-08-29 17:50 +08:00，第七次完整 validation 已结束。验证总损失降至 `0.2311407`，配体体素 PRAUC 为 `0.4713585`，受体 PRAUC 升至 `0.5202941`；新的 `TOP_epoch_00_score_0.4714.ckpt` 与更新后的 `last.ckpt` 已生成，任务继续推进到 `trainer/global_step=8012`。`BEST.ckpt` 已刷新为第六次的 `TOP_epoch_00_score_0.4785.ckpt`，未发现 traceback、CUDA OOM、NCCL、DataLoader 失败或非有限值错误。
+- 2026-08-29 22:23 +08:00，第八次完整 validation 已结束。验证总损失为 `0.2300247`，配体体素 PRAUC 创新高至 `0.5097033`，受体 PRAUC 创新高至 `0.5372400`；新的 `TOP_epoch_00_score_0.5097.ckpt` 与更新后的 `last.ckpt` 已生成，任务进入 epoch 1 并继续推进到 `trainer/global_step=9149`。`BEST.ckpt` 暂时保持第六次的 `TOP_epoch_00_score_0.4785.ckpt`，符合已确认的回调时序；未发现 traceback、CUDA OOM、NCCL、DataLoader 失败或非有限值错误。
+- 2026-08-30 03:08 +08:00，第九次完整 validation 已结束。验证总损失降至 `0.2178248`，配体体素 PRAUC 创新高至 `0.5327364`，受体 PRAUC 创新高至 `0.5641335`；新的 `TOP_epoch_01_score_0.5327.ckpt` 与更新后的 `last.ckpt` 已生成，任务继续推进到 `trainer/global_step=10289`。`BEST.ckpt` 已刷新为第八次的 `TOP_epoch_00_score_0.5097.ckpt`，未发现 traceback、CUDA OOM、NCCL、DataLoader 失败或非有限值错误。
+- 2026-08-30 07:57 +08:00，第十次完整 validation 已结束。验证总损失为 `0.2191286`，配体体素 PRAUC 为 `0.5293481`，受体 PRAUC 创新高至 `0.5670031`；新的 `TOP_epoch_01_score_0.5293.ckpt` 与更新后的 `last.ckpt` 已生成，任务继续推进到 `trainer/global_step=11366`。`BEST.ckpt` 已刷新为第九次的 `TOP_epoch_01_score_0.5327.ckpt`，未发现 traceback、CUDA OOM、NCCL、DataLoader 失败或非有限值错误。
+- 2026-08-30 12:45 +08:00，第十一次完整 validation 已结束。验证总损失为 `0.2243590`，配体体素 PRAUC 小幅创新高至 `0.5349470`，受体 PRAUC 创新高至 `0.5844466`；新的 `TOP_epoch_01_score_0.5349.ckpt` 与更新后的 `last.ckpt` 已生成，任务继续推进到 `trainer/global_step=13079`。`BEST.ckpt` 暂时保持第九次的 `TOP_epoch_01_score_0.5327.ckpt`，符合已确认的回调时序；未发现 traceback、CUDA OOM、NCCL、DataLoader 失败或非有限值错误。
+- 2026-08-30 17:31 +08:00，第十二次完整 validation 已结束。验证总损失为 `0.2182586`，配体体素 PRAUC 创新高至 `0.5367544`，受体 PRAUC 为 `0.5783800`；新的 `TOP_epoch_01_score_0.5368.ckpt` 与更新后的 `last.ckpt` 已生成，任务继续推进到 `trainer/global_step=13742`。`BEST.ckpt` 已刷新为第十一次的 `TOP_epoch_01_score_0.5349.ckpt`，未发现 traceback、CUDA OOM、NCCL、DataLoader 失败或非有限值错误。
+- 2026-08-30 22:14 +08:00，第十三次完整 validation 已结束。验证总损失为 `0.2181289`，配体体素 PRAUC 为 `0.5267326`，受体 PRAUC 为 `0.5686539`；新的 `TOP_epoch_01_score_0.5267.ckpt` 与更新后的 `last.ckpt` 已生成，任务继续推进到 `trainer/global_step=14846`。`BEST.ckpt` 已刷新为第十二次的 `TOP_epoch_01_score_0.5368.ckpt`，未发现 traceback、CUDA OOM、NCCL、DataLoader 失败或非有限值错误。
+- 2026-08-31 02:57 +08:00，第十四次完整 validation 已结束。验证总损失为 `0.2088470`，配体体素 PRAUC 为 `0.5241200`，受体 PRAUC 为 `0.5801458`；新的 `TOP_epoch_01_score_0.5241.ckpt` 与更新后的 `last.ckpt` 已生成，validation 对应 `trainer/global_step=15902`。
+- 2026-08-31 07:42 +08:00，第十五次完整 validation 已结束。验证总损失为 `0.2180344`，配体体素 PRAUC 创新高至 `0.5419699`，受体 PRAUC 创新高至 `0.5948478`；新的 `TOP_epoch_01_score_0.5420.ckpt` 与更新后的 `last.ckpt` 已生成，validation 对应 `trainer/global_step=17038`。
+- 2026-08-31 12:29 +08:00，第十六次完整 validation 已结束。验证总损失降至 `0.2037673`，配体体素 PRAUC 创新高至 `0.5507095`，受体 PRAUC 创新高至 `0.6137356`；新的 `TOP_epoch_01_score_0.5507.ckpt` 与更新后的 `last.ckpt` 已生成，任务进入 epoch 2 并继续推进到 `trainer/global_step=18176`。`BEST.ckpt` 已刷新为第十五次的 `TOP_epoch_01_score_0.5420.ckpt`，未发现 traceback、CUDA OOM、NCCL、DataLoader 失败或非有限值错误。
+- 第十四至第十六次 validation 期间，本地睡眠会话因宿主挂起延长；服务器 Job 始终保持 `RUNNING`。恢复后通过 Slurm、W&B `scan_history` 和 checkpoint 时间戳补齐了三次验证证据，训练本身未受影响。
+- 2026-08-31 17:12 +08:00，第十七次完整 validation 已结束。验证总损失为 `0.2076540`，配体体素 PRAUC 为 `0.5448655`，受体 PRAUC 创新高至 `0.6180575`；新的 `TOP_epoch_02_score_0.5449.ckpt` 与更新后的 `last.ckpt` 已生成，任务继续推进到 `trainer/global_step=19574`。`BEST.ckpt` 已刷新为第十六次的 `TOP_epoch_01_score_0.5507.ckpt`，未发现 traceback、CUDA OOM、NCCL、DataLoader 失败或非有限值错误。
+- 后续采用由多个 300 秒命令组成的 60 或 90 分钟静默守护周期，只在新的 validation、checkpoint、故障恢复、训练退出或其他明确状态变化时继续更新本记录。
+
 ## 接续位置
 
-后续训练 I/O 适配不得重复构造 split 或 BOX pool，也不得重新写入迁移后的 NPZ。当前第三版产物和下一轮实施停点记录在 AdaLigand 的 `文档/exec_plan/Stage1第三版训练IO与入口实施.md`；完整接手信息记录在 `CLAUDE/memory/handoffs/2026-08-17-stage1-v3数据准备完成与训练IO接续.md`。
+后续训练或推理适配不得重复构造 split 或 BOX pool，也不得重新写入迁移后的 NPZ。采样方式三的活动科学说明位于 `talk/global/global_8.26.md`；Job `358384` 的当前状态、恢复边界和后续检查项记录在 `CLAUDE/memory/handoffs/2026-08-28-stage1-pdb-centric-v2-unet-c1-running.md`。
