@@ -239,6 +239,11 @@
       "date": "2026-09-01",
       "summary": "Find_1 优化动力学门禁已升级到 schema 4：共同体素张量以可校验 float32 稠密旁车执行逐元素硬边界比较，原审查反例与 396 项活动测试通过，窄口径审查批准；提交 2fc8f15 已部署到隔离根，H100 Job 366071 的 attempt a7 已启动且保留 after_lock。",
       "handoff": "CLAUDE/memory/handoffs/2026-09-01-find1-schema4-a7-running.md"
+    },
+    {
+      "date": "2026-09-01",
+      "summary": "A800 接管窗口出现后，先取得并核验双节点 Job 366277，再只取消授权旧 Jobs 350302、356946；历史提交 5b4aa5f 与字面 last.ckpt 已通过摘要门禁部署，attempt a1 使用每节点 A800×1、CPU×17、每 rank 16 workers 启动并保留 after_lock。",
+      "handoff": "CLAUDE/memory/handoffs/2026-09-01-find1-a800-resume-launched.md"
     }
   ],
   "blockers": [
