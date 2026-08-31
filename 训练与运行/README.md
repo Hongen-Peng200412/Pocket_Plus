@@ -15,8 +15,11 @@ submit_task.sh
 - `sbatch/task.sbatch`：唯一真正交给 `sbatch` 的通用资源包装脚本。
 - `sh/Find_0.sh` 与 `sh/unet_c1.sh`：保留该历史端点原有训练入口。
 - `sh/Find_1.sh`：只用于从 Job `351295` 的字面 `last.ckpt` 完整续训；
-  恢复模型、优化器、scheduler、回调与训练进度，并在 epoch 0 跳过每个
-  rank 已经消费的 `45,150` 个 batch。
+  先把旧 `ModelCheckpoint` 的 dirpath、best/top-k/last 路径迁移到本次新运行目录，
+  再恢复模型、优化器、scheduler、回调与训练进度，并在 epoch 0 跳过每个
+  rank 已经消费的 `45,150` 个 batch。源 checkpoint 没有保存 DataLoader worker
+  的 Python/NumPy 随机数状态，因此剩余 BOX 身份连续，随机旋转不承诺逐位复现
+  未中断旧进程本应产生的旋转序列。
 
 release、launch 与四种锁控制的实现位于
 `训练与运行/runtime/`。这些文件主要供 AI 维护和审计；
@@ -82,6 +85,13 @@ size 仍为每卡 6，梯度累积由原全局 batch size 48 自动变为 4 次�
 ```text
 /home/penghongen/Feedback/Pocket_Plus/logs/AdaLigand_Stage1-Find_1-CPC1/Find_1-CPC1____Find_1_job351295_20260823T152130_a2_CPC1/checkpoints/last.ckpt
 ```
+
+新 attempt 的 node rank 0 会运行
+`ops/find1_historical_resume/rebase_checkpoint.py`，把历史 top-k 文件复制到本次
+`<formal_run>/checkpoints/`，并生成 `resume_state.ckpt` 与
+`resume_state_manifest.json`。其余节点只等待这两个共享文件，不会并发改写 checkpoint。
+manifest 记录源与迁移后 checkpoint 的 SHA-256、复制的 top-k 文件和
+`random_augmentation_state=not_present_in_source_checkpoint`；旧运行目录始终只读。
 
 每条命令只调用一次 `sbatch`。默认不创建 `pre_lock` 或 `try_lock`：作业获得资源后
 立即执行一次任务，任务结束后自动退出并释放资源。若希望先占有资源、再由人工决定何时开始，添加：

@@ -30,14 +30,45 @@ devices="${TASK_GPUS:-1}"
 nnodes="${TASK_NNODES:-2}"
 task_cpu_count="${TASK_CPU_COUNT:-31}"
 num_workers="${FIND1_NUM_WORKERS:-$((task_cpu_count - 1))}"
-resume_checkpoint="${FIND1_RESUME_CHECKPOINT:-/home/penghongen/Feedback/Pocket_Plus/logs/AdaLigand_Stage1-Find_1-CPC1/Find_1-CPC1____Find_1_job351295_20260823T152130_a2_CPC1/checkpoints/last.ckpt}"
+source_resume_checkpoint="${FIND1_RESUME_CHECKPOINT:-/home/penghongen/Feedback/Pocket_Plus/logs/AdaLigand_Stage1-Find_1-CPC1/Find_1-CPC1____Find_1_job351295_20260823T152130_a2_CPC1/checkpoints/last.ckpt}"
 experiment_group="AdaLigand_Stage1_resume/Find_1/CPC1"
 tag="Find_1/resume_last_job351295"
 run_stamp="${TASK_RUN_STAMP:-$(date '+%Y%m%dT%H%M%S')}_CPC1"
 formal_run="${EXPERIMENT_FEEDBACK_ROOT}/logs/${experiment_group//\//-}/${tag//\//-}____${run_stamp}"
 
-[[ -f "${resume_checkpoint}" ]] || {
-    echo "[Find_1][错误] 续训 checkpoint 不存在：${resume_checkpoint}" >&2
+[[ -f "${source_resume_checkpoint}" ]] || {
+    echo "[Find_1][错误] 续训 checkpoint 不存在：${source_resume_checkpoint}" >&2
+    exit 1
+}
+
+# 新运行目录不能直接恢复旧 dirpath 的 ModelCheckpoint 状态。每个节点的 shell
+# 共享同一个存储路径，仅 node rank 0 复制历史 top-k 并迁移回调路径，其他节点等待产物。
+resume_checkpoint_dir="${formal_run}/checkpoints"
+resume_checkpoint="${resume_checkpoint_dir}/resume_state.ckpt"
+resume_manifest="${resume_checkpoint_dir}/resume_state_manifest.json"
+resume_failure="${resume_checkpoint_dir}/resume_state.failed"
+node_rank="${TASK_DDP_NODE_RANK:-0}"
+mkdir -p "${resume_checkpoint_dir}"
+if [[ "${node_rank}" == "0" ]]; then
+    rm -f -- "${resume_failure}"
+    if ! python "${PROJECT_ROOT}/ops/find1_historical_resume/rebase_checkpoint.py" \
+        --source "${source_resume_checkpoint}" \
+        --destination "${resume_checkpoint_dir}"; then
+        touch -- "${resume_failure}"
+        exit 1
+    fi
+else
+    for _ in $(seq 1 360); do
+        [[ -f "${resume_failure}" ]] && {
+            echo "[Find_1][错误] node rank 0 迁移 checkpoint 失败。" >&2
+            exit 1
+        }
+        [[ -f "${resume_checkpoint}" && -f "${resume_manifest}" ]] && break
+        sleep 5
+    done
+fi
+[[ -f "${resume_checkpoint}" && -f "${resume_manifest}" ]] || {
+    echo "[Find_1][错误] 没有得到迁移后的完整 checkpoint：${resume_checkpoint}" >&2
     exit 1
 }
 (( num_workers >= 1 )) || {
@@ -79,7 +110,10 @@ overrides=(
 
 cd "${PROJECT_ROOT}"
 echo "[Find_1] 启动历史 CPC1 完整续训：${formal_run}"
-echo "[Find_1] checkpoint=${resume_checkpoint}"
+echo "[Find_1] source checkpoint=${source_resume_checkpoint}"
+echo "[Find_1] rebased checkpoint=${resume_checkpoint}"
+echo "[Find_1] rebase manifest=${resume_manifest}"
+echo "[Find_1][边界] 源 checkpoint 不含 DataLoader worker 的 Python/NumPy RNG 状态；首轮剩余 BOX 身份连续，但随机旋转不是旧 worker 流的逐位续接。"
 echo "[Find_1] 每节点 CPU=${task_cpu_count}，每个 rank workers=${num_workers}，首轮跳过 batch=45150"
 export TASK_RUN_STAMP="${run_stamp}"
 bash "${PROJECT_ROOT}/训练与运行/runtime/launch_training_python.sh" src/train.py "${overrides[@]}" "$@"

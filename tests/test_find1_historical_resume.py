@@ -7,7 +7,9 @@ from pathlib import Path
 import pytest
 import torch
 import lightning as pl
+from lightning.pytorch.callbacks import ModelCheckpoint
 
+from ops.find1_historical_resume.rebase_checkpoint import rebase_checkpoint
 from src.train import ResumeSkippingSampler, _resolve_resume_checkpoint
 
 
@@ -199,3 +201,71 @@ def test_historical_find1_launcher_freezes_resume_identity() -> None:
     assert "gradient_clip_mode" not in launcher
     assert 'num_workers="${FIND1_NUM_WORKERS:-$((task_cpu_count - 1))}"' in launcher
     assert "launch_training_python.sh" in launcher
+
+
+def test_rebased_checkpoint_restores_real_model_checkpoint_state(tmp_path: Path) -> None:
+    """跨目录迁移后，Lightning 应恢复 score、top-k 和 last 的完整状态."""
+
+    source_dir = tmp_path / "old" / "checkpoints"
+    destination_dir = tmp_path / "new" / "checkpoints"
+    source_dir.mkdir(parents=True)
+    first_top = source_dir / "TOP_epoch_00_score_0.5000.ckpt"
+    second_top = source_dir / "TOP_epoch_00_score_0.4000.ckpt"
+    first_top.write_bytes(b"first-top")
+    second_top.write_bytes(b"second-top")
+    source_checkpoint = source_dir / "last.ckpt"
+
+    original_callback = ModelCheckpoint(
+        dirpath=source_dir,
+        monitor="metric",
+        mode="max",
+        save_top_k=2,
+        save_last=True,
+    )
+    callback_state = original_callback.state_dict()
+    callback_state.update(
+        {
+            "best_model_score": torch.tensor(0.5),
+            "best_model_path": str(first_top),
+            "current_score": torch.tensor(0.5),
+            "best_k_models": {
+                str(first_top): torch.tensor(0.5),
+                str(second_top): torch.tensor(0.4),
+            },
+            "kth_best_model_path": str(second_top),
+            "kth_value": torch.tensor(0.4),
+            "last_model_path": str(source_checkpoint),
+        }
+    )
+    torch.save(
+        {
+            "callbacks": {original_callback.state_key: callback_state},
+            "state_dict": {"weight": torch.ones(())},
+        },
+        source_checkpoint,
+    )
+
+    rebased_checkpoint = rebase_checkpoint(source_checkpoint, destination_dir)
+    rebased_payload = torch.load(rebased_checkpoint, map_location="cpu")
+    rebased_state = rebased_payload["callbacks"][original_callback.state_key]
+    restored_callback = ModelCheckpoint(
+        dirpath=destination_dir,
+        monitor="metric",
+        mode="max",
+        save_top_k=2,
+        save_last=True,
+    )
+    restored_callback.load_state_dict(rebased_state)
+
+    assert restored_callback.best_model_score.item() == pytest.approx(0.5)
+    assert restored_callback.kth_value.item() == pytest.approx(0.4)
+    assert Path(restored_callback.best_model_path).parent == destination_dir
+    assert Path(restored_callback.kth_best_model_path).parent == destination_dir
+    assert Path(restored_callback.last_model_path) == rebased_checkpoint
+    assert set(restored_callback.best_k_models) == {
+        str(destination_dir / first_top.name),
+        str(destination_dir / second_top.name),
+    }
+    assert (destination_dir / first_top.name).read_bytes() == b"first-top"
+    assert (destination_dir / second_top.name).read_bytes() == b"second-top"
+    assert (destination_dir / "resume_state_manifest.json").is_file()
