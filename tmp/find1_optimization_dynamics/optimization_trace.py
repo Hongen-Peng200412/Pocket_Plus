@@ -217,7 +217,7 @@ def _compose_config(project_root: Path, experiment: str) -> Any:
 
 def _build_dataset(config: Any) -> Any:
     dataset_config = OmegaConf.create(
-        OmegaConf.to_container(config.dataset, resolve=False)
+        OmegaConf.to_container(config.dataset, resolve=True)
     )
     dataset_config.enable_random_rotation = False
     dataset = instantiate(
