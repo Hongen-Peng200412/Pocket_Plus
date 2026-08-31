@@ -13,6 +13,20 @@ class _DatasetStub:
         self.epoch = epoch
 
 
+def test_sample_positions_remain_valid_above_float32_integer_range() -> None:
+    numel = (1 << 24) + 3
+
+    positions = optimization_trace._sample_positions(numel)
+
+    assert optimization_trace._sample_positions(0) == ()
+    assert optimization_trace._sample_positions(1) == (0,)
+    assert optimization_trace._sample_positions(4) == (0, 1, 2, 3)
+    assert len(positions) == 16
+    assert positions[0] == 0
+    assert positions[-1] == numel - 1
+    assert tuple(sorted(set(positions))) == positions
+
+
 def test_build_dataset_resolves_root_scoped_interpolations(monkeypatch) -> None:
     config = OmegaConf.create(
         {

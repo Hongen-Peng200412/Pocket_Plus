@@ -96,20 +96,34 @@ def _json_value(value: Any) -> Any:
     return value
 
 
+def _sample_positions(numel: int) -> tuple[int, ...]:
+    """用整数运算生成最多十六个首尾覆盖的合法位置."""
+
+    sample_count = min(16, numel)
+    if sample_count == 0:
+        return ()
+    if sample_count == 1:
+        return (0,)
+    last_position = numel - 1
+    return tuple(
+        index * last_position // (sample_count - 1)
+        for index in range(sample_count)
+    )
+
+
 def tensor_signature(tensor: torch.Tensor) -> dict[str, Any]:
     """用原始字节摘要、有限性和统计量记录一个完整张量."""
 
     contiguous = tensor.detach().contiguous()
     values = contiguous.float().reshape(-1)
     raw_bytes = contiguous.view(torch.uint8).cpu().numpy().tobytes()
-    sample_count = min(16, int(values.numel()))
-    if sample_count:
-        indices = torch.linspace(
-            0,
-            values.numel() - 1,
-            steps=sample_count,
+    sample_positions = _sample_positions(int(values.numel()))
+    if sample_positions:
+        indices = torch.tensor(
+            sample_positions,
+            dtype=torch.long,
             device=values.device,
-        ).long()
+        )
         samples = values.index_select(0, indices).cpu().tolist()
     else:
         samples = []
