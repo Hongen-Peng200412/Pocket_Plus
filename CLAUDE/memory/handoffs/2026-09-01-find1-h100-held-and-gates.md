@@ -4,7 +4,7 @@ Date: 2026-09-01
 
 ## Current State
 
-Find_1 的生产实现位于工作树 `C:\Users\15919\Desktop\Pocket_Plus_worktrees\cross_node_ddp_infra`、分支 `codex/find1-training`。PDB-centric-1 与 PDB-centric-2 的独立 Dataset、训练、实验和 shell 配置，以及同一个 AdamW 内 voxel/trunk 与 point 两组分别按范数 0.5 裁剪的实现已经完成。表达/结构与科学逻辑各一轮全面审查均已完成，针对报告项的窄口径复核均已通过；完整可收集测试为 `367 passed, 11 warnings in 75.05s`。真实动力学 a2、a3 的插值和整数索引问题已经修复；a4 完成首个 optimizer step 后发现审计器错误假定所有参数都有 AdamW state。逐参数可空 state 修复端点 `5280bec889d35bbfa8b314ad12100a0f665d3479` 已重新部署，新动态命令已核验且 Job `366071` 安全停在 `try_lock`。当前下一步是触发 a5。PDB-centric-2 只允许配置与测试，本轮不得提交训练。
+Find_1 的生产实现位于工作树 `C:\Users\15919\Desktop\Pocket_Plus_worktrees\cross_node_ddp_infra`、分支 `codex/find1-training`。PDB-centric-1 与 PDB-centric-2 的独立 Dataset、训练、实验和 shell 配置，以及同一个 AdamW 内 voxel/trunk 与 point 两组分别按范数 0.5 裁剪的实现已经完成。表达/结构与科学逻辑各一轮全面审查均已完成，针对报告项的窄口径复核均已通过；完整可收集测试为 `367 passed, 11 warnings in 75.05s`。a5 已成功生成完整 AUTO controlled 轨迹，随后完整模型的 0 维标量参数暴露原始字节视图错误。标量摘要修复端点 `91f0833b0bfb1126c4b36c2bcc9a3151ac4fd4f3` 已重新部署，新动态命令已核验且 Job `366071` 安全停在 `try_lock`。当前下一步是触发 a6。PDB-centric-2 只允许配置与测试，本轮不得提交训练。
 
 H100 Job `366071` 已于 2026-09-01 01:41:37 +08:00 在 `hnode02` 获得 1 张 H100 和 32 CPU。旧 attempt a1 使用尚未更新的共享代码，在模型实例化阶段被本任务具名 `kill_lock_366071` 终止，退出码为 137，没有完成优化器 step，也不是有效的 PDB-centric-1 训练结果。allocation runner 已消费 `kill_lock` 并于 01:43:14 创建根级 `try_lock_366071`。截至 01:51:57，Job 仍为 RUNNING，`try_lock` 与 `after_lock` 均存在，因此 H100 资源被安全保留但没有继续执行代码。
 
@@ -26,7 +26,7 @@ attempt a1 的准确命令、监视器载荷、锁时间和路径均记录在 `�
 
 ## Implementation Facts
 
-- 生产分支基点为当时唯一最新的 `Learn/CUMULATIVE` 提交 `275fcec06ad...`；跨节点 DDP 基础设施提交为 `1d231f27...`；PDB-centric 配置、分组裁剪、测试、动力学门禁工具与文档提交为 `10463559fd147f700a4e9b1d91f6458e8043d9f4`；误纳入的一次性 Python 字节码缓存由 `2bcbb13` 删除；真实门禁发现的 Dataset 插值、整数抽样和 AdamW state 表示修复分别为 `acdf3f5`、`f4e4608` 与 `5280bec`。当前服务器执行端点是 `5280bec889d35bbfa8b314ad12100a0f665d3479`。
+- 生产分支基点为当时唯一最新的 `Learn/CUMULATIVE` 提交 `275fcec06ad...`；跨节点 DDP 基础设施提交为 `1d231f27...`；PDB-centric 配置、分组裁剪、测试、动力学门禁工具与文档提交为 `10463559fd147f700a4e9b1d91f6458e8043d9f4`；误纳入的一次性 Python 字节码缓存由 `2bcbb13` 删除；真实门禁发现的 Dataset 插值、整数抽样、AdamW state 表示和标量摘要修复分别为 `acdf3f5`、`f4e4608`、`5280bec` 与 `91f0833`。当前服务器执行端点是 `91f0833b0bfb1126c4b36c2bcc9a3151ac4fd4f3`。
 - `src/wrappers/voxel_point_stage1.py` 通过 `gradient_clip_mode=find_voxel_point` 启用两组裁剪。voxel/trunk 集合按已核实的 AUTO B_trunk 可训练参数前缀定义，point 集合是其余全部可训练参数；仍然只有一个 AdamW。
 - PDB-centric-1 固定为每卡 batch 6、全局 batch 48、24 workers、70 epochs、每个 epoch 12 次 validation、学习率 `5e-5`、warmup 比例 `0.005`。
 - PDB-centric-2 固定为每卡 batch 6、全局 batch 48、24 workers、110 epochs、每个 epoch 8 次 validation；它只完成配置与测试。
@@ -35,7 +35,7 @@ attempt a1 的准确命令、监视器载荷、锁时间和路径均记录在 `�
 - 动力学对照临时工具位于 `tmp/find1_optimization_dynamics/`。该工具只进入真实实现提交和服务器门禁，最终学习端点不得保留临时工具。
 - 初始审查通过的生产隔离根：`/home/penghongen/Feedback/Pocket_Plus/task_roots/find1-production-2bcbb13b285d/Pocket_Plus`；上传归档 SHA-256 为 `00a98c6b368972a16ec12b8184578251a76daadd514d3b61b69afcc10b961b85`。该根只对应 a2，后续 attempt 不复用它。
 - AUTO/生产 `src` 与 `configs` 受信摘要分别为 `5c6fb1ea40a1471b9c0ba0cfe9c251697318c6cae72b11fe5268234dbc63fc75` 与 `90c0874db54d7bf058aba5f5039989f5c924e3ebe11b91b34a1cfa8cec0f27b7`。
-- Job `366071` 当前动态命令为 `/home/penghongen/Feedback/Pocket_Plus/allocations/366071/run_cmd_366071.sh`，SHA-256 为 `2a952f9999a8e05956dbcfae7710128bbcda9b6233351555966bb9ae4acb05eb`。它执行八条轨迹和四条比较，结束后由 `after_hold` 返回 `try_lock`。
+- Job `366071` 当前动态命令为 `/home/penghongen/Feedback/Pocket_Plus/allocations/366071/run_cmd_366071.sh`，SHA-256 为 `202e2771e3dbcba8b5e77e956da39c690dbe129a39150958241713691b7876a9`。它执行八条轨迹和四条比较，结束后由 `after_hold` 返回 `try_lock`。
 - attempt a2 launch：`/home/penghongen/Feedback/Pocket_Plus/launches/366071/Find_1_job366071_20260901T033232_a2`；输出根：`/home/penghongen/Feedback/Pocket_Plus/validation/find1_optimization_dynamics/Find_1_job366071_20260901T033232_a2`。03:32:47 因 `${dataset.box_pool_root}` 作用域丢失退出码 1，只产生 `identity.txt`、`gate.log` 与 `_FAILED`。
 - 修复隔离根：`/home/penghongen/Feedback/Pocket_Plus/task_roots/find1-production-acdf3f5671aa/Pocket_Plus`；归档 SHA-256 为 `b595a867ba233d86900e2bc270b7568f7e8125b478154e01c00311b26a06830d`。
 - a3 的十二条科学命令不变，只改用修复端点。旧 a2 根、launch 和输出保持只读。
@@ -43,6 +43,8 @@ attempt a1 的准确命令、监视器载荷、锁时间和路径均记录在 `�
 - a4 修复隔离根：`/home/penghongen/Feedback/Pocket_Plus/task_roots/find1-production-f4e4608f5063/Pocket_Plus`；归档 SHA-256 为 `36d6ded78992c9748747bd014aac8d7c86862b4621e1123aeb204acffa1595bb`。抽样位置已改为纯整数运算；十二条科学命令和模型配置不变。
 - attempt a4 launch：`/home/penghongen/Feedback/Pocket_Plus/launches/366071/Find_1_job366071_20260901T041241_a4`；输出根：`/home/penghongen/Feedback/Pocket_Plus/validation/find1_optimization_dynamics/Find_1_job366071_20260901T041241_a4`。04:15:21 因未使用参数没有 AdamW `step` 而被审计器直接索引，退出码 1。
 - a5 修复隔离根：`/home/penghongen/Feedback/Pocket_Plus/task_roots/find1-production-5280bec889d3/Pocket_Plus`；归档 SHA-256 为 `cf083cbc02a7505b04a80ca1d23e6bf16246498a745de75c34840e2c1c9b5eec`。逐参数 state 映射把未参与更新明确记录为 `null`，并由比较器核对两侧一致性。
+- attempt a5 launch：`/home/penghongen/Feedback/Pocket_Plus/launches/366071/Find_1_job366071_20260901T043010_a5`；输出根：`/home/penghongen/Feedback/Pocket_Plus/validation/find1_optimization_dynamics/Find_1_job366071_20260901T043010_a5`。`trunk_controlled.json` 已完成，完整模型随后因 0 维标量不能直接改变 `view()` dtype 而于 04:35:55 退出码 1。
+- a6 修复隔离根：`/home/penghongen/Feedback/Pocket_Plus/task_roots/find1-production-91f0833b0bfb/Pocket_Plus`；归档 SHA-256 为 `247f2295d4b7afcfce0eb0065ff0ef8003ed1e8029ba738a50096a86c00bc240`。原始字节摘要先展平再按 uint8 读取，支持 float32 与 BF16 标量。
 
 ## Historical Resume
 
