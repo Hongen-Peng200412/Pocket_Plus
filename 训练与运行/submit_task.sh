@@ -27,6 +27,7 @@ usage() {
   --gpus N               每个节点的 GPU 数；CPU 任务不填写。
   --cpus N               每个 Slurm task 的 CPU 核数；不填写时按硬件类型推导。
   --nodes N              节点数，默认 1。
+  --multi-node-ddp       显式启用跨节点 DDP；要求 GPU 任务且 --nodes 大于 1。
   --array SPEC           原样传给 Slurm，例如 0-11。
   --pre_hold             allocation 启动后创建 pre_lock，等待人工删除再执行。
   --after_hold           每次任务脚本结束后创建 try_lock，保留 allocation 供人工复用。
@@ -69,6 +70,7 @@ resource_type=""
 gpu_count=""
 cpu_count=""
 node_count=1
+multi_node_ddp_mode=0
 array_spec=""
 pre_hold_mode=0
 after_hold_mode=0
@@ -109,6 +111,10 @@ while (($# > 0)); do
             (($# >= 2)) || fail "--nodes 缺少数量"
             node_count="$2"
             shift 2
+            ;;
+        --multi-node-ddp)
+            multi_node_ddp_mode=1
+            shift
             ;;
         --array)
             (($# >= 2)) || fail "--array 缺少 Slurm 数组表达式"
@@ -273,6 +279,12 @@ case "${resource_type}" in
         ;;
 esac
 is_positive_integer "${cpu_count}" || fail "--cpus 必须是正整数"
+if [[ "${multi_node_ddp_mode}" == "1" ]]; then
+    [[ "${resource_type}" != "cpu" ]] || fail "--multi-node-ddp 只支持 GPU 任务"
+    ((node_count > 1)) || fail "--multi-node-ddp 要求 --nodes 大于 1"
+elif ((node_count > 1)); then
+    fail "--nodes 大于 1 时必须显式提供 --multi-node-ddp，避免额外节点被申请后闲置"
+fi
 
 job_name="${job_name:-$(basename "${task_spec}" .sh)}"
 if [[ "${simple_mode}" == "1" ]]; then
@@ -307,6 +319,7 @@ printf '[submit_task] 任务根目录：%s\n' "${task_root}"
 printf '[submit_task] 任务：%s\n' "${task_spec}"
 printf '[submit_task] 资源：type=%s nodes=%s gpus_per_node=%s cpus_per_task=%s\n' \
     "${resource_type}" "${node_count}" "${gpu_count}" "${cpu_count}"
+printf '[submit_task] 跨节点 DDP：%s\n' "${multi_node_ddp_mode}"
 printf '[submit_task] 保留策略：pre_hold=%s after_hold=%s\n' \
     "${pre_hold_mode}" "${after_hold_mode}"
 if [[ "${simple_mode}" == "1" ]]; then
@@ -332,6 +345,7 @@ sbatch_command=(
     --resource "${resource_type}" \
     --gpus "${gpu_count}" \
     --nodes "${node_count}" \
+    --multi_node_ddp "${multi_node_ddp_mode}" \
     --cpus "${cpu_count}" \
     --array "${array_spec}"
 )

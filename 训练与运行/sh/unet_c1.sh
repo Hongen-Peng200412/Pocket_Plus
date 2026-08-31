@@ -95,7 +95,7 @@ training_overrides=(
 cd "${PROJECT_ROOT}"
 echo "[unet_c1] 启动 ${variant} 正式训练：${formal_run}"
 export TASK_RUN_STAMP="${formal_stamp}"
-python -u src/train.py "${training_overrides[@]}" "$@"
+bash "${PROJECT_ROOT}/训练与运行/runtime/launch_training_python.sh" src/train.py "${training_overrides[@]}" "$@"
 
 formal_best="${formal_run}/checkpoints/BEST.ckpt"
 [[ -f "${formal_best}" ]] || {

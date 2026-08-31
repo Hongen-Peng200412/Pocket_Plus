@@ -20,6 +20,7 @@ run_allocation() {
     local simple_mode="${TASK_SIMPLE_MODE:-0}"
     local pre_hold_mode="${TASK_PRE_HOLD_MODE:-0}"
     local after_hold_mode="${TASK_AFTER_HOLD_MODE:-0}"
+    local multi_node_ddp_mode="${TASK_MULTI_NODE_DDP_MODE:-0}"
     local allocation_root
     local job_directory
     if [[ "${simple_mode}" == "1" ]]; then
@@ -41,9 +42,11 @@ run_allocation() {
     local watcher_pid=""
     local command_pid=""
     local last_command_exit=0
+    local master_addr=""
     # 正式轮询间隔保持稳定；测试可缩短间隔，但不会改变锁文件语义。
     local lock_poll_seconds="${TASK_LOCK_POLL_SECONDS:-20}"
     local kill_poll_seconds="${TASK_KILL_POLL_SECONDS:-10}"
+    local kill_grace_seconds="${TASK_KILL_GRACE_SECONDS:-20}"
 
     task_name="$(basename "${TASK_PATH}" .sh)"
     task_name="${task_name//[^A-Za-z0-9_.-]/_}"
@@ -76,11 +79,27 @@ run_allocation() {
             while true; do
                 sleep "${kill_poll_seconds}"
                 if [[ -f "${kill_lock}" ]]; then
-                    printf '[kill_lock] 检测到 %s，终止进程组 %s。\n' \
-                        "${kill_lock}" "${monitored_pid}"
-                    kill -9 -"${monitored_pid}" 2>/dev/null \
-                        || kill -9 "${monitored_pid}" 2>/dev/null \
-                        || true
+                    if [[ "${multi_node_ddp_mode}" == "1" ]]; then
+                        printf '[kill_lock] 检测到 %s，先向跨节点进程组 %s 发送 TERM。\n' \
+                            "${kill_lock}" "${monitored_pid}"
+                        kill -TERM -"${monitored_pid}" 2>/dev/null \
+                            || kill -TERM "${monitored_pid}" 2>/dev/null \
+                            || true
+                        sleep "${kill_grace_seconds}"
+                        if kill -0 "${monitored_pid}" 2>/dev/null; then
+                            printf '[kill_lock] 跨节点进程组 %s 未在宽限期内退出，发送 KILL。\n' \
+                                "${monitored_pid}"
+                            kill -KILL -"${monitored_pid}" 2>/dev/null \
+                                || kill -KILL "${monitored_pid}" 2>/dev/null \
+                                || true
+                        fi
+                    else
+                        printf '[kill_lock] 检测到 %s，终止进程组 %s。\n' \
+                            "${kill_lock}" "${monitored_pid}"
+                        kill -KILL -"${monitored_pid}" 2>/dev/null \
+                            || kill -KILL "${monitored_pid}" 2>/dev/null \
+                            || true
+                    fi
                     rm -f -- "${kill_lock}"
                     exit 0
                 fi
@@ -207,6 +226,26 @@ run_allocation() {
 
         export TASK_GPUS="${TASK_GPUS_PER_NODE}"
         export TASK_NNODES="${TASK_NODE_COUNT}"
+        export TASK_DDP_ENABLED="${multi_node_ddp_mode}"
+        if [[ "${multi_node_ddp_mode}" == "1" ]]; then
+            master_addr=""
+            if ! master_addr="$(
+                "${TASK_SCONTROL_BIN:-scontrol}" show hostnames \
+                    "${SLURM_JOB_NODELIST}" | head -n 1
+            )" || [[ -z "${master_addr}" ]]; then
+                last_command_exit=2
+                printf '[allocation][错误] 无法从节点列表 %s 解析 DDP 主节点。\n' \
+                    "${SLURM_JOB_NODELIST}" >&2
+                if ! wait_after_attempt_if_requested; then
+                    break
+                fi
+                continue
+            fi
+            export TASK_DDP_MASTER_ADDR="${master_addr}"
+            export TASK_DDP_MASTER_PORT="$((15000 + (10#${job_id} + attempt) % 40000))"
+        else
+            unset TASK_DDP_MASTER_ADDR TASK_DDP_MASTER_PORT TASK_DDP_NODE_RANK
+        fi
 
         if [[ "${simple_mode}" == "1" ]]; then
             :
@@ -244,15 +283,35 @@ run_allocation() {
         printf '[allocation] 动态命令：%s\n' "${run_cmd}"
         cat "${run_cmd}"
 
-        (
-            cd "${TASK_PROJECT_ROOT}"
-            exec setsid stdbuf -oL -eL bash "${run_cmd}"
-        ) &
+        if [[ "${multi_node_ddp_mode}" == "1" ]]; then
+            printf '[allocation] 跨节点 DDP：nodes=%s, gpus_per_node=%s, master=%s:%s。\n' \
+                "${TASK_NODE_COUNT}" "${TASK_GPUS_PER_NODE}" \
+                "${TASK_DDP_MASTER_ADDR}" "${TASK_DDP_MASTER_PORT}"
+            (
+                cd "${TASK_PROJECT_ROOT}"
+                exec setsid "${TASK_SRUN_BIN:-srun}" \
+                    --nodes="${TASK_NODE_COUNT}" \
+                    --ntasks="${TASK_NODE_COUNT}" \
+                    --ntasks-per-node=1 \
+                    --cpus-per-task="${TASK_CPU_COUNT}" \
+                    --kill-on-bad-exit=1 \
+                    --wait=30 \
+                    --export=ALL \
+                    bash -c 'export TASK_DDP_NODE_RANK="${SLURM_NODEID:?缺少 SLURM_NODEID}"; exec stdbuf -oL -eL bash "$1"' \
+                    _ "${run_cmd}"
+            ) &
+        else
+            (
+                cd "${TASK_PROJECT_ROOT}"
+                exec setsid stdbuf -oL -eL bash "${run_cmd}"
+            ) &
+        fi
         command_pid=$!
         start_kill_watcher "${command_pid}"
         wait "${command_pid}" && command_exit=0 || command_exit=$?
         last_command_exit="${command_exit}"
         stop_kill_watcher
+        rm -f -- "${kill_lock}"
         command_pid=""
 
         if [[ "${command_exit}" -eq 0 ]]; then

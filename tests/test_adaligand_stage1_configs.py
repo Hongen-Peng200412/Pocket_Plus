@@ -69,6 +69,8 @@ def test_training_launchers_use_v3_worker_and_scope_contracts() -> None:
         launcher_text = (shell_root / launcher_name).read_text(encoding="utf-8")
         assert '"train.num_workers=16"' in launcher_text
         assert '"train.prefetch_factor=4"' in launcher_text
+        assert '"train.scheduler.warmup_ratio=0.005"' in launcher_text
+        assert "训练与运行/runtime/launch_training_python.sh" in launcher_text
     for launcher_name in ("Find_0.sh", "Find_1.sh"):
         launcher_text = (shell_root / launcher_name).read_text(encoding="utf-8")
         assert "+experiment=CPC1/" in launcher_text

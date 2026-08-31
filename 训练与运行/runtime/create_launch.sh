@@ -29,9 +29,17 @@ json_escape() {
 }
 
 created_at="$(date --iso-8601=seconds)"
+multi_node_ddp_json=false
+distributed_launcher="lightning"
+master_port_json=null
+if [[ "${TASK_DDP_ENABLED:-0}" == "1" ]]; then
+    multi_node_ddp_json=true
+    distributed_launcher="srun+torchrun"
+    master_port_json="${TASK_DDP_MASTER_PORT}"
+fi
 cat >"${launch_directory}/launch.json" <<EOF
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "launch_id": "$(printf '%s' "${launch_id}" | json_escape)",
   "slurm_job_id": "$(printf '%s' "${job_id}" | json_escape)",
   "created_at": "$(printf '%s' "${created_at}" | json_escape)",
@@ -42,6 +50,11 @@ cat >"${launch_directory}/launch.json" <<EOF
   "nodes": ${TASK_NODE_COUNT},
   "gpus_per_node": ${TASK_GPUS_PER_NODE},
   "cpus_per_task": ${TASK_CPU_COUNT},
+  "multi_node_ddp": ${multi_node_ddp_json},
+  "distributed_launcher": "${distributed_launcher}",
+  "slurm_nodelist": "$(printf '%s' "${SLURM_JOB_NODELIST:-}" | json_escape)",
+  "master_addr": "$(printf '%s' "${TASK_DDP_MASTER_ADDR:-}" | json_escape)",
+  "master_port": ${master_port_json},
   "array_spec": "$(printf '%s' "${TASK_ARRAY_SPEC}" | json_escape)"
 }
 EOF
