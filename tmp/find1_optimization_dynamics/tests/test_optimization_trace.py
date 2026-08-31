@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import torch
 from omegaconf import OmegaConf
 
@@ -28,11 +30,14 @@ def test_sample_positions_remain_valid_above_float32_integer_range() -> None:
     assert tuple(sorted(set(positions))) == positions
 
 
-def test_tensor_signature_preserves_scalar_raw_bytes() -> None:
+def test_tensor_signature_preserves_scalar_raw_bytes_and_dense_values() -> None:
     for dtype in (torch.float32, torch.bfloat16):
         tensor = torch.tensor(1.25, dtype=dtype)
 
-        signature = optimization_trace.tensor_signature(tensor)
+        signature = optimization_trace.tensor_signature(
+            tensor,
+            include_dense=True,
+        )
 
         assert signature["shape"] == []
         assert signature["dtype"] == str(dtype)
@@ -40,6 +45,38 @@ def test_tensor_signature_preserves_scalar_raw_bytes() -> None:
         assert signature["all_finite"] is True
         assert len(signature["sha256"]) == 64
         assert signature["samples"] == [1.25]
+        dense = signature["dense_float32"]
+        assert dense["encoding"] == "base64-float32-le"
+        assert dense["num_bytes"] == 4
+        assert len(dense["sha256"]) == 64
+
+
+def test_dense_tensor_store_uses_one_content_addressed_sidecar(
+    tmp_path: Path,
+) -> None:
+    output_path = tmp_path / "trace.json"
+    store = optimization_trace.DenseTensorStore(output_path)
+    tensor = torch.arange(100, dtype=torch.float32)
+
+    first = optimization_trace.tensor_signature(
+        tensor,
+        dense_store=store,
+        include_dense=True,
+    )
+    second = optimization_trace.tensor_signature(
+        tensor.clone(),
+        dense_store=store,
+        include_dense=True,
+    )
+    metadata = store.metadata()
+    store.publish()
+
+    assert first["dense_float32"] == second["dense_float32"]
+    assert first["dense_float32"]["encoding"] == "sidecar-float32-le"
+    assert metadata["captured_signature_count"] == 2
+    assert metadata["unique_sidecar_tensor_count"] == 1
+    assert metadata["total_bytes"] == tensor.numel() * 4
+    assert (tmp_path / metadata["file_name"]).stat().st_size == tensor.numel() * 4
 
 
 def test_build_dataset_resolves_root_scoped_interpolations(monkeypatch) -> None:

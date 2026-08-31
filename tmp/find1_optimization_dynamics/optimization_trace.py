@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import dataclasses
 import fnmatch
 import hashlib
@@ -29,6 +30,90 @@ VOXEL_PARAMETER_PREFIXES = (
 CONTROLLED_RECYCLE_SEQUENCE = (1, 2, 3, 2, 1, 3, 1, 2)
 POINT_LOSS_NAMES = frozenset(("atom", "pseudo"))
 PROCESS_NONCE = secrets.token_hex(16)
+TRACE_SCHEMA_VERSION = 4
+DENSE_TENSOR_STORE_VERSION = 1
+DENSE_INLINE_MAX_NUMEL = 64
+
+
+class DenseTensorStore:
+    """把共同体素张量按 float32 顺序写入单一二进制旁车。"""
+
+    def __init__(self, output_path: Path) -> None:
+        self.output_path = output_path
+        self.final_path = output_path.with_name(f"{output_path.name}.dense-float32.bin")
+        self.temporary_path = self.final_path.with_name(
+            f".{self.final_path.name}.tmp.{PROCESS_NONCE}"
+        )
+        self.output_path.parent.mkdir(parents=True, exist_ok=True)
+        if self.output_path.exists() or self.final_path.exists():
+            raise FileExistsError(
+                "动力学轨迹输出或对应稠密旁车已经存在："
+                f"{self.output_path} / {self.final_path}"
+            )
+        self._handle = self.temporary_path.open("xb")
+        self._published = False
+        self._captured_signature_count = 0
+        self._unique_tensors: dict[tuple[str, int], tuple[int, int]] = {}
+
+    def capture(self, values: np.ndarray) -> dict[str, Any]:
+        """返回可由比较器逐元素恢复的 float32 数据描述。"""
+
+        dense_values = np.asarray(values, dtype="<f4").reshape(-1)
+        raw_bytes = dense_values.tobytes(order="C")
+        sha256 = hashlib.sha256(raw_bytes).hexdigest()
+        self._captured_signature_count += 1
+        if dense_values.size <= DENSE_INLINE_MAX_NUMEL:
+            return {
+                "encoding": "base64-float32-le",
+                "sha256": sha256,
+                "num_bytes": len(raw_bytes),
+                "data": base64.b64encode(raw_bytes).decode("ascii"),
+            }
+
+        cache_key = (sha256, len(raw_bytes))
+        cached = self._unique_tensors.get(cache_key)
+        if cached is None:
+            offset = self._handle.tell()
+            self._handle.write(raw_bytes)
+            cached = (offset, len(raw_bytes))
+            self._unique_tensors[cache_key] = cached
+        return {
+            "encoding": "sidecar-float32-le",
+            "sha256": sha256,
+            "offset": cached[0],
+            "num_bytes": cached[1],
+        }
+
+    def metadata(self) -> dict[str, Any]:
+        """返回 JSON 顶层使用的旁车身份与规模。"""
+
+        return {
+            "version": DENSE_TENSOR_STORE_VERSION,
+            "file_name": self.final_path.name,
+            "dtype": "float32-le",
+            "total_bytes": self._handle.tell(),
+            "captured_signature_count": self._captured_signature_count,
+            "unique_sidecar_tensor_count": len(self._unique_tensors),
+        }
+
+    def publish(self) -> None:
+        """先持久化旁车，再以原子替换发布最终文件。"""
+
+        self._handle.flush()
+        os.fsync(self._handle.fileno())
+        self._handle.close()
+        os.replace(self.temporary_path, self.final_path)
+        self._published = True
+
+    def abort(self) -> None:
+        """清除本次尚未形成完整 JSON 的专属临时产物。"""
+
+        if not self._handle.closed:
+            self._handle.close()
+        if self.temporary_path.exists():
+            self.temporary_path.unlink()
+        if self._published and self.final_path.exists():
+            self.final_path.unlink()
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -84,7 +169,9 @@ def _source_tree_sha256(project_root: Path) -> str:
 
 def _json_value(value: Any) -> Any:
     if dataclasses.is_dataclass(value):
-        return {key: _json_value(item) for key, item in dataclasses.asdict(value).items()}
+        return {
+            key: _json_value(item) for key, item in dataclasses.asdict(value).items()
+        }
     if isinstance(value, Mapping):
         return {str(key): _json_value(item) for key, item in value.items()}
     if isinstance(value, (list, tuple)):
@@ -106,17 +193,24 @@ def _sample_positions(numel: int) -> tuple[int, ...]:
         return (0,)
     last_position = numel - 1
     return tuple(
-        index * last_position // (sample_count - 1)
-        for index in range(sample_count)
+        index * last_position // (sample_count - 1) for index in range(sample_count)
     )
 
 
-def tensor_signature(tensor: torch.Tensor) -> dict[str, Any]:
-    """用原始字节摘要、有限性和统计量记录一个完整张量."""
+def tensor_signature(
+    tensor: torch.Tensor,
+    *,
+    dense_store: DenseTensorStore | None = None,
+    include_dense: bool = False,
+) -> dict[str, Any]:
+    """记录张量摘要，并按需保存可逐元素恢复的 float32 数值。"""
 
     contiguous = tensor.detach().contiguous()
     values = contiguous.float().reshape(-1)
-    raw_bytes = contiguous.reshape(-1).view(torch.uint8).cpu().numpy().tobytes()
+    raw_sha256 = hashlib.sha256(
+        contiguous.reshape(-1).view(torch.uint8).cpu().numpy().tobytes()
+    ).hexdigest()
+    cpu_values = values.cpu().numpy()
     sample_positions = _sample_positions(int(values.numel()))
     if sample_positions:
         indices = torch.tensor(
@@ -127,17 +221,29 @@ def tensor_signature(tensor: torch.Tensor) -> dict[str, Any]:
         samples = values.index_select(0, indices).cpu().tolist()
     else:
         samples = []
-    return {
+    signature = {
         "shape": list(tensor.shape),
         "dtype": str(tensor.dtype),
         "numel": int(tensor.numel()),
-        "sha256": hashlib.sha256(raw_bytes).hexdigest(),
+        "sha256": raw_sha256,
         "all_finite": bool(torch.isfinite(values).all().item()),
         "l2": float(torch.linalg.vector_norm(values).item()),
         "mean": float(values.mean().item()) if values.numel() else 0.0,
         "max_abs": float(values.abs().max().item()) if values.numel() else 0.0,
         "samples": samples,
     }
+    if include_dense:
+        if dense_store is None:
+            raw_bytes = np.asarray(cpu_values, dtype="<f4").reshape(-1).tobytes()
+            signature["dense_float32"] = {
+                "encoding": "base64-float32-le",
+                "sha256": hashlib.sha256(raw_bytes).hexdigest(),
+                "num_bytes": len(raw_bytes),
+                "data": base64.b64encode(raw_bytes).decode("ascii"),
+            }
+        else:
+            signature["dense_float32"] = dense_store.capture(cpu_values)
+    return signature
 
 
 def _parameter_signatures(
@@ -145,6 +251,8 @@ def _parameter_signatures(
     *,
     source: str,
     optimizer: torch.optim.Optimizer | None = None,
+    dense_store: DenseTensorStore | None = None,
+    include_dense: bool = False,
 ) -> dict[str, Any]:
     signatures = {}
     for name, parameter in named_parameters:
@@ -156,7 +264,15 @@ def _parameter_signatures(
             if optimizer is None:
                 raise ValueError("optimizer state 签名需要 optimizer。")
             tensor = optimizer.state[parameter].get(source)
-        signatures[name] = None if tensor is None else tensor_signature(tensor)
+        signatures[name] = (
+            None
+            if tensor is None
+            else tensor_signature(
+                tensor,
+                dense_store=dense_store,
+                include_dense=include_dense,
+            )
+        )
     return signatures
 
 
@@ -190,12 +306,17 @@ def _snapshot_parameters(
 def _parameter_update_signatures(
     before_step: Mapping[str, torch.Tensor],
     named_parameters: Sequence[tuple[str, torch.nn.Parameter]],
+    *,
+    dense_store: DenseTensorStore | None = None,
+    include_dense: bool = False,
 ) -> dict[str, Any]:
     """记录每个体素参数在一个 optimizer step 中的实际增量."""
 
     return {
         name: tensor_signature(
-            parameter.detach().float().cpu() - before_step[name]
+            parameter.detach().float().cpu() - before_step[name],
+            dense_store=dense_store,
+            include_dense=include_dense,
         )
         for name, parameter in named_parameters
     }
@@ -276,10 +397,14 @@ def _materialize_batch(dataset: Any, positions: Sequence[int]) -> dict[str, Any]
     return dataset.collate_fn(samples)
 
 
-def _initialize_input_channels(wrapper: torch.nn.Module, batch: Mapping[str, Any]) -> int:
+def _initialize_input_channels(
+    wrapper: torch.nn.Module, batch: Mapping[str, Any]
+) -> int:
     input_tensor = batch.get("density_input", batch.get("voxel_grid"))
     if not torch.is_tensor(input_tensor) or input_tensor.ndim != 5:
-        raise ValueError("Stage1 collate batch 必须包含五维 density_input 或 voxel_grid。")
+        raise ValueError(
+            "Stage1 collate batch 必须包含五维 density_input 或 voxel_grid。"
+        )
     input_channels = int(input_tensor.shape[1])
     wrapper.backbone.set_input_channels(input_channels)
     return input_channels
@@ -347,12 +472,15 @@ def _configure_candidate_runtime(
 
 def _loss_values(loss_terms: Sequence[Any]) -> dict[str, float]:
     return {
-        str(term.name): float(term.value.detach().float().item())
-        for term in loss_terms
+        str(term.name): float(term.value.detach().float().item()) for term in loss_terms
     }
 
 
-def _voxel_output_signatures(outputs: Mapping[str, Any]) -> dict[str, Any]:
+def _voxel_output_signatures(
+    outputs: Mapping[str, Any],
+    *,
+    dense_store: DenseTensorStore,
+) -> dict[str, Any]:
     """记录两套模型都应产生的最终体素输出."""
 
     names = (
@@ -364,7 +492,11 @@ def _voxel_output_signatures(outputs: Mapping[str, Any]) -> dict[str, Any]:
         "voxel_recycle_out",
     )
     return {
-        name: tensor_signature(outputs[name])
+        name: tensor_signature(
+            outputs[name],
+            dense_store=dense_store,
+            include_dense=True,
+        )
         for name in names
         if torch.is_tensor(outputs.get(name))
     }
@@ -410,6 +542,7 @@ def _optimizer_step_trace(
     all_trainable: Sequence[torch.nn.Parameter],
     optimizer_step: int,
     last_microbatch: int,
+    dense_store: DenseTensorStore,
 ) -> dict[str, Any]:
     voxel_parameters = tuple(parameter for _, parameter in voxel_named)
     other_parameters = tuple(parameter for _, parameter in other_named)
@@ -424,10 +557,14 @@ def _optimizer_step_trace(
         "parameters_before_step": _parameter_signatures(
             voxel_named,
             source="parameter",
+            dense_store=dense_store,
+            include_dense=True,
         ),
         "pre_clip_gradients": _parameter_signatures(
             voxel_named,
             source="gradient",
+            dense_store=dense_store,
+            include_dense=True,
         ),
         "other_parameters_before_step": _parameter_signatures(
             other_named,
@@ -456,6 +593,8 @@ def _optimizer_step_trace(
     trace["post_clip_gradients"] = _parameter_signatures(
         voxel_named,
         source="gradient",
+        dense_store=dense_store,
+        include_dense=True,
     )
     trace["other_post_clip_gradients"] = _parameter_signatures(
         other_named,
@@ -468,10 +607,14 @@ def _optimizer_step_trace(
     trace["parameters_after_step"] = _parameter_signatures(
         voxel_named,
         source="parameter",
+        dense_store=dense_store,
+        include_dense=True,
     )
     trace["parameter_updates"] = _parameter_update_signatures(
         before_step,
         voxel_named,
+        dense_store=dense_store,
+        include_dense=True,
     )
     trace["other_parameters_after_step"] = _parameter_signatures(
         other_named,
@@ -485,11 +628,15 @@ def _optimizer_step_trace(
         voxel_named,
         source="exp_avg",
         optimizer=optimizer,
+        dense_store=dense_store,
+        include_dense=True,
     )
     trace["exp_avg_sq_after_step"] = _parameter_signatures(
         voxel_named,
         source="exp_avg_sq",
         optimizer=optimizer,
+        dense_store=dense_store,
+        include_dense=True,
     )
     trace["other_exp_avg_after_step"] = _parameter_signatures(
         other_named,
@@ -513,7 +660,11 @@ def _optimizer_step_trace(
     return trace
 
 
-def run_trace(arguments: argparse.Namespace) -> dict[str, Any]:
+def run_trace(
+    arguments: argparse.Namespace,
+    *,
+    dense_store: DenseTensorStore,
+) -> dict[str, Any]:
     """运行一条 AUTO trunk 或完整 Find_1 优化轨迹."""
 
     project_root = arguments.project_root.resolve()
@@ -530,8 +681,7 @@ def run_trace(arguments: argparse.Namespace) -> dict[str, Any]:
         replay_source = arguments.recycle_sequence_from.resolve()
         replay_payload = json.loads(replay_source.read_text(encoding="utf-8"))
         replay_sequence = [
-            int(record["recycle_passes"])
-            for record in replay_payload["microbatches"]
+            int(record["recycle_passes"]) for record in replay_payload["microbatches"]
         ]
         if len(replay_sequence) < microbatch_count:
             raise ValueError(
@@ -602,9 +752,13 @@ def run_trace(arguments: argparse.Namespace) -> dict[str, Any]:
     for microbatch_index in range(microbatch_count):
         begin = microbatch_index * arguments.batch_size
         positions = request_positions[begin : begin + arguments.batch_size]
-        cpu_batch = first_batch if microbatch_index == 0 else _materialize_batch(
-            dataset,
-            positions,
+        cpu_batch = (
+            first_batch
+            if microbatch_index == 0
+            else _materialize_batch(
+                dataset,
+                positions,
+            )
         )
         batch = _move_to_device(cpu_batch, device)
         if microbatch_index == 0:
@@ -656,13 +810,18 @@ def run_trace(arguments: argparse.Namespace) -> dict[str, Any]:
                 "recycle_passes": int(outputs["recycle_passes_used"]),
                 "total_loss": float(total_loss.detach().float().item()),
                 "loss_terms": _loss_values(loss_terms),
-                "voxel_outputs": _voxel_output_signatures(outputs),
+                "voxel_outputs": _voxel_output_signatures(
+                    outputs,
+                    dense_store=dense_store,
+                ),
                 "accumulated_voxel_gradient_norm": _group_gradient_norm(
                     voxel_parameters
                 ),
                 "accumulated_voxel_gradients": _parameter_signatures(
                     voxel_named,
                     source="gradient",
+                    dense_store=dense_store,
+                    include_dense=True,
                 ),
             }
         )
@@ -680,11 +839,12 @@ def run_trace(arguments: argparse.Namespace) -> dict[str, Any]:
                     all_trainable=all_trainable,
                     optimizer_step=optimizer_step,
                     last_microbatch=microbatch_index,
+                    dense_store=dense_store,
                 )
             )
 
     return {
-        "schema_version": 2,
+        "schema_version": TRACE_SCHEMA_VERSION,
         "role": arguments.role,
         "track": arguments.track,
         "source_identity": arguments.source_identity,
@@ -712,8 +872,7 @@ def run_trace(arguments: argparse.Namespace) -> dict[str, Any]:
         "point_to_voxel_gradient_probe": point_gradient_probe,
         "recycle_sequence_source_sha256": replay_source_sha256,
         "recycle_sequence": [
-            int(record["recycle_passes"])
-            for record in microbatch_records
+            int(record["recycle_passes"]) for record in microbatch_records
         ],
         **checkpoint_record,
         "microbatches": microbatch_records,
@@ -729,14 +888,24 @@ def main() -> None:
         raise ValueError("batch-size 与 accumulate-steps 必须为正数。")
     if arguments.optimizer_steps <= 0:
         raise ValueError("optimizer-steps 必须为正数。")
-    result = run_trace(arguments)
-    arguments.output.parent.mkdir(parents=True, exist_ok=True)
-    temporary_path = arguments.output.with_suffix(arguments.output.suffix + ".tmp")
-    temporary_path.write_text(
-        json.dumps(result, ensure_ascii=False, indent=2),
-        encoding="utf-8",
+    dense_store = DenseTensorStore(arguments.output)
+    temporary_path = arguments.output.with_name(
+        f".{arguments.output.name}.tmp.{PROCESS_NONCE}"
     )
-    os.replace(temporary_path, arguments.output)
+    try:
+        result = run_trace(arguments, dense_store=dense_store)
+        result["dense_tensor_store"] = dense_store.metadata()
+        temporary_path.write_text(
+            json.dumps(result, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        dense_store.publish()
+        os.replace(temporary_path, arguments.output)
+    except BaseException:
+        dense_store.abort()
+        if temporary_path.exists():
+            temporary_path.unlink()
+        raise
     print(arguments.output)
 
 
