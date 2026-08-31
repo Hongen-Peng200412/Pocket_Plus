@@ -27,6 +27,8 @@ seed_workers: true
 dataloader_seed_offsets:
   train: 0
   val: 1
+resume_skip_train_batches: 0              # int, 完整续训首个 epoch 中各 rank 已经消费的 batch 数；普通训练为 0。
+resume_skip_epoch: 0                      # int, 只在这个 epoch 应用 resume_skip_train_batches。
 
 # --- Data Fault Tolerance ---
 data_fault_tolerance:

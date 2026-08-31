@@ -56,6 +56,7 @@ keep_short_runs: true
 offline: false
 migrate_slurm_logs: false
 init_from: null                    # str|null, model-only 初始化来源; `.ckpt` 文件或含 checkpoints/BEST.ckpt 的 run 目录
+resume_from_checkpoint: null       # str|null, 完整恢复模型、优化器、scheduler、回调与训练进度的 Lightning checkpoint。
 
 hydra:
   output_subdir: null

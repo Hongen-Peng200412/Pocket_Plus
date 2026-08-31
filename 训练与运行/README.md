@@ -13,8 +13,10 @@ submit_task.sh
 
 - `submit_task.sh`：选择任务、节点数、每节点 GPU 数、CPU 数、跨节点 DDP 和可选锁。
 - `sbatch/task.sbatch`：唯一真正交给 `sbatch` 的通用资源包装脚本。
-- `sh/Find_0.sh`、`sh/Find_1.sh`、`sh/unet_c1.sh`：直接决定具体训练
-  使用的数据、环境、experiment、Hydra 覆盖和正式产物位置。
+- `sh/Find_0.sh` 与 `sh/unet_c1.sh`：保留该历史端点原有训练入口。
+- `sh/Find_1.sh`：只用于从 Job `351295` 的字面 `last.ckpt` 完整续训；
+  恢复模型、优化器、scheduler、回调与训练进度，并在 epoch 0 跳过每个
+  rank 已经消费的 `45,150` 个 batch。
 
 release、launch 与四种锁控制的实现位于
 `训练与运行/runtime/`。这些文件主要供 AI 维护和审计；
@@ -39,13 +41,6 @@ bash 训练与运行/submit_task.sh \
   --gpus 2 \
   --cpus 32
 
-# Find_1：一台节点、两张 H100，CPC1 训练。
-bash 训练与运行/submit_task.sh \
-  --sh Find_1.sh \
-  --resource h100 \
-  --gpus 2 \
-  --cpus 32
-
 # unet_c1 主链版：一台节点、一张 H100。
 bash 训练与运行/submit_task.sh \
   --sh unet_c1.sh \
@@ -61,19 +56,32 @@ bash 训练与运行/submit_task.sh \
   --cpus 32
 ```
 
-跨两节点、每节点两张 A800 训练 Find_1 时，必须显式增加 `--multi-node-ddp`：
+历史 Find_1 使用两个 A800 节点，每节点一张 GPU。接管窗口出现后，先按
+两节点届时可提供的 CPU 数计算 `<C>`，再提交带 `pre_lock` 的任务：
 
 ```bash
 bash 训练与运行/submit_task.sh \
   --sh Find_1.sh \
   --resource a800 \
   --nodes 2 \
-  --gpus 2 \
-  --cpus 64 \
-  --multi-node-ddp
+  --gpus 1 \
+  --cpus <C> \
+  --nodelist gnode09,gnode10 \
+  --multi-node-ddp \
+  --pre_hold \
+  --after_hold
 ```
 
-该命令申请两个节点，每个节点一个 Slurm task、两张 A800 和 64 个 CPU 核。每个 Slurm task 启动一个 `torchrun` agent，每个 agent 启动两个训练 rank，因此 Lightning 的全局 `world_size` 为 4。`train.devices=2` 始终表示每节点 GPU 数，`train.nnodes=2` 表示节点数；`train.global_batch_size` 仍表示所有节点合计的全局批量。
+该命令在每个节点启动一个训练 rank，因此 Lightning 的全局 `world_size=2`。
+`Find_1.sh` 自动令每个 rank 的 DataLoader worker 数为 `<C>-1`；物理 batch
+size 仍为每卡 6，梯度累积由原全局 batch size 48 自动变为 4 次。脚本不启用
+新版分组梯度裁剪，仍对原模型的全部可训练参数执行一次全局范数 0.5 裁剪。
+
+续训 checkpoint 固定为：
+
+```text
+/home/penghongen/Feedback/Pocket_Plus/logs/AdaLigand_Stage1-Find_1-CPC1/Find_1-CPC1____Find_1_job351295_20260823T152130_a2_CPC1/checkpoints/last.ckpt
+```
 
 每条命令只调用一次 `sbatch`。默认不创建 `pre_lock` 或 `try_lock`：作业获得资源后
 立即执行一次任务，任务结束后自动退出并释放资源。若希望先占有资源、再由人工决定何时开始，添加：

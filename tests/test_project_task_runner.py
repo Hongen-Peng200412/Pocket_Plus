@@ -879,6 +879,7 @@ def test_kill_lock_sends_term_to_the_active_multi_node_job_step(
         _wait_for_path(ready_output, process)
         kill_lock.touch()
         _wait_for_path(try_lock, process)
+        _wait_for_path(term_output, process)
         assert term_output.read_text(encoding="utf-8") == "term"
         after_lock.unlink()
         stdout, stderr = process.communicate(timeout=10)

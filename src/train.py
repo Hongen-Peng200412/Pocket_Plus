@@ -8,6 +8,7 @@ import random
 import fnmatch
 import shutil
 from collections.abc import Mapping
+from itertools import islice
 from typing import Any
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "max_split_size_mb:256,expandable_segments:True")
 
@@ -88,6 +89,15 @@ def _resolve_init_checkpoint(init_from: str, feedback_root: Path, current_run_di
             return ckpt_path
         raise FileNotFoundError(f"init_from 目录必须包含 checkpoints/BEST.ckpt: {init_path}")
     raise FileNotFoundError(f"init_from 指向的 ckpt 文件或 run 目录不存在: {init_path}")
+
+
+def _resolve_resume_checkpoint(resume_from_checkpoint: str) -> Path:
+    """解析用于恢复完整 Lightning 训练状态的 checkpoint。"""
+
+    checkpoint_path = Path(str(resume_from_checkpoint).strip()).expanduser()
+    if not checkpoint_path.is_file():
+        raise FileNotFoundError(f"resume_from_checkpoint 文件不存在: {checkpoint_path}")
+    return checkpoint_path.resolve()
 
 
 def _load_model_only_checkpoint(model: torch.nn.Module, ckpt_path: Path, verbose: bool) -> None:
@@ -822,6 +832,48 @@ class EpochAwareDistributedSampler(DistributedSampler):
             set_dataset_epoch(int(epoch))
 
 
+class ResumeSkippingSampler(Sampler[int]):
+    """在恢复训练的首个 epoch 跳过各 rank 已经消费的完整 batch。"""
+
+    def __init__(
+        self,
+        sampler: Sampler[int],
+        *,
+        skip_batches: int,
+        batch_size: int,
+        resume_epoch: int,
+    ) -> None:
+        self.sampler = sampler
+        self.skip_batches = int(skip_batches)
+        self.batch_size = int(batch_size)
+        self.resume_epoch = int(resume_epoch)
+
+    @property
+    def epoch(self) -> int:
+        """返回底层确定性 sampler 当前使用的 epoch。"""
+
+        return int(getattr(self.sampler, "epoch", 0))
+
+    def set_epoch(self, epoch: int) -> None:
+        """把 epoch 转发给底层 sampler 与动态请求源。"""
+
+        set_epoch = getattr(self.sampler, "set_epoch", None)
+        if callable(set_epoch):
+            set_epoch(int(epoch))
+
+    def __iter__(self):
+        iterator = iter(self.sampler)
+        if self.epoch != self.resume_epoch or self.skip_batches == 0:
+            return iterator
+        skip_samples = self.skip_batches * self.batch_size
+        return islice(iterator, skip_samples, None)
+
+    def __len__(self) -> int:
+        # Lightning 从 checkpoint 恢复了 batch 进度；保留原长度才能让剩余
+        # iterator 与已经完成的 batch 共同到达原 epoch 末尾。
+        return len(self.sampler)
+
+
 class DatasetEpochController(Callback):
     """在每个训练 epoch 开始前同步动态请求源与 sampler 的 epoch. """
 
@@ -998,10 +1050,27 @@ def main(cfg: DictConfig):
             world_size = int(getattr(self.trainer, "world_size", 1) or 1)
 
             if world_size > 1:
-                return EpochAwareDistributedSampler(ds, shuffle=(stage == "train" and shuffle), seed=stage_seed)
-            if stage == "train" and shuffle:
-                return SeededEpochRandomSampler(ds, seed=stage_seed)
-            return None
+                sampler = EpochAwareDistributedSampler(
+                    ds,
+                    shuffle=(stage == "train" and shuffle),
+                    seed=stage_seed,
+                )
+            elif stage == "train" and shuffle:
+                sampler = SeededEpochRandomSampler(ds, seed=stage_seed)
+            else:
+                return None
+
+            skip_batches = int(self.train_cfg.get("resume_skip_train_batches", 0))
+            if stage != "train" or skip_batches == 0:
+                return sampler
+            resume_epoch = int(self.train_cfg.get("resume_skip_epoch", 0))
+            sampler.set_epoch(resume_epoch)
+            return ResumeSkippingSampler(
+                sampler,
+                skip_batches=skip_batches,
+                batch_size=int(self.train_cfg.batch_size),
+                resume_epoch=resume_epoch,
+            )
 
         def _get_dataloader(self, ds, stage: str, shuffle: bool = False):
             """
@@ -1096,6 +1165,22 @@ def main(cfg: DictConfig):
     )
     _initialize_lazy_modules_before_ddp(model, dm, verbose=exp_manager.is_rank_zero)
     init_from = cfg.get("init_from", None)
+    resume_from_checkpoint = cfg.get("resume_from_checkpoint", None)
+    if init_from is not None and resume_from_checkpoint is not None:
+        raise ValueError("init_from 与 resume_from_checkpoint 不能同时使用。")
+    resume_checkpoint_path = None
+    if resume_from_checkpoint is not None:
+        resume_checkpoint_path = _resolve_resume_checkpoint(
+            str(resume_from_checkpoint)
+        )
+        if exp_manager.is_rank_zero:
+            print(
+                "[Train] 完整恢复 Lightning checkpoint："
+                f"path={resume_checkpoint_path}, "
+                f"skip_epoch={int(cfg.train.get('resume_skip_epoch', 0))}, "
+                "skip_rank_local_batches="
+                f"{int(cfg.train.get('resume_skip_train_batches', 0))}"
+            )
     if init_from is not None:
         if str(init_from).strip() == "***" and exp_manager.is_rank_zero:
             print("[Train] [WARN] init_from='***'，将按当前 SLURM_JOB_ID 自动解析上一阶段 checkpoints/BEST.ckpt。")
@@ -1469,7 +1554,15 @@ def main(cfg: DictConfig):
         # 4. 每次 validation 结束: wrapper 聚合 payload; train.py 的 callbacks 负责 checkpoint、plateau 与 small-increment 停训
         _fix_gloo_socket_ifname()
         _log_distributed_launch_state("即将调用trainer.fit")
-        trainer.fit(model, datamodule=dm)
+        trainer.fit(
+            model,
+            datamodule=dm,
+            ckpt_path=(
+                str(resume_checkpoint_path)
+                if resume_checkpoint_path is not None
+                else None
+            ),
+        )
     except Exception as e:
         print(f"[Train] Critical Exception occurred(严重异常): {e}")
         exp_manager.check_and_cleanup(error=e)
