@@ -56,7 +56,6 @@ def _trace(*, role: str, track: str = "controlled") -> dict[str, object]:
         process_nonce = "full-process"
         trainable_count = EXPECTED_FULL_PARAMETER_TENSORS
         other_count = EXPECTED_OTHER_PARAMETER_TENSORS
-        other_state_step = [1]
     else:
         other_trace = {}
         point_losses = {}
@@ -67,7 +66,6 @@ def _trace(*, role: str, track: str = "controlled") -> dict[str, object]:
         process_nonce = "trunk-process"
         trainable_count = EXPECTED_VOXEL_PARAMETER_TENSORS
         other_count = 0
-        other_state_step = []
 
     microbatch_template = {
         "optimizer_step": 0,
@@ -138,8 +136,12 @@ def _trace(*, role: str, track: str = "controlled") -> dict[str, object]:
                 "other_post_clip_group_norm": 0.5 if role == "full" else 0.0,
                 "voxel_clip_coefficient": 5 / 6,
                 "lr_after_step": 2.0e-5,
-                "optimizer_state_step": [1],
-                "other_optimizer_state_step": other_state_step,
+                "optimizer_state_step": {
+                    name: 1 for name in voxel_trace
+                },
+                "other_optimizer_state_step": {
+                    name: 1 for name in other_trace
+                },
                 "parameters_before_step": voxel_trace,
                 "pre_clip_gradients": voxel_trace,
                 "post_clip_gradients": voxel_trace,
@@ -190,6 +192,28 @@ def test_controlled_trace_requires_full_optimizer_equivalence() -> None:
     result = _compare(trunk, full)
     assert result["passed"] is False
     assert result["mismatch_count"] >= 1
+
+
+def test_optimizer_state_step_preserves_matching_inactive_parameters() -> None:
+    trunk = _trace(role="trunk")
+    full = _trace(role="full")
+    parameter_name = next(
+        iter(trunk["optimizer_step_records"][0]["optimizer_state_step"])
+    )
+    for trace in (trunk, full):
+        step = trace["optimizer_step_records"][0]
+        step["optimizer_state_step"][parameter_name] = None
+        step["exp_avg_after_step"][parameter_name] = None
+        step["exp_avg_sq_after_step"][parameter_name] = None
+
+    assert _compare(trunk, full)["passed"]
+
+    full["optimizer_step_records"][0]["optimizer_state_step"][
+        parameter_name
+    ] = 1
+    result = _compare(trunk, full)
+    assert result["passed"] is False
+    assert any("optimizer_state_step" in item for item in result["mismatches"])
 
 
 def test_identity_cannot_reuse_the_same_process_product() -> None:

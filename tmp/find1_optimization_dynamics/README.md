@@ -139,7 +139,7 @@ python "${TOOL_ROOT}/compare_optimization_traces.py" \
 - `point_to_voxel_gradient_probe: object`: 首批 `atom` 与 `pseudo` 两项监督各自对体素组产生的梯度范数；两项都必须存在且严格为零.
 - `recycle_sequence_source_sha256/recycle_sequence`: replay 使用的自然轨迹摘要和本次实际 recycle 序列.
 - `microbatches: list[object]`: 每个 microbatch 的请求位置、完整请求身份、recycle 数、总损失、各损失项、共同体素输出和逐体素参数累计梯度摘要.
-- `optimizer_step_records: list[object]`: 每次更新前后的学习率、两组梯度范数、体素裁剪系数，以及体素组和其他组的逐参数原值、裁剪前后梯度、参数增量、更新后参数、AdamW `exp_avg/exp_avg_sq` 和 state step.
+- `optimizer_step_records: list[object]`: 每次更新前后的学习率、两组梯度范数、体素裁剪系数，以及体素组和其他组的逐参数原值、裁剪前后梯度、参数增量、更新后参数、AdamW `exp_avg/exp_avg_sq` 和逐参数 state step；没有参与该次更新的参数以 `null` 明确记录.
 
 张量摘要统一包含 `shape`、`dtype`、`numel`、原始 dtype 全张量字节的 `sha256`、`all_finite`、`l2`、`mean`、`max_abs` 和固定位置 `samples`。比较器要求全张量摘要完全相同，因此未抽样位置不能隐藏差异；任一 NaN/Inf 都会失败。输出先写入同目录 `.tmp` 文件，再用 `os.replace()` 原子替换目标 JSON。路径创建或计算失败时程序非零退出，不发布完成 JSON。
 

@@ -157,6 +157,38 @@ def _compare_parameter_signatures(
         )
 
 
+def _validate_optimizer_state_steps(
+    state_steps: Mapping[str, Any],
+    exp_avg: Mapping[str, Any],
+    exp_avg_sq: Mapping[str, Any],
+    *,
+    expected_names: set[str],
+    expected_step: int,
+    path: str,
+    mismatches: list[str],
+) -> None:
+    """核对逐参数 AdamW step 与一、二阶矩的存在性关系."""
+
+    if set(state_steps) != expected_names:
+        mismatches.append(f"{path}: 参数名称集合不同")
+        return
+    active_count = 0
+    for name in sorted(expected_names):
+        step = state_steps[name]
+        has_moments = exp_avg[name] is not None and exp_avg_sq[name] is not None
+        if step is None:
+            if exp_avg[name] is not None or exp_avg_sq[name] is not None:
+                mismatches.append(f"{path}.{name}: step 为空但 AdamW 矩已存在")
+            continue
+        active_count += 1
+        if int(step) != expected_step:
+            mismatches.append(f"{path}.{name}: {step} != {expected_step}")
+        if not has_moments:
+            mismatches.append(f"{path}.{name}: step 已存在但 AdamW 矩缺失")
+    if active_count == 0:
+        mismatches.append(f"{path}: 没有参数参与本次 optimizer step")
+
+
 def _first_recycle_divergence(
     trunk_microbatches: Sequence[Mapping[str, Any]],
     full_microbatches: Sequence[Mapping[str, Any]],
@@ -471,11 +503,15 @@ def _validate_other_parameter_step(
             expected_count=EXPECTED_OTHER_PARAMETER_TENSORS,
             mismatches=mismatches,
         )
-    if full_step["other_optimizer_state_step"] != [index + 1]:
-        mismatches.append(
-            f"optimizer_step_records[{index}].full.other_optimizer_state_step: "
-            f"{full_step['other_optimizer_state_step']} != {[index + 1]}"
-        )
+    _validate_optimizer_state_steps(
+        full_step["other_optimizer_state_step"],
+        full_step["other_exp_avg_after_step"],
+        full_step["other_exp_avg_sq_after_step"],
+        expected_names=expected_names,
+        expected_step=index + 1,
+        path=f"optimizer_step_records[{index}].full.other_optimizer_state_step",
+        mismatches=mismatches,
+    )
 
 
 def _compare_optimizer_step(
@@ -533,10 +569,18 @@ def _compare_optimizer_step(
         )
     if trunk_step["optimizer_state_step"] != full_step["optimizer_state_step"]:
         mismatches.append(f"optimizer_step_records[{index}].optimizer_state_step: 不同")
-    if trunk_step["optimizer_state_step"] != [index + 1]:
-        mismatches.append(
-            f"optimizer_step_records[{index}].optimizer_state_step: "
-            f"{trunk_step['optimizer_state_step']} != {[index + 1]}"
+    voxel_names = set(trunk_step["parameters_before_step"])
+    for role, step in (("trunk", trunk_step), ("full", full_step)):
+        _validate_optimizer_state_steps(
+            step["optimizer_state_step"],
+            step["exp_avg_after_step"],
+            step["exp_avg_sq_after_step"],
+            expected_names=voxel_names,
+            expected_step=index + 1,
+            path=(
+                f"optimizer_step_records[{index}].{role}.optimizer_state_step"
+            ),
+            mismatches=mismatches,
         )
     for key in (
         "parameters_before_step",

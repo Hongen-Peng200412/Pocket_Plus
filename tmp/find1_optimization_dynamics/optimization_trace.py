@@ -160,6 +160,22 @@ def _parameter_signatures(
     return signatures
 
 
+def _optimizer_state_steps(
+    named_parameters: Sequence[tuple[str, torch.nn.Parameter]],
+    optimizer: torch.optim.Optimizer,
+) -> dict[str, int | None]:
+    """逐参数记录 AdamW step；未参与本次更新的参数记为 ``None``."""
+
+    return {
+        name: (
+            int(optimizer.state[parameter]["step"].item())
+            if "step" in optimizer.state[parameter]
+            else None
+        )
+        for name, parameter in named_parameters
+    }
+
+
 def _snapshot_parameters(
     named_parameters: Sequence[tuple[str, torch.nn.Parameter]],
 ) -> dict[str, torch.Tensor]:
@@ -485,18 +501,13 @@ def _optimizer_step_trace(
         source="exp_avg_sq",
         optimizer=optimizer,
     )
-    trace["optimizer_state_step"] = sorted(
-        {
-            int(optimizer.state[parameter]["step"].item())
-            for _, parameter in voxel_named
-        }
+    trace["optimizer_state_step"] = _optimizer_state_steps(
+        voxel_named,
+        optimizer,
     )
-    trace["other_optimizer_state_step"] = sorted(
-        {
-            int(optimizer.state[parameter]["step"].item())
-            for _, parameter in other_named
-            if "step" in optimizer.state[parameter]
-        }
+    trace["other_optimizer_state_step"] = _optimizer_state_steps(
+        other_named,
+        optimizer,
     )
     optimizer.zero_grad(set_to_none=True)
     return trace
