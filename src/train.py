@@ -1092,6 +1092,7 @@ def main(cfg: DictConfig):
         cfg.model,
         optimizer=cfg.train.optimizer,
         scheduler=cfg.train.scheduler,
+        gradient_clip_mode=cfg.train.gradient_clip_mode,
         compile=False,
     )
     _initialize_lazy_modules_before_ddp(model, dm, verbose=exp_manager.is_rank_zero)

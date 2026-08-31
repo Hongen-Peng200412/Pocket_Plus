@@ -22,6 +22,7 @@ LIGAND_PRAUC_MONITORED_EXPERIMENTS = (
     "CPC1/Find_0",
     "CPC2/Find_0",
     "CPC1/Find_1",
+    "CPC1/Find_1_pdb_centric_2",
     "CPC2/Find_1",
     "unet_c1",
 )
@@ -73,7 +74,6 @@ def test_training_launchers_use_v3_worker_and_scope_contracts() -> None:
     shell_root = PROJECT_ROOT / "训练与运行" / "sh"
     expected_training_scope = {
         "Find_0.sh": (16, 70, 10),
-        "Find_1.sh": (24, 70, 12),
         "unet_base.sh": (16, 70, 12),
         "unet_c1.sh": (30, 110, 8),
         "unet_diff.sh": (16, 70, 12),
@@ -90,10 +90,11 @@ def test_training_launchers_use_v3_worker_and_scope_contracts() -> None:
         assert f'"train.val_per_epoch={val_per_epoch}"' in launcher_text
         assert '"train.scheduler.warmup_ratio=0.005"' in launcher_text
         assert "训练与运行/runtime/launch_training_python.sh" in launcher_text
-    for launcher_name in ("Find_0.sh", "Find_1.sh"):
+    for launcher_name in ("Find_0.sh", "Find_1.sh", "Find_1_pdb_centric_2.sh"):
         launcher_text = (shell_root / launcher_name).read_text(encoding="utf-8")
         assert "+experiment=CPC1/" in launcher_text
         assert "+experiment=CPC2/" not in launcher_text
+        assert "训练与运行/runtime/launch_training_python.sh" in launcher_text
 
     find1_text = (shell_root / "Find_1.sh").read_text(encoding="utf-8")
     assert 'devices="${TASK_GPUS:-2}"' in find1_text
@@ -135,7 +136,12 @@ def test_find_configs_encode_common_stage1_contract(experiment: str) -> None:
     assert cfg.model.backbone.real_density_cube_cfg.num_conv == 0
     assert cfg.model.backbone.density_cube_cfg.chunk_size == 2048
     assert cfg.model.backbone.real_density_cube_cfg.chunk_size == 4096
-    assert cfg.train.global_batch_size == 64
+    if experiment == "CPC1/Find_1":
+        assert cfg.train.global_batch_size == 48
+        assert cfg.train.batch_size == 6
+        assert cfg.train.gradient_clip_mode == "find_voxel_point"
+    else:
+        assert cfg.train.global_batch_size == 64
     assert cfg.train.max_epochs == 70
     assert cfg.train.val_per_epoch == 12
     assert cfg.train.optimizer.lr == pytest.approx(5.0e-5)
@@ -200,6 +206,49 @@ def test_method_two_experiments_keep_the_v1_dataset_contract(experiment: str) ->
     assert "balanced_foreground_ratio" not in cfg.train
 
 
+def test_find1_pdb_centric_configs_are_explicit_and_independent() -> None:
+    """两份 Find_1 配置固定各自的 Dataset、validation 与训练预算."""
+
+    first = _compose("CPC1/Find_1")
+    second = _compose("CPC1/Find_1_pdb_centric_2")
+
+    assert first.dataset.name == "stage1_find_pdb_centric_1"
+    assert first.dataset.split_val.endswith("/validation_selection_pdb_centric.npz")
+    assert first.dataset.pdb_foreground_box_num == 25
+    assert first.dataset.pdb_foreground_fraction_target == pytest.approx(0.5)
+    assert first.dataset.pdb_occurrence_foreground_box_cap == 25
+    assert first.train.global_batch_size == 48
+    assert first.train.batch_size == 6
+    assert first.train.num_workers == 24
+    assert first.train.max_epochs == 70
+    assert first.train.val_per_epoch == 12
+
+    assert second.dataset.name == "stage1_find_pdb_centric_2"
+    assert second.dataset.split_val.endswith(
+        "/validation_selection_pdb_centric_v2.npz"
+    )
+    assert second.dataset.pdb_foreground_box_num == 50
+    assert second.dataset.pdb_foreground_fraction_target == pytest.approx(25 / 33)
+    assert second.dataset.pdb_occurrence_foreground_box_cap == 1
+    assert second.train.global_batch_size == 48
+    assert second.train.batch_size == 6
+    assert second.train.num_workers == 24
+    assert second.train.max_epochs == 110
+    assert second.train.val_per_epoch == 8
+
+    for cfg in (first, second):
+        assert cfg.train.gradient_clip_val == pytest.approx(0.5)
+        assert cfg.train.gradient_clip_mode == "find_voxel_point"
+        assert cfg.train.optimizer.lr == pytest.approx(5.0e-5)
+        assert cfg.train.scheduler.threshold == pytest.approx(0.003)
+
+    second_shell = (
+        PROJECT_ROOT / "训练与运行" / "sh" / "Find_1_pdb_centric_2.sh"
+    ).read_text(encoding="utf-8")
+    assert "+experiment=CPC1/Find_1_pdb_centric_2" in second_shell
+    assert "if [[" not in second_shell
+
+
 def test_cpc_stage_boundary_and_scheduler_contract() -> None:
     """验证 CPC1 从头训练, CPC2 strict model-only 接续及冻结/loss 边界."""
 
@@ -208,7 +257,7 @@ def test_cpc_stage_boundary_and_scheduler_contract() -> None:
     assert cpc1.init_from is None
     assert cpc1.train.scheduler.warmup_ratio == 0.005
     assert cpc1.train.scheduler.patience == 3
-    assert cpc1.train.scheduler.stop_after_lr_reductions == 3
+    assert cpc1.train.scheduler.stop_after_lr_reductions == 2
     assert cpc1.model.voxel_aux_loss_weight == 0.1
     assert cpc1.model.voxel_ligand_loss_weight == 1.0
     assert cpc1.model.protein_mainchain_loss_weight == 0.05

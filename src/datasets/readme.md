@@ -32,7 +32,7 @@ V3 split 与 BOX pool 根目录为：
     └── _COMPLETE
 ```
 
-`configs/dataset/stage1_find.yaml`、`stage1_unet_base.yaml`、`stage1_unet_c1.yaml` 与 `stage1_unet_diff.yaml` 都指向上述位置。训练不扫描目录中的额外 PDB 文件，只读取 `manifest.json` 声明的文件。Find、unet_base 与 unet_diff 读取 V1 `validation_selection_pdb_centric.npz`；unet_c1 读取 V2 `validation_selection_pdb_centric_v2.npz`。原 `validation_selection.npz` 与 `config.json::entry_ratio` 仅记录 V3 几何池的历史构建规则。
+`configs/dataset/stage1_find.yaml`、两份 `stage1_find_pdb_centric_*.yaml`、`stage1_unet_base.yaml`、`stage1_unet_c1.yaml` 与 `stage1_unet_diff.yaml` 都指向上述位置。训练不扫描目录中的额外 PDB 文件，只读取 `manifest.json` 声明的文件。Find_1 PDB-centric-1、Find_0、unet_base 与 unet_diff 读取 V1 `validation_selection_pdb_centric.npz`；Find_1 PDB-centric-2 与 unet_c1 读取 V2 `validation_selection_pdb_centric_v2.npz`。原 `validation_selection.npz` 与 `config.json::entry_ratio` 仅记录 V3 几何池的历史构建规则。
 
 ## 完整图资产
 
@@ -86,7 +86,7 @@ Dataset 按文件顺序完整展开这些请求，不在验证期间重新抽样
 
 ## DataLoader 边界
 
-- `Find_1.sh` 的双卡任务申请 64 CPU，每个 rank 使用 24 个 DataLoader worker；`unet_c1.sh` 的单卡任务申请 32 CPU，使用 30 个 worker；其余当前 Stage1 入口每个 rank 使用 16 个 worker。
+- Find_1 PDB-centric-1/2 每个 rank 使用 24 个 DataLoader worker；双卡 H100 的常用申请为 64 CPU。`unet_c1.sh` 的单卡任务申请 32 CPU，使用 30 个 worker；其余当前 Stage1 入口每个 rank 使用 16 个 worker。
 - `prefetch_factor=4`、`pin_memory=true`、`persistent_workers=false`。
 - `persistent_workers=false` 是请求语义的一部分：主进程调用 `set_epoch` 后，新 worker 才能看到该 epoch 的请求序列。
 

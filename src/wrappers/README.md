@@ -6,7 +6,7 @@
 
 | 顺序 | 文件 | 职责 |
 | --- | --- | --- |
-| 1 | `voxel_point_stage1.py` | 构造网络、执行 voxel/point 前向，并暴露训练与推理共同接口 |
+| 1 | `voxel_point_stage1.py` | 构造网络、执行 voxel/point 前向、协调全局或 Find_1 双组梯度裁剪，并暴露训练与推理共同接口 |
 | 2 | `voxel_point_stage1_losses.py` | 计算配体、主链和距离损失 |
 | 3 | `voxel_point_stage1_metrics.py` | 计算训练与 validation 指标 |
 | 4 | `voxel_point_stage1_logging.py` | 组织周期级日志字段 |

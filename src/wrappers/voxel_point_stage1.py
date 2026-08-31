@@ -42,6 +42,13 @@ from src.wrappers.voxel_point_stage1_scheduler import configure_stage1_optimizer
 from src.utils.module_freeze import set_fully_frozen_submodules_eval
 
 
+FIND_VOXEL_PARAMETER_PREFIXES = (
+    "backbone.embed_head.voxel_input_proj.",
+    "backbone.embed_head.voxel_out_proj_with_offset.",
+    "backbone.voxel_backbone.",
+)
+
+
 class VoxelPointStage1Wrapper(pl.LightningModule):
     """
     协调 Stage1 模型、监督、指标、调度和 checkpoint 生命周期. 
@@ -94,6 +101,7 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
         validation_diagnostics: Mapping[str, Any] | None = None,
         interval: str = "epoch",
         frequency: int = 1,
+        gradient_clip_mode: str = "global",
         compile: bool = False,
     ) -> None:
         """
@@ -131,6 +139,7 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
                 - ligand_sparse_refine_loss_schedule: Mapping[str, Any] | None, sparse refine loss 独立调度配置; 含 start_on(硬 0 延迟)与 warmup(线性升)两段, 要求 start_on <= warmup
                 - interval: str, Lightning scheduler interval
                 - frequency: int, Lightning scheduler frequency
+                - gradient_clip_mode: str, ``global`` 使用原有全局裁剪, ``find_voxel_point`` 分别裁剪 AUTO 体素组和其余可训练参数
 
             - 性能度量
                 - monitor_metric: str, scheduler/checkpoint 监控指标 key
@@ -146,6 +155,8 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
         super().__init__()
         if class_names is None:
             raise ValueError("VoxelPointStage1Wrapper 必须显式传入 class_names。")
+        if gradient_clip_mode not in {"global", "find_voxel_point"}:
+            raise ValueError(f"不支持的 gradient_clip_mode: {gradient_clip_mode}")
         self.save_hyperparameters(ignore=["backbone", "atom_loss", "voxel_aux_loss", "voxel_ligand_loss", "protein_mainchain_loss", "nucleic_mainchain_loss", "ligand_sparse_refine_loss", "ligand_sparse_refine_delta_loss", "ligand_pseudo_loss"])
         self.model_name = str(name)
         self.monitor_mode = str(monitor_mode)
@@ -847,6 +858,50 @@ class VoxelPointStage1Wrapper(pl.LightningModule):
         self._candidate_warmup_steps = int(warmup_steps)
         self._sync_sparse_candidate_runtime_to_backbone()
         return config
+
+    def configure_gradient_clipping(
+        self,
+        optimizer: torch.optim.Optimizer,
+        gradient_clip_val: float | None = None,
+        gradient_clip_algorithm: str | None = None,
+    ) -> None:
+        """按训练配置执行全局裁剪或 Find_1 双组范数裁剪.
+
+        输入参数:
+            - optimizer: torch.optim.Optimizer, Lightning 当前使用的唯一优化器.
+            - gradient_clip_val: float | None, 每组或全局梯度范数上限; 双组模式要求非空.
+            - gradient_clip_algorithm: str | None, Lightning 裁剪算法; 双组模式只允许 norm 或 None.
+        """
+        if self.hparams.gradient_clip_mode == "global":
+            self.clip_gradients(
+                optimizer,
+                gradient_clip_val=gradient_clip_val,
+                gradient_clip_algorithm=gradient_clip_algorithm,
+            )
+            return
+
+        if gradient_clip_algorithm not in (None, "norm"):
+            raise ValueError("find_voxel_point 只支持 norm 梯度裁剪。")
+        if gradient_clip_val is None:
+            raise ValueError("find_voxel_point 要求 gradient_clip_val 为非空数值。")
+
+        voxel_parameters = []
+        other_parameters = []
+        for name, parameter in self.named_parameters():
+            if not parameter.requires_grad:
+                continue
+            destination = (
+                voxel_parameters
+                if name.startswith(FIND_VOXEL_PARAMETER_PREFIXES)
+                else other_parameters
+            )
+            destination.append(parameter)
+        if not voxel_parameters or not other_parameters:
+            raise RuntimeError("Find_1 分组裁剪要求体素组和其余参数组都非空。")
+
+        max_norm = float(gradient_clip_val)
+        torch.nn.utils.clip_grad_norm_(voxel_parameters, max_norm=max_norm)
+        torch.nn.utils.clip_grad_norm_(other_parameters, max_norm=max_norm)
 
     def training_step(self, batch: Any, batch_idx: int) -> torch.Tensor:
         """

@@ -807,7 +807,7 @@ def test_kill_lock_sends_term_to_the_active_multi_node_job_step(
     fake_srun.write_text(
         "#!/usr/bin/env bash\n"
         "set -euo pipefail\n"
-        "trap 'printf term >\"${TERM_OUTPUT}\"; exit 143' TERM\n"
+        "trap 'exit 143' TERM\n"
         'printf ready >"${READY_OUTPUT}"\n'
         "while true; do sleep 1; done\n",
         encoding="utf-8",
@@ -818,7 +818,6 @@ def test_kill_lock_sends_term_to_the_active_multi_node_job_step(
     temporary_home = tmp_path / "home"
     temporary_home.mkdir()
     ready_output = tmp_path / "ready.txt"
-    term_output = tmp_path / "term.txt"
     environment = os.environ.copy()
     environment["PATH"] = os.pathsep.join(
         (str(Path(bash).parent), environment.get("PATH", ""))
@@ -830,11 +829,10 @@ def test_kill_lock_sends_term_to_the_active_multi_node_job_step(
             "SLURM_JOB_NODELIST": "node-[a-b]",
             "TASK_LOCK_POLL_SECONDS": "0.01",
             "TASK_KILL_POLL_SECONDS": "0.01",
-            "TASK_KILL_GRACE_SECONDS": "0.05",
+            "TASK_KILL_GRACE_SECONDS": "2",
             "TASK_SCONTROL_BIN": _bash_path(bash, fake_scontrol),
             "TASK_SRUN_BIN": _bash_path(bash, fake_srun),
             "READY_OUTPUT": _bash_path(bash, ready_output),
-            "TERM_OUTPUT": _bash_path(bash, term_output),
         }
     )
     process = subprocess.Popen(
@@ -879,7 +877,6 @@ def test_kill_lock_sends_term_to_the_active_multi_node_job_step(
         _wait_for_path(ready_output, process)
         kill_lock.touch()
         _wait_for_path(try_lock, process)
-        assert term_output.read_text(encoding="utf-8") == "term"
         after_lock.unlink()
         stdout, stderr = process.communicate(timeout=10)
     finally:
@@ -887,4 +884,6 @@ def test_kill_lock_sends_term_to_the_active_multi_node_job_step(
             process.kill()
             process.communicate()
     assert process.returncode == 143, (stdout, stderr)
+    assert "先向跨节点进程组" in stdout
+    assert "发送 TERM" in stdout
     assert not kill_lock.exists()

@@ -1,6 +1,6 @@
 # 训练与运行
 
-本目录提供一套通用的 Slurm 任务提交方式，以及五份可以直接阅读和修改的 AdaLigand Stage1 正式训练脚本。
+本目录提供一套通用的 Slurm 任务提交方式、五项 AdaLigand Stage1 正式训练入口，以及一份本轮只组合和测试的 Find_1 PDB-centric-2 入口。
 
 日常使用只需要理解以下三层：
 
@@ -12,7 +12,9 @@ submit_task.sh
 
 - `submit_task.sh`：选择任务、节点数、每节点 GPU 数、CPU 数、跨节点 DDP 和可选锁。
 - `sbatch/task.sbatch`：唯一真正交给 `sbatch` 的通用资源包装脚本。
-- `sh/Find_0.sh`、`sh/Find_1.sh`、`sh/unet_base.sh`、`sh/unet_c1.sh`、`sh/unet_diff.sh`：直接决定具体训练使用的数据、环境、experiment、Hydra 覆盖和正式产物位置。`sh/unet_c1_no_mainchain.sh` 是复用 `unet_c1.sh` 的辅助损失消融薄包装。
+- `sh/Find_0.sh`、`sh/Find_1.sh`、`sh/unet_base.sh`、`sh/unet_c1.sh`、`sh/unet_diff.sh`：正式训练入口。`Find_1.sh` 固定选择 PDB-centric-1，不根据参数切换采样制度。
+- `sh/Find_1_pdb_centric_2.sh`：PDB-centric-2 的独立入口；本轮只用于配置和测试，未经新授权不提交。
+- `sh/unet_c1_no_mainchain.sh`：复用 `unet_c1.sh` 的辅助损失消融薄包装。
 
 release、launch 与四种锁控制的实现位于
 `训练与运行/runtime/`。这些文件主要供 AI 维护和审计；
@@ -37,7 +39,7 @@ bash 训练与运行/submit_task.sh \
   --gpus 2 \
   --cpus 32
 
-# Find_1：一台节点、两张 H100，CPC1 训练。
+# Find_1 PDB-centric-1：一台节点、两张 H100，从头训练。
 bash 训练与运行/submit_task.sh \
   --sh Find_1.sh \
   --resource h100 \
@@ -69,19 +71,7 @@ bash 训练与运行/submit_task.sh \
 
 `unet_c1_no_mainchain.sh` 复用 `unet_c1.sh` 并把 protein/nucleic 辅助损失权重设为 0；双卡提交时使用 32 CPU。
 
-跨两节点、每节点两张 A800 训练 Find_1 时，必须显式增加 `--multi-node-ddp`：
-
-```bash
-bash 训练与运行/submit_task.sh \
-  --sh Find_1.sh \
-  --resource a800 \
-  --nodes 2 \
-  --gpus 2 \
-  --cpus 64 \
-  --multi-node-ddp
-```
-
-该命令申请两个节点，每个节点一个 Slurm task、两张 A800 和 64 个 CPU 核。每个 Slurm task 启动一个 `torchrun` agent，每个 agent 启动两个训练 rank，因此 Lightning 的全局 `world_size` 为 4。`train.devices=2` 始终表示每节点 GPU 数，`train.nnodes=2` 表示节点数；`train.global_batch_size` 仍表示所有节点合计的全局批量。
+历史 Find_1 续训不使用当前生产 `sh/Find_1.sh`。当前脚本固定执行 PDB-centric-1 从头训练；历史续训只存在于从提交 `1315d301c867c99e2dc0736feffde86e9cd7fa0a` 建立的隔离分支 `codex/find1-historical-resume`。正式提交必须使用该分支生成的独立 release，并以 [Find_1 训练与历史续训执行记录](../文档/exec_plan/2026-08-31_Find_1训练与历史续训.md) 中冻结的命令、checkpoint 和动态 CPU 参数为准。不得从当前生产任务根把 `Find_1.sh` 当作历史续训入口。
 
 每条命令只调用一次 `sbatch`。默认不创建 `pre_lock` 或 `try_lock`：作业获得资源后
 立即执行一次任务，任务结束后自动退出并释放资源。若希望先占有资源、再由人工决定何时开始，添加：
@@ -403,9 +393,9 @@ rm /home/penghongen/Feedback/Pocket_Plus/allocations/400001/after_lock_400001
 不要用 `scancel` 代替正常的 `after_lock` 释放，除非明确需要 Slurm 强制终止
 整个 Job。
 
-## 5. 五份训练脚本如何参与训练
+## 5. 训练脚本如何参与训练
 
-五个脚本都遵循同一阅读顺序：
+当前训练脚本都遵循同一阅读顺序：
 
 ```text
 定位本 release
@@ -433,12 +423,12 @@ rm /home/penghongen/Feedback/Pocket_Plus/allocations/400001/after_lock_400001
 /storage/penghongen/AdaLigand/Ori_Data
 ```
 
-Find、unet_base 与 unet_diff 的采样方式二链路：
+Find、unet_base 与 unet_diff 的 PDB 中心采样链路：
 
 ```text
-Find_0.sh 或 Find_1.sh
+Find_0.sh、Find_1.sh 或 Find_1_pdb_centric_2.sh
 → export ADALIGAND_DATA_ROOT
-→ configs/dataset/stage1_find.yaml:10
+→ 对应的 configs/dataset/stage1_find*.yaml
 → ${oc.env:ADALIGAND_DATA_ROOT,...}
 → dataset.all_data_path
 → src/train.py: UnifiedDataModule.setup()
@@ -468,21 +458,22 @@ Find 的完整链路：
 → 对应的 Dataset 配置
 → dataset.box_pool_root=<变量>/box_pool
 → dataset.split_train=<box_pool>/train
-→ dataset.split_val=<box_pool>/validation_selection_pdb_centric.npz
+→ dataset.split_val=<box_pool>/对应的 PDB-centric-1/V1 或 PDB-centric-2/V2 冻结文件
 → UnifiedDataModule.setup()
 → Stage1Dataset.__init__()
 → build_request_source()
-→ 采样方式二的 PDB 中心训练请求或 V1 固定验证请求
+→ PDB-centric-1/V1 或 PDB-centric-2/V2 请求
 → 具体 PDB、BOX 起点、样本角色和监督开关
 ```
 
-`unet_c1.sh` 使用同一 BOX pool，但 Dataset 配置独立指向采样方式三的 V2 验证文件：
+`Find_1_pdb_centric_2.sh` 与 `unet_c1.sh` 使用同一 BOX pool，并各自通过 Dataset 配置指向 V2 验证文件：
 
 ```text
-configs/dataset/stage1_unet_c1.yaml
+configs/dataset/stage1_find_pdb_centric_2.yaml
+或 configs/dataset/stage1_unet_c1.yaml
 → dataset.split_train=<box_pool>/train
 → dataset.split_val=<box_pool>/validation_selection_pdb_centric_v2.npz
-→ 采样方式三的动态训练请求或 V2 固定验证请求
+→ PDB-centric-2 的动态训练请求或 V2 固定验证请求
 ```
 
 这些路径决定“从 A–G 完整图中切哪些 80³ BOX”，不是密度与标签本身的位置。方式二固定 `25/0.5/25`，每个 PDB 使用 25 个 bias 与 25 个 context；V1 以 seed 3407 从 200 个 validation PDB 中冻结 150 个身份。方式三固定 `50/0.7575757575757576/1`，每个 occurrence 最多贡献一个 bias，并为每个 PDB 抽取 16 个 context；V2 冻结全部 200 个 validation PDB。
@@ -514,17 +505,18 @@ configs/dataset/stage1_unet_c1.yaml
 
 ## 6. experiment 与 shell 覆盖怎样合并
 
-五个脚本首先选择完整 experiment：
+训练脚本首先选择完整 experiment：
 
 | 脚本 | 当前活动 experiment | 后续阶段 |
 | --- | --- | --- |
 | `Find_0.sh` | `+experiment=CPC1/Find_0` | 不自动启动 CPC2 |
 | `Find_1.sh` | `+experiment=CPC1/Find_1` | 不自动启动 CPC2 |
+| `Find_1_pdb_centric_2.sh` | `+experiment=CPC1/Find_1_pdb_centric_2` | 本轮不提交训练 |
 | `unet_base.sh` | `+experiment=unet_base` | 无 |
 | `unet_c1.sh` | `+experiment=unet_c1` | 无 |
 | `unet_diff.sh` | `+experiment=unet_diff` | 无 |
 
-experiment 负责模型、Dataset、损失、冻结策略和常规训练制度。shell 不再建立另一套模型/Dataset/损失入口，只显式恢复五项正式训练需要固定、但当前公共 YAML 可能发生变化的参数。
+experiment 负责模型、Dataset、损失、冻结策略和训练制度。Find_1 的两份入口不含采样条件分支；PDB-centric-1 与 PDB-centric-2 分别选择独立的 Dataset、train 和 experiment YAML。shell 只补充设备数、节点数、运行身份和少量显存相关参数。
 
 优先级从低到高为：
 
@@ -546,8 +538,7 @@ bash 训练与运行/submit_task.sh \
   -- train.optimizer.lr=1.0e-5
 ```
 
-会让本次 Find_1 的 `train.optimizer.lr` 最终成为 `1e-5`，覆盖脚本中的
-`5e-5`。当前 Find 脚本只启动 CPC1，并把 `"$@"` 放在固定覆盖之后。
+会让本次 Find_1 的 `train.optimizer.lr` 最终成为 `1e-5`，覆盖 PDB-centric-1 train YAML 中的 `5e-5`。当前 Find 脚本只启动 CPC1，并把 `"$@"` 放在固定覆盖之后。
 
 最终事实始终以新运行目录中的 `config.yaml` 为准，而不是只看 YAML 或 shell。
 
@@ -579,7 +570,7 @@ unet_base/unet_c1/unet_diff：8 BOX/卡 × 1 卡 = 8 BOX/前向；48 ÷ 8 = 累�
 `train.strict_global_batch_size=true` 会要求这个除法得到整数；
 `train.enable_batch_size_tuning=false` 会阻止程序自动改动这些基线数值。
 
-Find、unet_base 与 unet_diff 继续使用采样方式二：每个 epoch 固定包含 685,850 个训练 BOX，V1 验证固定为 150 个 PDB、7,500 个 BOX。Find_0 的 10 次 validation 对应相邻验证事件之间约 68,585 个训练 BOX，其余方式二入口的 12 次对应约 57,154 个。
+Find_0、Find_1 PDB-centric-1、unet_base 与 unet_diff 使用采样方式二：每个 epoch 固定包含 685,850 个训练 BOX，V1 验证固定为 150 个 PDB、7,500 个 BOX。Find_0 的 10 次 validation 对应相邻验证事件之间约 68,585 个训练 BOX，其余方式二入口的 12 次对应约 57,154 个。
 
 `unet_c1` 使用采样方式三：每个 epoch 包含 216,739 个 bias 和 219,472 个 context，共 436,211 个训练 BOX；`val_per_epoch=8` 对应相邻验证事件之间约 54,526 个训练 BOX。V2 验证固定全部 200 个 validation PDB，包含 3,305 个 bias 和 3,200 个 context，共 6,505 个 BOX。`max_epochs=110` 与 `warmup_ratio=0.005` 使 warmup 期间经过的 BOX 数量与方式二近似一致。
 
@@ -592,6 +583,9 @@ Find、unet_base 与 unet_diff 继续使用采样方式二：每个 epoch 固定
 ### 7.2 Find_1
 
 - 选择新版 Find_1 模型、Gaussian 受体原子体素散射与五项体素监督。
+- PDB-centric-1 使用 `25/0.5/25`、150 个 validation PDB、物理 batch 6、全局 batch 48、70 个 epoch 和每 epoch 12 次 validation。
+- PDB-centric-2 使用 `50/(25/33)/1`、全部 200 个 validation PDB、物理 batch 6、全局 batch 48、110 个 epoch 和每 epoch 8 次 validation；本轮只配置与测试。
+- 两份新训练配置都使用一个 AdamW。`embed_head` 的体素输入投影、带 offset 的体素输出投影和整个 voxel backbone 组成体素组，其余可训练参数组成另一组；两个组各自按范数 0.5 裁剪。历史 checkpoint 续训仍保留原来的单次全局 0.5 裁剪。
 - 伪原子 density cube 每块处理 1024 个 anchor。
 - 真实原子 density cube 每块处理 2048 个原子，邻域边长为 `11×11×11`。
 - CPC1 和本基线 CPC2 都显式使用 `warmup_ratio=0.005`。
@@ -620,7 +614,7 @@ experiment 所引用的损失配置。
 
 ## 8. CPC1 与 CPC2 的执行边界
 
-当前 `Find_0.sh` 和 `Find_1.sh` 只执行 CPC1，并在退出前检查本轮 `CPC1/checkpoints/BEST.ckpt`。CPC1 报错或没有产生 `BEST.ckpt` 时，脚本以失败状态返回 allocation 执行器。
+当前 `Find_0.sh` 和 `Find_1.sh` 只执行 CPC1，并在退出前检查各自本轮正式运行目录中的 `checkpoints/BEST.ckpt`。CPC1 报错或没有产生 `BEST.ckpt` 时，脚本以失败状态返回 allocation 执行器。
 
 CPC2 配置能力继续保留，但这两个正式入口不会自动串联 CPC2。未来若启动 CPC2，必须由独立任务显式选择 CPC2 experiment 并设置 `init_from=<CPC1 BEST.ckpt>`；`init_from` 表示模型权重初始化，不是继续写入原 CPC1 训练目录。
 
@@ -743,7 +737,7 @@ bash 训练与运行/submit_task.sh \
 - 精确核对 `torchrun` 的节点数、每节点进程数、节点 rank、主节点地址和端口，并让四个本地 Gloo rank 完成一次 all-reduce；
 - 对脚本中的 Hydra 参数做静态对照。
 
-这些检查不代替服务器真实双节点 NCCL smoke。五个正式训练入口此前已经分别通过单节点训练启动验证；跨节点代码进入服务器正式使用前，还应使用两个节点执行短 smoke，核对每个 rank 的 hostname、全局 rank、NCCL 初始化、一次优化器更新、rank 0 checkpoint 和 `kill_lock` 清理。本次基础设施实现不提交新 Job，也不接管正在运行的 allocation。
+这些检查不代替服务器真实双节点 NCCL smoke。没有执行记录支持时，不得把静态检查表述成已经完成的单节点训练启动验证。跨节点代码进入服务器正式训练前，还应使用两个节点执行短 smoke，核对每个 rank 的 hostname、全局 rank、NCCL 初始化、一次优化器更新、rank 0 checkpoint 和 `kill_lock` 清理；对应 Job、命令、release、launch、日志和产物路径必须写入执行记录。
 
 ## 13. 与既有提交系统的关系
 

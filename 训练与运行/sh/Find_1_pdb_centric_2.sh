@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# Find_1 PDB-centric-1 从头训练入口.
+# Find_1 PDB-centric-2 从头训练入口; 本轮只完成配置与测试, 未经新授权不提交.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
@@ -28,13 +28,13 @@ export ADALIGAND_STAGE1_PREPARATION_ROOT="${ADALIGAND_STAGE1_PREPARATION_ROOT:-/
 
 devices="${TASK_GPUS:-2}"
 nnodes="${TASK_NNODES:-1}"
-experiment_group="AdaLigand_Stage1_pdb_centric/Find_1/pdb_centric_1"
-tag="Find_1/pdb_centric_1"
-run_stamp="${TASK_RUN_STAMP:-$(date '+%Y%m%dT%H%M%S')}_pdb_centric_1"
+experiment_group="AdaLigand_Stage1_pdb_centric/Find_1/pdb_centric_2"
+tag="Find_1/pdb_centric_2"
+run_stamp="${TASK_RUN_STAMP:-$(date '+%Y%m%dT%H%M%S')}_pdb_centric_2"
 formal_run="${EXPERIMENT_FEEDBACK_ROOT}/logs/${experiment_group//\//-}/${tag//\//-}____${run_stamp}"
 
 overrides=(
-    "+experiment=CPC1/Find_1"
+    "+experiment=CPC1/Find_1_pdb_centric_2"
     "experiment_group=${experiment_group}"
     "tag=${tag}"
     "init_from=null"
@@ -49,13 +49,13 @@ overrides=(
 )
 
 cd "${PROJECT_ROOT}"
-echo "[Find_1] 启动 PDB-centric-1：${formal_run}"
+echo "[Find_1_pdb_centric_2] 启动 PDB-centric-2：${formal_run}"
 export TASK_RUN_STAMP="${run_stamp}"
 bash "${PROJECT_ROOT}/训练与运行/runtime/launch_training_python.sh" src/train.py "${overrides[@]}" "$@"
 
 formal_best="${formal_run}/checkpoints/BEST.ckpt"
 [[ -f "${formal_best}" ]] || {
-    echo "[Find_1][错误] CPC1 没有产生 BEST.ckpt：${formal_best}" >&2
+    echo "[Find_1_pdb_centric_2][错误] 没有产生 BEST.ckpt：${formal_best}" >&2
     exit 1
 }
-echo "[Find_1] PDB-centric-1 正式训练完成。"
+echo "[Find_1_pdb_centric_2] PDB-centric-2 正式训练完成。"
