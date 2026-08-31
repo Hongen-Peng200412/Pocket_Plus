@@ -4,7 +4,7 @@ Date: 2026-09-01
 
 ## Current State
 
-Find_1 的生产实现位于工作树 `C:\Users\15919\Desktop\Pocket_Plus_worktrees\cross_node_ddp_infra`、分支 `codex/find1-training`。PDB-centric-1 与 PDB-centric-2 的独立 Dataset、训练、实验和 shell 配置，以及同一个 AdamW 内 voxel/trunk 与 point 两组分别按范数 0.5 裁剪的实现已经完成。表达/结构与科学逻辑各一轮全面审查均已完成，针对报告项的窄口径复核均已通过；完整可收集测试为 `367 passed, 11 warnings in 75.05s`。生产实现端点 `2bcbb13b285d71adbde8cd6d237dbad743baea28` 已部署到服务器隔离根，Job `366071` 的十二条真实动力学门禁命令也已写好并通过语法与哈希核验；当前只剩触发门禁、根据结果修复或启动正式训练。PDB-centric-2 只允许配置与测试，本轮不得提交训练。
+Find_1 的生产实现位于工作树 `C:\Users\15919\Desktop\Pocket_Plus_worktrees\cross_node_ddp_infra`、分支 `codex/find1-training`。PDB-centric-1 与 PDB-centric-2 的独立 Dataset、训练、实验和 shell 配置，以及同一个 AdamW 内 voxel/trunk 与 point 两组分别按范数 0.5 裁剪的实现已经完成。表达/结构与科学逻辑各一轮全面审查均已完成，针对报告项的窄口径复核均已通过；完整可收集测试为 `367 passed, 11 warnings in 75.05s`。真实动力学 attempt a2 在首条轨迹构造 Dataset 时暴露根作用域插值丢失，没有执行 optimizer step；窄口径修复端点 `acdf3f5671aa7439097d70d50e2357cd91b5432f` 已重新部署，新动态命令已核验且 Job `366071` 安全停在 `try_lock`。当前下一步是触发 a3。PDB-centric-2 只允许配置与测试，本轮不得提交训练。
 
 H100 Job `366071` 已于 2026-09-01 01:41:37 +08:00 在 `hnode02` 获得 1 张 H100 和 32 CPU。旧 attempt a1 使用尚未更新的共享代码，在模型实例化阶段被本任务具名 `kill_lock_366071` 终止，退出码为 137，没有完成优化器 step，也不是有效的 PDB-centric-1 训练结果。allocation runner 已消费 `kill_lock` 并于 01:43:14 创建根级 `try_lock_366071`。截至 01:51:57，Job 仍为 RUNNING，`try_lock` 与 `after_lock` 均存在，因此 H100 资源被安全保留但没有继续执行代码。
 
@@ -35,7 +35,10 @@ attempt a1 的准确命令、监视器载荷、锁时间和路径均记录在 `�
 - 动力学对照临时工具位于 `tmp/find1_optimization_dynamics/`。该工具只进入真实实现提交和服务器门禁，最终学习端点不得保留临时工具。
 - 生产隔离根：`/home/penghongen/Feedback/Pocket_Plus/task_roots/find1-production-2bcbb13b285d/Pocket_Plus`；上传归档 SHA-256 为 `00a98c6b368972a16ec12b8184578251a76daadd514d3b61b69afcc10b961b85`。
 - AUTO/生产 `src` 与 `configs` 受信摘要分别为 `5c6fb1ea40a1471b9c0ba0cfe9c251697318c6cae72b11fe5268234dbc63fc75` 与 `90c0874db54d7bf058aba5f5039989f5c924e3ebe11b91b34a1cfa8cec0f27b7`。
-- Job `366071` 当前动态命令为 `/home/penghongen/Feedback/Pocket_Plus/allocations/366071/run_cmd_366071.sh`，SHA-256 为 `df252894d8251fc357ad40a182998ebbd68cbf9cee4f1430d257607c1da98a2c`。它执行八条轨迹和四条比较，结束后由 `after_hold` 返回 `try_lock`。
+- Job `366071` 当前动态命令为 `/home/penghongen/Feedback/Pocket_Plus/allocations/366071/run_cmd_366071.sh`，SHA-256 为 `e53fb90607ada6406880e64c6129368951ee3e60ee951964eed3371b8cd6f47b`。它执行八条轨迹和四条比较，结束后由 `after_hold` 返回 `try_lock`。
+- attempt a2 launch：`/home/penghongen/Feedback/Pocket_Plus/launches/366071/Find_1_job366071_20260901T033232_a2`；输出根：`/home/penghongen/Feedback/Pocket_Plus/validation/find1_optimization_dynamics/Find_1_job366071_20260901T033232_a2`。03:32:47 因 `${dataset.box_pool_root}` 作用域丢失退出码 1，只产生 `identity.txt`、`gate.log` 与 `_FAILED`。
+- 修复隔离根：`/home/penghongen/Feedback/Pocket_Plus/task_roots/find1-production-acdf3f5671aa/Pocket_Plus`；归档 SHA-256 为 `b595a867ba233d86900e2bc270b7568f7e8125b478154e01c00311b26a06830d`。
+- a3 的十二条科学命令不变，只改用修复端点。旧 a2 根、launch 和输出保持只读。
 
 ## Historical Resume
 
