@@ -116,7 +116,7 @@ def tensor_signature(tensor: torch.Tensor) -> dict[str, Any]:
 
     contiguous = tensor.detach().contiguous()
     values = contiguous.float().reshape(-1)
-    raw_bytes = contiguous.view(torch.uint8).cpu().numpy().tobytes()
+    raw_bytes = contiguous.reshape(-1).view(torch.uint8).cpu().numpy().tobytes()
     sample_positions = _sample_positions(int(values.numel()))
     if sample_positions:
         indices = torch.tensor(

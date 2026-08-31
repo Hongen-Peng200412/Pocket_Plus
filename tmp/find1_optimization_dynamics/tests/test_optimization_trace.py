@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import torch
 from omegaconf import OmegaConf
 
 from tmp.find1_optimization_dynamics import optimization_trace
@@ -25,6 +26,20 @@ def test_sample_positions_remain_valid_above_float32_integer_range() -> None:
     assert positions[0] == 0
     assert positions[-1] == numel - 1
     assert tuple(sorted(set(positions))) == positions
+
+
+def test_tensor_signature_preserves_scalar_raw_bytes() -> None:
+    for dtype in (torch.float32, torch.bfloat16):
+        tensor = torch.tensor(1.25, dtype=dtype)
+
+        signature = optimization_trace.tensor_signature(tensor)
+
+        assert signature["shape"] == []
+        assert signature["dtype"] == str(dtype)
+        assert signature["numel"] == 1
+        assert signature["all_finite"] is True
+        assert len(signature["sha256"]) == 64
+        assert signature["samples"] == [1.25]
 
 
 def test_build_dataset_resolves_root_scoped_interpolations(monkeypatch) -> None:
