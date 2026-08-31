@@ -4,7 +4,7 @@ Date: 2026-09-01
 
 ## Current State
 
-Find_1 的生产实现位于工作树 `C:\Users\15919\Desktop\Pocket_Plus_worktrees\cross_node_ddp_infra`、分支 `codex/find1-training`。PDB-centric-1 与 PDB-centric-2 的独立 Dataset、训练、实验和 shell 配置，以及同一个 AdamW 内 voxel/trunk 与 point 两组分别按范数 0.5 裁剪的实现已经完成。表达/结构与科学逻辑各一轮全面审查均已完成，针对报告项的窄口径复核均已通过；完整可收集测试为 `367 passed, 11 warnings in 75.05s`。当前只剩生产提交、隔离部署、真实 GPU 优化动力学门禁与正式训练。PDB-centric-2 只允许配置与测试，本轮不得提交训练。
+Find_1 的生产实现位于工作树 `C:\Users\15919\Desktop\Pocket_Plus_worktrees\cross_node_ddp_infra`、分支 `codex/find1-training`。PDB-centric-1 与 PDB-centric-2 的独立 Dataset、训练、实验和 shell 配置，以及同一个 AdamW 内 voxel/trunk 与 point 两组分别按范数 0.5 裁剪的实现已经完成。表达/结构与科学逻辑各一轮全面审查均已完成，针对报告项的窄口径复核均已通过；完整可收集测试为 `367 passed, 11 warnings in 75.05s`。生产实现端点为 `2bcbb13b285d71adbde8cd6d237dbad743baea28`；当前只剩隔离部署、真实 GPU 优化动力学门禁与正式训练。PDB-centric-2 只允许配置与测试，本轮不得提交训练。
 
 H100 Job `366071` 已于 2026-09-01 01:41:37 +08:00 在 `hnode02` 获得 1 张 H100 和 32 CPU。旧 attempt a1 使用尚未更新的共享代码，在模型实例化阶段被本任务具名 `kill_lock_366071` 终止，退出码为 137，没有完成优化器 step，也不是有效的 PDB-centric-1 训练结果。allocation runner 已消费 `kill_lock` 并于 01:43:14 创建根级 `try_lock_366071`。截至 01:51:57，Job 仍为 RUNNING，`try_lock` 与 `after_lock` 均存在，因此 H100 资源被安全保留但没有继续执行代码。
 
@@ -26,7 +26,7 @@ attempt a1 的准确命令、监视器载荷、锁时间和路径均记录在 `�
 
 ## Implementation Facts
 
-- 生产分支基点为当时唯一最新的 `Learn/CUMULATIVE` 提交 `275fcec06ad...`；跨节点 DDP 基础设施提交为 `1d231f27...`。本轮生产改动已经通过审查与最终测试，准备提交真实实现历史。
+- 生产分支基点为当时唯一最新的 `Learn/CUMULATIVE` 提交 `275fcec06ad...`；跨节点 DDP 基础设施提交为 `1d231f27...`；PDB-centric 配置、分组裁剪、测试、动力学门禁工具与文档提交为 `10463559fd147f700a4e9b1d91f6458e8043d9f4`；误纳入的一次性 Python 字节码缓存由清理提交 `2bcbb13b285d71adbde8cd6d237dbad743baea28` 删除。服务器必须部署清理后的端点。
 - `src/wrappers/voxel_point_stage1.py` 通过 `gradient_clip_mode=find_voxel_point` 启用两组裁剪。voxel/trunk 集合按已核实的 AUTO B_trunk 可训练参数前缀定义，point 集合是其余全部可训练参数；仍然只有一个 AdamW。
 - PDB-centric-1 固定为每卡 batch 6、全局 batch 48、24 workers、70 epochs、每个 epoch 12 次 validation、学习率 `5e-5`、warmup 比例 `0.005`。
 - PDB-centric-2 固定为每卡 batch 6、全局 batch 48、24 workers、110 epochs、每个 epoch 8 次 validation；它只完成配置与测试。
@@ -51,7 +51,7 @@ attempt a1 的准确命令、监视器载荷、锁时间和路径均记录在 `�
 
 ## Next Actions
 
-1. 提交生产实现真实历史，把已验收版本部署到服务器隔离目录并核对哈希；不得改写共享 `/home/penghongen/My_Project/Pocket_Plus`。
+1. 把生产端点 `2bcbb13b285d71adbde8cd6d237dbad743baea28` 部署到服务器隔离目录并核对哈希；不得改写共享 `/home/penghongen/My_Project/Pocket_Plus`。
 2. 在 Job `366071` 的 `try_lock` 仍存在时，改写其具名动态命令，使下一 attempt 依次运行八条 AUTO/完整 Find_1 轨迹命令与四条比较命令并返回 `try_lock`。比较命令必须使用从两个只读 release 独立核验的 `src/` 与 `configs/` 内容摘要。门禁通过后，才改为正式 PDB-centric-1 训练命令并删除 `try_lock_366071`。
 3. A800 监视代理获得资源后，部署历史续训端点 `5b4aa5f52d699d904fa82e97e22099047e607e4c`、核对 checkpoint 与代码身份，再删除新任务的 `pre_lock`；不得操作未授权作业。
 4. 训练正常推进后持续监视，并在首个 optimizer step、首次 validation、checkpoint 或故障等关键事件更新执行记录和 handoff。
