@@ -10,13 +10,15 @@ submit_task.sh
 → sh/<具体训练>.sh
 ```
 
-- `submit_task.sh`：选择任务、GPU 类型、GPU 数、CPU 数和可选锁。
+- `submit_task.sh`：选择任务、节点数、每节点 GPU 数、CPU 数、跨节点 DDP 和可选锁。
 - `sbatch/task.sbatch`：唯一真正交给 `sbatch` 的通用资源包装脚本。
 - `sh/Find_0.sh`、`sh/Find_1.sh`、`sh/unet_base.sh`、`sh/unet_c1.sh`、`sh/unet_diff.sh`：直接决定具体训练使用的数据、环境、experiment、Hydra 覆盖和正式产物位置。`sh/unet_c1_no_mainchain.sh` 是复用 `unet_c1.sh` 的辅助损失消融薄包装。
 
 release、launch 与四种锁控制的实现位于
 `训练与运行/runtime/`。这些文件主要供 AI 维护和审计；
 运行实验不要求先阅读其实现。
+
+跨节点训练额外经过 `runtime/launch_training_python.sh`。allocation 控制器在每个节点启动一个 `torchrun` agent，agent 再为本节点的每张 GPU 创建一个 Python 训练进程；单节点训练仍直接运行一个 Python 主进程并由 Lightning 启动本节点的 DDP 子进程。
 
 本文中的“任务根目录”是一次提交需要冻结的完整项目目录。未填写
 `--task-root` 时，它就是 `训练与运行` 的上一层；因此把整个 `训练与运行`
@@ -66,6 +68,20 @@ bash 训练与运行/submit_task.sh \
 ```
 
 `unet_c1_no_mainchain.sh` 复用 `unet_c1.sh` 并把 protein/nucleic 辅助损失权重设为 0；双卡提交时使用 32 CPU。
+
+跨两节点、每节点两张 A800 训练 Find_1 时，必须显式增加 `--multi-node-ddp`：
+
+```bash
+bash 训练与运行/submit_task.sh \
+  --sh Find_1.sh \
+  --resource a800 \
+  --nodes 2 \
+  --gpus 2 \
+  --cpus 64 \
+  --multi-node-ddp
+```
+
+该命令申请两个节点，每个节点一个 Slurm task、两张 A800 和 64 个 CPU 核。每个 Slurm task 启动一个 `torchrun` agent，每个 agent 启动两个训练 rank，因此 Lightning 的全局 `world_size` 为 4。`train.devices=2` 始终表示每节点 GPU 数，`train.nnodes=2` 表示节点数；`train.global_batch_size` 仍表示所有节点合计的全局批量。
 
 每条命令只调用一次 `sbatch`。默认不创建 `pre_lock` 或 `try_lock`：作业获得资源后
 立即执行一次任务，任务结束后自动退出并释放资源。若希望先占有资源、再由人工决定何时开始，添加：
@@ -128,6 +144,7 @@ sbatch
   --resource h100
   --gpus 2
   --nodes 1
+  --multi_node_ddp 0
   --cpus 64
   --
   train.optimizer.weight_decay=0.02
@@ -291,6 +308,7 @@ release。`launch.json` 记录该次执行的：
 - release 项目根；
 - 原始任务脚本相对路径；
 - Job ID、资源类型、节点数、GPU 数和 CPU 数；
+- 是否启用跨节点 DDP、实际启动器、Slurm 节点表达式、rendezvous 主节点和端口；
 - Slurm array 表达式；
 - 唯一 `TASK_RUN_STAMP`，即本次实际执行传给训练程序的目录标识。
 
@@ -619,6 +637,7 @@ CPC2 配置能力继续保留，但这两个正式入口不会自动串联 CPC2�
 可用选项：
 
 - `--nodes N`：节点数，默认 1。
+- `--multi-node-ddp`：显式启用跨节点 DDP；只允许 GPU 任务，并要求 `--nodes` 大于 1。未提供该开关时，提交器拒绝 `--nodes` 大于 1，避免额外节点被申请后闲置。
 - `--gpus N`：每节点 GPU 数。
 - `--cpus N`：每个 Slurm task 的 CPU 核数。
 - `--partition`、`--qos`：覆盖资源类型映射。
@@ -719,10 +738,12 @@ bash 训练与运行/submit_task.sh \
 - 用临时任务验证第一次运行和 `try_lock` 重试分别绑定不同 release；
 - 用临时 `${HOME}` 直接运行 Slurm 包装层，验证 `--simple` 的锁、动态命令、
   退出码以及“不创建 release/launch”；
+- 用假的 `scontrol` 与 `srun` 验证一个 attempt 只创建一次 release/launch，并把同一命令分发到两个节点；
+- 验证 `kill_lock` 先向活动 `srun` job step 发送 TERM，再回到既有 `try_lock` 流程；
+- 精确核对 `torchrun` 的节点数、每节点进程数、节点 rank、主节点地址和端口，并让四个本地 Gloo rank 完成一次 all-reduce；
 - 对脚本中的 Hydra 参数做静态对照。
 
-这些检查不代替真实 GPU smoke，但本目录的五个正式训练入口此前已经分别通过训练
-启动验证。本次整理不提交新 Job，也不接管正在运行的 allocation。
+这些检查不代替服务器真实双节点 NCCL smoke。五个正式训练入口此前已经分别通过单节点训练启动验证；跨节点代码进入服务器正式使用前，还应使用两个节点执行短 smoke，核对每个 rank 的 hostname、全局 rank、NCCL 初始化、一次优化器更新、rank 0 checkpoint 和 `kill_lock` 清理。本次基础设施实现不提交新 Job，也不接管正在运行的 allocation。
 
 ## 13. 与既有提交系统的关系
 
