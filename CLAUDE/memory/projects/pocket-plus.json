@@ -234,6 +234,11 @@
       "date": "2026-08-31",
       "summary": "Stage1 密度通道消融 Job 350302（unet_base）在实际学习率衰减 3 次后按配置正常结束，最终 global step 39508，checkpoint 已写入并进入 try_lock；after_hold 资源和全部锁保持原状。Job 350305（unet_diff）继续正常训练。",
       "handoff": "CLAUDE/memory/handoffs/2026-08-21-unet-density-ablation-guard.md"
+    },
+    {
+      "date": "2026-09-01",
+      "summary": "Find_1 优化动力学门禁已升级到 schema 4：共同体素张量以可校验 float32 稠密旁车执行逐元素硬边界比较，原审查反例与 396 项活动测试通过，窄口径审查批准；提交 2fc8f15 已部署到隔离根，H100 Job 366071 的 attempt a7 已启动且保留 after_lock。",
+      "handoff": "CLAUDE/memory/handoffs/2026-09-01-find1-schema4-a7-running.md"
     }
   ],
   "blockers": [
