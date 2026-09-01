@@ -244,6 +244,11 @@
       "date": "2026-09-01",
       "summary": "A800 接管窗口出现后，先取得并核验双节点 Job 366277，再只取消授权旧 Jobs 350302、356946；历史提交 5b4aa5f 与字面 last.ckpt 已通过摘要门禁部署，attempt a1 使用每节点 A800×1、CPU×17、每 rank 16 workers 启动，完成完整状态恢复并从 global step 11287 推进到至少 11294。",
       "handoff": "CLAUDE/memory/handoffs/2026-09-01-find1-a800-resume-launched.md"
+    },
+    {
+      "date": "2026-09-01",
+      "summary": "Find_1 schema 4 attempt a7 完整生成八条稠密轨迹后因四项旧数值上限明确失败；attempt a8 以独立同角色运行标定 H100 BF16 底噪，提交 827d470 只冻结四项新包络，30 项动力学测试通过，H100 Job 366071 安全停在 try_lock 等待全新 a9。",
+      "handoff": "CLAUDE/memory/handoffs/2026-09-01-find1-schema4-calibrated.md"
     }
   ],
   "blockers": [
