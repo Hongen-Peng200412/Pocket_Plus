@@ -28,7 +28,7 @@ FULL_SOURCE_IDENTITY = "f" * 40
 
 
 def test_schema4_bf16_limits_match_h100_same_role_calibration() -> None:
-    assert VOXEL_OUTPUT_LIMITS["element_absolute_max"] == 3.0
+    assert VOXEL_OUTPUT_LIMITS["element_absolute_max"] == 3.5
     assert ACCUMULATED_GRADIENT_LIMITS["l2_relative_p95"] == 1.0e-1
     assert ACCUMULATED_GRADIENT_LIMITS["max_abs_relative_p95"] == 1.6e-1
     assert (

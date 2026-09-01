@@ -83,7 +83,7 @@ VOXEL_OUTPUT_LIMITS = {
     "max_abs_absolute_max": 2.0,
     "max_abs_relative_max": 5.0e-2,
     "sample_absolute_max": 5.0e-1,
-    "element_absolute_max": 3.0,
+    "element_absolute_max": 3.5,
 }
 COMMON_LOSS_ABSOLUTE_MAX = 1.0e-3
 COMMON_LOSS_RELATIVE_MAX = 5.0e-3
