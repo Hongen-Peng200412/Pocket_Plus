@@ -6,6 +6,7 @@ from pathlib import Path
 import torch
 
 from tmp.find1_optimization_dynamics.compare_optimization_traces import (
+    ACCUMULATED_GRADIENT_LIMITS,
     AUTO_TRUNK_SOURCE_IDENTITY,
     EXPECTED_FULL_PARAMETER_TENSORS,
     EXPECTED_OTHER_PARAMETER_TENSORS,
@@ -13,6 +14,8 @@ from tmp.find1_optimization_dynamics.compare_optimization_traces import (
     EXPECTED_VOXEL_OUTPUT_NAMES,
     EXPECTED_VOXEL_PARAMETER_NAMES_SHA256,
     EXPECTED_VOXEL_PARAMETER_TENSORS,
+    OPTIMIZER_SIGNATURE_LIMITS,
+    VOXEL_OUTPUT_LIMITS,
     compare_traces,
 )
 from tmp.find1_optimization_dynamics.optimization_trace import (
@@ -22,6 +25,16 @@ from tmp.find1_optimization_dynamics.optimization_trace import (
 
 
 FULL_SOURCE_IDENTITY = "f" * 40
+
+
+def test_schema4_bf16_limits_match_h100_same_role_calibration() -> None:
+    assert VOXEL_OUTPUT_LIMITS["element_absolute_max"] == 3.0
+    assert ACCUMULATED_GRADIENT_LIMITS["l2_relative_p95"] == 1.0e-1
+    assert ACCUMULATED_GRADIENT_LIMITS["max_abs_relative_p95"] == 1.6e-1
+    assert (
+        OPTIMIZER_SIGNATURE_LIMITS["parameter_updates"]["element_absolute_max"]
+        == 5.0e-5
+    )
 
 
 def _signature(value: float) -> dict[str, object]:

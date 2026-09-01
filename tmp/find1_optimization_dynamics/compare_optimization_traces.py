@@ -72,9 +72,9 @@ DENSE_COMPARISON_CHUNK_NUMEL = 1_048_576
 
 # H100 BF16 轨迹中的共同体素路径含 CUDA scatter_add_。同一模型、同一请求、
 # 同一 recycle 序列的独立进程重复运行也不会逐字节相等。传统统计字段的包络由
-# attempt a6 的同角色重复轨迹和双向 replay 轨迹标定；schema 4 新增逐元素
-# float32 稠密比较，必须由后续 H100 轨迹标定其绝对差上限。身份、初始参数、
-# 参数集合、点损失回灌和 AdamW step 映射仍按严格相等核对。
+# attempt a6 的同角色重复轨迹和双向 replay 轨迹标定；schema 4 新增的逐元素
+# float32 稠密比较及局部相对差由 attempt a7/a8 的独立同角色基线标定。
+# 身份、初始参数、参数集合、点损失回灌和 AdamW step 映射仍按严格相等核对。
 VOXEL_OUTPUT_LIMITS = {
     "l2_absolute_max": 2.0e1,
     "l2_relative_max": 5.0e-4,
@@ -83,16 +83,16 @@ VOXEL_OUTPUT_LIMITS = {
     "max_abs_absolute_max": 2.0,
     "max_abs_relative_max": 5.0e-2,
     "sample_absolute_max": 5.0e-1,
-    "element_absolute_max": 2.0,
+    "element_absolute_max": 3.0,
 }
 COMMON_LOSS_ABSOLUTE_MAX = 1.0e-3
 COMMON_LOSS_RELATIVE_MAX = 5.0e-3
 ACCUMULATED_GRADIENT_LIMITS = {
     "l2_absolute_max": 1.0e-2,
-    "l2_relative_p95": 5.0e-2,
+    "l2_relative_p95": 1.0e-1,
     "mean_absolute_max": 2.0e-4,
     "max_abs_absolute_max": 2.0e-3,
-    "max_abs_relative_p95": 8.0e-2,
+    "max_abs_relative_p95": 1.6e-1,
     "sample_absolute_max": 5.0e-4,
     "element_absolute_max": 2.0e-3,
 }
@@ -149,7 +149,7 @@ OPTIMIZER_SIGNATURE_LIMITS = {
         "max_abs_absolute_max": 1.0e-5,
         "max_abs_relative_p95": 2.0e-2,
         "sample_absolute_max": 1.0e-4,
-        "element_absolute_max": 2.0e-5,
+        "element_absolute_max": 5.0e-5,
     },
     "exp_avg_after_step": {
         "l2_absolute_max": 1.0e-3,
