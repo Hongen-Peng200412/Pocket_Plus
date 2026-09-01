@@ -4,7 +4,7 @@ Date: 2026-09-01
 
 ## Current State
 
-Find_1 历史续训 Job `366277` 正在 `gnode09,gnode10` 运行，每节点使用 A800×1、CPU×17，每个 DDP rank 使用 16 个 DataLoader workers。根级 `pre_lock_366277` 已于登录节点时间 2026-09-01 07:46:03 +08:00 删除；allocation 内 `after_lock_366277` 保持存在，没有操作 `kill_lock_366277`。attempt a1 已建立 release、launch 与训练输出根，当前正在迁移字面 `last.ckpt` 及其 ModelCheckpoint 历史文件，尚未观察到训练 step 或失败。
+Find_1 历史续训 Job `366277` 正在 `gnode09,gnode10` 稳定训练，每节点使用 A800×1、CPU×17，每个 DDP rank 使用 16 个 DataLoader workers。根级 `pre_lock_366277` 已于登录节点时间 2026-09-01 07:46:03 +08:00 删除；allocation 内 `after_lock_366277` 保持存在，没有操作 `kill_lock_366277`。attempt a1 已完成 checkpoint 迁移、两节点 rendezvous、完整 Lightning 状态恢复、恢复后验证和至少 7 个新 optimizer steps；当前没有明确错误。
 
 H100 Job `366071` 的 schema 4 动力学门禁 attempt a7 同时继续运行；最近一次事实是第一条 AUTO controlled 轨迹的稠密 float32 旁车仍在增长，没有 `_FAILED` 或 `_COMPLETE`。两项任务互相使用独立节点、反馈根和隔离代码根。
 
@@ -16,6 +16,9 @@ H100 Job `366071` 的 schema 4 动力学门禁 attempt a7 同时继续运行；�
 - 字面 checkpoint 为 `/home/penghongen/Feedback/Pocket_Plus/logs/AdaLigand_Stage1-Find_1-CPC1/Find_1-CPC1____Find_1_job351295_20260823T152130_a2_CPC1/checkpoints/last.ckpt`，1,466,227,120 bytes，SHA-256 `d633de0555f5ad46e76a36bfd83d5c4b7ab5a8cb09652918c2d6dfff225afd4c`。
 - 正式动态命令为 `/home/penghongen/Feedback/Pocket_Plus_Find1/allocations/366277/run_cmd_366277.sh`，1,322 bytes，SHA-256 `c476077d76d62d86e522929de9e8e44ccc68c076eba392757dff683bde33fc11`。它显式固定隔离代码根、checkpoint、checkpoint 摘要、反馈根和 16 workers。
 - 放行前的 Job、锁、部署摘要、checkpoint 摘要、Shell 语法和服务器 Python 语法门禁全部通过。
+- `resume_state.ckpt` 的 SHA-256 为 `b28adaf5228e0d49862bdba95307e9901ff16ea273f1d2101cc709dd27038b40`；manifest 记录唯一 ModelCheckpoint callback 和全部 10 个历史 TOP checkpoint 的迁移身份。
+- W&B run 为 `j0qdddcn`。截至 2026-09-01 08:02 +08:00，`trainer/global_step=11294`，相对源 checkpoint 已新增 7 个 optimizer steps；总训练损失为 `0.276797890663147`，恢复后配体体素 PRAUC 为 `0.5715321898460388`。
+- 新运行已经写出 `TOP_epoch_00_score_0.5715.ckpt` 与 `last.ckpt`，历史最佳 `0.6184` 和 `BEST.ckpt` 保持，证明跨目录 callback 状态迁移实际生效。
 - 本次接管、完整提交命令、取消命令、部署命令身份、完整动态命令和所有路径已写入 `文档/exec_plan/2026-08-31_Find_1训练与历史续训.md`。
 
 ## Formal Artifacts
@@ -35,10 +38,9 @@ H100 Job `366071` 的 schema 4 动力学门禁 attempt a7 同时继续运行；�
 
 ## Next Actions
 
-1. 读取 `366277` allocation 输出和训练目录，确认 `resume_state.ckpt`、`resume_state_manifest.json`、历史 top-k 复制和两节点 NCCL 初始化完成。
-2. 核对 Lightning 的恢复 epoch、global step、首轮跳批边界和第一个真实训练 step；出现错误时在历史隔离分支内做最小修复并完整记录。
-3. 同时观察 H100 a7 的 `_FAILED`、`_COMPLETE`、轨迹 JSON 和四份比较结果。动力学门禁通过后才允许 Job `366071` 进入 PDB-centric-1 正式训练。
-4. 只有明确事件才追加执行记录与 handoff；两项任务稳定后，用多个独立 `Start-Sleep -Seconds 300` 组成 60 或 90 分钟静默等待。
+1. 持续核对 Job `366277` 的 global step、有限损失、validation、checkpoint、W&B 与两节点状态；出现错误时在历史隔离分支内做最小修复并完整记录。
+2. 同时观察 H100 a7 的 `_FAILED`、`_COMPLETE`、轨迹 JSON 和四份比较结果。动力学门禁通过后才允许 Job `366071` 进入 PDB-centric-1 正式训练。
+3. 只有明确事件才追加执行记录与 handoff；两项任务稳定后，用多个独立 `Start-Sleep -Seconds 300` 组成 60 或 90 分钟静默等待。
 
 ## Files To Reopen
 

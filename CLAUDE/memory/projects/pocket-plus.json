@@ -242,7 +242,7 @@
     },
     {
       "date": "2026-09-01",
-      "summary": "A800 接管窗口出现后，先取得并核验双节点 Job 366277，再只取消授权旧 Jobs 350302、356946；历史提交 5b4aa5f 与字面 last.ckpt 已通过摘要门禁部署，attempt a1 使用每节点 A800×1、CPU×17、每 rank 16 workers 启动并保留 after_lock。",
+      "summary": "A800 接管窗口出现后，先取得并核验双节点 Job 366277，再只取消授权旧 Jobs 350302、356946；历史提交 5b4aa5f 与字面 last.ckpt 已通过摘要门禁部署，attempt a1 使用每节点 A800×1、CPU×17、每 rank 16 workers 启动，完成完整状态恢复并从 global step 11287 推进到至少 11294。",
       "handoff": "CLAUDE/memory/handoffs/2026-09-01-find1-a800-resume-launched.md"
     }
   ],
