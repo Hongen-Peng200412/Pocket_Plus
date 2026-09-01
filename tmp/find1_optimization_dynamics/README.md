@@ -4,9 +4,10 @@
 
 ## 阅读与执行顺序
 
-1. `optimization_trace.py`: 在一个独立 Python 进程中运行 AUTO B_trunk 或完整 Find_1 的一条轨迹.
-2. `compare_optimization_traces.py`: 比较相同轨迹类型的两个 JSON 文件.
-3. `tests/test_compare_optimization_traces.py`: 验证受控轨迹、自然随机轨迹和硬失败边界.
+1. `optimization_trace.py`：在一个独立 Python 进程中运行 AUTO B_trunk 或完整 Find_1 的一条轨迹。
+2. `compare_optimization_traces.py`：比较相同轨迹类型的两个 JSON 文件。
+3. `analyze_same_role_baseline.py`：只在阈值标定时比较同一角色的 natural 轨迹及其独立 replay，不参与最终通过判定。
+4. `tests/`：验证受控轨迹、自然随机轨迹、同角色基线身份和硬失败边界。
 
 AUTO 与完整模型必须使用两个独立 Python 进程, 防止两个项目中同名 `src` 包共享模块缓存. 两个进程必须先后使用同一张 GPU, 同一个 checkpoint、随机种子、物理 batch、梯度累积数和 optimizer step 数.
 
@@ -120,6 +121,17 @@ python "${TOOL_ROOT}/compare_optimization_traces.py" \
 ```
 
 `optimization_trace.py` 默认使用 BF16、物理 batch size 6、8 次梯度累积、2 个 optimizer step、AdamW 和 0.5 梯度裁剪. 可用同名命令行参数覆盖 batch、累积数、step 数和 seed; 正式验收不得覆盖冻结值.
+
+阈值标定只能使用同一角色、同一请求和同一 recycle 序列的独立进程重复。例如，以下命令比较 AUTO natural 轨迹和引用它的 AUTO replay：
+
+```bash
+python "${TOOL_ROOT}/analyze_same_role_baseline.py" \
+  --natural "${OUTPUT_ROOT}/trunk_natural.json" \
+  --replay "${OUTPUT_ROOT}/trunk_replay_trunk_sequence.json" \
+  --output "${OUTPUT_ROOT}/trunk_same_role_baseline.json"
+```
+
+完整模型使用 `full_natural.json` 与 `full_replay_full_sequence.json` 执行同样的比较。校准器要求两条轨迹的模型、配置、checkpoint、请求与 recycle 序列完全一致，同时要求进程身份不同；它核对稠密旁车的结构、范围、SHA-256 和有限性，再报告各字段的逐元素差异。输出中的 `valid=true` 只表示这是一组有效的同角色重复证据，不表示 AUTO B_trunk 与完整 Find_1 已通过最终门禁。
 
 ## 轨迹 JSON 契约
 
