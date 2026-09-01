@@ -249,6 +249,11 @@
       "date": "2026-09-01",
       "summary": "Find_1 schema 4 attempt a7 完整生成八条稠密轨迹后因四项旧数值上限明确失败；attempt a8 以独立同角色运行标定 H100 BF16 底噪，提交 827d470 只冻结四项新包络，30 项动力学测试通过，H100 Job 366071 安全停在 try_lock 等待全新 a9。",
       "handoff": "CLAUDE/memory/handoffs/2026-09-01-find1-schema4-calibrated.md"
+    },
+    {
+      "date": "2026-09-01",
+      "summary": "Find_1 schema 4 的 a9 仅出现一个 replay 单点边缘越界，冻结上限最小调整后由 fresh replay attempt a10 完整通过；H100 Job 366071 已用三行极简命令启动 PDB-centric-1 attempt a11 并进入真实 step，A800 历史续训 Job 366277 同期稳定推进。",
+      "handoff": "CLAUDE/memory/handoffs/2026-09-01-find1-pdb-centric1-running.md"
     }
   ],
   "blockers": [

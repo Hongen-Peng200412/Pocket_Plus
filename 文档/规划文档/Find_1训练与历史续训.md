@@ -100,7 +100,7 @@ AUTO 仓库 `C:\Users\15919\Desktop\AUTO\Pocket_Plus-v3-macro` 当前保留最�
 - [x] 控制层部署到隔离服务器任务根，远端哈希与 Shell 语法核验通过。
 - [x] A800 与 H100 只读资源监视已启动。
 - [x] 两套 PDB 中心配置与分组裁剪实现。
-- [ ] AUTO 优化动力学对照。
+- [x] AUTO 优化动力学对照；schema 4 受控、自然随机和双向 replay 门禁已由 H100 attempt a10 通过。
 - [x] 历史续训恢复实现。
-- [ ] 正式代码审查、服务器 smoke 与训练启动。
+- [x] 正式代码审查、服务器 smoke 与训练启动；A800 历史续训 Job `366277` 与 H100 PDB-centric-1 Job `366071` 均已进入真实 step。
 - [ ] 训练完成、执行记录收口、handoff 与双线 Git 收口。
