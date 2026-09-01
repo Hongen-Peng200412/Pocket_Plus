@@ -4,7 +4,7 @@ Date: 2026-09-01
 
 ## Current State
 
-H100 Job `366071` 已结束一次性优化动力学门禁，正式运行 PDB-centric-1。当前 allocation 动态命令只有三行，实际业务命令是 `exec bash .../训练与运行/sh/Find_1.sh`；attempt a11 已进入 epoch 0 的真实 optimizer steps。A800 两节点历史续训 Job `366277` 同时稳定运行。两项任务都保留各自 `after_lock`，没有 `kill_lock`，未经授权不得释放。
+H100 Job `366071` 已结束一次性优化动力学门禁，正式运行 PDB-centric-1。当前 allocation 动态命令只有三行，实际业务命令是 `exec bash .../训练与运行/sh/Find_1.sh`；attempt a11 已完成首次正式 validation、写出 TOP 与 last checkpoint，并恢复真实 optimizer steps。A800 两节点历史续训 Job `366277` 同时稳定运行。两项任务都保留各自 `after_lock`，没有 `kill_lock`，未经授权不得释放。
 
 ## H100 Gate Result
 
@@ -34,7 +34,9 @@ exec bash /home/penghongen/Feedback/Pocket_Plus/task_roots/find1-production-6905
 - 输出根：`/home/penghongen/Feedback/Pocket_Plus/logs/AdaLigand_Stage1_pdb_centric-Find_1-pdb_centric_1/Find_1-pdb_centric_1____Find_1_job366071_20260901T102343_a11_pdb_centric_1`。
 - W&B run：`wi4gcvcs`。
 - 资源和配置：hnode02、H100×1、CPU×32、workers 24、microbatch 6、累积 8、全局 batch 48、val 12 次/epoch、学习率 `5e-5`、`find_voxel_point` 两组各裁剪 0.5。
-- 截至本 handoff，`trainer/global_step=14`，总损失 `0.7000278830528259`，没有 traceback、OOM 或 NCCL 错误。
+- 首次正式 validation 于 2026-09-01 20:44:51 +08:00 完成，`val_score/global/voxel_ligand_PRAUC=0.40099334716796875`，`val_loss/global/total=0.42741990089416504`。
+- `TOP_epoch_00_score_0.4010.ckpt` 的 SHA-256 为 `7c2abe573e2f9454388324319fa50b5472498bd650ed42bdbceacbb75ceb52f4`；`last.ckpt` 的 SHA-256 为 `18e482fb55438fac457bf72b63f5961a9bd6895ab4fd6035389eca1ed2cb3957`。
+- 截至 20:51，`trainer/global_step=1205`，总损失 `0.4261522889137268`；checkpoint 发布后训练已继续推进，没有 traceback、OOM 或 NCCL 错误。
 
 以新 Slurm allocation 重启时，只应使用可读的生产入口：
 
@@ -53,7 +55,7 @@ bash 训练与运行/submit_task.sh \
 - Job：`366277`，`gnode09,gnode10`，每节点 A800×1、CPU×17、每 rank workers 16。
 - 输出根：`/home/penghongen/Feedback/Pocket_Plus_Find1/logs/AdaLigand_Stage1_resume-Find_1-CPC1/Find_1-resume_last_job351295____Find_1_job366277_20260901T074338_a1_CPC1`。
 - W&B run：`j0qdddcn`。
-- 截至同一关键节点，`trainer/global_step=11528`，总损失 `0.27465128898620605`，没有明确错误。
+- 截至同一关键节点，`trainer/global_step=12416`，总损失 `0.2079761028289795`，此前验证的 `voxel_ligand_PRAUC=0.5715321898460388` 保持，没有明确错误。
 
 ## Next Actions
 

@@ -252,7 +252,7 @@
     },
     {
       "date": "2026-09-01",
-      "summary": "Find_1 schema 4 的 a9 仅出现一个 replay 单点边缘越界，冻结上限最小调整后由 fresh replay attempt a10 完整通过；H100 Job 366071 已用三行极简命令启动 PDB-centric-1 attempt a11 并进入真实 step，A800 历史续训 Job 366277 同期稳定推进。",
+      "summary": "Find_1 schema 4 的 fresh replay attempt a10 完整通过；H100 Job 366071 以三行极简命令启动 PDB-centric-1 attempt a11，首次正式 validation 得到 voxel_ligand_PRAUC 0.400993，TOP 与 last checkpoint 已写出且训练恢复推进；A800 历史续训 Job 366277 同期稳定运行。",
       "handoff": "CLAUDE/memory/handoffs/2026-09-01-find1-pdb-centric1-running.md"
     }
   ],

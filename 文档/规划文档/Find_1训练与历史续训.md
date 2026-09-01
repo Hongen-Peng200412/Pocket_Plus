@@ -102,5 +102,5 @@ AUTO 仓库 `C:\Users\15919\Desktop\AUTO\Pocket_Plus-v3-macro` 当前保留最�
 - [x] 两套 PDB 中心配置与分组裁剪实现。
 - [x] AUTO 优化动力学对照；schema 4 受控、自然随机和双向 replay 门禁已由 H100 attempt a10 通过。
 - [x] 历史续训恢复实现。
-- [x] 正式代码审查、服务器 smoke 与训练启动；A800 历史续训 Job `366277` 与 H100 PDB-centric-1 Job `366071` 均已进入真实 step。
+- [x] 正式代码审查、服务器 smoke 与训练启动；A800 历史续训 Job `366277` 已稳定续训，H100 PDB-centric-1 Job `366071` 已完成首次正式 validation、写出 checkpoint 并恢复训练。
 - [ ] 训练完成、执行记录收口、handoff 与双线 Git 收口。
