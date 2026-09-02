@@ -8,6 +8,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd -P)"
 CONDA_BASE="${CONDA_BASE:-${HOME}/anaconda3}"
 CONDA_ENV_NAME="${POCKET_CONDA_ENV:-Pocket_Plus_centos7_cu121_allgpu}"
+INFERENCE_CONFIG="${STAGE1_INFERENCE_CONFIG:-${PROJECT_ROOT}/configs/inference/stage1_v3.yaml}"
 
 if (($# == 0)); then
     echo "[stage1_v3][错误] 必须传入 probability、blobs、centered、tune 或 evaluate 及其显式参数." >&2
@@ -28,4 +29,4 @@ export OPENBLAS_NUM_THREADS=1
 cd "${PROJECT_ROOT}"
 python -u -m src.inference.cli \
     "$@" \
-    --config "${PROJECT_ROOT}/configs/inference/stage1_v3.yaml"
+    --config "${INFERENCE_CONFIG}"
