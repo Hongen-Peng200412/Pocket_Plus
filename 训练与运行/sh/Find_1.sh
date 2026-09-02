@@ -31,6 +31,7 @@ nnodes="${TASK_NNODES:-2}"
 task_cpu_count="${TASK_CPU_COUNT:-31}"
 num_workers="${FIND1_NUM_WORKERS:-$((task_cpu_count - 1))}"
 source_resume_checkpoint="${FIND1_RESUME_CHECKPOINT:-/home/penghongen/Feedback/Pocket_Plus/logs/AdaLigand_Stage1-Find_1-CPC1/Find_1-CPC1____Find_1_job351295_20260823T152130_a2_CPC1/checkpoints/last.ckpt}"
+source_resume_sha256=d633de0555f5ad46e76a36bfd83d5c4b7ab5a8cb09652918c2d6dfff225afd4c
 experiment_group="AdaLigand_Stage1_resume/Find_1/CPC1"
 tag="Find_1/resume_last_job351295"
 run_stamp="${TASK_RUN_STAMP:-$(date '+%Y%m%dT%H%M%S')}_CPC1"
@@ -53,7 +54,8 @@ if [[ "${node_rank}" == "0" ]]; then
     rm -f -- "${resume_failure}"
     if ! python "${PROJECT_ROOT}/ops/find1_historical_resume/rebase_checkpoint.py" \
         --source "${source_resume_checkpoint}" \
-        --destination "${resume_checkpoint_dir}"; then
+        --destination "${resume_checkpoint_dir}" \
+        --expected-source-sha256 "${source_resume_sha256}"; then
         touch -- "${resume_failure}"
         exit 1
     fi
@@ -94,6 +96,7 @@ overrides=(
     "train.num_workers=${num_workers}"
     "train.resume_skip_train_batches=45150"
     "train.resume_skip_epoch=0"
+    "+train.resume_after_completed_validation=true"
     "train.prefetch_factor=4"
     "train.max_epochs=20"
     "train.val_per_epoch=40"

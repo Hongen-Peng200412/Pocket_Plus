@@ -356,7 +356,7 @@ class WarmupPlateauController(Callback):
         self.warmup_steps: int | None = None
         self._plateau_schedulers: list[torch.optim.lr_scheduler.ReduceLROnPlateau] = []
         self._pending_plateau_states: list[dict[str, Any]] | None = None
-        self._last_stepped_validation: tuple[int, int, int] | None = None
+        self._last_stepped_validation: tuple[int, int] | None = None
         self._validation_index = 0
 
     def _build_schedulers(self, trainer: pl.Trainer) -> None:
@@ -445,7 +445,6 @@ class WarmupPlateauController(Callback):
         validation_key = (
             int(trainer.global_step),
             int(getattr(trainer, "current_epoch", 0)),
-            int(self._validation_index),
         )
         if self._last_stepped_validation == validation_key:
             return
@@ -489,9 +488,9 @@ class WarmupPlateauController(Callback):
             self._last_stepped_validation = None
         else:
             last_values = tuple(int(value) for value in last_validation)
-            if len(last_values) != 3:
-                raise RuntimeError("WarmupPlateauController checkpoint 中 last_stepped_validation 长度必须为 3。")
-            self._last_stepped_validation = last_values
+            if len(last_values) not in (2, 3):
+                raise RuntimeError("WarmupPlateauController checkpoint 中 last_stepped_validation 长度必须为 2 或 3。")
+            self._last_stepped_validation = last_values[:2]
         self._validation_index = int(state_dict.get("validation_index", 0))
 
 
@@ -1278,6 +1277,14 @@ def main(cfg: DictConfig):
     )
     # 建立最初的回调列表
     callbacks = [checkpoint_callback, best_alias_callback, DatasetEpochController()]
+    if bool(cfg.train.get("resume_after_completed_validation", False)):
+        if resume_checkpoint_path is None:
+            raise ValueError("resume_after_completed_validation 只能与 resume_from_checkpoint 一起使用。")
+        from ops.find1_historical_resume.resume_guard import CompletedValidationResumeGuard
+
+        callbacks.append(CompletedValidationResumeGuard())
+        if exp_manager.is_rank_zero:
+            print("[Train] 已启用完整 validation 边界续训保护。")
 
     # ------ 额外开启周期性保存 ------
     # 从配置中获取 save_every_n_epochs (例如: 10)

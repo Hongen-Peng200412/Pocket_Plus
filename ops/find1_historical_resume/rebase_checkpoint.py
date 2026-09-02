@@ -25,6 +25,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     parser.add_argument("--source", type=Path, required=True)
     parser.add_argument("--destination", type=Path, required=True)
+    parser.add_argument("--expected-source-sha256", type=str, default=None)
     return parser
 
 
@@ -110,19 +111,74 @@ def _rebase_callback_state(
         state["best_k_models"] = rebased_best_k_models
 
 
-def rebase_checkpoint(source: Path, destination_dir: Path) -> Path:
+def _read_completed_validation_boundary(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """读取并校验历史 checkpoint 中已经完整结束的 validation 边界。"""
+
+    try:
+        fit_loop = payload["loops"]["fit_loop"]
+        train_progress = fit_loop["epoch_loop.batch_progress"]
+        validation_progress = fit_loop["epoch_loop.val_loop.batch_progress"]
+        epoch_progress = fit_loop["epoch_progress"]
+    except (KeyError, TypeError) as error:
+        raise ValueError("源 checkpoint 缺少 Lightning 2.2.5 的 fit/validation loop 进度。") from error
+
+    def read_counts(progress: Mapping[str, Any]) -> tuple[int, int, int, int]:
+        current = progress["current"]
+        return tuple(int(current[field_name]) for field_name in ("ready", "started", "processed", "completed"))
+
+    train_counts = read_counts(train_progress)
+    validation_counts = read_counts(validation_progress)
+    epoch_current = epoch_progress["current"]
+    if (
+        len(set(train_counts)) != 1
+        or train_counts[0] <= 0
+        or len(set(validation_counts)) != 1
+        or validation_counts[0] <= 0
+        or not bool(validation_progress.get("is_last_batch", False))
+        or int(epoch_current["started"]) <= int(epoch_current["completed"])
+    ):
+        raise ValueError(
+            "源 checkpoint 不是已完整完成 validation 的中途训练边界："
+            f"train_counts={train_counts}, validation_counts={validation_counts}, "
+            f"validation_is_last_batch={validation_progress.get('is_last_batch')}, "
+            f"epoch_started={epoch_current.get('started')}, epoch_completed={epoch_current.get('completed')}。"
+        )
+    return {
+        "global_step": int(payload["global_step"]),
+        "epoch": int(payload["epoch"]),
+        "rank_local_train_batches_completed": train_counts[3],
+        "rank_local_validation_batches_completed": validation_counts[3],
+        "validation_is_last_batch": True,
+    }
+
+
+def rebase_checkpoint(
+    source: Path,
+    destination_dir: Path,
+    *,
+    expected_source_sha256: str | None = None,
+) -> Path:
     """复制历史 top-k 并发布已迁移回调路径的完整 checkpoint."""
 
     source_checkpoint = source.expanduser().resolve()
     if not source_checkpoint.is_file():
         raise FileNotFoundError(f"源 checkpoint 不存在：{source_checkpoint}")
+    source_sha256 = _sha256_file(source_checkpoint)
+    if expected_source_sha256 is not None and source_sha256 != str(expected_source_sha256).lower():
+        raise ValueError(
+            "源 checkpoint SHA-256 与授权身份不一致："
+            f"expected={expected_source_sha256}, actual={source_sha256}。"
+        )
     destination_dir = destination_dir.expanduser().resolve()
     destination_dir.mkdir(parents=True, exist_ok=True)
     output_checkpoint = destination_dir / "resume_state.ckpt"
     manifest_path = destination_dir / "resume_state_manifest.json"
 
     payload = torch.load(source_checkpoint, map_location="cpu")
-    callback_states = payload.get("callbacks") if isinstance(payload, Mapping) else None
+    if not isinstance(payload, Mapping):
+        raise ValueError("源 checkpoint 顶层必须是映射。")
+    resume_boundary = _read_completed_validation_boundary(payload)
+    callback_states = payload.get("callbacks")
     if not isinstance(callback_states, MutableMapping):
         raise ValueError("源 checkpoint 缺少 Lightning callbacks 状态。")
 
@@ -148,11 +204,12 @@ def rebase_checkpoint(source: Path, destination_dir: Path) -> Path:
     torch.save(payload, temporary_checkpoint)
     os.replace(temporary_checkpoint, output_checkpoint)
     manifest = {
-        "schema_version": 1,
+        "schema_version": 2,
         "source_checkpoint": str(source_checkpoint),
-        "source_sha256": _sha256_file(source_checkpoint),
+        "source_sha256": source_sha256,
         "output_checkpoint": str(output_checkpoint),
         "output_sha256": _sha256_file(output_checkpoint),
+        "resume_boundary": resume_boundary,
         "rebased_callback_keys": rebased_callback_keys,
         "copied_checkpoint_artifacts": copied,
         "random_augmentation_state": "not_present_in_source_checkpoint",
@@ -168,7 +225,13 @@ def rebase_checkpoint(source: Path, destination_dir: Path) -> Path:
 
 def main() -> None:
     arguments = build_parser().parse_args()
-    print(rebase_checkpoint(arguments.source, arguments.destination))
+    print(
+        rebase_checkpoint(
+            arguments.source,
+            arguments.destination,
+            expected_source_sha256=arguments.expected_source_sha256,
+        )
+    )
 
 
 if __name__ == "__main__":
