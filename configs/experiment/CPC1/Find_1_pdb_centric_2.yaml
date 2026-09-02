@@ -1,5 +1,5 @@
 # @package _global_
-# AdaLigand Find_1 / CPC1: 107D voxel 输入; voxel 前处理没有 Transformer.
+# AdaLigand Find_1 / PDB-centric-2: 模型与 PDB-centric-1 相同, 只改变 PDB 中心请求制度和训练预算.
 defaults:
   - /model/detach_residual: max_detach
   - override /model/voxel_backbone: stardard
@@ -16,14 +16,14 @@ defaults:
   - override /model/sparse_refine/sparse_refine_head: none
   - override /model/sparse_refine/anchor_class_conditioning: none
   - override /loss: stage1_find_cpc1_auxiliary
-  - override /dataset: stage1_find_pdb_centric_1
-  - override /train: stage1_find_pdb_centric_1
+  - override /dataset: stage1_find_pdb_centric_2
+  - override /train: stage1_find_pdb_centric_2
   - override /frozen_module: adaligand_stage1
   - _self_
 
-name: Find_1_pdb_centric_1
-tag: "Find_1/pdb_centric_1"
-experiment_group: "AdaLigand_Stage1_pdb_centric/Find_1/pdb_centric_1"
+name: Find_1_pdb_centric_2
+tag: "Find_1/pdb_centric_2"
+experiment_group: "AdaLigand_Stage1_pdb_centric/Find_1/pdb_centric_2"
 project_name: AdaLigand_Stage1
 init_from: null
 
@@ -46,7 +46,6 @@ model:
       enable_multiscale_output: false
       enable_structure_heads: true
   class_names: ${dataset.class_names}
-  # 配体区域 PRAUC 越高越好; checkpoint 选择与平台期学习率调度共同读取这两个字段.
   monitor_metric: val_score/global/voxel_ligand_PRAUC
   monitor_mode: max
   validation_diagnostics:

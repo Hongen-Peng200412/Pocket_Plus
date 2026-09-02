@@ -1,0 +1,24 @@
+# Find_1 PDB-centric-2 从头训练配置; 本轮只组合与测试, 不提交训练.
+defaults:
+  - stage1_cpc1
+  - _self_
+
+global_batch_size: 48
+batch_size: 6
+strict_global_batch_size: true
+enable_batch_size_tuning: false
+num_workers: 24
+prefetch_factor: 4
+max_epochs: 110
+val_per_epoch: 8
+ddp_find_unused_parameters: true
+gradient_clip_val: 0.5
+gradient_clip_mode: find_voxel_point
+
+optimizer:
+  lr: 5.0e-5
+
+scheduler:
+  warmup_ratio: 0.005
+  patience: 3
+  stop_after_lr_reductions: 2

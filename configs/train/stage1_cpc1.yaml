@@ -8,7 +8,7 @@ global_batch_size: 64               # 实际 preflight 若任一 Find 只能 bat
 enable_batch_size_tuning: false
 batch_size: 8
 strict_global_batch_size: true
-num_workers: 16                     # int, 公共 YAML 中每个 DDP rank 的默认 Dataset worker 数; Find_1.sh 正式覆盖为每个 rank 30 workers, 双卡任务申请 64 CPU.
+num_workers: 16                     # int, 公共 YAML 中每个 DDP rank 的默认 Dataset worker 数; Find_1 两份独立 train YAML 均显式覆盖为 24.
 prefetch_factor: 4                  # int, 每个 worker 预取的 batch 数；只在 num_workers > 0 时传给 DataLoader。
 pin_memory: true                    # bool, Linux 训练把 CPU Tensor 固定到页锁定内存后再传入 GPU。
 dataloader_backend: torch

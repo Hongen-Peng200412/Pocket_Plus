@@ -1,0 +1,10 @@
+# Find_1 PDB-centric-1: 每个 PDB 固定目标 25 个 bias BOX 与 25 个 context BOX.
+defaults:
+  - stage1_find
+  - _self_
+
+name: stage1_find_pdb_centric_1
+split_val: ${dataset.box_pool_root}/validation_selection_pdb_centric.npz
+pdb_foreground_box_num: 25
+pdb_foreground_fraction_target: 0.5
+pdb_occurrence_foreground_box_cap: 25
