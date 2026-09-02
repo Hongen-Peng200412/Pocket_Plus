@@ -8,6 +8,7 @@ import random
 import fnmatch
 import shutil
 from collections.abc import Mapping
+from datetime import timedelta
 from itertools import islice
 from typing import Any
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "max_split_size_mb:256,expandable_segments:True")
@@ -1399,13 +1400,17 @@ def main(cfg: DictConfig):
     # 8. -------------- 训练器 --------------
     use_distributed = (cfg.train.devices > 1 or cfg.train.nnodes > 1)
     find_unused = bool(cfg.train.get("ddp_find_unused_parameters", False))
+    ddp_timeout_seconds = int(cfg.train.get("ddp_timeout_seconds", 1800))
     strategy = "auto"
     if use_distributed:
         from lightning.pytorch.strategies import DDPStrategy
         strategy = DDPStrategy(
             find_unused_parameters=find_unused,
-            process_group_backend="nccl"       # 强制使用 NCCL 后端, 避免 Gloo 辅助进程组导致的网络接口问题
+            process_group_backend="nccl",      # 强制使用 NCCL 后端, 避免 Gloo 辅助进程组导致的网络接口问题
+            timeout=timedelta(seconds=ddp_timeout_seconds),
         )
+        if exp_manager.is_rank_zero:
+            print(f"[Train] DDP collective timeout: {ddp_timeout_seconds} seconds")
 
     trainer = pl.Trainer(
         default_root_dir=run_dir, # str, save path

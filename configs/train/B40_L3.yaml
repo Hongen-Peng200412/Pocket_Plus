@@ -46,6 +46,7 @@ devices: 1
 max_epochs: 20
 accelerator: auto
 ddp_find_unused_parameters: false
+ddp_timeout_seconds: 1800          # int, DDP collective 的等待上限，单位为秒。
 precision: "bf16-mixed"
 gradient_clip_val: 0.5
 check_val_every_n_epoch: 1

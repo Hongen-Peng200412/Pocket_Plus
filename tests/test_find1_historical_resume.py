@@ -197,6 +197,7 @@ def test_historical_find1_launcher_freezes_resume_identity() -> None:
     assert "Find_1_job351295_20260823T152130_a2_CPC1/checkpoints/last.ckpt" in launcher
     assert '"train.resume_skip_train_batches=45150"' in launcher
     assert '"train.resume_skip_epoch=0"' in launcher
+    assert '"train.ddp_timeout_seconds=86400"' in launcher
     assert '"train.gradient_clip_val=0.5"' in launcher
     assert "gradient_clip_mode" not in launcher
     assert 'num_workers="${FIND1_NUM_WORKERS:-$((task_cpu_count - 1))}"' in launcher
