@@ -234,6 +234,26 @@
       "date": "2026-08-31",
       "summary": "Stage1 密度通道消融 Job 350302（unet_base）在实际学习率衰减 3 次后按配置正常结束，最终 global step 39508，checkpoint 已写入并进入 try_lock；after_hold 资源和全部锁保持原状。Job 350305（unet_diff）继续正常训练。",
       "handoff": "CLAUDE/memory/handoffs/2026-08-21-unet-density-ablation-guard.md"
+    },
+    {
+      "date": "2026-09-01",
+      "summary": "Find_1 优化动力学门禁已升级到 schema 4：共同体素张量以可校验 float32 稠密旁车执行逐元素硬边界比较，原审查反例与 396 项活动测试通过，窄口径审查批准；提交 2fc8f15 已部署到隔离根，H100 Job 366071 的 attempt a7 已启动且保留 after_lock。",
+      "handoff": "CLAUDE/memory/handoffs/2026-09-01-find1-schema4-a7-running.md"
+    },
+    {
+      "date": "2026-09-01",
+      "summary": "A800 接管窗口出现后，先取得并核验双节点 Job 366277，再只取消授权旧 Jobs 350302、356946；历史提交 5b4aa5f 与字面 last.ckpt 已通过摘要门禁部署，attempt a1 使用每节点 A800×1、CPU×17、每 rank 16 workers 启动，完成完整状态恢复并从 global step 11287 推进到至少 11294。",
+      "handoff": "CLAUDE/memory/handoffs/2026-09-01-find1-a800-resume-launched.md"
+    },
+    {
+      "date": "2026-09-01",
+      "summary": "Find_1 schema 4 attempt a7 完整生成八条稠密轨迹后因四项旧数值上限明确失败；attempt a8 以独立同角色运行标定 H100 BF16 底噪，提交 827d470 只冻结四项新包络，30 项动力学测试通过，H100 Job 366071 安全停在 try_lock 等待全新 a9。",
+      "handoff": "CLAUDE/memory/handoffs/2026-09-01-find1-schema4-calibrated.md"
+    },
+    {
+      "date": "2026-09-01",
+      "summary": "Find_1 schema 4 的 fresh replay attempt a10 完整通过；H100 Job 366071 以三行极简命令启动 PDB-centric-1 attempt a11，首次正式 validation 得到 voxel_ligand_PRAUC 0.400993，TOP 与 last checkpoint 已写出且训练恢复推进；A800 历史续训 Job 366277 同期稳定运行。",
+      "handoff": "CLAUDE/memory/handoffs/2026-09-01-find1-pdb-centric1-running.md"
     }
   ],
   "blockers": [
