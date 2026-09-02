@@ -26,6 +26,7 @@ def _build_parallel_tuning_case() -> tuple[
     first = {
         "source_blob_index": np.asarray([0, 1], dtype=np.int32),
         "source_probability_mean": np.asarray([0.85, 0.35], dtype=np.float32),
+        "source_voxel_count": np.asarray([2, 1], dtype=np.int32),
         "voxel_offsets": np.asarray([0, 2, 3], dtype=np.int64),
         "voxel_index_local_zyx": np.asarray(
             [[0, 0, 0], [0, 0, 1], [2, 2, 2]],
@@ -43,6 +44,7 @@ def _build_parallel_tuning_case() -> tuple[
     second = {
         "source_blob_index": np.asarray([0], dtype=np.int32),
         "source_probability_mean": np.asarray([0.65], dtype=np.float32),
+        "source_voxel_count": np.asarray([2], dtype=np.int32),
         "voxel_offsets": np.asarray([0, 2], dtype=np.int64),
         "voxel_index_local_zyx": np.asarray(
             [[1, 1, 1], [1, 1, 2]],
@@ -97,6 +99,7 @@ def _build_imbalanced_macro_tuning_case() -> tuple[
     large = {
         "source_blob_index": np.asarray([0, 1], dtype=np.int32),
         "source_probability_mean": np.asarray([0.9, 0.8], dtype=np.float32),
+        "source_voxel_count": np.asarray([100, 900], dtype=np.int32),
         "voxel_offsets": np.asarray([0, 100, 1000], dtype=np.int64),
         "voxel_index_local_zyx": np.concatenate((large_true, large_false)),
         "box_start_zyx": np.zeros((2, 3), dtype=np.int32),
@@ -109,6 +112,7 @@ def _build_imbalanced_macro_tuning_case() -> tuple[
     small = {
         "source_blob_index": np.asarray([0], dtype=np.int32),
         "source_probability_mean": np.asarray([0.8], dtype=np.float32),
+        "source_voxel_count": np.asarray([1], dtype=np.int32),
         "voxel_offsets": np.asarray([0, 1], dtype=np.int64),
         "voxel_index_local_zyx": np.asarray([[0, 0, 0]], dtype=np.int16),
         "box_start_zyx": np.zeros((1, 3), dtype=np.int32),
@@ -159,6 +163,8 @@ def test_basic_parallel_result_is_exact_and_uses_multiple_workers(
     state_lock = threading.Lock()
 
     def synchronized_objective(*args: object, **kwargs: object) -> float:
+        """让首两个最小体素数组合并发会合后调用正式目标函数."""
+
         nonlocal call_count
         with state_lock:
             current_call = call_count
@@ -188,11 +194,9 @@ def test_gaussian_parallel_result_is_exact() -> None:
             "tau_angstrom": [0.75, 1.0],
             "lambda_positive": [0.1, 0.2],
             "lambda_negative": [0.05],
-            "gauss_score_min": [0.2, 0.6],
         },
         "refinement_multipliers": {
             "lambda": [0.8, 1.2],
-            "score_threshold": [0.8, 1.2],
         },
         "prefiltered_min_voxel": 1,
         "min_voxel_values": [1, 2, 3],
@@ -236,11 +240,9 @@ def test_basic_and_gaussian_searches_use_same_macro_objective() -> None:
             "tau_angstrom": [1.0],
             "lambda_positive": [0.0],
             "lambda_negative": [0.0],
-            "gauss_score_min": [0.9, 0.8],
         },
         refinement_multipliers={
             "lambda": [1.0],
-            "score_threshold": [1.0],
         },
     )
 
@@ -270,6 +272,7 @@ def test_basic_exact_objective_tie_keeps_higher_score_threshold() -> None:
     first = {
         "source_blob_index": np.asarray([0, 1], dtype=np.int32),
         "source_probability_mean": np.asarray([0.9, 0.8], dtype=np.float32),
+        "source_voxel_count": np.asarray([35, 42], dtype=np.int32),
         "voxel_offsets": np.asarray([0, 35, 77], dtype=np.int64),
         "voxel_index_local_zyx": np.asarray(
             [[0, 0, index] for index in range(77)],
@@ -296,6 +299,7 @@ def test_basic_exact_objective_tie_keeps_higher_score_threshold() -> None:
     second = {
         "source_blob_index": np.asarray([0, 1], dtype=np.int32),
         "source_probability_mean": np.asarray([0.9, 0.8], dtype=np.float32),
+        "source_voxel_count": np.asarray([37, 54], dtype=np.int32),
         "voxel_offsets": np.asarray([0, 37, 91], dtype=np.int64),
         "voxel_index_local_zyx": np.concatenate((second_high, second_low)),
         "box_start_zyx": np.zeros((2, 3), dtype=np.int32),
@@ -344,11 +348,9 @@ def test_run_tune_stage_parallel_loads_both_modes_and_publishes_json(
                     "tau_angstrom": [1.0],
                     "lambda_positive": [0.2],
                     "lambda_negative": [0.1],
-                    "gauss_score_min": [0.5],
                 },
                 "gaussian_refinement": {
                     "lambda": [1.0],
-                    "score_threshold": [1.0],
                 },
             },
             "evaluation": {
@@ -385,6 +387,7 @@ def test_run_tune_stage_parallel_loads_both_modes_and_publishes_json(
                 "source_probability_mean": np.asarray(
                     [0.8 - 0.2 * index], dtype=np.float32
                 ),
+                "voxel_count": np.asarray([2], dtype=np.int32),
                 "voxel_offsets": np.asarray([0, 2], dtype=np.int64),
                 "voxel_index_global_zyx": voxel_rows[pdb_id],
             },
@@ -397,12 +400,23 @@ def test_run_tune_stage_parallel_loads_both_modes_and_publishes_json(
             pdb_id,
         )
         publish_stage1_artifact(
+            gaussian_paths.artifact("F2_blobs"),
+            {
+                "blob_index": np.asarray([0], dtype=np.int32),
+                "voxel_count": np.asarray([2], dtype=np.int32),
+                "voxel_offsets": np.asarray([0, 2], dtype=np.int64),
+                "voxel_index_global_zyx": voxel_rows[pdb_id],
+            },
+            None,
+        )
+        publish_stage1_artifact(
             gaussian_paths.artifact("F2_centered"),
             {
-                "source_blob_index": np.asarray([index], dtype=np.int32),
+                "source_blob_index": np.asarray([0], dtype=np.int32),
                 "source_probability_mean": np.asarray(
                     [0.8 - 0.2 * index], dtype=np.float32
                 ),
+                "source_voxel_count": np.asarray([2], dtype=np.int32),
                 "voxel_offsets": np.asarray([0, 2], dtype=np.int64),
                 "voxel_index_local_zyx": voxel_rows[pdb_id].astype(np.int16),
                 "box_start_zyx": np.zeros((1, 3), dtype=np.int32),
@@ -424,6 +438,8 @@ def test_run_tune_stage_parallel_loads_both_modes_and_publishes_json(
     state_lock = threading.Lock()
 
     def synchronized_npz_load(*args: object, **kwargs: object) -> dict[str, np.ndarray]:
+        """记录 NPZ 加载线程并让最先两个加载任务并发会合."""
+
         nonlocal load_count
         with state_lock:
             current_load = load_count
@@ -437,6 +453,8 @@ def test_run_tune_stage_parallel_loads_both_modes_and_publishes_json(
         *args: object,
         **kwargs: object,
     ) -> tuple[np.ndarray, tuple[np.ndarray, ...], tuple[int, int, int]]:
+        """记录 occurrence 加载线程并复用同一并发屏障."""
+
         nonlocal load_count
         with state_lock:
             current_load = load_count
@@ -449,6 +467,8 @@ def test_run_tune_stage_parallel_loads_both_modes_and_publishes_json(
     observed_calls: list[dict[str, object]] = []
 
     def recording_tune(**kwargs: object) -> dict[str, object]:
+        """记录 pipeline 传入的候选字段与 PDB 顺序后调用正式调参."""
+
         items = tuple(kwargs["centered_items"])
         kwargs["centered_items"] = items
         observed_calls.append(
@@ -523,11 +543,9 @@ def test_gaussian_out_of_order_completion_keeps_first_tied_configuration(
             "tau_angstrom": [1.0, 2.0],
             "lambda_positive": [0.2, 0.4],
             "lambda_negative": [0.1],
-            "gauss_score_min": [0.5, 0.75],
         },
         "refinement_multipliers": {
             "lambda": [0.8, 1.0],
-            "score_threshold": [0.5, 1.0],
         },
         "prefiltered_min_voxel": 100,
         "min_voxel_values": [1, 2],
@@ -538,26 +556,30 @@ def test_gaussian_out_of_order_completion_keeps_first_tied_configuration(
     serial = tune_centered_selection(**arguments, workers=1)
 
     original_atom_terms = calibration_module.sum_gaussian_atom_terms
-    original_gaussian_objective = calibration_module._gaussian_selection_objective
+    original_score_scan = calibration_module._scan_actual_score_thresholds
+    original_selection_objective = calibration_module._selection_objective
     atom_barrier = threading.Barrier(2)
-    search_barriers = {
+    scan_barriers = {
         "coarse": threading.Barrier(2),
         "refined": threading.Barrier(2),
-        "min_voxels": threading.Barrier(2),
     }
-    release_first_configuration = {
-        stage: threading.Event() for stage in search_barriers
-    }
+    scan_release = {stage: threading.Event() for stage in scan_barriers}
+    minimum_barrier = threading.Barrier(2)
+    minimum_release = threading.Event()
     atom_threads: set[int] = set()
-    search_threads = {stage: set() for stage in search_barriers}
-    completion_order: list[tuple[str, float, float, float, int]] = []
+    scan_threads = {stage: set() for stage in scan_barriers}
+    minimum_threads: set[int] = set()
+    completion_order: list[tuple[str, int]] = []
     atom_call_count = 0
-    search_call_count = 0
+    scan_call_count = 0
+    minimum_call_count = 0
     state_lock = threading.Lock()
 
     def synchronized_atom_terms(
         *args: object, **kwargs: object
     ) -> tuple[np.ndarray, np.ndarray]:
+        """让首两个 Gaussian 原子项任务并发会合并记录工作线程."""
+
         nonlocal atom_call_count
         with state_lock:
             current_call = atom_call_count
@@ -567,100 +589,93 @@ def test_gaussian_out_of_order_completion_keeps_first_tied_configuration(
             atom_barrier.wait(timeout=5.0)
         return original_atom_terms(*args, **kwargs)
 
-    def delayed_gaussian_objective(
+    def delayed_score_scan(
         facts_by_pdb: object,
-        terms_by_pdb: object,
-        lambda_positive: float,
-        lambda_negative: float,
-        score_threshold: float,
+        scores_by_pdb: object,
         min_voxels: int,
         beta: float,
-    ) -> float:
-        nonlocal search_call_count
+    ) -> dict[str, float]:
+        """反转同阶段前两个分数扫描的完成顺序并记录工作线程."""
+
+        nonlocal scan_call_count
         with state_lock:
-            current_call = search_call_count
-            search_call_count += 1
-        if current_call < 8:
+            current_call = scan_call_count
+            scan_call_count += 1
+        if current_call < 4:
             stage = "coarse"
             stage_offset = current_call
-        elif current_call < 16:
-            stage = "refined"
-            stage_offset = current_call - 8
         else:
-            stage = "min_voxels"
-            stage_offset = current_call - 16
+            stage = "refined"
+            stage_offset = current_call - 4
         with state_lock:
-            search_threads[stage].add(threading.get_ident())
+            scan_threads[stage].add(threading.get_ident())
         if stage_offset < 2:
-            search_barriers[stage].wait(timeout=5.0)
-
-        is_first_configuration = (
-            stage == "coarse"
-            and np.isclose(lambda_positive, 0.2)
-            and np.isclose(lambda_negative, 0.1)
-            and np.isclose(score_threshold, 0.5)
-        ) or (
-            stage != "coarse"
-            and np.isclose(lambda_positive, 0.16)
-            and np.isclose(lambda_negative, 0.08)
-            and np.isclose(score_threshold, 0.25)
-            and min_voxels == 1
-        )
-        if is_first_configuration:
-            if not release_first_configuration[stage].wait(timeout=5.0):
+            scan_barriers[stage].wait(timeout=5.0)
+        if stage_offset == 0:
+            if not scan_release[stage].wait(timeout=5.0):
                 raise RuntimeError(f"{stage} 首个配置没有等到另一个任务先完成")
-        objective = original_gaussian_objective(
+        result = original_score_scan(
             facts_by_pdb,
-            terms_by_pdb,
-            lambda_positive,
-            lambda_negative,
-            score_threshold,
+            scores_by_pdb,
             min_voxels,
             beta,
         )
         with state_lock:
-            completion_order.append(
-                (
-                    stage,
-                    lambda_positive,
-                    lambda_negative,
-                    score_threshold,
-                    min_voxels,
-                )
-            )
-        if not is_first_configuration:
-            release_first_configuration[stage].set()
+            completion_order.append((stage, stage_offset))
+        if stage_offset != 0:
+            scan_release[stage].set()
+        return result
+
+    def delayed_minimum_objective(*args: object, **kwargs: object) -> float:
+        """反转前两个最小体素数任务的完成顺序并记录工作线程."""
+
+        nonlocal minimum_call_count
+        with state_lock:
+            current_call = minimum_call_count
+            minimum_call_count += 1
+            minimum_threads.add(threading.get_ident())
+        if current_call < 2:
+            minimum_barrier.wait(timeout=5.0)
+        if current_call == 0:
+            if not minimum_release.wait(timeout=5.0):
+                raise RuntimeError("min_voxels 首个配置没有等到另一个任务先完成")
+        objective = original_selection_objective(*args, **kwargs)
+        with state_lock:
+            completion_order.append(("min_voxels", current_call))
+        if current_call != 0:
+            minimum_release.set()
         return objective
 
     monkeypatch.setattr(
         calibration_module, "sum_gaussian_atom_terms", synchronized_atom_terms
     )
     monkeypatch.setattr(
-        calibration_module, "_gaussian_selection_objective", delayed_gaussian_objective
+        calibration_module, "_scan_actual_score_thresholds", delayed_score_scan
+    )
+    monkeypatch.setattr(
+        calibration_module, "_selection_objective", delayed_minimum_objective
     )
     parallel = tune_centered_selection(**arguments, workers=4)
 
     assert parallel == serial
     assert len(atom_threads) >= 2
-    assert all(len(thread_ids) >= 2 for thread_ids in search_threads.values())
+    assert all(len(thread_ids) >= 2 for thread_ids in scan_threads.values())
+    assert len(minimum_threads) >= 2
     for stage in ("coarse", "refined", "min_voxels"):
         first_completed = next(entry for entry in completion_order if entry[0] == stage)
-        if stage == "coarse":
-            assert first_completed[1:4] != pytest.approx((0.2, 0.1, 0.5))
-        else:
-            assert first_completed[1:] != pytest.approx((0.16, 0.08, 0.25, 1))
+        assert first_completed[1] != 0
     assert parallel["stages"]["coarse"] == {
         "objective": 0.0,
         "tau_angstrom": 1.0,
         "lambda_positive": 0.2,
         "lambda_negative": 0.1,
-        "score_threshold": 0.5,
+        "score_threshold": 0.0,
     }
     assert parallel["stages"]["refined"]["objective"] == 0.0
     assert parallel["stages"]["refined"]["tau_angstrom"] == 1.0
     assert parallel["stages"]["refined"]["lambda_positive"] == pytest.approx(0.16)
     assert parallel["stages"]["refined"]["lambda_negative"] == pytest.approx(0.08)
-    assert parallel["stages"]["refined"]["score_threshold"] == pytest.approx(0.25)
+    assert parallel["stages"]["refined"]["score_threshold"] == 0.0
     assert parallel["stages"]["min_voxels"] == {
         "objective": 0.0,
         "min_voxels": 1,
