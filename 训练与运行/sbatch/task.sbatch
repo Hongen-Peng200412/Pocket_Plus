@@ -22,6 +22,7 @@ simple_mode=0
 resource_type=""
 gpu_count=0
 node_count=1
+multi_node_ddp_mode=0
 cpu_count=1
 array_spec=""
 task_arguments=()
@@ -37,6 +38,7 @@ while (($# > 0)); do
         --resource) resource_type="$2"; shift 2 ;;
         --gpus) gpu_count="$2"; shift 2 ;;
         --nodes) node_count="$2"; shift 2 ;;
+        --multi_node_ddp) multi_node_ddp_mode="$2"; shift 2 ;;
         --cpus) cpu_count="$2"; shift 2 ;;
         --array) array_spec="$2"; shift 2 ;;
         --)
@@ -79,6 +81,7 @@ export TASK_SIMPLE_MODE="${simple_mode}"
 export TASK_RESOURCE_TYPE="${resource_type}"
 export TASK_GPUS_PER_NODE="${gpu_count}"
 export TASK_NODE_COUNT="${node_count}"
+export TASK_MULTI_NODE_DDP_MODE="${multi_node_ddp_mode}"
 export TASK_CPU_COUNT="${cpu_count}"
 export TASK_ARRAY_SPEC="${array_spec}"
 
