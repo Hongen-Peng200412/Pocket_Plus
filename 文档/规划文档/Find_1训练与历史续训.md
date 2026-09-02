@@ -102,5 +102,5 @@ AUTO 仓库 `C:\Users\15919\Desktop\AUTO\Pocket_Plus-v3-macro` 当前保留最�
 - [x] 两套 PDB 中心配置与分组裁剪实现。
 - [x] AUTO 优化动力学对照；schema 4 受控、自然随机和双向 replay 门禁已由 H100 attempt a10 通过。
 - [x] 历史续训恢复实现。
-- [x] 正式代码审查、服务器 smoke 与训练启动；A800 历史续训 Job `366277` 已稳定续训，H100 PDB-centric-1 Job `366071` 已完成首次正式 validation、写出 checkpoint 并恢复训练。
+- [x] 正式代码审查、服务器 smoke 与训练启动；H100 PDB-centric-1 Job `366071` 已完成三次正式 validation，最新 `voxel_ligand_PRAUC=0.4633158`。A800 a1/a2 已确认在恢复瞬间各写入一次单 batch 伪 validation，均冻结为故障证据；历史续训分支已最小修复 Lightning 完成态 validation 边界和同一 global step 的调度器幂等性，attempt a3 从指定原始 checkpoint 启动并先推进真实训练 step，未再次触发伪 validation。
 - [ ] 训练完成、执行记录收口、handoff 与双线 Git 收口。

@@ -4,7 +4,7 @@ Date: 2026-08-28
 
 ## Current State
 
-Stage1 采样方式三的 V2 验证产物、Dataset 请求入口、`unet_c1` 配置和正式 shell 已完成实现与验收。正式训练 Job `358384` 于 2026-08-28 09:31:26 +08:00 在 `hnode01` 启动，使用 1 张 H100、32 CPU 和 30 个 `DataLoader` workers。任务已完成十七次完整 validation、处于 epoch 2，并生成对应 TOP 与 last checkpoint；没有发现 CUDA OOM、NCCL、DataLoader 或非有限值错误。`after_lock_358384` 仍存在，不得自动释放。
+Stage1 采样方式三的 V2 验证产物、Dataset 请求入口、`unet_c1` 配置和正式 shell 已完成实现与验收。正式训练 Job `358384` 于 2026-08-28 09:31:26 +08:00 在 `hnode01` 启动，使用 1 张 H100、32 CPU 和 30 个 `DataLoader` workers。任务已完成十八次完整 validation、处于 epoch 2，并生成对应 TOP 与 last checkpoint；没有发现 CUDA OOM、NCCL、DataLoader 或非有限值错误。`after_lock_358384` 仍存在，不得自动释放。
 
 详细的数据产物与运行证据记录在 `ops/stage1_data_preparation/EXECUTION.md`，活动科学说明位于 `talk/global/global_8.26.md`。
 
@@ -36,6 +36,12 @@ Stage1 采样方式三的 V2 验证产物、Dataset 请求入口、`unet_c1` 配
 - 2026-08-31 12:29 +08:00，第十六次完整 validation 结束：验证总损失降至 `0.2037673`，配体体素 PRAUC 创新高至 `0.5507095`，受体 PRAUC 创新高至 `0.6137356`；`checkpoints/TOP_epoch_01_score_0.5507.ckpt` 与 `checkpoints/last.ckpt` 已更新，任务进入 epoch 2 并继续推进到 `trainer/global_step=18176`。`BEST.ckpt` 已刷新为第十五次的 `TOP_epoch_01_score_0.5420.ckpt`，错误扫描为空。
 - 第十四至第十六次 validation 期间，本地 90 分钟睡眠会话因宿主挂起延长；服务器 Job 始终为 `RUNNING`。恢复后通过 Slurm、W&B `scan_history` 和 checkpoint 时间戳补齐了三次验证的权威证据，训练本身未受影响。
 - 2026-08-31 17:12 +08:00，第十七次完整 validation 结束：验证总损失为 `0.2076540`，配体体素 PRAUC 为 `0.5448655`，受体 PRAUC 创新高至 `0.6180575`；`checkpoints/TOP_epoch_02_score_0.5449.ckpt` 与 `checkpoints/last.ckpt` 已更新，任务继续推进到 `trainer/global_step=19574`。`BEST.ckpt` 已刷新为第十六次的 `TOP_epoch_01_score_0.5507.ckpt`，错误扫描为空。
+- 2026-08-31 21:58 +08:00，第十八次完整 validation 结束：验证总损失降至 `0.2011843`，配体体素 PRAUC 创新高至 `0.5764135`，受体 PRAUC 创新高至 `0.6228836`；`checkpoints/TOP_epoch_02_score_0.5764.ckpt` 与 `checkpoints/last.ckpt` 已更新，任务继续推进到 `trainer/global_step=20528`。`BEST.ckpt` 暂时保持第十六次的 `TOP_epoch_01_score_0.5507.ckpt`，符合已确认的回调时序；错误扫描为空。
+- 2026-09-01 02:45 +08:00，第十九次完整 validation 结束：验证总损失继续降至 `0.1990959`，配体体素 PRAUC 为 `0.5634502`，受体 PRAUC 创新高至 `0.6248313`；`checkpoints/TOP_epoch_02_score_0.5635.ckpt` 与 `checkpoints/last.ckpt` 已更新，任务继续推进到 `trainer/global_step=21626`。`BEST.ckpt` 已按既知的一次 validation 回调滞后刷新为第十八次的 `TOP_epoch_02_score_0.5764.ckpt`，错误扫描为空。
+- 2026-09-01 07:32 +08:00，第二十次完整 validation 结束：验证总损失为 `0.2051169`，配体体素 PRAUC 为 `0.5622604`，受体 PRAUC 为 `0.6195352`；`checkpoints/TOP_epoch_02_score_0.5623.ckpt` 与 `checkpoints/last.ckpt` 已更新，任务恢复训练并继续推进到 `trainer/global_step=22973`。`BEST.ckpt` 正确保持第十八次的 `TOP_epoch_02_score_0.5764.ckpt`，错误扫描为空。
+- 2026-09-01 12:15 +08:00，第二十一次完整 validation 结束：验证总损失为 `0.2043146`，配体体素 PRAUC 为 `0.5645520`，受体 PRAUC 为 `0.6244339`；`checkpoints/TOP_epoch_02_score_0.5646.ckpt` 与 `checkpoints/last.ckpt` 已更新，任务恢复训练并继续推进到 `trainer/global_step=23945`。`BEST.ckpt` 正确保持第十八次的 `TOP_epoch_02_score_0.5764.ckpt`，错误扫描为空。
+- 2026-09-01 16:44 +08:00，第二十二次完整 validation 结束：验证总损失为 `0.1995346`，配体体素 PRAUC 为 `0.5633904`，受体 PRAUC 为 `0.6191931`；`checkpoints/TOP_epoch_02_score_0.5634.ckpt` 与 `checkpoints/last.ckpt` 已更新，任务恢复训练并继续推进到 `trainer/global_step=25112`。连续四次验证未超过调度器记录的配体体素 PRAUC `0.5764135` 后，正式调度器按 `factor=0.2`、`patience=3`、绝对改进阈值 `0.003` 将学习率从 `1e-4` 降至 `2e-5`。`last.ckpt` 已保存第一次实际衰减及重置后的 `num_bad_epochs=0`；第二次实际衰减将按配置触发正常停训。`BEST.ckpt` 保持第十八次的 `TOP_epoch_02_score_0.5764.ckpt`，错误扫描为空。
+- 2026-09-01 21:11 +08:00，第二十三次完整 validation 结束：验证总损失创新低至 `0.1895426`，配体体素 PRAUC 创新高至 `0.5819030`，受体 PRAUC 创新高至 `0.6446361`；`checkpoints/TOP_epoch_02_score_0.5819.ckpt` 与 `checkpoints/last.ckpt` 已更新，任务恢复训练并继续推进到 `trainer/global_step=26159`。配体体素 PRAUC 较调度器旧基准提高约 `0.00549`，超过绝对改进阈值 `0.003`；`last.ckpt` 已保存新基准 `0.5819030`、`num_bad_epochs=0`、学习率 `2e-5` 和第一次实际衰减计数。`BEST.ckpt` 暂时保持第十八次的 `TOP_epoch_02_score_0.5764.ckpt`，符合已确认的一次 validation 回调滞后；错误扫描为空。
 
 ## Decisions
 

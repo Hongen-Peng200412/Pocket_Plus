@@ -226,8 +226,8 @@
       "handoff": "CLAUDE/memory/handoffs/2026-08-26-stage1-f2-blobs-beta1-trial.md"
     },
     {
-      "date": "2026-08-31",
-      "summary": "Stage1 采样方式三的 V2 验证产物和 unet_c1 正式入口已验收；Job 358384 使用单 H100、32 CPU、30 workers 在 hnode01 稳定训练，生产请求数为训练 436211、验证 6505。W&B run 9dsi7i9w 已完成十七次完整验证并处于 epoch 2；第十七次配体体素 PRAUC 为 0.5449、受体 PRAUC 创新高至 0.6181，当前配体体素最佳仍为第十六次的 0.5507；任务继续推进且无显式错误。",
+      "date": "2026-09-01",
+      "summary": "Stage1 采样方式三的 V2 验证产物和 unet_c1 正式入口已验收；Job 358384 使用单 H100、32 CPU、30 workers 在 hnode01 稳定训练，生产请求数为训练 436211、验证 6505。W&B run 9dsi7i9w 已完成二十三次完整验证并处于 epoch 2；第二十三次验证总损失创新低至 0.1895，配体体素/受体 PRAUC 同时创新高至 0.5819/0.6446。调度器已在学习率 2e-5 下把配体体素 PRAUC 新基准更新为 0.5819，第一次实际衰减计数保持不变；第二次实际衰减将触发正常停训。BEST.ckpt 将按既知的一次 validation 回调滞后追上第二十三次检查点，任务继续推进且无显式错误。",
       "handoff": "CLAUDE/memory/handoffs/2026-08-28-stage1-pdb-centric-v2-unet-c1-running.md"
     },
     {
@@ -254,6 +254,21 @@
       "date": "2026-09-01",
       "summary": "Find_1 schema 4 的 fresh replay attempt a10 完整通过；H100 Job 366071 以三行极简命令启动 PDB-centric-1 attempt a11，首次正式 validation 得到 voxel_ligand_PRAUC 0.400993，TOP 与 last checkpoint 已写出且训练恢复推进；A800 历史续训 Job 366277 同期稳定运行。",
       "handoff": "CLAUDE/memory/handoffs/2026-09-01-find1-pdb-centric1-running.md"
+    },
+    {
+      "date": "2026-09-01",
+      "summary": "Stage1 密度通道消融 Job 350302 的训练结果已安全保存；其 after_hold allocation 随后由账号用户取消，A800 资源和活动锁均已释放。守护过程未操作任务或锁；Job 350305 继续正常训练。",
+      "handoff": "CLAUDE/memory/handoffs/2026-08-21-unet-density-ablation-guard.md"
+    },
+    {
+      "date": "2026-09-02",
+      "summary": "Stage1 采样方式二 pdb-centric-1 的 unet_c1 Job 356953 已确认正常完成训练：单 A800、24 CPU，最终配置为单实验密度通道、25/0.5/25 采样、batch 8/global batch 48、24 workers、lr 1e-4 和五项体素损失。训练在 epoch 1、last.ckpt global_step 23814 时因第二次实际学习率衰减按配置停止；BEST.ckpt 与最高分 0.4918 的 TOP checkpoint 字节一致。Slurm RUNNING 仅由 after_hold 保留空闲 allocation；锁未触碰。尚未发现该 Job 的 complete-map 推理与统一评估产物。",
+      "handoff": "CLAUDE/memory/handoffs/2026-09-02-stage1-pdb-centric-1-unet-c1-complete.md"
+    },
+    {
+      "date": "2026-09-02",
+      "summary": "Find_1 A800 历史续训已纠正 Lightning 完成态 validation 恢复语义：a1/a2 均在 global step 11287 写入单 batch 伪 validation，已冻结为只读故障证据；提交 0829058 最小修复 validation 调度边界与 plateau 幂等键，Job 366277 attempt a3 从指定原始 checkpoint 启动并先推进到至少 step 11291，学习率保持 5e-5。H100 PDB-centric-1 同期完成第三次 validation，voxel_ligand_PRAUC 为 0.463316；两个 Job 均保留 after_lock 并继续运行。",
+      "handoff": "CLAUDE/memory/handoffs/2026-09-02-find1-a800-timeout-recovered.md"
     }
   ],
   "blockers": [

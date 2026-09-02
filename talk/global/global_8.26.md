@@ -78,6 +78,15 @@ unet_c1: pencounkdual-111/AdaLigand_Stage1/6uuzdbgs
 - 启动留证：`/home/penghongen/Feedback/Pocket_Plus/launches/356953/unet_c1_job356953_20260826T110721_a1/launch.json`
 - 训练所用的配置：`/home/penghongen/Feedback/Pocket_Plus/logs/AdaLigand_Stage1_pdb_centric-unet_c1-mainchain/unet_c1_mainchain____unet_c1_job356953_20260826T110721_a1_formal/config.yaml`
 
+### 方式二训练收口（2026-09-02 核验）
+
+Job `356953` 确实是 `unet_c1` 的采样方式二 `pdb-centric-1` 正式训练，并且训练主体已经正常完成。Slurm 最终执行事实为 `nvlink` partition、`h200g4` QOS、`gnode09`、1 张 A800 和 24 CPU，提交契约为 `pre_hold=0`、`after_hold=1`。任务于 2026-08-26 11:09:47 +08:00 获得资源；训练包装器于 2026-09-01 06:48:18 +08:00 创建 `try_lock_356953`，标准输出明确记录两次实际学习率衰减触发正常停止、`unet_c1 mainchain` 正式训练完成以及第 1 次执行成功。
+
+运行目录中的最终 `config.yaml` 而不是当前工作树配置是本次训练的权威配置。该文件确认输入只有 `exp_clipnorm_nopost` 一个实验密度通道；训练请求使用 `pdb_foreground_box_num=25`、`pdb_foreground_fraction_target=0.5`、`pdb_occurrence_foreground_box_cap=25`，验证读取 V1 `validation_selection_pdb_centric.npz`。每个 epoch 共有 685,850 个训练 BOX；V1 验证文件固定包含 150 个 PDB、3,750 个 bias BOX 和 3,750 个 context BOX。训练使用每卡 batch 8、全局 batch 48、梯度累积 6、24 个 `DataLoader` workers、学习率 `1e-4`、`max_epochs=70`、`val_per_epoch=12`、BF16 混合精度，以及配体区域、配体体素、蛋白主链、核酸主链和配体反距离五项损失，权重分别为 `0.1/1.0/0.05/0.05/0.3`。
+
+训练共保存 20 个 TOP checkpoint。`last.ckpt` 的内部状态为 epoch 1、`global_step=23814`，已记录第二次学习率衰减并把优化器学习率降至约 `4e-6`；W&B 最终摘要记录的相邻日志步为 `trainer/global_step=23813`，最后一次验证总损失为 `0.1979677`、配体体素 PRAUC 为 `0.4891676`、受体 PRAUC 为 `0.5830685`。最高配体体素 PRAUC 为 `0.4918`，对应 `TOP_epoch_01_score_0.4918.ckpt`；`BEST.ckpt` 与该 TOP 文件的 SHA-256 均为 `0bb6bd5231c638c13dee5144bfb361b6bd20f5268bd10337a040c8486efa9b5a`，因此最终最佳别名已经闭合。
+
+
 
 
 
@@ -129,7 +138,7 @@ unet_c1: pencounkdual-111/AdaLigand_Stage1/6uuzdbgs
 - 训练所用配置：`/home/penghongen/Feedback/Pocket_Plus/logs/AdaLigand_Stage1_pdb_centric_2-unet_c1-mainchain/unet_c1_mainchain_pdb_centric_2____unet_c1_job358384_20260828T093205_a1_formal/config.yaml`
 - W&B run：`pencounkdual-111/AdaLigand_Stage1/9dsi7i9w`
 
-启动验收已从 release 的生产请求入口重新确认每个 epoch 共有 436,211 个训练 BOX，V2 共有 6,505 个验证 BOX。前十七次完整 validation 均已结束，任务处于 epoch 2；第十七次验证总损失为 `0.2076540`，配体体素 PRAUC 为 `0.5448655`，受体 PRAUC 创新高至 `0.6180575`。当前配体体素最佳仍为第十六次的 `0.5507095`；`TOP_epoch_02_score_0.5449.ckpt` 与更新后的 `last.ckpt` 已生成，`BEST.ckpt` 已更新为第十六次的 `0.5507` 检查点。任务继续训练且未发现显式错误。
+启动验收已从 release 的生产请求入口重新确认每个 epoch 共有 436,211 个训练 BOX，V2 共有 6,505 个验证 BOX。前二十三次完整 validation 均已结束，任务处于 epoch 2；第二十三次验证总损失创新低至 `0.1895426`，配体体素 PRAUC 创新高至 `0.5819030`，受体 PRAUC 创新高至 `0.6446361`。`TOP_epoch_02_score_0.5819.ckpt` 与更新后的 `last.ckpt` 已生成；配体体素 PRAUC 较旧基准提高约 `0.00549`，超过绝对改进阈值 `0.003`，调度器已在学习率 `2e-5` 下把新基准更新为 `0.5819030`。`BEST.ckpt` 暂时保持此前的 `TOP_epoch_02_score_0.5764.ckpt`，符合已确认的一次 validation 回调滞后。第一次实际学习率衰减计数保持不变；第二次实际衰减仍将触发正常停训。任务继续训练且未发现显式错误。
 
 
 
