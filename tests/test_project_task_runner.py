@@ -199,6 +199,87 @@ def test_submitter_forwards_pre_hold_and_after_hold_without_old_hold(
     assert "未知参数：--hold" in rejected.stderr
 
 
+def test_submitter_requires_an_explicit_valid_multi_node_ddp_contract(
+    tmp_path: Path,
+) -> None:
+    """跨节点任务必须显式选择 GPU DDP, 不能静默申请闲置节点."""
+
+    bash = _find_bash()
+    copied_project = tmp_path / "AdaLigand"
+    copied_runner = copied_project / "训练与运行"
+    shutil.copytree(RUNNER_DIRECTORY, copied_runner)
+    task_script = copied_runner / "sh" / "smoke.sh"
+    task_script.parent.mkdir(exist_ok=True)
+    task_script.write_text("#!/usr/bin/env bash\n", encoding="utf-8", newline="\n")
+    submitter = copied_runner / "submit_task.sh"
+
+    capture_path = tmp_path / "multi-node.arguments"
+    completed = _run_submitter(
+        bash,
+        submitter,
+        capture_path,
+        [
+            "--sh",
+            "smoke.sh",
+            "--resource",
+            "h100",
+            "--nodes",
+            "2",
+            "--gpus",
+            "2",
+            "--cpus",
+            "64",
+            "--multi-node-ddp",
+        ],
+        cwd=tmp_path,
+    )
+    assert completed.returncode == 0, completed.stderr
+    submitted = capture_path.read_text(encoding="utf-8").splitlines()
+    assert "--nodes=2" in submitted
+    assert "--ntasks-per-node=1" in submitted
+    assert _argument_value(submitted, "--multi_node_ddp") == "1"
+
+    missing_mode = _run_submitter(
+        bash,
+        submitter,
+        tmp_path / "missing-mode.arguments",
+        ["--sh", "smoke.sh", "--resource", "h100", "--nodes", "2", "--gpus", "2"],
+        cwd=tmp_path,
+    )
+    assert missing_mode.returncode == 2
+    assert "必须显式提供 --multi-node-ddp" in missing_mode.stderr
+
+    cpu_mode = _run_submitter(
+        bash,
+        submitter,
+        tmp_path / "cpu-mode.arguments",
+        ["--sh", "smoke.sh", "--resource", "cpu", "--nodes", "2", "--multi-node-ddp"],
+        cwd=tmp_path,
+    )
+    assert cpu_mode.returncode == 2
+    assert "只支持 GPU 任务" in cpu_mode.stderr
+
+    single_node_mode = _run_submitter(
+        bash,
+        submitter,
+        tmp_path / "single-node-mode.arguments",
+        [
+            "--sh",
+            "smoke.sh",
+            "--resource",
+            "h100",
+            "--nodes",
+            "1",
+            "--gpus",
+            "2",
+            "--multi-node-ddp",
+        ],
+        cwd=tmp_path,
+    )
+    assert single_node_mode.returncode == 2
+    assert "要求 --nodes 大于 1" in single_node_mode.stderr
+
+
 def test_task_root_selects_another_project_and_rejects_outside_script(
     tmp_path: Path,
 ) -> None:
@@ -331,6 +412,120 @@ def test_full_runtime_freezes_copied_project_and_records_generic_stamp(
     assert "pocket_run_stamp" not in launch
     assert Path(launch["release_project_root"]).name == "AdaLigand"
     assert launch["task_script"] == "训练与运行/sh/runtime_contract.sh"
+    assert launch["multi_node_ddp"] is False
+    assert launch["distributed_launcher"] == "lightning"
+    assert launch["master_addr"] == ""
+    assert launch["master_port"] is None
+
+
+def test_full_runtime_launches_one_task_per_ddp_node_and_records_topology(
+    tmp_path: Path,
+) -> None:
+    """跨节点 attempt 应只发布一次, 再把同一运行命令分发到每个节点."""
+
+    bash = _find_bash(required_command="rsync")
+    copied_project = tmp_path / "AdaLigand"
+    copied_runner = copied_project / "训练与运行"
+    shutil.copytree(RUNNER_DIRECTORY, copied_runner)
+    (copied_runner / "runtime" / "create_release.sh").chmod(0o644)
+    (copied_runner / "runtime" / "create_launch.sh").chmod(0o644)
+    task_script = copied_runner / "sh" / "multi_node_contract.sh"
+    task_script.write_text(
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n"
+        'printf \'%s|%s|%s|%s\\n\' "${TASK_DDP_NODE_RANK}" '
+        '"${TASK_DDP_MASTER_ADDR}" "${TASK_DDP_MASTER_PORT}" '
+        '"${TASK_RUN_STAMP}" >>"${TEST_OUTPUT}"\n',
+        encoding="utf-8",
+        newline="\n",
+    )
+    fake_scontrol = tmp_path / "scontrol.sh"
+    fake_scontrol.write_text(
+        "#!/usr/bin/env bash\nprintf 'node-a\\nnode-b\\n'\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    fake_srun = tmp_path / "srun.sh"
+    fake_srun.write_text(
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n"
+        'while [[ "$1" == --* ]]; do shift; done\n'
+        'for node_rank in 0 1; do SLURM_NODEID="${node_rank}" "$@"; done\n',
+        encoding="utf-8",
+        newline="\n",
+    )
+    fake_scontrol.chmod(0o755)
+    fake_srun.chmod(0o755)
+    feedback_root = tmp_path / "feedback"
+    output_path = tmp_path / "node-ranks.txt"
+    environment = os.environ.copy()
+    environment["PATH"] = os.pathsep.join(
+        (str(Path(bash).parent), environment.get("PATH", ""))
+    )
+    environment.update(
+        {
+            "SLURM_JOB_ID": "900006",
+            "SLURM_JOB_NODELIST": "node-[a-b]",
+            "TASK_LOCK_POLL_SECONDS": "0.01",
+            "TASK_KILL_POLL_SECONDS": "0.01",
+            "TASK_SCONTROL_BIN": _bash_path(bash, fake_scontrol),
+            "TASK_SRUN_BIN": _bash_path(bash, fake_srun),
+            "TEST_OUTPUT": _bash_path(bash, output_path),
+        }
+    )
+
+    completed = subprocess.run(
+        [
+            bash,
+            _bash_path(bash, copied_runner / "sbatch" / "task.sbatch"),
+            "--task-root",
+            _bash_path(bash, copied_project),
+            "--feedback-root",
+            _bash_path(bash, feedback_root),
+            "--task",
+            "训练与运行/sh/multi_node_contract.sh",
+            "--simple",
+            "0",
+            "--pre_hold",
+            "0",
+            "--after_hold",
+            "0",
+            "--resource",
+            "h100",
+            "--gpus",
+            "2",
+            "--nodes",
+            "2",
+            "--multi_node_ddp",
+            "1",
+            "--cpus",
+            "64",
+            "--array",
+            "",
+        ],
+        env=environment,
+        capture_output=True,
+        encoding="utf-8",
+        timeout=30,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    node_records = output_path.read_text(encoding="utf-8").splitlines()
+    assert len(node_records) == 2
+    fields = [record.split("|") for record in node_records]
+    assert [field[0] for field in fields] == ["0", "1"]
+    assert {field[1] for field in fields} == {"node-a"}
+    assert len({field[2] for field in fields}) == 1
+    assert len({field[3] for field in fields}) == 1
+    launch_paths = list((feedback_root / "launches" / "900006").glob("*/launch.json"))
+    assert len(launch_paths) == 1
+    launch = json.loads(launch_paths[0].read_text(encoding="utf-8"))
+    assert launch["multi_node_ddp"] is True
+    assert launch["distributed_launcher"] == "srun+torchrun"
+    assert launch["nodes"] == 2
+    assert launch["gpus_per_node"] == 2
+    assert launch["master_addr"] == "node-a"
+    assert launch["master_port"] == int(fields[0][2])
 
 
 def test_simple_runtime_uses_same_task_root_without_release(
@@ -587,3 +782,108 @@ def test_default_release_preserves_failed_task_exit_code(tmp_path: Path) -> None
     )
     assert completed.returncode == 7, completed.stderr
     assert not (temporary_home / "SIMPLE_RUN" / "try_lock_900005").exists()
+
+
+def test_kill_lock_sends_term_to_the_active_multi_node_job_step(
+    tmp_path: Path,
+) -> None:
+    """kill_lock 应先让 srun 收到 TERM, 再回到既有 try_lock 流程."""
+
+    bash = _find_bash(required_command="setsid")
+    copied_project = tmp_path / "AdaLigand"
+    copied_runner = copied_project / "训练与运行"
+    shutil.copytree(RUNNER_DIRECTORY, copied_runner)
+    task_script = copied_runner / "sh" / "kill_contract.sh"
+    task_script.write_text(
+        "#!/usr/bin/env bash\nexit 0\n", encoding="utf-8", newline="\n"
+    )
+    fake_scontrol = tmp_path / "scontrol.sh"
+    fake_scontrol.write_text(
+        "#!/usr/bin/env bash\nprintf 'node-a\\nnode-b\\n'\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    fake_srun = tmp_path / "srun.sh"
+    fake_srun.write_text(
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n"
+        "trap 'exit 143' TERM\n"
+        'printf ready >"${READY_OUTPUT}"\n'
+        "while true; do sleep 1; done\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    fake_scontrol.chmod(0o755)
+    fake_srun.chmod(0o755)
+    temporary_home = tmp_path / "home"
+    temporary_home.mkdir()
+    ready_output = tmp_path / "ready.txt"
+    environment = os.environ.copy()
+    environment["PATH"] = os.pathsep.join(
+        (str(Path(bash).parent), environment.get("PATH", ""))
+    )
+    environment.update(
+        {
+            "HOME": _bash_path(bash, temporary_home),
+            "SLURM_JOB_ID": "900007",
+            "SLURM_JOB_NODELIST": "node-[a-b]",
+            "TASK_LOCK_POLL_SECONDS": "0.01",
+            "TASK_KILL_POLL_SECONDS": "0.01",
+            "TASK_KILL_GRACE_SECONDS": "2",
+            "TASK_SCONTROL_BIN": _bash_path(bash, fake_scontrol),
+            "TASK_SRUN_BIN": _bash_path(bash, fake_srun),
+            "READY_OUTPUT": _bash_path(bash, ready_output),
+        }
+    )
+    process = subprocess.Popen(
+        [
+            bash,
+            _bash_path(bash, copied_runner / "sbatch" / "task.sbatch"),
+            "--task-root",
+            _bash_path(bash, copied_project),
+            "--feedback-root",
+            "",
+            "--task",
+            "训练与运行/sh/kill_contract.sh",
+            "--simple",
+            "1",
+            "--pre_hold",
+            "0",
+            "--after_hold",
+            "1",
+            "--resource",
+            "h100",
+            "--gpus",
+            "2",
+            "--nodes",
+            "2",
+            "--multi_node_ddp",
+            "1",
+            "--cpus",
+            "2",
+            "--array",
+            "",
+        ],
+        env=environment,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        encoding="utf-8",
+    )
+    control_root = temporary_home / "SIMPLE_RUN"
+    kill_lock = control_root / "kill_lock_900007"
+    try_lock = control_root / "try_lock_900007"
+    after_lock = control_root / "after_lock_900007"
+    try:
+        _wait_for_path(ready_output, process)
+        kill_lock.touch()
+        _wait_for_path(try_lock, process)
+        after_lock.unlink()
+        stdout, stderr = process.communicate(timeout=10)
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.communicate()
+    assert process.returncode == 143, (stdout, stderr)
+    assert "先向跨节点进程组" in stdout
+    assert "发送 TERM" in stdout
+    assert not kill_lock.exists()
