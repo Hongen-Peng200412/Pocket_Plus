@@ -33,7 +33,7 @@ stage1_v3.yaml
 | --- | --- | --- |
 | stride_zyx | 三个整数，[30,30,30] | 完整图 ZYX 三轴的无 padding 80³ 滑窗步长；Python 函数不设默认值 |
 | gaussian_sigma | 浮点数，0.5 | 每轴规范化到 [-1,1] 后的 Gaussian 标准差，不是体素数 |
-| batch_size | 整数，通用 16；A800/24 CPU 为 32；A100/16 CPU 为 16 | 一次模型前向包含的 80³ 窗口数 |
+| batch_size | 整数，通用 16；A800/24 CPU 为 24；A100/16 CPU 为 12 | 一次模型前向包含的 80³ 窗口数 |
 | workers | 整数，通用 12；A800/24 CPU 为 18；A100/16 CPU 为 10 | CPU 请求物化线程数；两个资源配置都为融合、发布和主线程预留约 6 个 CPU |
 | prefetch_batches | 整数，通用 12；A800/24 CPU 为 18；A100/16 CPU 为 10 | GPU 前方已经提交物化且尚未前向的有序 batch 数量上限；两个资源配置分别与 `workers` 相同，使配置中的 CPU 物化线程数能够形成同等数量的待处理批次 |
 | pending_fusion_batches | 整数，通用 8；两个资源配置为 4 | GPU 后方等待 CPU 有序融合的 batch 数量上限 |
