@@ -180,11 +180,11 @@ def test_sampling_comparison_shell_uses_official_entry_and_resource_profiles() -
     assert "stage1 centered" not in shell_text
     assert "unet_c1_pdb_centric_v1/artifacts" in shell_text
     assert "unet_c1_pdb_centric_v2/artifacts" in shell_text
-    assert int(a800.window.batch_size) == 32
+    assert int(a800.window.batch_size) == 24
     assert int(a800.window.workers) == 18
     assert int(a800.window.prefetch_batches) == 18
     assert int(a800.calibration.workers) == 24
-    assert int(a100.window.batch_size) == 16
+    assert int(a100.window.batch_size) == 12
     assert int(a100.window.workers) == 10
     assert int(a100.window.prefetch_batches) == 10
     assert int(a100.calibration.workers) == 16

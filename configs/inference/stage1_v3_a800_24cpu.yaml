@@ -12,7 +12,7 @@ pending_centered_pdbs: 2  # int, GPU 后方尚未打包或发布的 centered PDB
 window:
   stride_zyx: [30, 30, 30]  # int[3], 完整图 ZYX 无 padding 滑窗步长
   gaussian_sigma: 0.5  # float, 规范化坐标中的 Gaussian 标准差
-  batch_size: 32  # int, A800 一次前向的 80³ 窗口数
+  batch_size: 24  # int, A800 一次前向的 80³ 窗口数
   workers: 18  # int, CPU 请求物化线程数；其余 CPU 留给融合、发布和主线程
   prefetch_batches: 18  # int，GPU 前方最多保留的有序窗口批次数；与 workers 相同以允许 18 个批次级物化任务并发
   pending_fusion_batches: 4  # int, GPU 后方最多保留的待融合批次数
