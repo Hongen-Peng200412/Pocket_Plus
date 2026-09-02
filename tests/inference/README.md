@@ -4,15 +4,16 @@
 
 `test_stage1_v3.py` 覆盖以下边界：
 
-- 无填充 80³ 滑窗与归一化 Gaussian 权重；
+- 无填充 80³ 滑窗、归一化 Gaussian 权重、跨 PDB session 复用和下一 PDB 首批预取；
 - 26 邻域连通区域稳定排序，以及偏斜区域的合法 centered BOX；
 - 正式 float32 blob 均值的排序 tie-break；
-- centered offsets、`centered_box_index`、所有 producer 固定保存的 auxiliary 与三张 48³ 数组、50 维 `A_feat_L0` 和 float16 特征；
+- centered offsets、`centered_box_index`、同一 batch 内逐请求并发物化、所有 producer 固定保存的 auxiliary 与三张 48³ 数组、50 维 `A_feat_L0` 和 float16 特征；
+- 无法被单个 80³ BOX 完整容纳的 blob 仍执行前向，只归档框内真实体素，并单独保存完整来源体素数与可容纳标志；
 - 合成 CPU BF16 输出进入 NumPy 前的显式 float32 转换；
 - 5 Å Find Gaussian 纳入端点与 10 Å Find A 表保留端点；
 - calibration 与正式 Find Gaussian 的逐位数值同源；
 - basic 与 Gaussian 在参数搜索前固定同一个预过滤门槛，且该值不限制最终 `min_voxels` 搜索列表；
-- 不均衡 PDB 规模下的语义 macro 阈值选择，以及 evaluate 同时发布三类 micro/macro F-beta 与完整图 semantic micro/macro PRAUC；PRAUC 另以相邻 float32 端点证明 1024 个阈值与训练 TorchMetrics 一致；
+- 不均衡 PDB 规模下的语义 macro 阈值选择，以及 evaluate 同时发布三类 micro/macro F-beta、semantic PRAUC、coverage PRAUC 与 one-to-one PRAUC；候选 PRAUC 另验证实际 float32 分数、最终分数阈值无关性和固定体素门槛；semantic PRAUC 以相邻 float32 端点证明 1024 个阈值与训练 TorchMetrics 一致；
 - Python 3.10 CLI、真正的 `ResolvedStage1Crop` Dataset 构造和重复 PDB 拒绝；
 - 动态 `F{alpha}` 路径标签、probability/centered 正式阶段和固定种子 3407 的随机分片；
 - evaluate 显式结果名、全候选不做二次打分，以及全候选与参数过滤结果并存；
@@ -26,7 +27,7 @@
 - 数学上并列的 basic macro 目标不被浮点差量累计破坏，仍保留先遇到的高分阈值；
 
 - `workers=1` 与 `workers>1` 的 basic 完整选择 JSON 逐字段相等，并用同步屏障证明最终 `min_voxels` 目标确实由多个线程重叠计算；
-- `workers=1` 与 `workers>1` 的 Gaussian 粗搜、细搜和最终体素门槛结果逐字段相等；
+- `workers=1` 与 `workers>1` 的 Gaussian 粗搜、细搜、每组实际分数扫描和最终体素门槛结果逐字段相等；
 - 用线程事件分别阻塞粗搜、细搜和最终体素门槛的首个参数任务，并让全部目标值并列，证明三个阶段乱序完成时仍按配置原顺序保留首项；
 - `run_tune_stage()` 以两个 worker 并行读取临时正式 NPZ，保持 PDB 清单顺序，完成 basic 字段改名、Gaussian A 原子字段读取和两类 JSON 发布。
 
