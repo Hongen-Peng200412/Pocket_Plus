@@ -46,6 +46,7 @@ accelerator: auto
 ddp_find_unused_parameters: false
 precision: "bf16-mixed"
 gradient_clip_val: 0.5
+gradient_clip_mode: global                   # str, global 保持 Lightning 原有全局裁剪; Find_1 新训练显式覆盖为 find_voxel_point.
 check_val_every_n_epoch: 1
 val_per_epoch: 3               # int, 每个 epoch 内等间隔验证次数; 1=仅 epoch 末验证
 log_every_n_steps: 3
