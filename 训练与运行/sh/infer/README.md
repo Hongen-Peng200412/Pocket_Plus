@@ -1,6 +1,6 @@
 # Stage1 V3 推理提交入口
 
-本目录只保留一个正式脚本 `stage1_v3.sh`。脚本激活 Pocket Plus 环境并调用 `python -m src.inference.cli`，不把完整推理固定成一个长命令。使用者可以分别提交完整图概率、连通区域、centered 特征、参数调优和评估五个阶段，也可以按相同顺序连续提交。
+`stage1_v3.sh` 是五个阶段共用的官方入口：它激活 Pocket Plus 环境并调用 `python -m src.inference.cli`，不把完整推理固定成一个长命令。`unet_c1_sampling_comparison.sh` 只编排三种 `unet_c1` 采样模型已经冻结的 F1 blobs+basic 校准与 held-out 测试；其内部仍逐阶段调用 `stage1_v3.sh`。
 
 旧 `calibrate`、`run`、固定 `F1_basic`、固定 `F3_centered`、Selector、CLG、组件森林和 Li 入口已经退出活动代码树。需要考察旧行为时使用 Git 历史。
 
@@ -25,7 +25,7 @@ evaluate --artifact blobs|centered
 五个命令都显式接收：
 
 - `--producer`：产物目录名，例如 `unet_c1`、`unet_base`、`Find_0` 或未来新增的同类名称。CLI 不维护名称白名单。
-- `--pdb-json`：顶层为字符串列表的 JSON 文件，例如 Stage1 V3 的 `validation.json`。
+- `--pdb-json`：顶层可以是字符串列表，也可以是通过 `pdb_ids` 字段保存字符串列表的对象；后者用于 held-out `test_0.json`。对象式清单的构造示例为 `{"pdb_ids":["1abc","2xyz"]}`。
 - `--split`：写入产物目录的数据划分名，例如 `calibration`、`validation` 或 `train`。
 - `--output-root`：当前推理结果根目录。同一目录可以先保存 probability，再逐次增加多个 alpha 的 blobs 和 centered。
 
@@ -75,7 +75,7 @@ bash 训练与运行/sh/infer/stage1_v3.sh blobs \
 
 ## 3. 生成 F-alpha centered
 
-正常 centered 需要 checkpoint、resolved config、模型代码来源和显式 `--forward-min-voxels`。该阈值只决定哪些 `fits_centered_box=True` 的来源 blob 进入完整模型前向；选择参数 JSON 中的 `prefiltered_min_voxel` 与 `min_voxels` 只决定 `selected`，不会改变已经前向的候选集合。
+正常 centered 需要 checkpoint、resolved config、模型代码来源和显式 `--forward-min-voxels`。该阈值按完整来源 blob 的体素数决定候选是否进入前向；`fits_centered_box=false` 的 blob 同样使用合法 80³ BOX 前向，并在产物中保留可容纳标志和完整来源体素数。选择参数 JSON 中的 `prefiltered_min_voxel` 与 `min_voxels` 只决定 `selected`，不会改变已经前向的候选集合。
 
 ```bash
 bash 训练与运行/sh/infer/stage1_v3.sh centered \
@@ -118,7 +118,7 @@ bash 训练与运行/sh/infer/stage1_v3.sh centered \
 
 `tune --score-mode gaussian` 对 Find centered 应用同一预过滤，再读取 A 原子表并依次执行 Gaussian 粗搜索、细搜索和最小体素数搜索。输出为 `tuning/F{alpha}_gaussian.json`。
 
-两个模式都读取 `configs/inference/stage1_v3.yaml:calibration.workers`。当前值 16 同时用于候选/occurrence 文件读取、逐 PDB 事实构造和相互独立的参数目标计算；basic 的实际 float32 分数阈值扫描仍按降序串行累计。脚本把 OMP、MKL 与 OpenBLAS 内部线程固定为 1，由调参线程池提供外层并发。并发结果按 YAML 列表原顺序收集，目标并列时仍由原列表中的首项获胜。
+两个模式都读取当前通过 `STAGE1_INFERENCE_CONFIG` 激活配置中的 `calibration.workers`；通用/A100 配置为 16，A800 配置为 24。该值同时用于候选/occurrence 文件读取、逐 PDB 事实构造和相互独立的参数目标计算；basic 的实际 float32 分数阈值扫描仍按降序串行累计。脚本把 OMP、MKL 与 OpenBLAS 内部线程固定为 1，由调参线程池提供外层并发。并发结果按 YAML 列表原顺序收集，目标并列时仍由原列表中的首项获胜。
 
 ```bash
 bash 训练与运行/sh/infer/stage1_v3.sh tune \
@@ -140,7 +140,7 @@ bash 训练与运行/sh/infer/stage1_v3.sh tune \
 `evaluate` 必须显式提供 `--evaluation-name`，并从两种候选范围中选择一种：
 
 - `--selection-parameters <json>`：按 JSON 中的 basic 或 Gaussian 参数重算 `score` 与 `selected`，只让 `selected=true` 的候选进入语义、真实侧覆盖、一对一匹配和 top-K 指标。有效组合是 blobs+basic、centered+basic 和 Find centered+Gaussian；Gaussian 需要 centered A 原子字段，不能用于 blobs。
-- `--all-candidates`：不执行 basic 或 Gaussian 二次打分，把当前 blobs 或 centered 文件中的全部候选纳入指标；排序分数使用已有 `source_probability_mean`。centered 的“全部”只指已经进入 centered 文件的候选，不补回被 `forward_min_voxels`、80³ 容纳条件或 `_BLOB_EXCEED` 排除的 blobs。
+- `--all-candidates`：不执行 basic 或 Gaussian 二次打分，把当前 blobs 或 centered 文件中的全部候选纳入指标；排序分数使用已有 `source_probability_mean`。centered 的“全部”只指已经进入 centered 文件的候选，不补回被 `forward_min_voxels` 或 `_BLOB_EXCEED` 排除的 blobs。
 
 `evaluation-name` 直接成为 NPZ、JSONL 和 metrics JSON 的文件名主体。不同参数只要使用不同名称就能在同一输出目录并存，例如 `f2_centered_basic_recall` 与 `f2_centered_basic_precision`；代码不从参数内容生成摘要。
 
@@ -174,7 +174,25 @@ bash 训练与运行/sh/infer/stage1_v3.sh evaluate \
 
 若 centered 因默认 `_BLOB_EXCEED` 行为而缺失，tune/evaluate 只在标准输出说明该原因并跳过该 PDB，不写另一套跳过状态。提示模式已经生成 centered 时，tune/evaluate 直接消费 centered，不读取 `_BLOB_EXCEED`。
 
-`evaluate` 还会从每个实际完成候选评估的 PDB 完整图 `probability_map` 与 `union_mask` 发布 `semantic_micro_prauc` 和 `semantic_macro_prauc`。两项都沿用训练的 1024 阈值 AP 口径；macro 先算每个 PDB 再等权平均，micro 先合并所有已评估 PDB 的体素计数。精确阈值、包含端点与阶梯积分公式见 `src/inference/README.md` 的评估字段说明。
+`evaluate` 还会从每个实际完成候选评估的 PDB 完整图 `probability_map` 与 `union_mask` 发布 `semantic_micro_prauc` 和 `semantic_macro_prauc`。coverage 与 one-to-one 也在每个双向覆盖阈值下发布 micro/macro PRAUC：固定应用两个来源体素数门槛，忽略最终分数阈值，再按实际 float32 候选分数扫描。精确阈值、包含端点与阶梯积分公式见 `src/inference/README.md` 的评估字段说明。
+
+## 三种 unet_c1 采样模型的固定入口
+
+三模型比较固定使用 `alpha=1`、`objective_beta=1`、blobs+basic。occurrence-centric 复用既有 calibration 产物，只补做 held-out 测试；两个 pdb-centric 模型分别在 100 个 calibration PDB 上拟合语义阈值和 basic 参数，再评估同一 held-out `test_0.json`。正式命令只有：
+
+```bash
+exec bash "${TASK_PROJECT_ROOT}/训练与运行/sh/infer/unet_c1_sampling_comparison.sh" occurrence
+```
+
+```bash
+exec bash "${TASK_PROJECT_ROOT}/训练与运行/sh/infer/unet_c1_sampling_comparison.sh" pdb_centric_1
+```
+
+```bash
+exec bash "${TASK_PROJECT_ROOT}/训练与运行/sh/infer/unet_c1_sampling_comparison.sh" pdb_centric_2
+```
+
+occurrence 模式读取 `stage1_v3_a100_16cpu.yaml`，完整图 batch 为 16；两个 pdb-centric 模式读取 `stage1_v3_a800_24cpu.yaml`，完整图 batch 为 32。`stage1_v3.sh` 也接受环境变量 `STAGE1_INFERENCE_CONFIG` 选择其他同契约配置，未设置时仍使用通用 `stage1_v3.yaml`。
 
 ## 发布与复用
 

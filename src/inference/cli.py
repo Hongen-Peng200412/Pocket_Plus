@@ -33,6 +33,7 @@ def main() -> None:
     """解析一个 Stage1 阶段命令, 构造所需依赖并调用对应正式入口.
 
     所有命令显式接收 `producer`, JSON PDB 清单, `split` 与 `output_root`.
+    清单顶层可以是字符串列表, 也可以是含 `pdb_ids` 字符串列表的对象.
     probability 和正常 centered 额外接收 checkpoint, resolved config 与模型
     代码来源. 可分片阶段先以固定随机种子 3407 打乱完整清单, 再按
     `[shard_index::shard_count]` 选择 0-based 分片. tune, evaluate 与语义拟合
@@ -124,7 +125,9 @@ def main() -> None:
         config.alpha if getattr(arguments, "alpha", None) is None else arguments.alpha
     )
     pdb_payload = json.loads(Path(arguments.pdb_json).read_text(encoding="utf-8"))
-    pdb_ids = tuple(str(value).strip().lower() for value in pdb_payload)
+    # 字符串序列, 兼容直接列表和 held-out 清单的顶层 `pdb_ids` 字段, 后续顺序原样定义推理 PDB 轴.
+    pdb_values = pdb_payload["pdb_ids"] if isinstance(pdb_payload, dict) else pdb_payload
+    pdb_ids = tuple(str(value).strip().lower() for value in pdb_values)
     if len(pdb_ids) != len(set(pdb_ids)):
         raise ValueError("PDB JSON 中的标识必须唯一.")
     shard_count = getattr(arguments, "shard_count", None)

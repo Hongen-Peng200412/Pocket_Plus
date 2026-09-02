@@ -8,7 +8,9 @@ import json
 from pathlib import Path
 import random
 import sys
+import threading
 from types import SimpleNamespace
+from typing import Any, Mapping, Sequence
 
 import numpy as np
 from omegaconf import OmegaConf
@@ -36,6 +38,7 @@ from src.inference.evaluation import (
     semantic_prauc_histogram,
 )
 from src.inference.full_map import (
+    FullMapInferenceSession,
     FullMapResult,
     gaussian_window_weight,
     window_starts_zyx,
@@ -70,6 +73,79 @@ def test_window_geometry_and_normalized_gaussian() -> None:
     assert weight[39, 39, 39] > weight[0, 0, 0]
 
 
+def test_full_map_session_prefetches_next_pdb_without_duplicate_materialization() -> None:
+    """同一 session 必须在首个 PDB 前向时预取下一 PDB 的首批窗口."""
+
+    second_materialized = threading.Event()
+    materialized_pdb_ids: list[str] = []
+
+    class Dataset:
+        """记录每个滑窗请求所属 PDB, 并通知第二个 PDB 已完成物化."""
+
+        def full_map_context(
+            self,
+            _pdb_id: str,
+        ) -> tuple[tuple[int, int, int], np.ndarray, np.ndarray, None]:
+            """返回固定 80³ 完整图几何."""
+
+            return (80, 80, 80), np.ones(3), np.zeros(3), None
+
+        def materialize_request(self, request: Any) -> dict[str, torch.Tensor]:
+            """记录请求所属 PDB 并返回固定密度张量."""
+
+            materialized_pdb_ids.append(request.pdb_id)
+            if request.pdb_id == "second":
+                second_materialized.set()
+            return {"density": torch.zeros((1, 80, 80, 80))}
+
+    class Wrapper:
+        """在首个 PDB 前向开始前确认第二个 PDB 的预取已经执行."""
+
+        call_count = 0
+
+        def forward_voxel_probability(
+            self,
+            batch: Mapping[str, torch.Tensor],
+        ) -> torch.Tensor:
+            """等待下一 PDB 预取证据后返回零 logits."""
+
+            if self.call_count == 0:
+                assert second_materialized.wait(timeout=5.0)
+            self.call_count += 1
+            batch_size = int(batch["density"].shape[0])
+            return torch.zeros((batch_size, 1, 80, 80, 80))
+
+    def collator(
+        rows: Sequence[Mapping[str, torch.Tensor]],
+    ) -> dict[str, torch.Tensor]:
+        """按请求顺序拼接固定密度张量."""
+
+        return {"density": torch.stack([row["density"] for row in rows])}
+
+    wrapper = Wrapper()
+    with FullMapInferenceSession(
+        dataset=Dataset(),
+        collator=collator,
+        wrapper=wrapper,
+        device="cpu",
+        stride_zyx=(50, 50, 50),
+        sigma=0.5,
+        window_batch_size=1,
+        window_workers=2,
+        prefetch_batches=1,
+        precision="float32",
+        pending_fusion_batches=1,
+    ) as session:
+        first = session.infer("first", "second")
+        second = session.infer("second", None)
+
+    assert first.window_count == 1
+    assert second.window_count == 1
+    assert materialized_pdb_ids.count("first") == 1
+    assert materialized_pdb_ids.count("second") == 1
+    assert wrapper.call_count == 2
+
+
 def test_inference_shell_pins_nested_numeric_threads_to_one() -> None:
     """外层推理与调参并发启用时, shell 必须覆盖继承环境并把数值库线程固定为 1."""
 
@@ -80,6 +156,38 @@ def test_inference_shell_pins_nested_numeric_threads_to_one() -> None:
     for variable_name in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS"):
         assert f"export {variable_name}=1" in shell_text
         assert f"{variable_name}:-1" not in shell_text
+
+
+def test_sampling_comparison_shell_uses_official_entry_and_resource_profiles() -> None:
+    """三模型正式入口应复用五阶段脚本, 并固定 A800/A100 完整图 batch."""
+
+    project_root = Path(__file__).resolve().parents[2]
+    shell_text = (
+        project_root
+        / "训练与运行"
+        / "sh"
+        / "infer"
+        / "unet_c1_sampling_comparison.sh"
+    ).read_text(encoding="utf-8")
+    a800 = OmegaConf.load(
+        project_root / "configs" / "inference" / "stage1_v3_a800_24cpu.yaml"
+    )
+    a100 = OmegaConf.load(
+        project_root / "configs" / "inference" / "stage1_v3_a100_16cpu.yaml"
+    )
+
+    assert "训练与运行/sh/infer/stage1_v3.sh" in shell_text
+    assert "stage1 centered" not in shell_text
+    assert "unet_c1_pdb_centric_v1/artifacts" in shell_text
+    assert "unet_c1_pdb_centric_v2/artifacts" in shell_text
+    assert int(a800.window.batch_size) == 32
+    assert int(a800.window.workers) == 18
+    assert int(a800.window.prefetch_batches) == 18
+    assert int(a800.calibration.workers) == 24
+    assert int(a100.window.batch_size) == 16
+    assert int(a100.window.workers) == 10
+    assert int(a100.window.prefetch_batches) == 10
+    assert int(a100.calibration.workers) == 16
 
 
 def test_blobs_keep_all_components_and_sort_stably() -> None:
@@ -128,6 +236,8 @@ def test_centered_packing_preserves_offsets_and_feature_dtypes() -> None:
         entries.append(
             {
                 "source_blob_index": np.asarray(source_index, dtype=np.int32),
+                "source_blob_fits_centered_box": np.asarray(True),
+                "source_voxel_count": np.asarray(voxel_count, dtype=np.int32),
                 "box_start_zyx": np.asarray((0, 0, 0), dtype=np.int32),
                 "box_shape_zyx": np.asarray((80, 80, 80), dtype=np.uint8),
                 "box_origin_world": np.zeros(3, dtype=np.float32),
@@ -168,6 +278,8 @@ def test_centered_packing_preserves_offsets_and_feature_dtypes() -> None:
     assert arrays["A_feat_L0"].dtype == np.float32
     assert arrays["voxel_final"].shape == (3, 4)
     assert arrays["centered_box_index"].tolist() == [0, 1]
+    assert arrays["source_blob_fits_centered_box"].tolist() == [True, True]
+    assert arrays["source_voxel_count"].tolist() == [2, 1]
 
 
 def test_centered_cpu_arranger_accepts_bfloat16_output(tmp_path: Path) -> None:
@@ -252,6 +364,8 @@ def test_centered_cpu_arranger_accepts_bfloat16_output(tmp_path: Path) -> None:
     assert arrays["centered_probability"].dtype == np.float32
     assert arrays["voxel_final"].dtype == np.float16
     assert arrays["voxel_final"].shape == (1, 4)
+    assert arrays["source_blob_fits_centered_box"].tolist() == [True]
+    assert arrays["source_voxel_count"].tolist() == [1]
     assert {
         "voxel_aux_offsets",
         "voxel_aux_index_local_zyx",
@@ -271,6 +385,171 @@ def test_centered_cpu_arranger_accepts_bfloat16_output(tmp_path: Path) -> None:
     np.testing.assert_array_equal(arrays["experimental_density_48"], 0.0)
     np.testing.assert_array_equal(arrays["simulated_density_48"], 1.0)
     np.testing.assert_array_equal(arrays["source_probability_48"], 2.0)
+
+
+def test_centered_materializes_requests_concurrently_and_preserves_order(
+    tmp_path: Path,
+) -> None:
+    """同一 GPU batch 内的候选请求应独立并发物化, 归档顺序仍跟随 blobs."""
+
+    density_root = tmp_path / "density" / "demo"
+    density_root.mkdir(parents=True)
+    np.save(density_root / "exp.npy", np.zeros((1, 80, 80, 80), dtype=np.float32))
+    np.save(density_root / "sim.npy", np.zeros((1, 80, 80, 80), dtype=np.float32))
+    materialize_barrier = threading.Barrier(2)
+
+    class Dataset:
+        """让同一 batch 的两个候选请求在物化屏障会合."""
+
+        root = tmp_path
+
+        def materialize_request(self, request: Any) -> dict[str, torch.Tensor]:
+            """让两个请求在屏障会合后返回各自 hardmask."""
+
+            materialize_barrier.wait(timeout=5.0)
+            hardmask = torch.zeros((80, 80, 80), dtype=torch.bool)
+            hardmask[request.box_start_zyx] = True
+            return {"hardmask": hardmask}
+
+    class Wrapper:
+        """为并发物化测试返回固定形状的零模型输出."""
+
+        def __call__(self, batch: Mapping[str, torch.Tensor]) -> dict[str, Any]:
+            """返回与输入 batch 大小一致的零模型输出."""
+
+            shape = (len(batch["hardmask"]), 1, 80, 80, 80)
+            return {
+                "voxel_logits_ligand": torch.zeros(shape),
+                "voxel_logits_aux": torch.zeros(shape),
+                "voxel_features": {
+                    "voxel_final": torch.zeros((shape[0], 1, 80, 80, 80))
+                },
+            }
+
+    def collator(
+        rows: Sequence[Mapping[str, torch.Tensor]],
+    ) -> dict[str, torch.Tensor]:
+        """按请求顺序拼接 hardmask."""
+
+        return {"hardmask": torch.stack([row["hardmask"] for row in rows])}
+
+    blobs = {
+        "voxel_count": np.asarray([1, 1], dtype=np.int32),
+        "fits_centered_box": np.asarray([True, True]),
+        "centered_box_start_zyx": np.asarray([[0, 0, 0], [0, 0, 0]], dtype=np.int32),
+        "voxel_offsets": np.asarray([0, 1, 2], dtype=np.int64),
+        "voxel_index_global_zyx": np.asarray([[1, 1, 1], [70, 70, 70]], dtype=np.int32),
+        "source_probability": np.asarray([0.9, 0.8], dtype=np.float32),
+        "source_probability_mean": np.asarray([0.9, 0.8], dtype=np.float32),
+        "source_threshold_value": np.asarray([0.5], dtype=np.float32),
+    }
+    with ThreadPoolExecutor(max_workers=1) as packer:
+        packed, _ = infer_centered_boxes(
+            dataset=Dataset(),
+            collator=collator,
+            wrapper=Wrapper(),
+            pdb_id="demo",
+            producer="unet_c1",
+            blobs=blobs,
+            full_probability=np.zeros((80, 80, 80), dtype=np.float32),
+            origin_xyz=np.zeros(3, dtype=np.float32),
+            voxel_size_xyz=np.ones(3, dtype=np.float32),
+            device="cpu",
+            precision="float32",
+            centered_batch_size=2,
+            centered_workers=2,
+            prefetch_batches=1,
+            pending_cpu_batches=1,
+            forward_min_voxels=1,
+            packer=packer,
+        )
+        arrays = packed.result()
+
+    assert arrays["source_blob_index"].tolist() == [0, 1]
+    assert arrays["voxel_offsets"].tolist() == [0, 1, 2]
+
+
+def test_oversized_blob_is_forwarded_and_archives_only_in_box_voxels(
+    tmp_path: Path,
+) -> None:
+    """跨越 80 体素的 blob 仍需前向, 并单独保存完整体素数与可容纳标志."""
+
+    density_root = tmp_path / "density" / "demo"
+    density_root.mkdir(parents=True)
+    np.save(density_root / "exp.npy", np.zeros((1, 100, 100, 100), dtype=np.float32))
+    np.save(density_root / "sim.npy", np.zeros((1, 100, 100, 100), dtype=np.float32))
+
+    class Dataset:
+        """为超大 blob 测试返回固定 centered 输入."""
+
+        root = tmp_path
+
+        def materialize_request(self, _request: Any) -> dict[str, torch.Tensor]:
+            """返回不含辅助受体体素的固定 hardmask."""
+
+            return {"hardmask": torch.zeros((80, 80, 80), dtype=torch.bool)}
+
+    class Wrapper:
+        """为超大 blob 测试返回固定形状的零模型输出."""
+
+        def __call__(self, batch: Mapping[str, torch.Tensor]) -> dict[str, Any]:
+            """返回与输入 batch 大小一致的零模型输出."""
+
+            shape = (len(batch["hardmask"]), 1, 80, 80, 80)
+            return {
+                "voxel_logits_ligand": torch.zeros(shape),
+                "voxel_logits_aux": torch.zeros(shape),
+                "voxel_features": {
+                    "voxel_final": torch.zeros((shape[0], 1, 80, 80, 80))
+                },
+            }
+
+    def collator(
+        rows: Sequence[Mapping[str, torch.Tensor]],
+    ) -> dict[str, torch.Tensor]:
+        """按请求顺序拼接 hardmask."""
+
+        return {"hardmask": torch.stack([row["hardmask"] for row in rows])}
+
+    source_voxels = np.asarray([[z, 40, 40] for z in range(100)], dtype=np.int32)
+    blobs = {
+        "voxel_count": np.asarray([100], dtype=np.int32),
+        "fits_centered_box": np.asarray([False]),
+        "centered_box_start_zyx": np.asarray([[-1, -1, -1]], dtype=np.int32),
+        "voxel_offsets": np.asarray([0, 100], dtype=np.int64),
+        "voxel_index_global_zyx": source_voxels,
+        "source_probability": np.full(100, 0.8, dtype=np.float32),
+        "source_probability_mean": np.asarray([0.8], dtype=np.float32),
+        "source_threshold_value": np.asarray([0.5], dtype=np.float32),
+    }
+    with ThreadPoolExecutor(max_workers=1) as packer:
+        packed, performance = infer_centered_boxes(
+            dataset=Dataset(),
+            collator=collator,
+            wrapper=Wrapper(),
+            pdb_id="demo",
+            producer="unet_c1",
+            blobs=blobs,
+            full_probability=np.zeros((100, 100, 100), dtype=np.float32),
+            origin_xyz=np.zeros(3, dtype=np.float32),
+            voxel_size_xyz=np.ones(3, dtype=np.float32),
+            device="cpu",
+            precision="float32",
+            centered_batch_size=1,
+            centered_workers=1,
+            prefetch_batches=1,
+            pending_cpu_batches=1,
+            forward_min_voxels=1,
+            packer=packer,
+        )
+        arrays = packed.result()
+
+    assert performance["entry_count"] == 1
+    assert arrays["source_blob_fits_centered_box"].tolist() == [False]
+    assert arrays["source_voxel_count"].tolist() == [100]
+    assert arrays["box_start_zyx"].tolist() == [[10, 0, 0]]
+    assert arrays["voxel_offsets"].tolist() == [0, 80]
+    assert arrays["voxel_index_local_zyx"][:, 0].tolist() == list(range(80))
 
 
 def test_find_gaussian_score_uses_five_angstrom_cutoff() -> None:
@@ -586,6 +865,143 @@ def test_evaluate_reports_distinct_micro_and_macro_metrics() -> None:
     assert metrics["one_to_one_macro_f1_0p3"] == pytest.approx(0.5)
 
 
+def test_candidate_prauc_scans_actual_scores_and_applies_only_size_gate() -> None:
+    """候选 PRAUC 应忽略最终分数阈值, 并只按固定体素门槛掩码进入扫描."""
+
+    first = evaluate_centered_pdb(
+        pdb_id="first",
+        centered={
+            "selected": np.asarray([False, False]),
+            "score": np.asarray([0.9, 0.8], dtype=np.float32),
+            "source_blob_index": np.asarray([0, 1], dtype=np.int32),
+            "voxel_offsets": np.asarray([0, 1, 2], dtype=np.int64),
+            "voxel_index_local_zyx": np.asarray(
+                [[0, 0, 2], [0, 0, 0]], dtype=np.int16
+            ),
+            "box_start_zyx": np.zeros((2, 3), dtype=np.int32),
+            "prauc_eligible": np.asarray([True, True]),
+        },
+        occurrence_id=np.asarray([0], dtype=np.int32),
+        occurrence_voxel_zyx=(np.asarray([[0, 0, 0]], dtype=np.int32),),
+        full_shape_zyx=(1, 1, 3),
+        coverage_thresholds=(0.3, 0.5, 0.6),
+        topk_values=(3, 4, 5),
+    )
+    second = evaluate_centered_pdb(
+        pdb_id="second",
+        centered={
+            "selected": np.asarray([False]),
+            "score": np.asarray([0.9], dtype=np.float32),
+            "source_blob_index": np.asarray([0], dtype=np.int32),
+            "voxel_offsets": np.asarray([0, 1], dtype=np.int64),
+            "voxel_index_local_zyx": np.asarray([[0, 0, 0]], dtype=np.int16),
+            "box_start_zyx": np.zeros((1, 3), dtype=np.int32),
+            "prauc_eligible": np.asarray([True]),
+        },
+        occurrence_id=np.asarray([0], dtype=np.int32),
+        occurrence_voxel_zyx=(np.asarray([[0, 0, 0]], dtype=np.int32),),
+        full_shape_zyx=(1, 1, 3),
+        coverage_thresholds=(0.3, 0.5, 0.6),
+        topk_values=(3, 4, 5),
+    )
+    metrics = aggregate_stage1_metrics(
+        (first, second),
+        coverage_thresholds=(0.3, 0.5, 0.6),
+        topk_values=(3, 4, 5),
+    )
+    assert metrics["coverage_micro_prauc_0p3"] == pytest.approx(7.0 / 12.0)
+    assert metrics["coverage_macro_prauc_0p3"] == pytest.approx(0.75)
+    assert metrics["one_to_one_micro_prauc_0p3"] == pytest.approx(7.0 / 12.0)
+    assert metrics["one_to_one_macro_prauc_0p3"] == pytest.approx(0.75)
+
+    first.candidate_prauc_eligible[0] = False
+    gated_metrics = aggregate_stage1_metrics(
+        (first, second),
+        coverage_thresholds=(0.3, 0.5, 0.6),
+        topk_values=(3, 4, 5),
+    )
+    assert gated_metrics["coverage_micro_prauc_0p3"] == 1.0
+    assert gated_metrics["coverage_macro_prauc_0p3"] == 1.0
+    assert gated_metrics["one_to_one_micro_prauc_0p3"] == 1.0
+    assert gated_metrics["one_to_one_macro_prauc_0p3"] == 1.0
+
+
+@pytest.mark.parametrize(
+    ("coverage_threshold", "voxel_count", "intersection_count"),
+    (
+        (0.3, 10, 3),
+        (0.6, 5, 3),
+    ),
+)
+def test_candidate_prauc_preserves_inclusive_decimal_boundary(
+    coverage_threshold: float,
+    voxel_count: int,
+    intersection_count: int,
+) -> None:
+    """候选 PRAUC 必须与同名 F1 共用原始小数阈值的包含端点语义.
+
+    构造中候选和 occurrence 均含 `voxel_count` 个体素, 两者交集恰为
+    `intersection_count`. 两组参数分别形成 3/10=0.3 和 3/5=0.6;
+    即使逐 PDB 事实把阈值归档为 float32, PRAUC 也不能提高比较边界.
+    """
+
+    # int16, (voxel_count, 3), 唯一候选在零基 BOX 局部 ZYX 坐标中占据 X 轴区间 [0, voxel_count), Z/Y 均为 0.
+    candidate_zyx = np.stack(
+        (
+            np.zeros(voxel_count, dtype=np.int16),
+            np.zeros(voxel_count, dtype=np.int16),
+            np.arange(voxel_count, dtype=np.int16),
+        ),
+        axis=1,
+    )
+    # Python 整数, occurrence 的 X 轴起点; 使候选尾部恰有 intersection_count 个体素与其相交.
+    occurrence_start = voxel_count - intersection_count
+    # int32, (voxel_count, 3), 唯一 occurrence 在零基完整图 ZYX 坐标中占据 X 轴区间 [occurrence_start, occurrence_start + voxel_count); 本例 BOX 起点为 (0, 0, 0), 因而局部与完整图数值可直接比较.
+    occurrence_zyx = np.stack(
+        (
+            np.zeros(voxel_count, dtype=np.int32),
+            np.zeros(voxel_count, dtype=np.int32),
+            np.arange(
+                occurrence_start,
+                occurrence_start + voxel_count,
+                dtype=np.int32,
+            ),
+        ),
+        axis=1,
+    )
+    # PdbEvaluation, 唯一候选已选且进入 PRAUC 扫描; 候选与 occurrence 的双向覆盖率都恰好等于 coverage_threshold.
+    evaluation = evaluate_centered_pdb(
+        pdb_id="boundary",
+        centered={
+            "selected": np.asarray([True]),
+            "score": np.asarray([0.9], dtype=np.float32),
+            "source_blob_index": np.asarray([0], dtype=np.int32),
+            "voxel_offsets": np.asarray([0, voxel_count], dtype=np.int64),
+            "voxel_index_local_zyx": candidate_zyx,
+            "box_start_zyx": np.zeros((1, 3), dtype=np.int32),
+            "prauc_eligible": np.asarray([True]),
+        },
+        occurrence_id=np.asarray([0], dtype=np.int32),
+        occurrence_voxel_zyx=(occurrence_zyx,),
+        full_shape_zyx=(1, 1, 2 * voxel_count - intersection_count),
+        coverage_thresholds=(coverage_threshold,),
+        topk_values=(1,),
+    )
+    # dict[str, object], 使用调用方原始 Python 浮点阈值汇总同一 PDB 的 F1 和 PRAUC.
+    metrics = aggregate_stage1_metrics(
+        (evaluation,),
+        coverage_thresholds=(coverage_threshold,),
+        topk_values=(1,),
+    )
+    # 字符串, 与正式 JSON 字段一致的小数阈值标签, 例如 0.3 对应 0p3.
+    threshold_tag = str(coverage_threshold).replace(".", "p")
+
+    assert metrics[f"coverage_micro_f1_{threshold_tag}"] == 1.0
+    assert metrics[f"coverage_micro_prauc_{threshold_tag}"] == 1.0
+    assert metrics[f"one_to_one_micro_f1_{threshold_tag}"] == 1.0
+    assert metrics[f"one_to_one_micro_prauc_{threshold_tag}"] == 1.0
+
+
 def test_semantic_prauc_keeps_voxel_micro_and_pdb_equal_macro_distinct() -> None:
     """语义 PRAUC 的 macro 必须让不同体素规模的 PDB 等权.
 
@@ -710,13 +1126,33 @@ def test_probability_science_archive_excludes_performance_fields(
     paths.complete("probability").parent.mkdir(parents=True, exist_ok=True)
     paths.complete("probability").write_text("stale", encoding="utf-8")
 
-    def infer_full_map(**_):
-        """确认旧完成标记已撤销并返回固定完整图结果."""
+    class Session:
+        """替代正式多 PDB session 并返回固定完整图结果."""
 
-        assert not paths.complete("probability").exists()
-        return result
+        def __init__(self, **_: object) -> None:
+            """接受正式会话的全部关键字参数."""
 
-    monkeypatch.setattr("src.inference.pipeline.infer_full_map", infer_full_map)
+        def __enter__(self) -> Session:
+            """返回当前测试替身."""
+
+            return self
+
+        def __exit__(self, *_: object) -> None:
+            """结束测试替身上下文."""
+
+        def infer(
+            self,
+            pdb_id: str,
+            next_pdb_id: str | None,
+        ) -> FullMapResult:
+            """确认旧完成标记已撤销, 且单 PDB 没有下一项."""
+
+            assert pdb_id == "demo"
+            assert next_pdb_id is None
+            assert not paths.complete("probability").exists()
+            return result
+
+    monkeypatch.setattr("src.inference.pipeline.FullMapInferenceSession", Session)
     config = OmegaConf.create(
         {
             "publish_workers": 1,
@@ -779,6 +1215,7 @@ def test_centered_selection_is_written_before_first_formal_completion(
     packed.set_result(
         {
             "source_probability_mean": np.asarray([0.8], dtype=np.float32),
+            "source_voxel_count": np.asarray([9], dtype=np.int32),
             "voxel_offsets": np.asarray([0, 9], dtype=np.int64),
         }
     )
@@ -870,7 +1307,7 @@ def test_cli_builds_current_dataset_without_hydra_dataclass_conversion(
     config = tmp_path / "inference.yaml"
     config.write_text("device: cpu\nalpha: 2.0\n", encoding="utf-8")
     pdb_list = tmp_path / "pdb.json"
-    pdb_list.write_text('["demo"]\n', encoding="utf-8")
+    pdb_list.write_text('{"pdb_ids": ["demo"]}\n', encoding="utf-8")
     training_config = OmegaConf.create(
         {
             "dataset": {
@@ -1163,6 +1600,7 @@ def test_evaluate_keeps_raw_and_filtered_results_side_by_side(
         {
             "blob_index": np.asarray([0, 1], dtype=np.int32),
             "source_probability_mean": np.asarray([0.9, 0.4], dtype=np.float32),
+            "voxel_count": np.asarray([1, 1], dtype=np.int32),
             "voxel_offsets": np.asarray([0, 1, 2], dtype=np.int64),
             "voxel_index_global_zyx": np.asarray(
                 [[0, 0, 0], [1, 1, 1]], dtype=np.int32
@@ -1245,6 +1683,8 @@ def test_evaluate_keeps_raw_and_filtered_results_side_by_side(
     filtered = load_stage1_npz(paths.pdb_root / "evaluation" / "basic_strict.npz", None)
     assert raw["candidate_selected"].tolist() == [True, True]
     assert filtered["candidate_selected"].tolist() == [True, False]
+    assert "candidate_prauc_eligible" not in raw
+    assert "candidate_prauc_eligible" not in filtered
     assert raw_metrics["semantic_micro_prauc"] == 1.0
     assert raw_metrics["semantic_macro_prauc"] == 1.0
     assert filtered_metrics["semantic_micro_prauc"] == 1.0
@@ -1313,11 +1753,9 @@ def _run_empty_blob_limit_case(
                     "tau_angstrom": [1.0],
                     "lambda_positive": [0.0],
                     "lambda_negative": [0.0],
-                    "gauss_score_min": [0.0],
                 },
                 "gaussian_refinement": {
                     "lambda": [1.0],
-                    "score_threshold": [1.0],
                 },
             },
             "evaluation": {
@@ -1453,6 +1891,7 @@ def test_centered_score_only_changes_two_fields(tmp_path: Path) -> None:
         paths.artifact("F2_centered"),
         {
             "source_probability_mean": np.asarray([0.8, 0.4], dtype=np.float32),
+            "source_voxel_count": np.asarray([2, 1], dtype=np.int32),
             "voxel_offsets": np.asarray([0, 2, 3], dtype=np.int64),
             "source_blob_index": np.asarray([3, 7], dtype=np.int32),
             "voxel_final": np.arange(6, dtype=np.float16).reshape(3, 2),
@@ -1497,6 +1936,7 @@ def test_tune_prefilter_is_fixed_before_basic_parameter_search() -> None:
     centered = {
         "source_blob_index": np.asarray([0, 1], dtype=np.int32),
         "source_probability_mean": np.asarray([0.9, 0.8], dtype=np.float32),
+        "source_voxel_count": np.asarray([1, 2], dtype=np.int32),
         "voxel_offsets": np.asarray([0, 1, 3], dtype=np.int64),
         "voxel_index_local_zyx": np.asarray(
             [[2, 2, 2], [0, 0, 0], [0, 0, 1]], dtype=np.int16
@@ -1534,6 +1974,7 @@ def test_find_calibration_uses_coarse_refined_then_minimum_stages() -> None:
     centered = {
         "source_blob_index": np.asarray([0], dtype=np.int32),
         "source_probability_mean": np.asarray([0.5], dtype=np.float32),
+        "source_voxel_count": np.asarray([1], dtype=np.int32),
         "selected": np.asarray([False]),
         "score": np.asarray([0.0], dtype=np.float32),
         "voxel_offsets": np.asarray([0, 1], dtype=np.int64),
@@ -1558,9 +1999,8 @@ def test_find_calibration_uses_coarse_refined_then_minimum_stages() -> None:
             "tau_angstrom": [1.0],
             "lambda_positive": [0.2],
             "lambda_negative": [0.1],
-            "gauss_score_min": [0.5],
         },
-        refinement_multipliers={"lambda": [1.0], "score_threshold": [1.0]},
+        refinement_multipliers={"lambda": [1.0]},
         prefiltered_min_voxel=2,
         min_voxel_values=[1, 2],
         objective_beta=2.0,

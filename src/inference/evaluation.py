@@ -40,6 +40,7 @@ class PdbEvaluation:
         - source_blob_index: int32 ``(N_pred,)``, 按最终 score 稳定降序的来源 blob 标识.
         - candidate_score: float32 ``(N_pred,)``, 与候选轴对齐的冻结分数.
         - candidate_selected: bool ``(N_pred,)``, 当前评估实际纳入指标的候选掩码.
+        - candidate_prauc_eligible: bool ``(N_pred,)``, 达到固定体素数门槛并进入候选 PRAUC 分数扫描的掩码; 不应用最终分数阈值.
         - intersections: int64 ``(N_pred, N_gt)``, 候选与 occurrence 的体素交集数.
         - pred_sizes: int64 ``(N_pred,)``, 每个候选的稀疏体素数.
         - gt_sizes: int64 ``(N_gt,)``, 每个真实 occurrence 的稀疏体素数.
@@ -73,6 +74,7 @@ class PdbEvaluation:
     source_blob_index: np.ndarray
     candidate_score: np.ndarray
     candidate_selected: np.ndarray
+    candidate_prauc_eligible: np.ndarray
     intersections: np.ndarray
     pred_sizes: np.ndarray
     gt_sizes: np.ndarray
@@ -194,7 +196,7 @@ def evaluate_centered_pdb(
 
     输入参数:
         - pdb_id: 字符串, 当前 PDB 标识.
-        - centered: centered 产物字段映射; 读取分数, 选择掩码, 稀疏体素, BOX 起点和来源 blob 编号.
+        - centered: 候选字段映射; 读取分数, 选择掩码, 可选 PRAUC 资格掩码, 稀疏体素, BOX 起点和来源 blob 编号.
         - occurrence_id: int32 `(N_gt,)`, 真实 occurrence 标识.
         - occurrence_voxel_zyx: 长度 N_gt 的稀疏坐标序列; 第 i 项是 occurrence_id[i] 的完整图 ZYX 体素索引.
         - full_shape_zyx: 三个整数, 完整图 ZYX 形状, 用于把三维坐标转成不跨 PDB 的线性体素编号.
@@ -202,7 +204,7 @@ def evaluate_centered_pdb(
         - topk_values: 正整数序列; 每个值限制按分数排序后参与 top-K 评估的已选候选数.
 
     返回值:
-        - evaluation: `PdbEvaluation`, 保存完整候选轴, 真实 occurrence 轴, 两轴交集, 语义计数, 多对多覆盖, 一对一匹配与 top-K 命中事实.
+        - evaluation: `PdbEvaluation`, 保存完整候选轴, PRAUC 资格, 真实 occurrence 轴, 两轴交集, 语义计数, 多对多覆盖, 一对一匹配与 top-K 命中事实.
     """
     # float64, (N_pred,), centered 候选的冻结分数, 输入顺序与 source_blob_index 一致.
     score = np.asarray(centered["score"], dtype=np.float64)
@@ -210,6 +212,14 @@ def evaluate_centered_pdb(
     order = np.argsort(-score, kind="stable")
     # bool, (N_pred,), 按分数降序对齐的最终候选选择掩码.
     candidate_selected = np.asarray(centered["selected"], dtype=np.bool_)[order]
+    # candidate_prauc_eligible: bool, (N_pred,), 固定体素数门槛掩码; 未提供时全部候选参与扫描.
+    candidate_prauc_eligible = np.asarray(
+        centered.get(
+            "prauc_eligible",
+            np.ones(score.shape, dtype=np.bool_),
+        ),
+        dtype=np.bool_,
+    )[order]
     score = score[order]
 
     # int64, (N_pred + 1,), 以原候选轴顺序切分 voxel_index_local_zyx.
@@ -230,8 +240,6 @@ def evaluate_centered_pdb(
         # int64, (K_pred, 3), 当前候选在完整图中的 ZYX 体素索引.
         global_zyx = local_rows[begin:end] + box_starts[entry_index][None, :]
         pred_linear.append(np.unique(np.ravel_multi_index(global_zyx.T, shape)))
-
-
     # gt_linear: 长度 N_gt 的列表; 第 j 项是 occurrence_id[j] 的唯一 C-order 线性体素编号.
     gt_linear = [
         np.unique(np.ravel_multi_index(np.asarray(rows, dtype=np.int64).T, shape))
@@ -295,9 +303,15 @@ def evaluate_centered_pdb(
     # thresholds: 长度 N_threshold 的双向覆盖阈值轴, 保持调用方顺序.
     thresholds = tuple(float(value) for value in coverage_thresholds)
     # bool, (N_threshold, N_pred), 每个候选是否与任一 occurrence 达到双向覆盖阈值.
-    coverage_pred_hit_mask = np.zeros((len(thresholds), len(pred_linear)), dtype=np.bool_)
+    coverage_pred_hit_mask = np.zeros(
+        (len(thresholds), len(pred_linear)),
+        dtype=np.bool_,
+    )
     # bool, (N_threshold, N_gt), 每个 occurrence 是否被任一已选候选达到双向覆盖阈值.
-    coverage_gt_hit_mask = np.zeros((len(thresholds), len(gt_linear)), dtype=np.bool_)
+    coverage_gt_hit_mask = np.zeros(
+        (len(thresholds), len(gt_linear)),
+        dtype=np.bool_,
+    )
     # match_pred_rows: 长度 N_threshold 的列表; 每项保存该阈值一对一匹配的候选轴下标.
     match_pred_rows: list[np.ndarray] = []
     # match_gt_rows: 长度 N_threshold 的列表; 每项保存与 match_pred_rows 同步的 occurrence 轴下标.
@@ -308,7 +322,7 @@ def evaluate_centered_pdb(
         coverage_pred_hit_mask[threshold_row] = valid.any(axis=1)
         # bool, (N_selected, N_gt), 只保留已选候选后的有效匹配边.
         selected_valid = valid[selected_rows]
-        coverage_gt_hit_mask[threshold_row] = selected_valid.any(axis=0)   # 如果某个pred_blob没被打分选中(selected=False), 那么它无法hit gt
+        coverage_gt_hit_mask[threshold_row] = selected_valid.any(axis=0)
         if selected_valid.size:
             # matched_pred, matched_gt: int64, (N_assignment,), Hungarian 返回的已选候选轴与 occurrence 轴下标.
             matched_pred, matched_gt = linear_sum_assignment(-selected_valid.astype(np.int8))
@@ -340,7 +354,9 @@ def evaluate_centered_pdb(
         top_candidate_rows = selected_rows[: int(topk)]
         for threshold_row, threshold in enumerate(thresholds):
             # bool, (min(K, N_selected), N_gt), top-K 候选与 occurrence 的双向覆盖命中表.
-            valid = (pred_cover[top_candidate_rows] >= threshold) & (gt_cover[top_candidate_rows] >= threshold)
+            valid = (pred_cover[top_candidate_rows] >= threshold) & (
+                gt_cover[top_candidate_rows] >= threshold
+            )
             # int64, (N_winner, 2), 命中表中按 C-order 排列的候选名次与 occurrence 轴下标.
             winners = np.argwhere(valid)
             if winners.size:
@@ -353,6 +369,7 @@ def evaluate_centered_pdb(
         source_blob_index=np.asarray(centered["source_blob_index"], dtype=np.int32)[order],
         candidate_score=score.astype(np.float32),
         candidate_selected=candidate_selected,
+        candidate_prauc_eligible=candidate_prauc_eligible,
         intersections=intersections,
         pred_sizes=pred_sizes,
         gt_sizes=gt_sizes,
@@ -362,9 +379,12 @@ def evaluate_centered_pdb(
         semantic_fn=semantic_fn,
         coverage_thresholds=np.asarray(thresholds, dtype=np.float32),
         topk_values=np.asarray(topk_values, dtype=np.int32),
-        coverage_pred_hit_mask=coverage_pred_hit_mask,   # 如果pred_blob没被打分选中(selected=False), 那么在下面第2行不会计入得分
-        coverage_gt_hit_mask=coverage_gt_hit_mask, # 如果某个pred_blob没被打分选中(selected=False), 那么它无法hit gt
-        coverage_pred_hit=coverage_pred_hit_mask[:, selected_rows].sum(axis=1, dtype=np.int64),   # 如果pred_blob没被打分选中(selected=False), 那么不计入得分
+        coverage_pred_hit_mask=coverage_pred_hit_mask,
+        coverage_gt_hit_mask=coverage_gt_hit_mask,
+        coverage_pred_hit=coverage_pred_hit_mask[:, selected_rows].sum(
+            axis=1,
+            dtype=np.int64,
+        ),
         coverage_gt_hit=coverage_gt_hit_mask.sum(axis=1, dtype=np.int64),
         one_to_one_match_offsets=match_offsets,
         one_to_one_match_pred_index=(
@@ -380,6 +400,146 @@ def evaluate_centered_pdb(
         topk_winning_candidate_rank=topk_winning_candidate_rank,
         topk_winning_occurrence_index=topk_winning_occurrence_index,
     )
+
+
+def _candidate_detection_prauc(
+    evaluations: Sequence[PdbEvaluation],
+    coverage_threshold: float,
+    matching_mode: str,
+) -> float:
+    """按实际 float32 候选分数断点计算 coverage 或 one-to-one PRAUC.
+
+    形状符号:
+        - N_pdb: `evaluations` 中共同参与一次分数扫描的 PDB 数量.
+        - N_pred_i: 第 i 个 PDB 的当前评估候选数量, 包含未进入 PRAUC 扫描的候选.
+        - N_gt_i: 第 i 个 PDB 中的真实配体 occurrence 数量.
+        - N_ranked: 全部 PDB 中 `candidate_prauc_eligible=True` 的候选总数.
+
+    输入参数:
+        - evaluations: 长度 N_pdb 的 `Sequence[PdbEvaluation]`; 传入整个数据划分计算 micro PRAUC, 传入单个 PDB 计算该 PDB 的 macro 分量.
+        - evaluations[i].candidate_score: float32, ``(N_pred_i,)``, 当前评估角色冻结的候选分数, 可以是来源平均概率, basic 分数或 Gaussian 分数; 数值用于定义 PRAUC 阈值轴.
+        - evaluations[i].candidate_prauc_eligible: bool, ``(N_pred_i,)``, True 表示对应候选进入 PRAUC 分数扫描. 带选择参数的现有路径用冻结的两个体素数门槛生成该掩码; 全候选路径全部为 True.
+        - evaluations[i].intersections: int64, ``(N_pred_i, N_gt_i)``, 每个候选与每个真实 occurrence 的交集体素数.
+        - evaluations[i].pred_sizes: int64, ``(N_pred_i,)``, 每个候选的完整来源 blob 体素数, 与 `intersections` 第一维逐候选对齐.
+        - evaluations[i].gt_sizes: int64, ``(N_gt_i,)``, 每个真实 occurrence 的体素数, 与 `intersections` 第二维逐 occurrence 对齐.
+        - coverage_threshold: float, 候选覆盖率和 occurrence 覆盖率共同使用的包含端点下限; 直接使用汇总入口收到的 Python 浮点值, 不经过评估数组的 float32 往返.
+        - matching_mode: 字符串, `coverage` 分别统计至少连接一条有效覆盖边的候选数和 occurrence 数, `one_to_one` 统计二分图最大一对一匹配边数.
+
+    返回值:
+        - prauc: float, 候选分数从高到低加入时的阶梯式 precision-recall 曲线面积, 计算式为 ``sum((recall_i - recall_{i-1}) * precision_i)``; 没有合格候选或真实 occurrence 时为 0.0.
+
+    科学边界:
+        - 一条候选-occurrence 边只有在交集分别占候选体素数和 occurrence 体素数的比例都达到当前覆盖阈值时才有效.
+        - 相同 float32 分数的候选必须在同一个断点同时加入, 防止并列候选的任意排序改变面积.
+        - 冻结的最终 `score_threshold` 和 `candidate_selected` 不参与 PRAUC 分数扫描; 是否进入扫描只由 `candidate_prauc_eligible` 决定.
+    """
+
+    # float 标量, 直接来自 aggregate_stage1_metrics 输入的当前双向覆盖下限; 避免 float32 归档值改变包含端点语义.
+    threshold = float(coverage_threshold)
+    # 长度 N_pdb 的列表, 第 i 项为 bool (N_pred_i, N_gt_i) 有效覆盖边矩阵; True 表示对应候选和 occurrence 的双向覆盖率都达到当前阈值.
+    valid_by_evaluation: list[np.ndarray] = []
+    for evaluation in evaluations:
+        # float64, (N_pred_i, N_gt_i), 每个候选-occurrence 交集占候选完整来源体素数的比例; 第二维通过广播新增 occurrence 轴. [N_pred_i, N_gt_i] / [N_pred_i, 1] -> [N_pred_i, N_gt_i]
+        pred_cover = np.divide(
+            evaluation.intersections,
+            evaluation.pred_sizes[:, None],
+            out=np.zeros(evaluation.intersections.shape, dtype=np.float64),
+            where=evaluation.pred_sizes[:, None] > 0,
+        )
+        # float64, (N_pred_i, N_gt_i), 每个候选-occurrence 交集占真实 occurrence 体素数的比例; 第一维通过广播新增候选轴. [N_pred_i, N_gt_i] / [1, N_gt_i] -> [N_pred_i, N_gt_i]
+        gt_cover = np.divide(
+            evaluation.intersections,
+            evaluation.gt_sizes[None, :],
+            out=np.zeros(evaluation.intersections.shape, dtype=np.float64),
+            where=evaluation.gt_sizes[None, :] > 0,
+        )
+        # bool, (N_pred_i, N_gt_i), True 表示对应候选-occurrence 边同时满足两侧覆盖比例下限.
+        valid_by_evaluation.append(
+            (pred_cover >= threshold) & (gt_cover >= threshold)
+        )
+
+    # 长度 N_ranked 的三元组列表, 每项依次为当前评估候选的实际 float32 分数, evaluations 序列下标和该 PdbEvaluation.candidate_score 第一维下标.
+    ranked_candidates = [
+        (float(score), evaluation_index, candidate_index)
+        for evaluation_index, evaluation in enumerate(evaluations)
+        for candidate_index, score in enumerate(evaluation.candidate_score.tolist())
+        if evaluation.candidate_prauc_eligible[candidate_index]
+    ]
+    # 分数降序定义 PRAUC 阈值扫描顺序; PDB 标识和候选编号只为并列分数提供确定顺序, 同分组仍会整体加入.
+    ranked_candidates.sort(
+        key=lambda value: (
+            -value[0],
+            evaluations[value[1]].pdb_id,
+            value[2],
+        )
+    )
+    if not ranked_candidates:
+        return 0.0
+
+    # 长度 N_pdb 的列表, 第 i 项为 bool (N_pred_i,) 扫描掩码; True 表示对应候选分数已达到当前断点并进入 precision-recall 计数.
+    selected_by_evaluation = [
+        np.zeros(evaluation.candidate_score.size, dtype=np.bool_)
+        for evaluation in evaluations
+    ]
+    # Python 整数, 当前 micro 数据划分或单 PDB 中的真实 occurrence 总数, 作为每个分数断点的 recall 分母.
+    gt_total = sum(int(evaluation.gt_sizes.size) for evaluation in evaluations)
+    # 两个 float 标量, 分别保存上一分数断点的 recall 和已经累计的右端点阶梯面积.
+    previous_recall = 0.0
+    prauc = 0.0
+    # Python 整数, 当前尚未处理的 ranked_candidates 起始编号.
+    offset = 0
+    while offset < len(ranked_candidates):
+        # float 标量, 当前并列组的实际 float32 候选分数值.
+        score_value = ranked_candidates[offset][0]
+        # Python 整数, 当前同分候选组在 ranked_candidates 中的半开区间终点.
+        end = offset + 1
+        while (
+            end < len(ranked_candidates)
+            and ranked_candidates[end][0] == score_value
+        ):
+            end += 1
+        for _, evaluation_index, candidate_index in ranked_candidates[offset:end]:
+            selected_by_evaluation[evaluation_index][candidate_index] = True
+
+        # 三个 Python 整数, 分别统计当前断点的候选总数, precision 分子和 recall 分子.
+        pred_total = 0
+        pred_hit = 0
+        gt_hit = 0
+        for evaluation_index, evaluation in enumerate(evaluations):
+            # int64, (N_selected_i,), 第 i 个 PDB 中已经达到当前分数断点的候选编号; 数值索引 candidate_score 和有效覆盖边矩阵的第一维.
+            selected_candidate_index = np.flatnonzero(
+                selected_by_evaluation[evaluation_index]
+            )
+            pred_total += int(selected_candidate_index.size)
+            # bool, (N_selected_i, N_gt_i), 当前 PDB 已达到分数断点的候选与全部真实 occurrence 之间的有效覆盖边. [N_pred_i, N_gt_i] -> [N_selected_i, N_gt_i]
+            selected_valid = valid_by_evaluation[evaluation_index][
+                selected_candidate_index
+            ]
+            if matching_mode == "coverage":
+                # coverage precision 分子增加至少连接一条有效边的候选数, recall 分子增加至少连接一条有效边的 occurrence 数.
+                pred_hit += int(selected_valid.any(axis=1).sum())
+                gt_hit += int(selected_valid.any(axis=0).sum())
+            elif selected_valid.size:
+                # 两个 int64 (N_assignment_i,) 编号数组, 分别索引 selected_valid 的候选轴和 occurrence 轴; 二元代价的匈牙利分配最大化有效一对一边数.
+                matched_pred, matched_gt = linear_sum_assignment(
+                    -selected_valid.astype(np.int8)
+                )
+                # Python 整数, 当前 PDB 分配边中 `selected_valid=True` 的最大一对一匹配数, 同时加入 precision 和 recall 分子.
+                matched_count = int(
+                    selected_valid[matched_pred, matched_gt].sum()
+                )
+                pred_hit += matched_count
+                gt_hit += matched_count
+
+        # float 标量, 当前分数断点下的候选级 precision; 分母是全部已加入候选, 无候选时定义为 0.0.
+        precision = pred_hit / pred_total if pred_total else 0.0
+        # float 标量, 当前分数断点下的 occurrence 级 recall; 分母是全部真实 occurrence, 无 occurrence 时定义为 0.0.
+        recall = gt_hit / gt_total if gt_total else 0.0
+        # 当前断点使用右端 precision 乘新增 recall 宽度, 与按降序阈值生成的阶梯式 precision-recall 曲线一致.
+        prauc += (recall - previous_recall) * precision
+        previous_recall = recall
+        offset = end
+    return float(prauc)
 
 
 def aggregate_stage1_metrics(
@@ -412,12 +572,16 @@ def aggregate_stage1_metrics(
         - coverage_micro_f2_<t>: float, 由全局 coverage precision 和 recall 计算的 F2.
         - coverage_macro_f1_<t>: float, 逐 PDB coverage F1 的算术平均.
         - coverage_macro_f2_<t>: float, 逐 PDB coverage F2 的算术平均.
+        - coverage_micro_prauc_<t>: float, 固定体素数门槛后按全数据划分实际候选分数扫描的 coverage PRAUC.
+        - coverage_macro_prauc_<t>: float, 逐 PDB 独立扫描 coverage PRAUC 后的算术平均.
         - one_to_one_micro_precision_<t>: float, 全部最大一对一匹配数除以已选候选数.
         - one_to_one_micro_recall_<t>: float, 全部最大一对一匹配数除以 occurrence 数.
         - one_to_one_micro_f1_<t>: float, 由全局 one-to-one precision 和 recall 计算的 F1.
         - one_to_one_micro_f2_<t>: float, 由全局 one-to-one precision 和 recall 计算的 F2.
         - one_to_one_macro_f1_<t>: float, 逐 PDB one-to-one F1 的算术平均.
         - one_to_one_macro_f2_<t>: float, 逐 PDB one-to-one F2 的算术平均.
+        - one_to_one_micro_prauc_<t>: float, 固定体素数门槛后按全数据划分实际候选分数扫描的一对一 PRAUC.
+        - one_to_one_macro_prauc_<t>: float, 逐 PDB 独立扫描一对一 PRAUC 后的算术平均.
         - top<K>_success_count_<t>: int, 前 K 个已选候选至少覆盖一个 occurrence 的 PDB 数量.
         - top<K>_success_ratio_<t>: float, 前述数量除以 topk_eligible_pdb_count.
 
@@ -437,7 +601,9 @@ def aggregate_stage1_metrics(
         semantic = np.zeros((0, 3), dtype=np.int64)
     # total_tp, total_fp, total_fn: 跨 PDB 汇总的语义体素计数.
     total_tp, total_fp, total_fn = semantic.sum(axis=0, dtype=np.int64).tolist()
-    semantic_precision = (total_tp / (total_tp + total_fp) if total_tp + total_fp else 0.0)
+    semantic_precision = (
+        total_tp / (total_tp + total_fp) if total_tp + total_fp else 0.0
+    )
     semantic_recall = total_tp / (total_tp + total_fn) if total_tp + total_fn else 0.0
     # report: 最终写入数据划分级 global_metrics.json 的标量字段映射.
     report: dict[str, object] = {
@@ -461,7 +627,9 @@ def aggregate_stage1_metrics(
                 numerator + beta2 * float(item.semantic_fn) + float(item.semantic_fp)
             )
             per_pdb.append(numerator / local_denominator if local_denominator else 0.0)
-        report[f"semantic_macro_f{int(beta)}"] = (float(np.mean(per_pdb)) if per_pdb else 0.0)
+        report[f"semantic_macro_f{int(beta)}"] = (
+            float(np.mean(per_pdb)) if per_pdb else 0.0
+        )
 
     # pred_total: 全部 PDB 的已选候选总数, 是预测侧 micro precision 的分母.
     pred_total = sum(int(item.candidate_selected.sum()) for item in evaluations)
@@ -513,8 +681,14 @@ def aggregate_stage1_metrics(
                 else:
                     local_pred_hit = local_gt_hit = int(item.one_to_one_tp[row])
                 local_pred_count = int(item.candidate_selected.sum())
-                local_precision = (local_pred_hit / local_pred_count if local_pred_count else 0.0)
-                local_recall = (local_gt_hit / item.gt_sizes.size if item.gt_sizes.size else 0.0)
+                local_precision = (
+                    local_pred_hit / local_pred_count if local_pred_count else 0.0
+                )
+                local_recall = (
+                    local_gt_hit / item.gt_sizes.size
+                    if item.gt_sizes.size
+                    else 0.0
+                )
                 for beta, target in ((1.0, per_pdb_f1), (2.0, per_pdb_f2)):
                     beta2 = beta * beta
                     denominator = beta2 * local_precision + local_recall
@@ -522,8 +696,25 @@ def aggregate_stage1_metrics(
                         (1.0 + beta2) * local_precision * local_recall / denominator
                         if denominator else 0.0
                     )
-            report[f"{name}_macro_f1_{tag}"] = (float(np.mean(per_pdb_f1)) if per_pdb_f1 else 0.0)
-            report[f"{name}_macro_f2_{tag}"] = (float(np.mean(per_pdb_f2)) if per_pdb_f2 else 0.0)
+            report[f"{name}_macro_f1_{tag}"] = (
+                float(np.mean(per_pdb_f1)) if per_pdb_f1 else 0.0
+            )
+            report[f"{name}_macro_f2_{tag}"] = (
+                float(np.mean(per_pdb_f2)) if per_pdb_f2 else 0.0
+            )
+            report[f"{name}_micro_prauc_{tag}"] = _candidate_detection_prauc(
+                evaluations,
+                threshold,
+                name,
+            )
+            # per_pdb_prauc: 长度 N_pdb 的候选 PRAUC; 每个 PDB 独立使用自己的实际分数断点.
+            per_pdb_prauc = [
+                _candidate_detection_prauc((item,), threshold, name)
+                for item in evaluations
+            ]
+            report[f"{name}_macro_prauc_{tag}"] = (
+                float(np.mean(per_pdb_prauc)) if per_pdb_prauc else 0.0
+            )
 
     # 只有含真实 occurrence 的 PDB 进入 top-K 成功比例分母.
     eligible_pdb = sum(int(item.gt_sizes.size > 0) for item in evaluations)
@@ -537,9 +728,12 @@ def aggregate_stage1_metrics(
         for threshold_row, threshold in enumerate(thresholds):
             tag = f"{threshold:.3f}".rstrip("0").rstrip(".").replace(".", "p")
             report[f"top{int(topk)}_success_count_{tag}"] = int(successes[threshold_row])
-            report[f"top{int(topk)}_success_ratio_{tag}"] = (float(successes[threshold_row]) / eligible_pdb if eligible_pdb else 0.0)
+            report[f"top{int(topk)}_success_ratio_{tag}"] = (
+                float(successes[threshold_row]) / eligible_pdb
+                if eligible_pdb
+                else 0.0
+            )
     return report
-
 
 
 def aggregate_semantic_prauc(

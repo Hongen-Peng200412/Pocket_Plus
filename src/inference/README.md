@@ -8,7 +8,7 @@
 | --- | --- | --- |
 | 1 | `artifacts.py` | `f_alpha_tag()` 生成可读 F-alpha 标签；`Stage1ArtifactPaths` 解析路径；三个发布函数原子写 NPZ/JSON/JSONL |
 | 2 | `checkpoint.py` | `load_stage1_wrapper()` 从训练 run 的 resolved config、checkpoint 和可选代码快照恢复 wrapper |
-| 3 | `full_map.py` | `infer_full_map()` 执行 80³ 滑窗物化、GPU 前向、异步 D2H 和固定顺序 Gaussian 融合 |
+| 3 | `full_map.py` | `FullMapInferenceSession` 在同一阶段复用物化线程并预取下一 PDB；`infer_full_map()` 保留单 PDB 兼容入口 |
 | 4 | `blobs.py` | `extract_probability_blobs()` 提取并稳定排序一个概率阈值下的全部 26 邻域连通区域 |
 | 5 | `centered.py` | `infer_centered_boxes()` 执行候选完整前向；`pack_centered_entries()` 组装共享 offsets 的正式数组 |
 | 6 | `scoring.py` | `score_centered_candidates()` 计算 basic 来源均值分数或 Find A 原子 Gaussian 分数 |
@@ -103,7 +103,7 @@ checkpoint、resolved config、代码摘要或哈希。
 
 ## `F{alpha}_centered.npz` 共同字段
 
-`N` 是进入 centered 前向的候选数。候选必须同时满足 `fits_centered_box=true` 和命令显式 `forward_min_voxels`；选择参数中的 `prefiltered_min_voxel` 与 `min_voxels` 不改变该候选轴。`L_voxel` 是 N 个来源 blob 拼接后的体素数，`L_aux` 是 hardmask 内辅助受体体素拼接后的数量，`C_voxel` 是模型 `voxel_final` 特征宽度。
+`N` 是进入 centered 前向的候选数。候选只需达到命令显式给出的 `forward_min_voxels`；`fits_centered_box=false` 的来源 blob 同样执行一次合法 80³ 前向。选择参数中的 `prefiltered_min_voxel` 与 `min_voxels` 不改变该候选轴。`L_voxel` 是各来源 blob 位于自身 80³ BOX 内的真实体素总数，`L_aux` 是 hardmask 内辅助受体体素拼接后的数量，`C_voxel` 是模型 `voxel_final` 特征宽度。
 
 | 字段 | dtype 与形状 | 含义 |
 | --- | --- | --- |
@@ -115,6 +115,8 @@ checkpoint、resolved config、代码摘要或哈希。
 | `voxel_size_world` | `float32 (N,3)` | 世界 XYZ 体素尺寸，单位 Å/voxel |
 | `source_probability_mean` | `float32 (N,)` | 来源 blob 的完整图平均概率 |
 | `source_threshold_value` | `float32 (N,)` | 来源 blobs 文件使用的语义概率阈值 |
+| `source_blob_fits_centered_box` | `bool (N,)` | 来源 blob 是否能被单个合法 80³ BOX 完整容纳 |
+| `source_voxel_count` | `int32 (N,)` | 裁块前完整来源 blob 的体素数；候选体素门槛使用该字段 |
 | `voxel_offsets` | `int64 (N+1,)` | 同步切分 `voxel_index_local_zyx`、`source_probability`、`centered_probability` 和 `voxel_final`；首值 0，末值 L_voxel |
 | `voxel_index_local_zyx` | `int16 (L_voxel,3)` | 来源 blob 体素在当前 80³ BOX 内的 ZYX 索引 |
 | `source_probability` | `float32 (L_voxel,)` | 与来源局部体素逐项对齐的完整图概率 |
@@ -133,7 +135,9 @@ checkpoint、resolved config、代码摘要或哈希。
 | `score` | `float32 (N,)`，条件字段 | 仅传入选择参数或执行 score-only 后存在；basic 为来源平均概率，Gaussian 为来源均值加 A 原子正负项 |
 | `selected` | `bool (N,)`，条件字段 | 仅与 `score` 同时存在；True 表示同时达到分数阈值、固定 `prefiltered_min_voxel` 和最终 `min_voxels`，三个门槛均包含端点 |
 
-不带选择参数的 centered 文件没有 `score` 和 `selected`。score-only 只能增加或替换这两个字段，其余字段、候选顺序、offsets 和数组数值保持不变。
+超大 blob 的构造示例：`source_blob_fits_centered_box=[false]`、`source_voxel_count=[120000]`、`voxel_offsets=[0,95000]` 表示完整来源 blob 含 120000 个体素，但合法 80³ BOX 内只有 95000 个体素能够写入稀疏概率与特征表。未落入 BOX 的 25000 个体素不填零，也不写 `None`；完整候选选择与评估需要时从同 alpha blobs 文件回读这些体素。
+
+不带选择参数的 centered 文件没有 `score` 和 `selected`。score-only 只能增加或替换这两个字段，其余字段、候选顺序、offsets 和数组数值保持不变。不可完整容纳的 blob 以完整来源体素质心确定 80³ BOX；只有实际落在该 BOX 内的来源体素写入稀疏局部数组，不为框外位置填零或构造 `None`。调参和评估通过 `source_blob_index` 回读同 alpha blobs 文件中的完整体素坐标，因此候选体素门槛与实例指标仍使用完整来源 blob。
 
 ## Find centered A/P 扩展字段
 
@@ -259,13 +263,17 @@ occurrence 数量均不会改变 PDB 权重。
 | `topk_winning_candidate_rank` | `int32 (K,T)` | 已选候选序列中首个获胜名次；未命中为 -1 |
 | `topk_winning_occurrence_index` | `int32 (K,T)` | 与获胜名次对齐的 occurrence 轴下标；未命中为 -1 |
 
-数据划分 `.jsonl` 每个已评估 PDB 一条 `pdb_id` 加指标映射；`.metrics.json` 保存同一公式的跨 PDB 汇总。两者与逐 PDB NPZ 使用同一个显式 `evaluation-name`。固定键是 `pdb_count`、`semantic_tp`、`semantic_fp`、`semantic_fn`、`semantic_micro_f1`、`semantic_micro_f2`、`semantic_macro_f1`、`semantic_macro_f2`、`semantic_micro_prauc`、`semantic_macro_prauc` 与 `topk_eligible_pdb_count`。每个覆盖阈值标签 `{t}` 生成 `coverage_micro_precision_{t}`、`coverage_micro_recall_{t}`、`coverage_micro_f1_{t}`、`coverage_micro_f2_{t}`、`coverage_macro_f1_{t}`、`coverage_macro_f2_{t}`，以及同样六个 `one_to_one_*_{t}` 键。每个 top-K 值 `{k}` 与阈值标签 `{t}` 生成 `top{k}_success_count_{t}` 和 `top{k}_success_ratio_{t}`。阈值标签把小数点改为 `p`，例如 0.3 写成 `0p3`；任一分母为零时保存 0.0。
+数据划分 `.jsonl` 每个已评估 PDB 一条 `pdb_id` 加指标映射；`.metrics.json` 保存同一公式的跨 PDB 汇总。两者与逐 PDB NPZ 使用同一个显式 `evaluation-name`。固定键是 `pdb_count`、`semantic_tp`、`semantic_fp`、`semantic_fn`、`semantic_micro_f1`、`semantic_micro_f2`、`semantic_macro_f1`、`semantic_macro_f2`、`semantic_micro_prauc`、`semantic_macro_prauc` 与 `topk_eligible_pdb_count`。每个覆盖阈值标签 `{t}` 生成 `coverage_micro_precision_{t}`、`coverage_micro_recall_{t}`、`coverage_micro_f1_{t}`、`coverage_micro_f2_{t}`、`coverage_macro_f1_{t}`、`coverage_macro_f2_{t}`、`coverage_micro_prauc_{t}`、`coverage_macro_prauc_{t}`，以及同样八个 `one_to_one_*_{t}` 键。每个 top-K 值 `{k}` 与阈值标签 `{t}` 生成 `top{k}_success_count_{t}` 和 `top{k}_success_ratio_{t}`。阈值标签把小数点改为 `p`，例如 0.3 写成 `0p3`；任一分母为零时保存 0.0。
+
+指标键的构造示例：覆盖阈值 0.3 可以保存 `coverage_micro_prauc_0p3=0.412`、`coverage_macro_prauc_0p3=0.387`、`one_to_one_micro_prauc_0p3=0.351` 和 `one_to_one_macro_prauc_0p3=0.329`。这些数值只说明字段格式，不是本次三模型正式结果。
 
 `semantic_micro_prauc` 和 `semantic_macro_prauc` 使用本次实际完成候选评估的 PDB 完整图 `probability_map` 与 `union_mask`。同一批已评估 PDB 内，改变 blobs、centered 或候选选择参数不会改变 PRAUC；centered 因默认 `_BLOB_EXCEED` 行为缺失时，该 PDB 连同候选指标一起跳过。阈值精确定义为 `t_j = torch.linspace(0,1,1024,dtype=torch.float32)[j]`，其中 `j=0,...,1023`，并以 `p >= t_j` 作为阳性预测。令该阈值的精确率和召回率为 `precision_j` 与 `recall_j`，则 `AP = sum((recall_j - recall_{j+1}) * precision_j)`，并规定 `recall_1024=0`；任一比率分母为零时该比率取 0，没有正体素时 AP 取 0。micro 先合并全部已评估 PDB 的正负体素计数再计算 AP；macro 先逐 PDB 计算 AP，再按 PDB 等权平均。
 
+coverage 与 one-to-one PRAUC 不使用最终 `score_threshold`。参数过滤模式先固定 `prefiltered_min_voxel` 和 `min_voxels` 两个来源体素门槛，再按实际 float32 候选分数降序加入候选；相同分数作为一个阈值组同时加入。coverage 以多对多命中的候选数和 occurrence 数形成 precision-recall，one-to-one 以每个 PDB 内最大一对一匹配数形成 precision-recall。micro 在所有 PDB 的同一分数轴上累计，macro 先逐 PDB 计算面积再等权平均。该资格掩码只参与内存计算，不增加逐 PDB evaluation NPZ 字段。
+
 ## 并行与发布
 
-一个 PDB 内部，CPU 线程提前物化 batch，当前调用线程独占 GPU，异步 D2H 结果由单独 CPU 线程按提交顺序融合或整理。跨 PDB 时，probability 与 centered 的 NPZ 压缩分别与下一个 PDB 的 GPU 前向重叠；两个 pending 配置限制尚未发布的大数组数量。
+一个 PDB 内部，CPU 线程提前物化完整图 batch 或 centered 单请求，当前调用线程独占 GPU，异步 D2H 结果由单独 CPU 线程按提交顺序融合或整理。centered 主线程把按顺序取得的单请求结果拼成模型 batch。跨 PDB 时，probability 与 centered 的 NPZ 压缩分别与下一个 PDB 的 GPU 前向重叠；两个 pending 配置限制尚未发布的大数组数量。
 
 `run_tune_stage()` 使用 `calibration.workers` 并行读取多个 PDB 的候选 NPZ 与 `ligand_area.npz`，`tune_centered_selection()` 使用同一线程数并行构造逐 PDB 事实、准备 Gaussian 原子项、计算 Gaussian 粗搜与细搜组合，以及计算最终 `min_voxels` 组合。basic 的实际分数阈值扫描保持串行，因为它按分数降序累计语义计数、覆盖状态和一对一增广匹配。全部异步任务句柄（`Future`）都按 PDB 清单或配置列表的原顺序读取，再用“目标值仅严格提升才替换”的规则选取参数；任务完成顺序不会改变包含端点、分数并列或参数并列的行为。标准输出分别记录输入加载、事实构造、basic 阈值扫描、Gaussian 原子项、粗搜索、细搜索和最终体素门槛搜索的耗时；这些运行时间不写入科学 JSON。
 

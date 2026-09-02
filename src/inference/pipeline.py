@@ -43,7 +43,7 @@ from .evaluation import (
     load_occurrence_voxels,
     semantic_prauc_histogram,
 )
-from .full_map import infer_full_map
+from .full_map import FullMapInferenceSession
 from .scoring import score_centered_candidates
 
 
@@ -79,7 +79,9 @@ def run_probability_stage(
 ) -> None:
     """生成并异步发布一个 PDB 清单的完整图概率.
     每个 PDB 发布 `probability_map.npz`, `geometry.json`, `performance.json` 和 `status/probability/_COMPLETE`.
-    默认跳过已有完成标记; `overwrite=True` 只撤销并重算 probability 阶段. 概率 NPZ 压缩与下一个 PDB 的 GPU 前向重叠.
+    默认跳过已有完成标记; `overwrite=True` 只撤销并重算 probability 阶段.
+    同一 session 复用 CPU 物化线程并预取下一个待处理 PDB 的几何与首批窗口;
+    概率 NPZ 压缩与后续 PDB 的 GPU 前向重叠.
 
     输入参数:
         - config: OmegaConf 配置, 读取 `window`, `publish_workers` 和 `pending_probability_pdbs`.
@@ -133,60 +135,80 @@ def run_probability_stage(
             paths.artifact("probability"), arrays, paths.complete("probability")
         )
 
+    # pending_pdb_ids: 保持原清单顺序且本次确实需要前向的 PDB; 下一 PDB 预取不会落到已完成项.
+    pending_pdb_ids = tuple(
+        pdb_id
+        for pdb_id in pdb_ids
+        if overwrite
+        or not Stage1ArtifactPaths(
+            output_root, producer, split, pdb_id
+        ).complete("probability").is_file()
+    )
     pending: deque[Future[None]] = deque()
     with ThreadPoolExecutor(
         max_workers=int(config.publish_workers),
         thread_name_prefix="stage1-probability-publish",
     ) as publisher:
-        for pdb_id in pdb_ids:
-            paths = Stage1ArtifactPaths(output_root, producer, split, pdb_id)
-            if paths.complete("probability").is_file() and not overwrite:
-                continue
-            paths.complete("probability").unlink(missing_ok=True)
-            result = infer_full_map(
-                dataset=dataset,
-                collator=collator,
-                wrapper=wrapper,
-                pdb_id=pdb_id,
-                device=device,
-                stride_zyx=config.window.stride_zyx,
-                sigma=float(config.window.gaussian_sigma),
-                window_batch_size=int(config.window.batch_size),
-                window_workers=int(config.window.workers),
-                prefetch_batches=int(config.window.prefetch_batches),
-                precision=str(config.window.precision),
-                pending_fusion_batches=int(config.window.pending_fusion_batches),
-            )
-            arrays = {
-                "probability_map": result.probability_map.astype(
-                    np.float32, copy=False
-                ),
-                "origin_xyz": result.origin_xyz.astype(np.float32, copy=False),
-                "voxel_size_xyz": result.voxel_size_xyz.astype(np.float32, copy=False),
-            }
-            geometry = {
-                "full_shape_zyx": [
-                    int(value) for value in result.probability_map.shape
-                ],
-                "origin_xyz": [float(value) for value in result.origin_xyz],
-                "voxel_size_xyz": [float(value) for value in result.voxel_size_xyz],
-                "window_shape_zyx": [80, 80, 80],
-                "stride_zyx": [int(value) for value in config.window.stride_zyx],
-                "gaussian_sigma": float(config.window.gaussian_sigma),
-                "window_count": int(result.window_count),
-            }
-            performance = {
-                "wall_seconds": float(result.wall_seconds),
-                "materialize_wait_seconds": float(result.materialize_wait_seconds),
-                "fusion_wait_seconds": float(result.fusion_wait_seconds),
-            }
-            pending.append(
-                publisher.submit(
-                    publish_probability, paths, arrays, geometry, performance
+        with FullMapInferenceSession(
+            dataset=dataset,
+            collator=collator,
+            wrapper=wrapper,
+            device=device,
+            stride_zyx=config.window.stride_zyx,
+            sigma=float(config.window.gaussian_sigma),
+            window_batch_size=int(config.window.batch_size),
+            window_workers=int(config.window.workers),
+            prefetch_batches=int(config.window.prefetch_batches),
+            precision=str(config.window.precision),
+            pending_fusion_batches=int(config.window.pending_fusion_batches),
+        ) as session:
+            for pdb_index, pdb_id in enumerate(pending_pdb_ids):
+                paths = Stage1ArtifactPaths(output_root, producer, split, pdb_id)
+                paths.complete("probability").unlink(missing_ok=True)
+                next_pdb_id = (
+                    pending_pdb_ids[pdb_index + 1]
+                    if pdb_index + 1 < len(pending_pdb_ids)
+                    else None
                 )
-            )
-            if len(pending) >= int(config.pending_probability_pdbs):
-                pending.popleft().result()
+                result = session.infer(pdb_id, next_pdb_id)
+                arrays = {
+                    "probability_map": result.probability_map.astype(
+                        np.float32, copy=False
+                    ),
+                    "origin_xyz": result.origin_xyz.astype(np.float32, copy=False),
+                    "voxel_size_xyz": result.voxel_size_xyz.astype(
+                        np.float32, copy=False
+                    ),
+                }
+                geometry = {
+                    "full_shape_zyx": [
+                        int(value) for value in result.probability_map.shape
+                    ],
+                    "origin_xyz": [float(value) for value in result.origin_xyz],
+                    "voxel_size_xyz": [
+                        float(value) for value in result.voxel_size_xyz
+                    ],
+                    "window_shape_zyx": [80, 80, 80],
+                    "stride_zyx": [
+                        int(value) for value in config.window.stride_zyx
+                    ],
+                    "gaussian_sigma": float(config.window.gaussian_sigma),
+                    "window_count": int(result.window_count),
+                }
+                performance = {
+                    "wall_seconds": float(result.wall_seconds),
+                    "materialize_wait_seconds": float(
+                        result.materialize_wait_seconds
+                    ),
+                    "fusion_wait_seconds": float(result.fusion_wait_seconds),
+                }
+                pending.append(
+                    publisher.submit(
+                        publish_probability, paths, arrays, geometry, performance
+                    )
+                )
+                if len(pending) >= int(config.pending_probability_pdbs):
+                    pending.popleft().result()
         while pending:
             pending.popleft().result()
 
@@ -331,9 +353,10 @@ def run_centered_stage(
 ) -> None:
     """生成动态 F-alpha centered, 或只更新已有文件的选择字段.
 
-    正常模式读取 `F{alpha}_blobs.npz`, 对 `fits_centered_box=True` 且来源体素数
-    达到 `forward_min_voxels` 的候选执行完整模型前向. 所有 producer 保存共同
-    字段, `voxel_final`, auxiliary 和三张 48³ 稠密数组; Find 另外保存 A/P 表. 来源
+    正常模式读取 `F{alpha}_blobs.npz`, 对来源体素数达到
+    `forward_min_voxels` 的候选执行完整模型前向; `fits_centered_box=False` 的
+    来源 blob 同样以合法 80³ BOX 前向. 所有 producer 保存共同字段,
+    `voxel_final`, auxiliary 和三张 48³ 稠密数组; Find 另外保存 A/P 表. 来源
     `blob_index` 数量严格大于 `CENTERED_BLOB_LIMIT` 时总是写 `_BLOB_EXCEED`.
     `continue_on_blob_exceed=False` 时跳过当前 PDB; 显式为 True 时继续生成
     centered. `selection` 存在时首次发布即写入 `score` 与 `selected`.
@@ -382,7 +405,7 @@ def run_centered_stage(
                 score_parameters=selection["score_parameters"],
             )
             arrays["score"] = np.asarray(score, dtype=np.float32)
-            voxel_count = np.diff(np.asarray(arrays["voxel_offsets"], dtype=np.int64))
+            voxel_count = np.asarray(arrays["source_voxel_count"], dtype=np.int64)
             arrays["selected"] = (
                 (arrays["score"] >= np.float32(selection["score_threshold"]))
                 & (voxel_count >= int(selection["prefiltered_min_voxel"]))
@@ -416,7 +439,7 @@ def run_centered_stage(
                 score_parameters=selection["score_parameters"],
             )
             arrays["score"] = np.asarray(score, dtype=np.float32)
-            voxel_count = np.diff(np.asarray(arrays["voxel_offsets"], dtype=np.int64))
+            voxel_count = np.asarray(arrays["source_voxel_count"], dtype=np.int64)
             arrays["selected"] = (
                 (arrays["score"] >= np.float32(selection["score_threshold"]))
                 & (voxel_count >= int(selection["prefiltered_min_voxel"]))
@@ -505,7 +528,8 @@ def run_tune_stage(
     `score_mode='basic'` 读取动态 blobs, 包括 `fits_centered_box=False` 的区域.
     两种模式都在尝试任何参数之前固定 `prefiltered_min_voxel`; 体素数低于该值
     的候选在所有参数组合中保持未入选. `score_mode='gaussian'` 读取动态 centered
-    的 A 原子表; 只有 `_BLOB_EXCEED` 而没有 centered 的 PDB 被直接跳过并在
+    的 A 原子表, 并从同 alpha blobs 回读完整来源体素用于候选指标; 只有
+    `_BLOB_EXCEED` 而没有 centered 的 PDB 被直接跳过并在
     标准输出说明原因. 目标是 semantic, coverage@0.3 和 one-to-one@0.3 三项
     PDB 等权 macro F-beta 之和. 返回映射同时原子发布到
     `tuning/F{alpha}_{mode}.json`.
@@ -533,12 +557,13 @@ def run_tune_stage(
     alpha_tag = f_alpha_tag(alpha)
     blob_role = f"{alpha_tag}_blobs"
     centered_role = f"{alpha_tag}_centered"
-    # 每个 `Future` 二元组分别读取候选 NPZ 与同一 PDB 的 occurrence 体素; 列表顺序保持 pdb_ids 顺序.
+    # 每项 Future 依次读取候选 NPZ, Gaussian 所需的完整 blobs 和同一 PDB 的 occurrence 体素; basic 的完整 blobs Future 为 None.
     input_loading_started = perf_counter()
     pending_inputs: list[
         tuple[
             str,
             Future[Mapping[str, np.ndarray]],
+            Future[Mapping[str, np.ndarray]] | None,
             Future[
                 tuple[
                     np.ndarray,
@@ -558,7 +583,9 @@ def run_tune_stage(
                     "source_probability_mean",
                     "voxel_offsets",
                     "voxel_index_global_zyx",
+                    "voxel_count",
                 )
+                full_blob_future = None
             else:
                 if (
                     not paths.artifact(centered_role).is_file()
@@ -577,11 +604,23 @@ def run_tune_stage(
                     "A_coord_local_xyz",
                     "A_probability",
                     "voxel_size_world",
+                    "source_voxel_count",
+                )
+                full_blob_future = loader.submit(
+                    load_stage1_npz,
+                    paths.artifact(blob_role),
+                    (
+                        "blob_index",
+                        "voxel_offsets",
+                        "voxel_index_global_zyx",
+                        "voxel_count",
+                    ),
                 )
             pending_inputs.append(
                 (
                     pdb_id,
                     loader.submit(load_stage1_npz, artifact_path, required_fields),
+                    full_blob_future,
                     loader.submit(
                         load_occurrence_voxels,
                         Path(data_root) / "density" / pdb_id / "ligand_area.npz",
@@ -593,7 +632,12 @@ def run_tune_stage(
         ground_truth: dict[
             str, tuple[np.ndarray, Sequence[np.ndarray], Sequence[int]]
         ] = {}
-        for pdb_id, candidate_future, ground_truth_future in pending_inputs:
+        for (
+            pdb_id,
+            candidate_future,
+            full_blob_future,
+            ground_truth_future,
+        ) in pending_inputs:
             loaded_candidate = candidate_future.result()
             if score_mode == "basic":
                 candidate_count = int(np.asarray(loaded_candidate["blob_index"]).size)
@@ -615,9 +659,54 @@ def run_tune_stage(
                         dtype=np.int32,
                     ),
                     "box_start_zyx": np.zeros((candidate_count, 3), dtype=np.int32),
+                    "source_voxel_count": np.asarray(
+                        loaded_candidate["voxel_count"],
+                        dtype=np.int32,
+                    ),
                 }
             else:
-                candidate = loaded_candidate
+                full_blobs = full_blob_future.result()
+                # source_indices: int32, (N_candidate,), centered 候选指向完整 blobs 候选轴的编号.
+                source_indices = np.asarray(
+                    loaded_candidate["source_blob_index"],
+                    dtype=np.int32,
+                )
+                # source_counts: int64, (N_candidate,), 每个 centered 候选的完整来源 blob 体素数.
+                source_counts = np.asarray(
+                    full_blobs["voxel_count"],
+                    dtype=np.int64,
+                )[source_indices]
+                # evaluation_offsets: int64, (N_candidate+1,), 切分完整来源 blob 的评估坐标表.
+                evaluation_offsets = np.concatenate(
+                    (
+                        np.zeros(1, dtype=np.int64),
+                        np.cumsum(source_counts, dtype=np.int64),
+                    )
+                )
+                # evaluation_rows: int32, (L_full, 3), 按 centered 候选轴重排的完整来源 blob 全图 ZYX 坐标.
+                evaluation_rows = (
+                    np.concatenate(
+                        [
+                            np.asarray(
+                                full_blobs["voxel_index_global_zyx"][
+                                    int(full_blobs["voxel_offsets"][source_index]) : int(
+                                        full_blobs["voxel_offsets"][source_index + 1]
+                                    )
+                                ],
+                                dtype=np.int32,
+                            )
+                            for source_index in source_indices.tolist()
+                        ],
+                        axis=0,
+                    )
+                    if source_indices.size
+                    else np.empty((0, 3), dtype=np.int32)
+                )
+                candidate = {
+                    **loaded_candidate,
+                    "evaluation_voxel_offsets": evaluation_offsets,
+                    "evaluation_voxel_index_global_zyx": evaluation_rows,
+                }
             items.append((pdb_id, candidate))
             ground_truth[pdb_id] = ground_truth_future.result()
     print(
@@ -666,7 +755,8 @@ def run_evaluate_stage(
     `selection` 为参数映射时按 basic 或 Gaussian 参数重算 `score` 与
     `selected`; 显式为 ``None`` 时不做二次打分, 以来源概率均值稳定排序并把
     当前 artifact 中的全部候选纳入指标. blobs 使用完整图稀疏坐标,
-    centered 使用 80³ BOX 局部坐标. centered 文件因 `_BLOB_EXCEED` 缺失时
+    centered 的 Gaussian 分数使用 80³ BOX 局部字段, 候选指标则回读同 alpha
+    blobs 的完整来源体素. centered 文件因 `_BLOB_EXCEED` 缺失时
     跳过该 PDB 并在标准输出说明原因; 不建立额外跳过清单或完成状态.
 
     输入参数:
@@ -688,6 +778,7 @@ def run_evaluate_stage(
     alpha_tag = f_alpha_tag(alpha)
     score_mode = "all_candidates" if selection is None else str(selection["score_mode"])
     role = f"{alpha_tag}_{artifact}"
+    blob_role = f"{alpha_tag}_blobs"
     # evaluations: 按未跳过 PDB 顺序保存的候选语义与实例事实.
     evaluations = []
     # prauc_histograms: 与 evaluations 一一对齐的 int64 `(2, 1024)` 完整图语义计数.
@@ -711,6 +802,7 @@ def run_evaluate_stage(
                     "source_probability_mean",
                     "voxel_offsets",
                     "voxel_index_global_zyx",
+                    "voxel_count",
                 ),
             )
             candidate_count = int(np.asarray(arrays["blob_index"]).size)
@@ -724,6 +816,10 @@ def run_evaluate_stage(
                     arrays["voxel_index_global_zyx"], dtype=np.int32
                 ),
                 "box_start_zyx": np.zeros((candidate_count, 3), dtype=np.int32),
+                "source_voxel_count": np.asarray(
+                    arrays["voxel_count"],
+                    dtype=np.int32,
+                ),
             }
         else:
             fields = [
@@ -732,6 +828,7 @@ def run_evaluate_stage(
                 "voxel_offsets",
                 "voxel_index_local_zyx",
                 "box_start_zyx",
+                "source_voxel_count",
             ]
             if score_mode == "gaussian":
                 fields.extend(
@@ -749,6 +846,10 @@ def run_evaluate_stage(
         )
         # bool, (N_candidate,), 全候选模式全部纳入; 参数过滤模式会在下方替换.
         candidate["selected"] = np.ones(candidate["score"].shape, dtype=np.bool_)
+        candidate["prauc_eligible"] = np.ones(
+            candidate["score"].shape,
+            dtype=np.bool_,
+        )
         if selection is not None:
             score = score_centered_candidates(
                 candidate,
@@ -756,13 +857,64 @@ def run_evaluate_stage(
                 score_parameters=selection["score_parameters"],
             )
             candidate["score"] = np.asarray(score, dtype=np.float32)
-            voxel_count = np.diff(
-                np.asarray(candidate["voxel_offsets"], dtype=np.int64)
+            voxel_count = np.asarray(
+                candidate["source_voxel_count"],
+                dtype=np.int64,
+            )
+            candidate["prauc_eligible"] = (
+                (voxel_count >= int(selection["prefiltered_min_voxel"]))
+                & (voxel_count >= int(selection["min_voxels"]))
             )
             candidate["selected"] = (
                 (candidate["score"] >= np.float32(selection["score_threshold"]))
-                & (voxel_count >= int(selection["prefiltered_min_voxel"]))
-                & (voxel_count >= int(selection["min_voxels"]))
+                & candidate["prauc_eligible"]
+            )
+        if artifact == "centered":
+            full_blobs = load_stage1_npz(
+                paths.artifact(blob_role),
+                (
+                    "voxel_offsets",
+                    "voxel_index_global_zyx",
+                    "voxel_count",
+                ),
+            )
+            # source_indices: int32, (N_candidate,), centered 候选指向完整 blobs 候选轴的编号.
+            source_indices = np.asarray(
+                candidate["source_blob_index"],
+                dtype=np.int32,
+            )
+            # source_counts: int64, (N_candidate,), 每个 centered 候选的完整来源 blob 体素数.
+            source_counts = np.asarray(
+                full_blobs["voxel_count"],
+                dtype=np.int64,
+            )[source_indices]
+            candidate["voxel_offsets"] = np.concatenate(
+                (
+                    np.zeros(1, dtype=np.int64),
+                    np.cumsum(source_counts, dtype=np.int64),
+                )
+            )
+            candidate["voxel_index_local_zyx"] = (
+                np.concatenate(
+                    [
+                        np.asarray(
+                            full_blobs["voxel_index_global_zyx"][
+                                int(full_blobs["voxel_offsets"][source_index]) : int(
+                                    full_blobs["voxel_offsets"][source_index + 1]
+                                )
+                            ],
+                            dtype=np.int32,
+                        )
+                        for source_index in source_indices.tolist()
+                    ],
+                    axis=0,
+                )
+                if source_indices.size
+                else np.empty((0, 3), dtype=np.int32)
+            )
+            candidate["box_start_zyx"] = np.zeros(
+                (source_indices.size, 3),
+                dtype=np.int32,
             )
         density_root = Path(data_root) / "density" / pdb_id
         occurrence_id, occurrence_rows, full_shape = load_occurrence_voxels(
