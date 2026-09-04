@@ -1,13 +1,13 @@
-# Handoff: Find_1 A800 validation 恢复边界已修复，a3 正常训练
+# Handoff: Find_1 A800 恢复边界已通过首次完整 validation
 
-Date: 2026-09-02
+Date: 2026-09-03
 
 ## Current State
 
 Find_1 两项训练均在运行，未经用户新指令不得释放资源或操作其锁：
 
-- A800 历史续训：Job `366277`，`gnode09,gnode10`，每节点 A800×1、CPU×17、每 rank 16 workers；修复版 attempt a3 已从原始 checkpoint 跨过完成态 validation 边界，并从 `global_step=11287` 推进到至少 `11291`。W&B run 为 `9kj96nld`。
-- H100 PDB-centric-1：Job `366071`，`hnode02`，H100×1、CPU×32，正式 attempt a11；W&B run `wi4gcvcs` 的最新摘要已到 `global_step=3668`，第三次 validation 的 `voxel_ligand_PRAUC=0.46331578493118286`。
+- A800 历史续训：Job `366277`，`gnode09,gnode10`，每节点 A800×1、CPU×17、每 rank 16 workers；修复版 attempt a3 已在 `global_step=12416` 完成首次真实续训 validation，每 rank 551 batches，`num_gt=14,802,569`、`voxel_ligand_PRAUC=0.6154788136482239`，并继续训练到至少 `global_step=12530`。W&B run 为 `9kj96nld`。
+- H100 PDB-centric-1：Job `366071`，`hnode02`，H100×1、CPU×32，正式 attempt a11；W&B run `wi4gcvcs` 已完成第四次 validation，`voxel_ligand_PRAUC=0.507824182510376`，并继续训练到至少 `global_step=5561`。
 - 两个 Job 的 allocation 内 `after_lock` 均存在；根级 `try_lock` 与 allocation 内 `kill_lock` 均不存在。
 
 ## Critical Correction
@@ -84,10 +84,27 @@ rm -- /home/penghongen/Feedback/Pocket_Plus_Find1/allocations/try_lock_366277
 
 截至 18:45:24，a3 已到 `global_step=11291`，`warmup_lr=5.000000000000013e-05`，训练总损失为 `0.2594981789588928`；W&B 摘要没有任何新 validation 字段，目录没有新的 validation 诊断或由 a3 写出的 checkpoint。这证明恢复瞬间先进入训练，没有重放伪 validation。
 
+## A800 First Full Validation
+
+首次正常调度的续训 validation 在 `global_step=12416` 完成，诊断文件于 2026-09-03 08:58:20 +08:00 写成。结果为 `num_gt=14,802,569`、`voxel_ligand_PRAUC=0.6154788136482239`、总验证损失 `0.28627124428749084`、atom/pseudo/receptor PRAUC 分别为 `0.7239863276481628`、`0.6551620364189148`、`0.7084718942642212`。`num_gt` 与原始完整 validation 精确一致，排除了 44,405 量级的伪 validation。
+
+`last.ckpt` 明确记录 validation 当前 `ready/started/processed/completed=551/551/551/551`、`is_last_batch=true`，累计 validation 完成数从 5,510 增至 6,061。学习率保持 `5e-5`；plateau 的 `last_stepped_validation=[12416,0]`、`validation_index=8`、`num_bad_epochs=3`，即从源状态恰好推进一次；停止器仍为 0。candidate `p_best=0.044921875`；ModelCheckpoint 当前分数为 `0.6154788136482239`，历史 BEST 仍为 `0.6184396743774414`。
+
+- `TOP_epoch_00_score_0.6155.ckpt`：1,466,245,103 bytes，SHA-256 `9ebfd831748f34fdc5fdd819a709c96e6380ce3b8697f95ec2a4ca8d4c0f3d81`。
+- `last.ckpt`：1,466,245,103 bytes，SHA-256 `2464c837f2ecf6d3408042af63f855a81908878b68ba35ec22f280c042c07111`。
+- `validation_diagnostics/epoch_000000/summary.json`：SHA-256 `801fedbdf531061042e2645168e03dfa500428eace657c3d5c3a6254decf9122`；`warnings.json` 为空数组。
+- 只读检查程序：`/home/penghongen/Feedback/Pocket_Plus_Find1/diagnostics/job366277/inspect_first_full_validation.py`，SHA-256 `d1a474daed4c0718a534cc89dd41b3b6ef8c480c50d73050d828fcd7d0cd3f58`。大型 checkpoint 只在 Job `366277` 的保留 allocation 内读取。
+
+10:33:05 +08:00 的 W&B 摘要已到 `global_step=12530`，证明 validation 与 checkpoint 结束后训练继续。Job、allocation 与锁均未被改动。
+
+## H100 Fourth Validation
+
+第四次完整 validation 在 `global_step=4760` 完成：`voxel_ligand_PRAUC=0.507824182510376`、总验证损失 `0.31278860569000244`、`num_gt=8,156,584`。`TOP_epoch_00_score_0.5078.ckpt` 与更新后的 `last.ckpt` 均位于正式 a11 输出根，大小均为 1,466,224,694 bytes，SHA-256 均为 `d86bd106a43bbe94ddfc97f8fb69080cd5032393eeb4361124dfd78a6e9e02c2`。05:34:52 +08:00 已推进到 `global_step=4874`，说明 checkpoint 后训练恢复正常。
+
 ## Next Actions
 
-1. 继续只读监视 A800 a3；下一次正常 validation 预计在再完成约 4,515 个 rank-local 训练 batches 后触发。验收必须看到每 rank 551 batches、`num_gt` 约 1,480 万，并核对 scheduler、候选缓存、checkpoint 和停止器只更新一次。
-2. 同时只读监视 H100 a11 的第三次 validation checkpoint 与后续训练；没有故障时不操作资源或锁。
+1. 继续只读监视 A800 a3；首次真实 validation 已通过，后续只在新 validation、异常、训练结束或锁变化时集中记录。
+2. 同时只读监视 H100 a11 的后续 validation 与训练；没有故障时不操作资源或锁。
 3. 稳定期使用 12 或 18 个彼此独立的 `Start-Sleep -Seconds 300` 组成 60 或 90 分钟静默等待，不用 heartbeat；只在 validation、checkpoint、错误、任务结束或锁变化等明确事件写记录。
 4. 历史实现分支已经只有一个本轮实质提交。执行记录、计划和本 handoff 统一纳入 `Learn/CUMULATIVE` 的日志提交，不与正式代码逻辑混合。
 5. 两项训练正常完成后，才执行学习历史、tree 等价和 `Learn/CUMULATIVE` 收口；当前持久 goal 不应提前标记完成。

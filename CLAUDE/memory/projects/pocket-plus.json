@@ -267,8 +267,68 @@
     },
     {
       "date": "2026-09-02",
-      "summary": "Find_1 A800 历史续训已纠正 Lightning 完成态 validation 恢复语义：a1/a2 均在 global step 11287 写入单 batch 伪 validation，已冻结为只读故障证据；提交 0829058 最小修复 validation 调度边界与 plateau 幂等键，Job 366277 attempt a3 从指定原始 checkpoint 启动并先推进到至少 step 11291，学习率保持 5e-5。H100 PDB-centric-1 同期完成第三次 validation，voxel_ligand_PRAUC 为 0.463316；两个 Job 均保留 after_lock 并继续运行。",
+      "summary": "Find_1 A800 历史续训已纠正 Lightning 完成态 validation 恢复语义：a1/a2 的单 batch 伪 validation 保持为只读证据；提交 0829058 的最小修复在 Job 366277 attempt a3 经首次真实续训 validation 验收，每 rank 完成 551 batches，num_gt=14,802,569、voxel_ligand_PRAUC=0.6154788，学习率、plateau、candidate cache、checkpoint 和停止器均只推进一次，训练继续到至少 step 12530。H100 PDB-centric-1 同期完成第四次 validation 并继续训练；两个 Job 均保留 after_lock。",
       "handoff": "CLAUDE/memory/handoffs/2026-09-02-find1-a800-timeout-recovered.md"
+    },
+    {
+      "date": "2026-09-03",
+      "summary": "unet_c1 三采样模型比较管线已从 Learn/CUMULATIVE 正式启动：Job 367332/367411 首次 batch 32/16 前向 OOM 后按预授权降为 24/12，第 2 次执行均完成首个 PDB、写出概率图与 _COMPLETE，GPU 利用率 100% 且未新增 traceback；pdb-centric-v2 后续已在 Job 358384 正常结束训练后固定最终 checkpoint 并启动独立推理。",
+      "handoff": "CLAUDE/memory/handoffs/2026-09-03-unet-c1-sampling-comparison-running.md"
+    },
+    {
+      "date": "2026-09-03",
+      "summary": "pdb-centric-v1 已完成 100-PDB 独立 calibration：F1 semantic threshold 0.46185302734375，F1 basic score threshold 0.5705057382583618、prefiltered_min_voxel 8、min_voxels 26；Job 367332 已进入 held-out probability，occurrence Job 367411 同期稳定推进，均无新增异常。",
+      "handoff": "CLAUDE/memory/handoffs/2026-09-03-unet-c1-pdb-centric-v1-calibrated.md"
+    },
+    {
+      "date": "2026-09-03",
+      "summary": "occurrence-centric 已完成 test_0.json 的 179-PDB 固定评估：probability、F1 blobs、逐 PDB NPZ 与 JSONL 集合闭合；semantic micro/macro F1 为 0.54840/0.38105，coverage 0.3 micro/macro F1 为 0.56076/0.46053，one-to-one 0.3 micro/macro F1 为 0.54820/0.45513，并已产出 coverage/one-to-one 三阈值 micro/macro PRAUC。正式执行成功，资源已由用户释放。",
+      "handoff": "CLAUDE/memory/handoffs/2026-09-03-unet-c1-occurrence-held-out-complete.md"
+    },
+    {
+      "date": "2026-09-03",
+      "summary": "Stage1 已建立固定醒来检查：Job 367928 等待 hnode01 单 H100、32 CPU，取得 pre_lock 后直接启动现有正式训练命令，不把 GPU 门禁混入入口；Jobs 366071、350305、366277 继续守护。采样方式三 unet_c1 Job 358384 已在第二次实际学习率衰减后正常完成，最终 global step 36349、配体体素 PRAUC 0.5956817，BEST、最高分 TOP 与 last checkpoint 字节一致；其 H100 allocation 已被推理工作复用，未经用户新授权不得释放或中断。",
+      "handoff": "CLAUDE/memory/handoffs/2026-09-03-stage1-training-global-watch.md"
+    },
+    {
+      "date": "2026-09-03",
+      "summary": "pdb-centric-v2 已冻结 Job 358384 正常训练结束后的最终最高 TOP_epoch_03_score_0.5957.ckpt，并复用该 Job 保留的 H100×1、32 CPU allocation 启动独立 calibration 与 held-out 测试；正式 release 为 Pocket_Plus_d57060538839，launch 为 unet_c1_job358384_20260903T161305_a2，首个 calibration PDB 已完整落盘且未出现 traceback 或 CUDA OOM，after_lock_358384 必须继续保留。",
+      "handoff": "CLAUDE/memory/handoffs/2026-09-03-unet-c1-sampling-comparison-running.md"
+    },
+    {
+      "date": "2026-09-03",
+      "summary": "采样方式三 unet_c1 Job 358384 已正常完成训练：最终 global step 36349、配体体素 PRAUC 0.5956817，BEST、TOP_epoch_03_score_0.5957.ckpt 与 last.ckpt 的 SHA-256 均为 8e8bd068...7bec3a。原 H100 allocation 已启动采样方式三推理，after_lock 保留；最新用户指令禁止未经授权释放或中断。",
+      "handoff": "CLAUDE/memory/handoffs/2026-09-03-stage1-pdb-centric-v2-unet-c1-complete-held.md"
+    },
+    {
+      "date": "2026-09-03",
+      "summary": "pdb-centric-v1 已完成独立 calibration、F1 semantic/basic 选参与 test_0.json 的 179-PDB 固定评估；probability、F1 blobs、逐 PDB evaluation NPZ 和 JSONL 的 PDB 集合完全闭合，全部汇总指标有限。semantic micro/macro F1 为 0.53804/0.33924，coverage 0.3 为 0.51608/0.38785，one-to-one 0.3 为 0.50666/0.38361。Job 367332 成功停在 try_lock，after_lock 保留。",
+      "handoff": "CLAUDE/memory/handoffs/2026-09-03-unet-c1-pdb-centric-v1-held-out-complete.md"
+    },
+    {
+      "date": "2026-09-03",
+      "summary": "pdb-centric-v2 已完成独立 100-PDB calibration、F1 semantic 阈值拟合、F1 blobs 和 F1 basic 选参；semantic threshold 为 0.3990478515625，basic score threshold 为 0.5232318639755249、prefilter 8、min voxels 21。集合与固定 calibration 清单完全闭合，Job 358384 已进入 179-PDB held-out probability，H100 满载且零 traceback/OOM，after_lock 必须保留。",
+      "handoff": "CLAUDE/memory/handoffs/2026-09-03-unet-c1-pdb-centric-v2-calibrated.md"
+    },
+    {
+      "date": "2026-09-03",
+      "summary": "occurrence-centric unet_diff Job 350305 完成一轮 827-batch validation：总损失 0.1614619、配体体素 PRAUC 0.6319024、受体 PRAUC 0.7162517。PRAUC 提升 0.0030347，严格超过 0.003 阈值；plateau best 正确更新、bad epoch 重置为 0，LR 保持 4e-6、实际衰减计数保持 2。新 TOP 与 last checkpoint 哈希一致，训练已恢复推进；after_lock 未触碰。",
+      "handoff": "CLAUDE/memory/handoffs/2026-09-03-unet-diff-validation-new-best.md"
+    },
+    {
+      "date": "2026-09-03",
+      "summary": "Find_1 PDB-centric-2 已完成单卡到双卡转换：用户先取得 hnode01 双 H100、64 CPU Job 368455，再取消单卡 Job 367928。368455 的两条 NCCL rank 已建立并推进到 global step 20；每卡 batch 6、全局 batch 48、每 rank 30 workers。用户确认 stop_after_lr_reductions=3 是手动设定的最新配置；第二次衰减 checkpoint 仍作为可选端点。运行身份、配置和源码哈希已冻结，after_lock 保留。",
+      "handoff": "CLAUDE/memory/handoffs/2026-09-03-find1-pdb-centric2-dual-h100-running.md"
+    },
+    {
+      "date": "2026-09-04",
+      "summary": "unet_c1 三种采样模型比较已完成：pdb-centric-v2 在 Job 358384 上完成独立 100-PDB calibration、F1 semantic/basic 选参与 test_0.json 的 179-PDB 固定评估；probability、F1 blobs、逐 PDB NPZ 和 JSONL 集合完全闭合，所有汇总浮点有限。其 semantic micro/macro F1 为 0.55267/0.39444，semantic micro/macro PRAUC 为 0.50150/0.40162，在三者中最高；Job 358384 已安全停在 try_lock，after_lock 保留且 H100 不释放。",
+      "handoff": "CLAUDE/memory/handoffs/2026-09-04-unet-c1-pdb-centric-v2-held-out-complete.md"
+    },
+    {
+      "date": "2026-09-04",
+      "summary": "Stage1 四条活动训练线继续运行：Find_1 PDB-centric-2 第三轮完整 validation PRAUC 0.5468278，每 rank 543 batches，仍处于 warmup且实际衰减 0 次；PDB-centric-1 第七轮为 0.5385515；双节点历史续训第三轮为 0.6125641，best 仍为 0.6297938、plateau bad epochs 为 1；occurrence-centric unet_diff 原始最高为 0.6343954，最新一轮为 0.6314629，plateau bad epochs 已到 2、实际衰减仍为 2 次。368455 保持三次实际学习率衰减停训并强制保留第二次衰减 checkpoint。Job 358384 的推理完成后于 08:35:30 被外部取消，本守护未操作资源；09:41 调度包装器已完成活动锁清理，未经授权不得自行重提任务或占用空出的 H100。",
+      "handoff": "CLAUDE/memory/handoffs/2026-09-04-stage1-four-training-validation-milestones.md"
     }
   ],
   "blockers": [

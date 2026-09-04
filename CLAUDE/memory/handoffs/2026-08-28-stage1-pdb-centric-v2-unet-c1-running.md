@@ -4,7 +4,7 @@ Date: 2026-08-28
 
 ## Current State
 
-Stage1 采样方式三的 V2 验证产物、Dataset 请求入口、`unet_c1` 配置和正式 shell 已完成实现与验收。正式训练 Job `358384` 于 2026-08-28 09:31:26 +08:00 在 `hnode01` 启动，使用 1 张 H100、32 CPU 和 30 个 `DataLoader` workers。任务已完成十八次完整 validation、处于 epoch 2，并生成对应 TOP 与 last checkpoint；没有发现 CUDA OOM、NCCL、DataLoader 或非有限值错误。`after_lock_358384` 仍存在，不得自动释放。
+Stage1 采样方式三的 V2 验证产物、Dataset 请求入口、`unet_c1` 配置和正式 shell 已完成实现与验收。正式训练 Job `358384` 于 2026-08-28 09:31:26 +08:00 在 `hnode01` 启动，使用 1 张 H100、32 CPU 和 30 个 `DataLoader` workers。截至 2026-09-03 14:47 +08:00，任务已推进到 `global_step=36269`，最近一次 validation 的配体体素 PRAUC 为 `0.5937543`，并继续训练。`after_lock_358384` 仍存在；用户已授权在确认训练正常完成并核验最终产物后，只删除该锁安全释放 allocation。
 
 详细的数据产物与运行证据记录在 `ops/stage1_data_preparation/EXECUTION.md`，活动科学说明位于 `talk/global/global_8.26.md`。
 
@@ -42,13 +42,14 @@ Stage1 采样方式三的 V2 验证产物、Dataset 请求入口、`unet_c1` 配
 - 2026-09-01 12:15 +08:00，第二十一次完整 validation 结束：验证总损失为 `0.2043146`，配体体素 PRAUC 为 `0.5645520`，受体 PRAUC 为 `0.6244339`；`checkpoints/TOP_epoch_02_score_0.5646.ckpt` 与 `checkpoints/last.ckpt` 已更新，任务恢复训练并继续推进到 `trainer/global_step=23945`。`BEST.ckpt` 正确保持第十八次的 `TOP_epoch_02_score_0.5764.ckpt`，错误扫描为空。
 - 2026-09-01 16:44 +08:00，第二十二次完整 validation 结束：验证总损失为 `0.1995346`，配体体素 PRAUC 为 `0.5633904`，受体 PRAUC 为 `0.6191931`；`checkpoints/TOP_epoch_02_score_0.5634.ckpt` 与 `checkpoints/last.ckpt` 已更新，任务恢复训练并继续推进到 `trainer/global_step=25112`。连续四次验证未超过调度器记录的配体体素 PRAUC `0.5764135` 后，正式调度器按 `factor=0.2`、`patience=3`、绝对改进阈值 `0.003` 将学习率从 `1e-4` 降至 `2e-5`。`last.ckpt` 已保存第一次实际衰减及重置后的 `num_bad_epochs=0`；第二次实际衰减将按配置触发正常停训。`BEST.ckpt` 保持第十八次的 `TOP_epoch_02_score_0.5764.ckpt`，错误扫描为空。
 - 2026-09-01 21:11 +08:00，第二十三次完整 validation 结束：验证总损失创新低至 `0.1895426`，配体体素 PRAUC 创新高至 `0.5819030`，受体 PRAUC 创新高至 `0.6446361`；`checkpoints/TOP_epoch_02_score_0.5819.ckpt` 与 `checkpoints/last.ckpt` 已更新，任务恢复训练并继续推进到 `trainer/global_step=26159`。配体体素 PRAUC 较调度器旧基准提高约 `0.00549`，超过绝对改进阈值 `0.003`；`last.ckpt` 已保存新基准 `0.5819030`、`num_bad_epochs=0`、学习率 `2e-5` 和第一次实际衰减计数。`BEST.ckpt` 暂时保持第十八次的 `TOP_epoch_02_score_0.5764.ckpt`，符合已确认的一次 validation 回调滞后；错误扫描为空。
+- 2026-09-03 14:47 +08:00，W&B run `9dsi7i9w` 已推进到 `global_step=36269`、学习率 `2e-5`、训练总损失约 `0.1894`。最近一次完整 validation 总损失为 `0.1875641`、配体体素 PRAUC 为 `0.5937543`、受体 PRAUC 为 `0.6552877`；`TOP_epoch_03_score_0.5938.ckpt` 与 `last.ckpt` 已于 11:16 写出，均为 499,678,098 bytes。Job 仍为 `RUNNING`，只有预期的 `after_lock_358384`，没有 `try_lock` 或 `kill_lock`。
 
 ## Decisions
 
 - 方式二 V1 与方式三 V2 长期共存。当前 `unet_c1` 只消费 V2；Find、`unet_base` 和 `unet_diff` 继续消费 V1。
 - 当前没有理由修改 batch 或 workers。只有出现 CUDA OOM 时才先把每卡 batch 从 8 降为 6并保持全局 batch 48；只有 worker 内存或进程故障时才把 workers 从 30 降为 24。
 - 稳定训练采用由多个 300 秒命令组成的 60 或 90 分钟静默守护周期，不使用 heartbeat，不记录无变化轮询。
-- `after_hold=1` 是正式资源契约。训练退出后保留 allocation 和 `after_lock_358384`，除非用户另行明确授权，否则不得删除锁或释放资源。
+- `after_hold=1` 是正式资源契约。用户现已明确授权：训练正常结束、最终 checkpoint 和 W&B 状态核验通过后，只删除 `after_lock_358384` 安全释放该 allocation；训练仍在执行或退出原因不明时不得删除。
 
 ## Open Questions
 
@@ -60,7 +61,7 @@ Stage1 采样方式三的 V2 验证产物、Dataset 请求入口、`unet_c1` 配
 1. 每 60 或 90 分钟检查 Job 状态、W&B 最新 step、错误信号和 checkpoint；每次等待必须由连续的 300 秒睡眠命令组成。
 2. 后续 validation 继续核对验证损失、配体体素 PRAUC、受体 PRAUC、全部损失的有限性，以及 TOP、last 与 BEST checkpoint 的更新时间。
 3. 若出现可恢复故障，在同一训练目标内按既定 batch/worker 次序修复，并把科学契约变化、原因和恢复证据写入执行记录与本 handoff。
-4. 训练退出后核对 Slurm、W&B、最终 checkpoint 和 `after_lock_358384`，保持 allocation 未释放，再完成文档收口与 goal。
+4. 训练退出后核对 Slurm、W&B、最终 checkpoint、成功状态和 `after_lock_358384`；全部通过后只删除该 `after_lock`，确认 Slurm allocation 退出，再完成文档与 handoff 收口。
 
 ## Files To Reopen
 

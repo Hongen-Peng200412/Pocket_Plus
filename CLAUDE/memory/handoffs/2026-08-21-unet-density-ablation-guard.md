@@ -4,7 +4,7 @@ Date: 2026-08-21
 
 ## Current State
 
-AdaLigand Stage1 的两项 density-only U-Net 消融已完成端到端修复、测试、安全同步、Slurm 提交和最终运行核验。Job `350302` 是 `unet_base`，使用 `nvlink` partition、`nvlinkg8` QOS、1 张 A800 和 16 CPU；训练已在 `gnode09` 按 `stop_after_lr_reductions=3` 正常结束。该 allocation 随后于 2026-09-01 07:33:50 由账号用户取消，`after_hold` 资源已释放，`try_lock_350302` 与 `after_lock_350302` 已由调度包装器清理。Job `350305` 是 `unet_diff`，使用 `nvlink` partition、`h200g2` QOS、1 张 A800 和 16 CPU，仍在 `gnode10` 正常训练。两项任务都使用 `pre_hold=0`、`after_hold=1`。
+AdaLigand Stage1 的两项 density-only U-Net 消融已完成端到端修复、测试、安全同步、Slurm 提交和最终运行核验。Job `350302` 是 `unet_base`，训练已在 `gnode09` 按 `stop_after_lr_reductions=3` 正常结束，其 allocation 后由账号用户取消并完成资源清理。Job `350305` 是 occurrence-centric `unet_diff`，使用 `nvlink` partition、`h200g2` QOS、1 张 A800 和 16 CPU，仍在 `gnode10` 正常训练；截至 2026-09-03 14:47 +08:00 已到 `global_step=41018`，最近一次 validation 的配体体素 PRAUC 为 `0.6288677`。当前综合训练守护继续覆盖该 Job。
 
 详细证据和后续关键事件记录在 `文档/exec_plan/2026-08-21_unet密度通道消融守护.md`。
 
@@ -23,6 +23,7 @@ AdaLigand Stage1 的两项 density-only U-Net 消融已完成端到端修复、�
 - Job `350305` 已在 `trainer/global_step=1175` 完成首次验证：验证总损失约 `0.2976`、配体体素 PRAUC 约 `0.2980`、受体 PRAUC 约 `0.2707`，五项验证损失均为有限值并继续训练。同期 Job `350302` 达到 `trainer/global_step=6998`；两项任务均没有错误、OOM、NaN 或 `try_lock`。
 - Job `350302` 于 2026-08-31 12:10 达到 3 次实际学习率衰减后按配置正常结束。最终 `trainer/global_step=39508`，验证总损失约 `0.1334`、受体 PRAUC 约 `0.7658`、配体体素 PRAUC 约 `0.6794`；`last.ckpt` 和 TOP checkpoint 已写入，现有最高分 TOP checkpoint 为 `TOP_epoch_00_score_0.6809.ckpt`。调度包装器记录第 1 次执行成功并创建 `/home/penghongen/Feedback/Pocket_Plus/allocations/try_lock_350302`；`after_lock_350302` 继续保留资源，两个锁均未被触碰。同期 Job `350305` 继续训练并达到 `trainer/global_step=30827`，没有错误或 `try_lock`。
 - Job `350302` 的 Slurm allocation 于 2026-09-01 07:33:50 被账号用户取消；该操作发生在训练正常结束和 checkpoint 写入之后，只释放了 `after_hold` 保留的 A800。调度包装器随后清理 `try_lock_350302`、`after_lock_350302` 与动态命令。守护过程没有执行 `scancel`，也没有删除锁。同期 Job `350305` 继续正常训练，GPU 利用率抽样为 99%，没有错误或 `try_lock`。
+- 2026-09-03 14:47 +08:00，Job `350305` 的 W&B run `nf93buae` 已推进到 `global_step=41018`、学习率约 `4e-6`。最近一次 validation 总损失为 `0.1653458`、配体体素 PRAUC 为 `0.6288677`、受体 PRAUC 为 `0.7104262`；运行目录中的 `TOP_epoch_00_score_0.6289.ckpt` 与 `last.ckpt` 已于 11:59 写出。Job 仍为 `RUNNING`，只有 `after_lock_350305`，没有 `try_lock` 或 `kill_lock`。
 
 ## Decisions
 
