@@ -559,8 +559,12 @@ def aggregate_stage1_metrics(
         - semantic_tp: int, 全部 PDB 已选候选体素并集与真实体素并集的交集数.
         - semantic_fp: int, 全部 PDB 已选候选体素并集落在真实体素并集外的体素数.
         - semantic_fn: int, 全部 PDB 真实体素并集未被已选候选覆盖的体素数.
+        - semantic_micro_precision: float, 先汇总全部 PDB 的 TP 与 FP 再计算的语义 precision.
+        - semantic_micro_recall: float, 先汇总全部 PDB 的 TP 与 FN 再计算的语义 recall.
         - semantic_micro_f1: float, 先汇总全部 PDB 的 TP, FP, FN 再计算的语义 F1.
         - semantic_micro_f2: float, 先汇总全部 PDB 的 TP, FP, FN 再计算的语义 F2.
+        - semantic_macro_precision: float, 逐 PDB 语义 precision 的算术平均.
+        - semantic_macro_recall: float, 逐 PDB 语义 recall 的算术平均.
         - semantic_macro_f1: float, 逐 PDB 语义 F1 的算术平均.
         - semantic_macro_f2: float, 逐 PDB 语义 F2 的算术平均.
         - topk_eligible_pdb_count: int, 至少含一个真实 occurrence 的 PDB 数量; top-K 成功比例使用该值作分母.
@@ -570,6 +574,8 @@ def aggregate_stage1_metrics(
         - coverage_micro_recall_<t>: float, 全部 occurrence 中的多对多覆盖命中比例.
         - coverage_micro_f1_<t>: float, 由全局 coverage precision 和 recall 计算的 F1.
         - coverage_micro_f2_<t>: float, 由全局 coverage precision 和 recall 计算的 F2.
+        - coverage_macro_precision_<t>: float, 逐 PDB coverage precision 的算术平均.
+        - coverage_macro_recall_<t>: float, 逐 PDB coverage recall 的算术平均.
         - coverage_macro_f1_<t>: float, 逐 PDB coverage F1 的算术平均.
         - coverage_macro_f2_<t>: float, 逐 PDB coverage F2 的算术平均.
         - coverage_micro_prauc_<t>: float, 固定体素数门槛后按全数据划分实际候选分数扫描的 coverage PRAUC.
@@ -578,6 +584,8 @@ def aggregate_stage1_metrics(
         - one_to_one_micro_recall_<t>: float, 全部最大一对一匹配数除以 occurrence 数.
         - one_to_one_micro_f1_<t>: float, 由全局 one-to-one precision 和 recall 计算的 F1.
         - one_to_one_micro_f2_<t>: float, 由全局 one-to-one precision 和 recall 计算的 F2.
+        - one_to_one_macro_precision_<t>: float, 逐 PDB one-to-one precision 的算术平均.
+        - one_to_one_macro_recall_<t>: float, 逐 PDB one-to-one recall 的算术平均.
         - one_to_one_macro_f1_<t>: float, 逐 PDB one-to-one F1 的算术平均.
         - one_to_one_macro_f2_<t>: float, 逐 PDB one-to-one F2 的算术平均.
         - one_to_one_micro_prauc_<t>: float, 固定体素数门槛后按全数据划分实际候选分数扫描的一对一 PRAUC.
@@ -605,12 +613,38 @@ def aggregate_stage1_metrics(
         total_tp / (total_tp + total_fp) if total_tp + total_fp else 0.0
     )
     semantic_recall = total_tp / (total_tp + total_fn) if total_tp + total_fn else 0.0
+    # 长度 N_pdb 的语义 precision, 每个 PDB 等权进入 semantic_macro_precision; 没有预测正体素时记为 0.0.
+    per_pdb_semantic_precision = [
+        item.semantic_tp / (item.semantic_tp + item.semantic_fp)
+        if item.semantic_tp + item.semantic_fp
+        else 0.0
+        for item in evaluations
+    ]
+    # 长度 N_pdb 的语义 recall, 每个 PDB 等权进入 semantic_macro_recall; 没有真实正体素时记为 0.0.
+    per_pdb_semantic_recall = [
+        item.semantic_tp / (item.semantic_tp + item.semantic_fn)
+        if item.semantic_tp + item.semantic_fn
+        else 0.0
+        for item in evaluations
+    ]
     # report: 最终写入数据划分级 global_metrics.json 的标量字段映射.
     report: dict[str, object] = {
         "pdb_count": len(evaluations),
         "semantic_tp": int(total_tp),
         "semantic_fp": int(total_fp),
         "semantic_fn": int(total_fn),
+        "semantic_micro_precision": semantic_precision,
+        "semantic_micro_recall": semantic_recall,
+        "semantic_macro_precision": (
+            float(np.mean(per_pdb_semantic_precision))
+            if per_pdb_semantic_precision
+            else 0.0
+        ),
+        "semantic_macro_recall": (
+            float(np.mean(per_pdb_semantic_recall))
+            if per_pdb_semantic_recall
+            else 0.0
+        ),
     }
     for beta in (1.0, 2.0):
         beta2 = beta * beta
@@ -670,6 +704,10 @@ def aggregate_stage1_metrics(
                     if denominator else 0.0
                 )
 
+            # per_pdb_precision: 长度 N_pdb, 第 i 项对应 evaluations[i] 在当前匹配模式 name、当前阈值 thresholds[row] 下的 precision; 分子是命中的已选候选数, 分母是该 PDB 的已选候选总数.
+            per_pdb_precision: list[float] = []
+            # per_pdb_recall: 长度 N_pdb, 第 i 项对应 evaluations[i] 在当前匹配模式 name、当前阈值 thresholds[row] 下的 recall; 分子是命中的真实 occurrence 数, 分母是该 PDB 的真实 occurrence 总数.
+            per_pdb_recall: list[float] = []
             # per_pdb_f1: 长度 N_pdb 的当前指标 F1, 用于 PDB 等权 macro 平均.
             per_pdb_f1: list[float] = []
             # per_pdb_f2: 长度 N_pdb 的当前指标 F2, 用于 PDB 等权 macro 平均.
@@ -689,6 +727,8 @@ def aggregate_stage1_metrics(
                     if item.gt_sizes.size
                     else 0.0
                 )
+                per_pdb_precision.append(local_precision)
+                per_pdb_recall.append(local_recall)
                 for beta, target in ((1.0, per_pdb_f1), (2.0, per_pdb_f2)):
                     beta2 = beta * beta
                     denominator = beta2 * local_precision + local_recall
@@ -696,6 +736,12 @@ def aggregate_stage1_metrics(
                         (1.0 + beta2) * local_precision * local_recall / denominator
                         if denominator else 0.0
                     )
+            report[f"{name}_macro_precision_{tag}"] = (
+                float(np.mean(per_pdb_precision)) if per_pdb_precision else 0.0
+            )
+            report[f"{name}_macro_recall_{tag}"] = (
+                float(np.mean(per_pdb_recall)) if per_pdb_recall else 0.0
+            )
             report[f"{name}_macro_f1_{tag}"] = (
                 float(np.mean(per_pdb_f1)) if per_pdb_f1 else 0.0
             )

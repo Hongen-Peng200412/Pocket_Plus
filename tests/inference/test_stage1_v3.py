@@ -834,35 +834,88 @@ def test_evaluate_reports_distinct_micro_and_macro_metrics() -> None:
         coverage_thresholds=(0.3, 0.5, 0.6),
         topk_values=(3, 4, 5),
     )
-    # small 的单个候选与单个 occurrence 不相交, 因而三类 F1 均为 0.
+    # int16, (2, 3), small 两个候选框内的局部 ZYX 体素坐标; box_start_zyx 全为 0, 因而同一数值也是完整图 ZYX 坐标, 且只有第一项命中真实 occurrence.
+    small_coordinates = np.asarray([[0, 0, 0], [0, 0, 1]], dtype=np.int16)
+    # small 的 precision 为 1/2、recall 为 1, 用非对称分母分别约束 P 与 R.
     small = evaluate_centered_pdb(
         pdb_id="small",
         centered={
-            "selected": np.asarray([True]),
-            "score": np.asarray([1.0], dtype=np.float32),
-            "source_blob_index": np.asarray([0], dtype=np.int32),
-            "voxel_offsets": np.asarray([0, 1], dtype=np.int64),
-            "voxel_index_local_zyx": np.asarray([[0, 0, 0]], dtype=np.int16),
-            "box_start_zyx": np.zeros((1, 3), dtype=np.int32),
+            "selected": np.ones(2, dtype=np.bool_),
+            "score": np.asarray([1.0, 0.5], dtype=np.float32),
+            "source_blob_index": np.arange(2, dtype=np.int32),
+            "voxel_offsets": np.arange(3, dtype=np.int64),
+            "voxel_index_local_zyx": small_coordinates,
+            "box_start_zyx": np.zeros((2, 3), dtype=np.int32),
         },
         occurrence_id=np.asarray([0], dtype=np.int32),
-        occurrence_voxel_zyx=(np.asarray([[0, 0, 1]], dtype=np.int32),),
+        occurrence_voxel_zyx=(small_coordinates[:1].astype(np.int32),),
         full_shape_zyx=(1, 1, 2),
         coverage_thresholds=(0.3, 0.5, 0.6),
         topk_values=(3, 4, 5),
     )
-    # 两个 PDB 等权 macro 为 0.5, 而按 11 个预测候选与 11 个真实 occurrence 汇总的 micro 为 10/11.
+    # 两个 PDB 共有 12 个预测候选、11 个真实 occurrence 和 11 个命中; small 使 macro precision 与 recall 也不同.
     metrics = aggregate_stage1_metrics(
         (large, small),
         coverage_thresholds=(0.3, 0.5, 0.6),
         topk_values=(3, 4, 5),
     )
-    assert metrics["semantic_micro_f1"] == pytest.approx(10.0 / 11.0)
-    assert metrics["semantic_macro_f1"] == pytest.approx(0.5)
-    assert metrics["coverage_micro_f1_0p3"] == pytest.approx(10.0 / 11.0)
-    assert metrics["coverage_macro_f1_0p3"] == pytest.approx(0.5)
-    assert metrics["one_to_one_micro_f1_0p3"] == pytest.approx(10.0 / 11.0)
-    assert metrics["one_to_one_macro_f1_0p3"] == pytest.approx(0.5)
+    assert metrics["semantic_micro_precision"] == pytest.approx(11.0 / 12.0)
+    assert metrics["semantic_micro_recall"] == pytest.approx(1.0)
+    assert metrics["semantic_micro_f1"] == pytest.approx(22.0 / 23.0)
+    assert metrics["semantic_macro_precision"] == pytest.approx(0.75)
+    assert metrics["semantic_macro_recall"] == pytest.approx(1.0)
+    assert metrics["semantic_macro_f1"] == pytest.approx(5.0 / 6.0)
+    assert metrics["coverage_micro_precision_0p3"] == pytest.approx(11.0 / 12.0)
+    assert metrics["coverage_micro_recall_0p3"] == pytest.approx(1.0)
+    assert metrics["coverage_micro_f1_0p3"] == pytest.approx(22.0 / 23.0)
+    assert metrics["coverage_macro_precision_0p3"] == pytest.approx(0.75)
+    assert metrics["coverage_macro_recall_0p3"] == pytest.approx(1.0)
+    assert metrics["coverage_macro_f1_0p3"] == pytest.approx(5.0 / 6.0)
+    assert metrics["one_to_one_micro_precision_0p3"] == pytest.approx(11.0 / 12.0)
+    assert metrics["one_to_one_micro_recall_0p3"] == pytest.approx(1.0)
+    assert metrics["one_to_one_micro_f1_0p3"] == pytest.approx(22.0 / 23.0)
+    assert metrics["one_to_one_macro_precision_0p3"] == pytest.approx(0.75)
+    assert metrics["one_to_one_macro_recall_0p3"] == pytest.approx(1.0)
+    assert metrics["one_to_one_macro_f1_0p3"] == pytest.approx(5.0 / 6.0)
+
+
+def test_evaluate_reports_zero_precision_recall_for_empty_candidates() -> None:
+    """含真实 occurrence 但没有候选时, semantic 与实例 P/R 都必须定义为 0.0."""
+
+    evaluation = evaluate_centered_pdb(
+        pdb_id="empty",
+        centered={
+            "selected": np.empty(0, dtype=np.bool_),
+            "score": np.empty(0, dtype=np.float32),
+            "source_blob_index": np.empty(0, dtype=np.int32),
+            "voxel_offsets": np.zeros(1, dtype=np.int64),
+            "voxel_index_local_zyx": np.empty((0, 3), dtype=np.int16),
+            "box_start_zyx": np.empty((0, 3), dtype=np.int32),
+        },
+        occurrence_id=np.asarray([0], dtype=np.int32),
+        occurrence_voxel_zyx=(np.asarray([[0, 0, 0]], dtype=np.int32),),
+        full_shape_zyx=(1, 1, 1),
+        coverage_thresholds=(0.3, 0.5, 0.6),
+        topk_values=(3, 4, 5),
+    )
+    metrics = aggregate_stage1_metrics(
+        (evaluation,),
+        coverage_thresholds=(0.3, 0.5, 0.6),
+        topk_values=(3, 4, 5),
+    )
+
+    assert metrics["semantic_micro_precision"] == 0.0
+    assert metrics["semantic_micro_recall"] == 0.0
+    assert metrics["semantic_macro_precision"] == 0.0
+    assert metrics["semantic_macro_recall"] == 0.0
+    assert metrics["coverage_micro_precision_0p3"] == 0.0
+    assert metrics["coverage_micro_recall_0p3"] == 0.0
+    assert metrics["coverage_macro_precision_0p3"] == 0.0
+    assert metrics["coverage_macro_recall_0p3"] == 0.0
+    assert metrics["one_to_one_micro_precision_0p3"] == 0.0
+    assert metrics["one_to_one_micro_recall_0p3"] == 0.0
+    assert metrics["one_to_one_macro_precision_0p3"] == 0.0
+    assert metrics["one_to_one_macro_recall_0p3"] == 0.0
 
 
 def test_candidate_prauc_scans_actual_scores_and_applies_only_size_gate() -> None:
@@ -1692,6 +1745,33 @@ def test_evaluate_keeps_raw_and_filtered_results_side_by_side(
     evaluation_root = tmp_path / "unet_c1" / "validation" / "evaluation"
     assert (evaluation_root / "raw_blobs.metrics.json").is_file()
     assert (evaluation_root / "basic_strict.metrics.json").is_file()
+    precision_recall_fields = {
+        "semantic_micro_precision",
+        "semantic_micro_recall",
+        "semantic_macro_precision",
+        "semantic_macro_recall",
+        "coverage_micro_precision_0p5",
+        "coverage_micro_recall_0p5",
+        "coverage_macro_precision_0p5",
+        "coverage_macro_recall_0p5",
+        "one_to_one_micro_precision_0p5",
+        "one_to_one_micro_recall_0p5",
+        "one_to_one_macro_precision_0p5",
+        "one_to_one_macro_recall_0p5",
+    }
+    for evaluation_name in ("raw_blobs", "basic_strict"):
+        metrics_payload = json.loads(
+            (evaluation_root / f"{evaluation_name}.metrics.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        jsonl_payload = json.loads(
+            (evaluation_root / f"{evaluation_name}.jsonl").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert precision_recall_fields <= metrics_payload.keys()
+        assert precision_recall_fields <= jsonl_payload.keys()
 
 
 def _run_empty_blob_limit_case(
