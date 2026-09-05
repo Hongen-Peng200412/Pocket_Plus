@@ -329,6 +329,11 @@
       "date": "2026-09-04",
       "summary": "Stage1 四条活动训练线继续运行：Find_1 PDB-centric-2 第三轮完整 validation PRAUC 0.5468278，每 rank 543 batches，仍处于 warmup且实际衰减 0 次；PDB-centric-1 第七轮为 0.5385515；双节点历史续训第三轮为 0.6125641，best 仍为 0.6297938、plateau bad epochs 为 1；occurrence-centric unet_diff 原始最高为 0.6343954，最新一轮为 0.6314629，plateau bad epochs 已到 2、实际衰减仍为 2 次。368455 保持三次实际学习率衰减停训并强制保留第二次衰减 checkpoint。Job 358384 的推理完成后于 08:35:30 被外部取消，本守护未操作资源；09:41 调度包装器已完成活动锁清理，未经授权不得自行重提任务或占用空出的 H100。",
       "handoff": "CLAUDE/memory/handoffs/2026-09-04-stage1-four-training-validation-milestones.md"
+    },
+    {
+      "date": "2026-09-05",
+      "summary": "Occurrence-centric unet_diff Job 350305 已在第 3 次实际学习率衰减后按 stop_after_lr_reductions=3 正常结束训练。最终 checkpoint global step 46282，最终 validation 配体体素 PRAUC 0.6330414，全程原始最高 0.6343954；最终 last/TOP 与原始最佳 BEST/TOP 的哈希均已核验。用户在产物验收后释放该 Job，活动锁与动态命令均已清理。普通 validation、epoch 和常规 checkpoint 不再触发 handoff。",
+      "handoff": "CLAUDE/memory/handoffs/2026-08-21-unet-density-ablation-guard.md"
     }
   ],
   "blockers": [

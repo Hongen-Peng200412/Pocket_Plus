@@ -46,6 +46,13 @@ bash 训练与运行/submit_task.sh \
   --gpus 2 \
   --cpus 64
 
+# Find_1 PDB-centric-1：一台节点、两张 H100，从头训练。
+bash 训练与运行/submit_task.sh \
+  --sh Find_1_pdb_centric_2.sh \
+  --resource h100 \
+  --gpus 2 \
+  --cpus 64
+
 # unet_base：一台节点、一张 A800。
 bash 训练与运行/submit_task.sh \
   --sh unet_base.sh \

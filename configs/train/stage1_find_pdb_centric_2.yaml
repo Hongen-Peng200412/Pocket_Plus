@@ -7,7 +7,7 @@ global_batch_size: 48
 batch_size: 6
 strict_global_batch_size: true
 enable_batch_size_tuning: false
-num_workers: 24
+num_workers: 30
 prefetch_factor: 4
 max_epochs: 110
 val_per_epoch: 8

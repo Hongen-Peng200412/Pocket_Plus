@@ -1,12 +1,13 @@
-# Handoff：Stage1 四条活动训练线与一条保留资源综合守护
+# Handoff：Stage1 三条活动训练线综合守护
 
 Date: 2026-09-04
+Updated: 2026-09-05
 
 ## Current State
 
-当前持续目标统一守护四条活动训练线，并保留一条已经完成训练的资源线：Find_1 PDB-centric-1、Find_1 PDB-centric-2 双卡训练、Find_1 两节点历史续训、occurrence-centric `unet_diff`，以及训练已完成但 H100 allocation 仍被复用的采样方式三 `unet_c1`。其中代码名 `pdb_centric_2` 表示 Find_1 的第二套 PDB 中心配置，也是三种 Stage1 采样方式中的方式三；不另建含义重复的 `pdb_centric_3` 配置。
+当前持续目标统一守护三条活动训练线：Find_1 PDB-centric-1、Find_1 PDB-centric-2 双卡训练和 Find_1 两节点历史续训。Occurrence-centric `unet_diff` Job `350305` 已完成训练并由用户释放，不再属于活动训练或资源守护清单。代码名 `pdb_centric_2` 表示 Find_1 的第二套 PDB 中心配置，也是三种 Stage1 采样方式中的方式三；不另建含义重复的 `pdb_centric_3` 配置。
 
-截至 2026-09-04 18:06 +08:00，Jobs `368455`、`366071`、`366277` 和 `350305` 正常训练。PDB-centric-2 双卡 Job `368455` 已完成第三次 validation，每 rank 543 batches、配体体素 PRAUC `0.5468278`；当前仍处于 warmup，实际学习率衰减 0 次。PDB-centric-1 Job `366071` 已完成第七次 validation，配体体素 PRAUC 新高为 `0.5385515`。配置保持 `stop_after_lr_reductions=3`，第二次实际衰减后的完整 checkpoint 必须保留，可在需要时作为“2 次衰减”版本的等价端点。
+截至 2026-09-05 10:26 +08:00，Jobs `368455`、`366071` 和 `366277` 正常训练。Job `350305` 已在第 3 次实际学习率衰减后正常结束训练，最终 validation 配体体素 PRAUC 为 `0.6330414`，全程原始最高为 `0.6343954`；最终与最佳 checkpoint 均已核验。用户已在产物验收后释放该 Job，活动锁与动态命令均已清理。Find_1 PDB-centric-2 的配置保持 `stop_after_lr_reductions=3`，第二次实际衰减后的完整 checkpoint 必须保留，可在需要时作为“2 次衰减”版本的等价端点。
 
 Job `358384` 的推理于 06:03 成功结束并写回 `try_lock`，但 Slurm 于 08:35:30 把该 Job 记录为外部取消；本守护没有执行取消、删除锁或其他资源写操作。它已经不再持有 hnode01 的第三张 H100；09:41 调度包装器也已删除临时遗留的 `try_lock_358384`、`after_lock_358384` 与 allocation 活动文件。未经新的用户授权，不重提任务，也不尝试接管空出的资源。
 
@@ -18,7 +19,7 @@ Job `358384` 的推理于 06:03 成功结束并写回 `try_lock`，但 Slurm 于
 | `368455` | Find_1 PDB-centric-2，即全局采样方式三 | hnode01，H100×2，CPU×64 | `/home/penghongen/Feedback/Pocket_Plus/logs/AdaLigand_Stage1_pdb_centric-Find_1-pdb_centric_2/Find_1-pdb_centric_2____Find_1_pdb_centric_2_job368455_20260903T233745_a1_pdb_centric_2`；`g7ul4r8p` | a1 正常双卡训练；第三次 validation `0.5468278`，仍处于 warmup，18:06 已到 `global_step=3635` |
 | `366277` | Find_1 指定历史 checkpoint 两节点续训 | gnode09、gnode10 各 A800×1、CPU×17 | `/home/penghongen/Feedback/Pocket_Plus_Find1/logs/AdaLigand_Stage1_resume-Find_1-CPC1/Find_1-resume_last_job351295____Find_1_job366277_20260902T182829_a3_CPC1`；`9kj96nld` | a3 正常训练；第三次真实续训 validation 每 rank 551 batches、PRAUC `0.6125641`，best 仍为 `0.6297938`，14:57 已到 `global_step=14777` |
 | `358384` | 采样方式三 `unet_c1`；训练与推理均已完成 | 已于 08:35:30 被外部取消，不再持有 H100 | 训练根 `/home/penghongen/Feedback/Pocket_Plus/logs/AdaLigand_Stage1_pdb_centric_2-unet_c1-mainchain/unet_c1_mainchain_pdb_centric_2____unet_c1_job358384_20260828T093205_a1_formal`；`9dsi7i9w` | Slurm `CANCELLED`；09:41 已完成活动锁清理；不自行重提资源 |
-| `350305` | occurrence-centric `unet_diff` 密度通道消融 | gnode10，A800×1，CPU×16 | `/home/penghongen/Feedback/Pocket_Plus/logs/AdaLigand_Stage1-unet_diff/unet_diff____unet_diff_job350305_20260822T171529_a1_formal`；`nf93buae` | 正常训练；原始 PRAUC 最高仍为 `0.6343954`；最新 validation `0.6314629`，plateau bad epochs 2、实际衰减 2 次，13:24 已到 step 44087 |
+| `350305` | occurrence-centric `unet_diff` 密度通道消融 | 已释放，不再占用 gnode10 资源 | `/home/penghongen/Feedback/Pocket_Plus/logs/AdaLigand_Stage1-unet_diff/unet_diff____unet_diff_job350305_20260822T171529_a1_formal`；`nf93buae` | 训练已正常完成；最终 checkpoint step 46282、实际衰减 3 次；用户完成产物验收后已释放 Job，活动锁已经清理 |
 
 ## Job 367906 Evidence
 
@@ -58,6 +59,14 @@ Job `358384` 的推理于 06:03 成功结束并写回 `try_lock`，但 Slurm 于
 - release、launch、正式运行根和 W&B 分别为 `Pocket_Plus_fdb8a30fa196`、`unet_diff_job350305_20260822T171529_a1`、`/home/penghongen/Feedback/Pocket_Plus/logs/AdaLigand_Stage1-unet_diff/unet_diff____unet_diff_job350305_20260822T171529_a1_formal`、`pencounkdual-111/AdaLigand_Stage1/nf93buae`。immutable `launch.json` 与 `run_cmd.sh` SHA-256 分别为 `f5852fe2c7ec78da3f03250c2d7c47879b5708abac5f5c89fca284a4713611f0`、`29c6433271a5f46c8403d5d2a9b9d7de6c3f1ce460b12a9e4c4714b738cedfc5`。
 - 21:52 时训练已恢复并推进到至少 `global_step=41915`。核验只读完成，没有操作 Job、进程、checkpoint 或锁。
 
+## Job 350305 训练完成并释放资源
+
+- 2026-09-05 05:00，最终 827-batch validation 得到总损失 `0.1607799530`、配体体素 PRAUC `0.6330414414`、受体 PRAUC `0.7154738903`。该分数没有超过 plateau best `0.6319023967` 加绝对阈值 `0.003`，因此第 3 次实际学习率衰减正常发生，并触发配置化停训。
+- 最终 `last.ckpt` 为 epoch 1、`global_step=46282`、完整 validation 进度 827/827；优化器学习率为 `8.000000000000022e-07`，实际衰减计数为 3。标准输出明确记录总时长 `1,165,496.32` 秒、正式训练完成和第一次执行成功。
+- `last.ckpt` 与 `TOP_epoch_01_score_0.6330.ckpt` 的 SHA-256 均为 `48ad3b374c32e34edad21a7e9127cf875a5bd42c21327821f84e2b4d45c7dbfd`。原始最佳 `BEST.ckpt` 与 `TOP_epoch_00_score_0.6344.ckpt` 的 SHA-256 均为 `8777e7a58ffdb6f17914329a3a2bbdc1bb478b345b6da8b570f50108c9c51409`。
+- release 为 `/home/penghongen/Feedback/Pocket_Plus/releases/Pocket_Plus_fdb8a30fa196/Pocket_Plus`；launch 为 `/home/penghongen/Feedback/Pocket_Plus/launches/350305/unet_diff_job350305_20260822T171529_a1`；正式产物根为 `/home/penghongen/Feedback/Pocket_Plus/logs/AdaLigand_Stage1-unet_diff/unet_diff____unet_diff_job350305_20260822T171529_a1_formal`，其下 `checkpoints/`、`src_snapshot/`、`wandb/run-20260822_172939-nf93buae/` 分别保存 checkpoint、冻结源码和 W&B 本地产物。
+- immutable `launch.json` 与 `run_cmd.sh` SHA-256 分别为 `f5852fe2c7ec78da3f03250c2d7c47879b5708abac5f5c89fca284a4713611f0`、`29c6433271a5f46c8403d5d2a9b9d7de6c3f1ce460b12a9e4c4714b738cedfc5`。05:01:25 创建的根级 `try_lock_350305` 和 allocation 内 `after_lock_350305` 已在用户释放 Job 后由调度包装器清理；训练产物保持原位。
+
 ## PDB-centric-2 单卡到双卡转换
 
 - Job `367928` 于 22:42:57 在 hnode01 获得单 H100、CPU×32，并停在 `pre_lock_367928`。23:28:31 按既定授权核验身份后，只删除该任务自己的根级 `pre_lock`，直接执行 immutable `run_cmd.sh`；没有增加 GPU 门禁，也没有碰其他 Job。
@@ -86,9 +95,9 @@ Job `358384` 的推理于 06:03 成功结束并写回 `try_lock`，但 Slurm 于
 - PDB-centric-2 的单卡到双卡转换已经完成。活动权威 Job 固定为 `368455`；已取消的 `367928` 仅作为历史证据，不再提交、恢复或操作其锁。
 - Job `368455` 使用 hnode01 的 H100×2、CPU×64，从头训练。未经新的明确授权，不停止该 Job、不删除 `after_lock_368455`，也不把诊断门禁或条件分支加入正式入口。
 - Job `358384` 已完成训练和推理，并被外部取消；本守护没有执行该动作，调度包装器已经完成活动锁清理。未经用户新的明确指令，不得自行重提 Job 或占用目前空出的第三张 H100。
-- Job `350305` 没有自动释放授权。训练结束或进入 `try_lock` 后先核验并报告，不擅自删除锁。
+- Job `350305` 已正常结束训练，并由用户在产物验收后释放；活动锁与动态命令均已清理，不重新提交该消融训练。
 - Jobs `366071`、`366277` 继续遵守各自既有 after-hold 和故障恢复契约。
-- 每次醒来固定检查 Jobs `368455`、`366071`、`350305`、`366277` 的训练进度、validation、checkpoint、错误与资源状态。Job `358384` 不属于固定训练检查清单，但其“未经授权不得释放”约束继续生效。稳定阶段采用由多个独立 300 秒命令组成的 60 或 90 分钟静默等待，不创建 heartbeat；只有启动、失败、恢复、validation/checkpoint、训练完成或资源转换等明确事件才更新日志。
+- 每次醒来固定检查 Jobs `368455`、`366071`、`366277` 的训练、错误与资源状态。Jobs `350305`、`358384` 均已结束并完成资源清理，不属于固定训练检查清单。稳定阶段采用由多个独立 300 秒命令组成的 60 或 90 分钟静默等待，不创建 heartbeat。普通 validation、epoch 完成和常规 checkpoint 只用于健康判断，不更新 handoff；任务提交或替换、训练完成、故障修复与重启、资源交接、科学契约变化等阶段事件才更新 handoff。
 
 ## Logs Updated
 
@@ -107,10 +116,10 @@ Job `358384` 的推理于 06:03 成功结束并写回 `try_lock`，但 Slurm 于
 ## Next Actions
 
 1. 每次醒来固定检查 Job `368455` 的双 rank 训练进度、GPU 活动、validation、checkpoint、错误与锁状态；只在明确事件发生时集中记录。
-2. 同一次醒来检查 Jobs `366071`、`350305` 和 `366277`；只在出现 bug、完整 validation、checkpoint 里程碑、训练完成或资源状态变化时执行相应动作并集中记录。
+2. 同一次醒来检查 Jobs `366071` 与 `366277`；普通 validation、epoch 与 checkpoint 不写 handoff，只在故障、训练完成、重启、资源变化或科学契约变化时集中记录。
 3. 对已经外部取消并完成清理的 Job `358384` 只做冲突防护，不自行重提任务。若用户以后授权重新申请资源，再按当时状态拟定提交动作。
 4. Job `368455` 在第二次实际学习率衰减时保留并核验对应完整 checkpoint；训练继续遵循用户确认的三次实际衰减停训配置。
-5. 各活动训练最终完成后更新对应执行记录与 handoff，再统一完成 Find_1 的 Git 双线收口。
+5. 剩余三条活动训练最终完成后更新对应执行记录与 handoff，再统一完成 Find_1 的 Git 双线收口。
 
 ## Files To Reopen
 

@@ -4,7 +4,7 @@
 
 本计划统一管理三项互相关联的工作，但只维护一套当前生产实现：
 
-1. 为 Find_1 建立两份显式的 PDB 中心采样配置。PDB-centric-1 完成训练并提交；PDB-centric-2 只完成配置与测试，未经用户新授权不提交训练。
+1. 为 Find_1 建立两份显式的 PDB 中心采样配置。PDB-centric-1 与 PDB-centric-2 均进入正式训练；后者也是三种 Stage1 采样方式中的方式三，代码名保持 `pdb_centric_2`。
 2. 在当前生产实现中，以一个 AdamW 优化器分别裁剪体素组与其余可训练参数组。每组梯度范数上限均为 0.5，不增加第二个优化器，不改变学习率或调度器。
 3. 从历史提交 `1315d301c867c99e2dc0736feffde86e9cd7fa0a` 建立隔离的续训实现，只增加完整 checkpoint 恢复和首轮已完成 batch 跳过能力。历史续训继续使用原来的全局梯度裁剪，不吸收当前 Dataset 或分组裁剪。
 
@@ -25,9 +25,10 @@
 - Dataset 训练请求：每个 PDB 目标 bias BOX 数量 50，bias 目标比例 25/33，单个 occurrence 的 bias BOX 上限 1。
 - validation：`validation_selection_pdb_centric_v2.npz`，200 个 PDB，3,305 个 bias BOX 与 3,200 个 context BOX。
 - 训练：物理 batch size 6，全局 batch size 48，110 个 epoch，每个 epoch 8 次 validation，学习率 `5e-5`。
-- 每个训练 rank 使用 24 个 Dataset workers。
+- 每个训练 rank 使用 30 个 Dataset workers；当前双卡 H100 作业合计使用 60 个 workers，并申请 64 CPU。
 - 梯度裁剪与 PDB-centric-1 相同。
-- 本轮只完成配置组合、Shell 入口和测试，不提交训练。
+- 已获正式训练授权。单卡 Job `367928` 在 hnode01 启动后由用户按既定“先取得双卡、后取消单卡”顺序取消；当前权威训练为 Job `368455`，使用同一 hnode01 的 H100×2、CPU×64，从头训练。
+- 用户把 `stop_after_lr_reductions` 从 2 明确改为 3。第二次实际学习率衰减后的完整 checkpoint 仍保留，可在需要时作为“2 次衰减”版本的等价选择端点；当前运行不改回 2。
 
 ### AUTO 体素组边界
 
@@ -80,7 +81,7 @@ AUTO 仓库 `C:\Users\15919\Desktop\AUTO\Pocket_Plus-v3-macro` 当前保留最�
 - `366071` 专用于 PDB-centric-1。若它在优化动力学门禁完成前获得单卡资源并开始旧命令，只创建该 Job 控制根中的 `kill_lock_366071`；核实旧训练进程退出、`kill_lock` 被消费且根级 `try_lock_366071` 出现后保留 allocation。生产实现、部署哈希和动力学门禁全部通过后，才删除该 `try_lock` 启动正式 PDB-centric-1。
 - 只有同一 H100 节点存在 Slurm 实际可分配的第二张 H100、且 H100 没有等待作业时，才先提交双卡 H100 作业并核验 `pre_lock`，之后取消单卡作业。
 - 节点级 `GRES_USED` 是资源判断依据；不得根据逐作业 GPU 请求数推测“名义空卡”。
-- PDB-centric-2 未经新授权不提交。
+- PDB-centric-2 已获训练授权。Jobs `367906`、`367917` 因 hnode02 的故障 GPU 已退出；Job `367928` 后来在 hnode01 获得单 H100 并启动，用户取得同节点双 H100 Job `368455` 后才取消该单卡 Job。当前固定守护 `368455`，不得再对已取消的 `367928` 执行资源动作。
 
 ## 实施与验收顺序
 
@@ -91,7 +92,7 @@ AUTO 仓库 `C:\Users\15919\Desktop\AUTO\Pocket_Plus-v3-macro` 当前保留最�
 5. 建立历史续训隔离分支，完成 checkpoint 恢复与 batch 跳过测试。
 6. 对生产代码进行一轮表达/结构全面审查和一轮科学逻辑全面审查；之后只窄口径复核已报告问题。
 7. 同步已验收代码，记录文件哈希、release、launch、run_cmd、Slurm Job、W&B 与产物目录。
-8. 启动并监视历史续训与 PDB-centric-1，出现可恢复问题时在各自科学边界内修复并记录。
+8. 启动并综合监视历史续训、PDB-centric-1、PDB-centric-2、采样方式三 `unet_c1` 与 occurrence-centric `unet_diff`；出现可恢复问题时在各自科学边界内修复并记录。
 9. 实现历史与学习历史等价后推进 `Learn/CUMULATIVE`，确保其重新成为按提交者时间形成的唯一最新提交。
 
 ## 当前状态
@@ -102,5 +103,8 @@ AUTO 仓库 `C:\Users\15919\Desktop\AUTO\Pocket_Plus-v3-macro` 当前保留最�
 - [x] 两套 PDB 中心配置与分组裁剪实现。
 - [x] AUTO 优化动力学对照；schema 4 受控、自然随机和双向 replay 门禁已由 H100 attempt a10 通过。
 - [x] 历史续训恢复实现。
-- [x] 正式代码审查、服务器 smoke 与训练启动；H100 PDB-centric-1 Job `366071` 已完成三次正式 validation，最新 `voxel_ligand_PRAUC=0.4633158`。A800 a1/a2 已确认在恢复瞬间各写入一次单 batch 伪 validation，均冻结为故障证据；历史续训分支已最小修复 Lightning 完成态 validation 边界和同一 global step 的调度器幂等性，attempt a3 从指定原始 checkpoint 启动并先推进真实训练 step，未再次触发伪 validation。
+- [x] 正式代码审查、服务器 smoke 与训练启动；H100 PDB-centric-1 Job `366071` 已完成第七次正式 validation，配体体素 PRAUC 新高为 `0.5385515`，plateau best 已按 `expected_threshold=0.003` 更新且学习率仍为 `5e-5`。A800 a1/a2 已冻结为单 batch 伪 validation 故障证据；历史续训 attempt a3 已完成三次真实续训 validation，每次均为每 rank 551 batches、`num_gt=14,802,569`。第二次的配体体素 PRAUC `0.6297938` 仍是最佳；第三次为 `0.6125641`，plateau bad epochs 为 1，学习率仍为 `5e-5`。恢复后的 plateau、candidate cache、checkpoint 与停止计数继续按完整 validation 推进。
+- [x] PDB-centric-2 正式训练已获授权；科学配置与 V2 验证选择核验通过。Job `367928` 已在 hnode01 启动单卡版本，随后按用户操作在同节点双卡 Job `368455` 获得资源后取消。`368455` 使用 H100×2、CPU×64、每 rank batch 6、每 rank 30 workers、全局 batch 48 从头训练；第三次完整 validation 已完成，每 rank 543 batches、累计 1,629 batches、`num_gt=13,835,754`、配体体素 PRAUC `0.5468278`。当前仍处于 warmup，实际学习率衰减 0 次；训练保持 `stop_after_lr_reductions=3`，并把第二次实际衰减后的完整 checkpoint 作为可选的“2 次衰减”端点。
+- [x] 采样方式三 `unet_c1` Job `358384` 已于 2026-09-03 正常完成训练，随后于 2026-09-04 06:03 完成独立 calibration 与 held-out 推理并写回 `try_lock`。08:35:30 Slurm 将该 Job 记录为外部取消，本守护没有执行资源写操作；09:41 调度包装器已完成锁和 allocation 活动文件清理。未经新授权不得自行重提任务或占用空出的 H100。Occurrence-centric `unet_diff` Job `350305` 已于 2026-09-05 05:01 正常结束训练：第 3 次实际学习率衰减把 checkpoint 中的优化器学习率降至 `8e-7`，并按 `stop_after_lr_reductions=3` 停止。最终 validation 的配体体素 PRAUC 为 `0.6330414`；全程原始最高 PRAUC 仍为 `0.6343954`。最终 `last.ckpt` 与 `TOP_epoch_01_score_0.6330.ckpt` 的 SHA-256 均为 `48ad3b37...7dbfd`，原始最佳 `BEST.ckpt` 的 SHA-256 为 `8777e7a5...51409`。训练产物验收完成后，用户已释放 Job `350305` 的 held allocation，相关活动锁均已清理。
+- [x] 固定醒来检查已经更新：每次守护 Jobs `368455`、`366071`、`366277` 的训练、验证、checkpoint、错误与资源状态。常规 validation、epoch 结束和普通 checkpoint 只用于判断训练健康度，不触发 handoff；提交或替换任务、训练完成、故障修复与重启、资源交接、科学契约变化等阶段事件才更新 handoff。Jobs `350305`、`358384` 均已结束并完成资源清理，不再属于固定检查清单。
 - [ ] 训练完成、执行记录收口、handoff 与双线 Git 收口。

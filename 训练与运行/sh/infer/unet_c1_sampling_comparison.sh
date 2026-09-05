@@ -17,15 +17,6 @@ stage1() {
     bash "${STAGE1_ENTRY}" "$@"
 }
 
-select_best_top_checkpoint() {
-    # 按文件名中的浮点 score 选择当前训练目录内数值最高的 TOP checkpoint.
-    find "$1/checkpoints" -maxdepth 1 -type f -name 'TOP_epoch_*_score_*.ckpt' -print \
-        | awk -F'_score_' '{score=$2; sub(/[.]ckpt$/, empty, score); print score, $0}' \
-        | sort -nr \
-        | sed -n '1p' \
-        | cut -d' ' -f2-
-}
-
 run_probability() {
     # 使用当前模式已经冻结的 checkpoint、训练配置和资源配置生成完整图概率.
     local pdb_json="$1"
@@ -106,7 +97,7 @@ case "${MODE}" in
         ;;
     pdb_centric_2)
         RUN_ROOT="/home/penghongen/Feedback/Pocket_Plus/logs/AdaLigand_Stage1_pdb_centric_2-unet_c1-mainchain/unet_c1_mainchain_pdb_centric_2____unet_c1_job358384_20260828T093205_a1_formal"
-        CHECKPOINT="$(select_best_top_checkpoint "${RUN_ROOT}")"
+        CHECKPOINT="${RUN_ROOT}/checkpoints/TOP_epoch_03_score_0.5957.ckpt"
         RESOLVED_CONFIG="${RUN_ROOT}/config.yaml"
         OUTPUT_ROOT="/storage/penghongen/AdaLigand_stage1_inference/UNET/unet_c1_pdb_centric_v2/artifacts"
         export STAGE1_INFERENCE_CONFIG="${PROJECT_ROOT}/configs/inference/stage1_v3_a800_24cpu.yaml"
