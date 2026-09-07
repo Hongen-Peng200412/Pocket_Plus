@@ -334,6 +334,11 @@
       "date": "2026-09-05",
       "summary": "Occurrence-centric unet_diff Job 350305 已在第 3 次实际学习率衰减后按 stop_after_lr_reductions=3 正常结束训练。最终 checkpoint global step 46282，最终 validation 配体体素 PRAUC 0.6330414，全程原始最高 0.6343954；最终 last/TOP 与原始最佳 BEST/TOP 的哈希均已核验。用户在产物验收后释放该 Job，活动锁与动态命令均已清理。普通 validation、epoch 和常规 checkpoint 不再触发 handoff。",
       "handoff": "CLAUDE/memory/handoffs/2026-08-21-unet-density-ablation-guard.md"
+    },
+    {
+      "date": "2026-09-06",
+      "summary": "Find_1 PDB-centric-1 的旧 Job 366071 因 hnode02 重启而失去 GPU TRES，后由用户主动取消；节点故障前 a11 的 last.ckpt、完整 validation 边界和恢复状态均已只读核验。最小恢复实现通过 34 项相关测试及两类独立审查，已作为最终提交 e91721f 部署到隔离任务根。用户已接受 4 个未保存累积 microbatch 与 RNG 状态所导致的一次性非逐位偏差；替代 Job 371591 已申请 A800×1、CPU×16 并以 pre_hold/after_hold 排队，到卡核验后可直接启动。",
+      "handoff": "CLAUDE/memory/handoffs/2026-09-06-find1-pdb-centric1-node-recovery-a800-queued.md"
     }
   ],
   "blockers": [
