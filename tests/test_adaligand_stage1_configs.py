@@ -232,7 +232,7 @@ def test_find1_pdb_centric_configs_are_explicit_and_independent() -> None:
     assert second.dataset.pdb_occurrence_foreground_box_cap == 1
     assert second.train.global_batch_size == 48
     assert second.train.batch_size == 6
-    assert second.train.num_workers == 24
+    assert second.train.num_workers == 30
     assert second.train.max_epochs == 110
     assert second.train.val_per_epoch == 8
 

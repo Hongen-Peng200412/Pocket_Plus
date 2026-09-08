@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -199,3 +200,47 @@ def test_checkpoint_callbacks_have_unique_lightning_state_keys(tmp_path) -> None
     ]
 
     _validate_callbacks_list(callbacks)
+
+
+@pytest.mark.parametrize("is_global_zero", [True, False])
+def test_periodic_checkpoint_save_is_called_on_every_ddp_rank(
+    tmp_path: Path,
+    is_global_zero: bool,
+) -> None:
+    """周期断点必须由每个 DDP rank 共同进入 Lightning 保存调用。"""
+
+    saved_paths: list[str] = []
+    trainer = SimpleNamespace(
+        current_epoch=2,
+        is_global_zero=is_global_zero,
+        save_checkpoint=saved_paths.append,
+    )
+    callback = PeriodicCheckpointSaver(
+        tmp_path,
+        every_n_epochs=3,
+        filename_template="PERIODIC_epoch_{epoch:02d}",
+    )
+
+    callback.on_train_epoch_end(trainer, SimpleNamespace())
+
+    assert saved_paths == [str(tmp_path / "PERIODIC_epoch_02.ckpt")]
+
+
+def test_periodic_checkpoint_skips_unscheduled_epoch_on_every_ddp_rank(tmp_path: Path) -> None:
+    """未到保存间隔时，任一 rank 都不得进入 Lightning 保存调用。"""
+
+    saved_paths: list[str] = []
+    trainer = SimpleNamespace(
+        current_epoch=1,
+        is_global_zero=False,
+        save_checkpoint=saved_paths.append,
+    )
+    callback = PeriodicCheckpointSaver(
+        tmp_path,
+        every_n_epochs=3,
+        filename_template="PERIODIC_epoch_{epoch:02d}",
+    )
+
+    callback.on_train_epoch_end(trainer, SimpleNamespace())
+
+    assert saved_paths == []

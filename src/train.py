@@ -616,17 +616,16 @@ class PeriodicCheckpointSaver(Callback):
             - pl_module: pl.LightningModule, 当前模型, 此处不直接读取
 
         输出:
-            - None, 仅 rank0 写 checkpoint 文件
+            - None，所有 DDP rank 共同进入保存调用，由 Lightning 只在 rank 0 写文件。
         """
         del pl_module
-        if not bool(getattr(trainer, "is_global_zero", True)):
-            return
         epoch_index = int(trainer.current_epoch)
         if (epoch_index + 1) % self.every_n_epochs != 0:
             return
         self.dirpath.mkdir(parents=True, exist_ok=True)
         filename = self.filename_template.format(epoch=epoch_index)
         checkpoint_path = self.dirpath / f"{filename}.ckpt"
+        # Lightning 的分布式保存包含 collective；所有 rank 必须以相同顺序调用。
         trainer.save_checkpoint(str(checkpoint_path))
 
 
