@@ -339,6 +339,16 @@
       "date": "2026-09-06",
       "summary": "Find_1 PDB-centric-1 的旧 Job 366071 因 hnode02 重启而失去 GPU TRES，后由用户主动取消；节点故障前 a11 的 last.ckpt、完整 validation 边界和恢复状态均已只读核验。最小恢复实现通过 34 项相关测试及两类独立审查，已作为最终提交 e91721f 部署到隔离任务根。用户已接受 4 个未保存累积 microbatch 与 RNG 状态所导致的一次性非逐位偏差；替代 Job 371591 已申请 A800×1、CPU×16 并以 pre_hold/after_hold 排队，到卡核验后可直接启动。",
       "handoff": "CLAUDE/memory/handoffs/2026-09-06-find1-pdb-centric1-node-recovery-a800-queued.md"
+    },
+    {
+      "date": "2026-09-07",
+      "summary": "Find_1 PDB-centric-1 替代 Job 371591 已在 gnode09 使用 A800×1、CPU×16 正式恢复训练。最终提交 e91721f、release、launch、源 checkpoint 与重建 manifest 身份均已核验；唯一启动动作是删除本任务自己的 pre_lock，after_lock 保留。W&B gg8y6s0i 已从源 global step 14287 推进到 14291，LR 保持 5e-5，且没有立即产生伪 validation。",
+      "handoff": "CLAUDE/memory/handoffs/2026-09-07-find1-pdb-centric1-a800-resume-running.md"
+    },
+    {
+      "date": "2026-09-09",
+      "summary": "Find_1 PDB-centric-2 Job 368455 的 attempt a1 因周期 checkpoint 只由 rank 0 调用而发生 DDP collective 顺序死锁。最小修复提交 fa01b8d 已通过 65 项相关测试并部署到隔离根；attempt a2 从可靠 last.ckpt 恢复，成功写出新的 PERIODIC_epoch_02.ckpt 后继续进入 epoch 3。用户接受恢复边界重复 7 个 microbatch 所造成的一次性非逐位偏差；双 H100 allocation 与 after_lock 保留。",
+      "handoff": "CLAUDE/memory/handoffs/2026-09-09-find1-pdb-centric2-periodic-checkpoint-recovered.md"
     }
   ],
   "blockers": [

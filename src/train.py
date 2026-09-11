@@ -8,6 +8,7 @@ import random
 import fnmatch
 import shutil
 from collections.abc import Mapping
+from itertools import islice
 from typing import Any
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "max_split_size_mb:256,expandable_segments:True")
 
@@ -88,6 +89,65 @@ def _resolve_init_checkpoint(init_from: str, feedback_root: Path, current_run_di
             return ckpt_path
         raise FileNotFoundError(f"init_from 目录必须包含 checkpoints/BEST.ckpt: {init_path}")
     raise FileNotFoundError(f"init_from 指向的 ckpt 文件或 run 目录不存在: {init_path}")
+
+
+def _resolve_resume_checkpoint(resume_from_checkpoint: str) -> Path:
+    """
+    解析用于恢复完整 Lightning 训练状态的 checkpoint.
+
+    输入参数:
+        - resume_from_checkpoint: str, checkpoint 文件路径; 不接受运行目录或 model-only checkpoint 别名.
+
+    返回值:
+        - checkpoint_path: Path, 已确认存在并转换为绝对路径的 checkpoint 文件.
+    """
+
+    checkpoint_path = Path(str(resume_from_checkpoint).strip()).expanduser()
+    if not checkpoint_path.is_file():
+        raise FileNotFoundError(f"resume_from_checkpoint 文件不存在: {checkpoint_path}")
+    return checkpoint_path.resolve()
+
+
+def _validate_resume_configuration(
+    train_cfg: Mapping[str, Any],
+    resume_checkpoint_path: Path | None,
+) -> None:
+    """
+    校验完整 checkpoint 与 sampler/validation 恢复字段必须成套启用.
+
+    输入参数:
+        - train_cfg: Mapping[str, Any], `cfg.train` 映射; 恢复时必须显式包含三个 `resume_*` 字段.
+        - resume_checkpoint_path: Path | None, 已解析的完整 checkpoint; `None` 表示从头训练或 model-only 初始化.
+
+    副作用:
+        - 配置缺项或互相矛盾时, 在创建训练目录、Dataset 和模型前抛出 ValueError.
+    """
+
+    field_names = (
+        "resume_skip_train_batches",
+        "resume_skip_epoch",
+        "resume_after_completed_validation",
+    )
+    skip_batches = int(train_cfg.get("resume_skip_train_batches", 0))
+    resume_epoch = int(train_cfg.get("resume_skip_epoch", 0))
+    guard_enabled = bool(train_cfg.get("resume_after_completed_validation", False))
+    if resume_checkpoint_path is None:
+        if skip_batches != 0 or resume_epoch != 0 or guard_enabled:
+            raise ValueError("train.resume_* 字段只能与 resume_from_checkpoint 一起启用。")
+        return
+
+    missing_fields = [field_name for field_name in field_names if field_name not in train_cfg]
+    if missing_fields:
+        raise ValueError(
+            "resume_from_checkpoint 要求显式配置全部 train.resume_* 字段；"
+            f"缺少：{', '.join(missing_fields)}。"
+        )
+    if skip_batches <= 0:
+        raise ValueError("train.resume_skip_train_batches 必须大于 0。")
+    if resume_epoch < 0:
+        raise ValueError("train.resume_skip_epoch 不能为负数。")
+    if not guard_enabled:
+        raise ValueError("完整 validation 后续训必须启用 train.resume_after_completed_validation。")
 
 
 def _load_model_only_checkpoint(model: torch.nn.Module, ckpt_path: Path, verbose: bool) -> None:
@@ -345,7 +405,7 @@ class WarmupPlateauController(Callback):
         self.warmup_steps: int | None = None
         self._plateau_schedulers: list[torch.optim.lr_scheduler.ReduceLROnPlateau] = []
         self._pending_plateau_states: list[dict[str, Any]] | None = None
-        self._last_stepped_validation: tuple[int, int, int] | None = None
+        self._last_stepped_validation: tuple[int, int] | None = None
         self._validation_index = 0
 
     def _build_schedulers(self, trainer: pl.Trainer) -> None:
@@ -434,7 +494,6 @@ class WarmupPlateauController(Callback):
         validation_key = (
             int(trainer.global_step),
             int(getattr(trainer, "current_epoch", 0)),
-            int(self._validation_index),
         )
         if self._last_stepped_validation == validation_key:
             return
@@ -478,9 +537,9 @@ class WarmupPlateauController(Callback):
             self._last_stepped_validation = None
         else:
             last_values = tuple(int(value) for value in last_validation)
-            if len(last_values) != 3:
-                raise RuntimeError("WarmupPlateauController checkpoint 中 last_stepped_validation 长度必须为 3。")
-            self._last_stepped_validation = last_values
+            if len(last_values) not in (2, 3):
+                raise RuntimeError("WarmupPlateauController checkpoint 中 last_stepped_validation 长度必须为 2 或 3。")
+            self._last_stepped_validation = last_values[:2]
         self._validation_index = int(state_dict.get("validation_index", 0))
 
 
@@ -557,17 +616,16 @@ class PeriodicCheckpointSaver(Callback):
             - pl_module: pl.LightningModule, 当前模型, 此处不直接读取
 
         输出:
-            - None, 仅 rank0 写 checkpoint 文件
+            - None，所有 DDP rank 共同进入保存调用，由 Lightning 只在 rank 0 写文件。
         """
         del pl_module
-        if not bool(getattr(trainer, "is_global_zero", True)):
-            return
         epoch_index = int(trainer.current_epoch)
         if (epoch_index + 1) % self.every_n_epochs != 0:
             return
         self.dirpath.mkdir(parents=True, exist_ok=True)
         filename = self.filename_template.format(epoch=epoch_index)
         checkpoint_path = self.dirpath / f"{filename}.ckpt"
+        # Lightning 的分布式保存包含 collective；所有 rank 必须以相同顺序调用。
         trainer.save_checkpoint(str(checkpoint_path))
 
 
@@ -822,6 +880,171 @@ class EpochAwareDistributedSampler(DistributedSampler):
             set_dataset_epoch(int(epoch))
 
 
+class ResumeSkippingSampler(Sampler[int]):
+    """
+    在完整 checkpoint 恢复后的指定 epoch 跳过当前 rank 已消费的 batch.
+
+    构造参数:
+        - sampler: Sampler[int], 当前 rank 原本使用的确定性训练 sampler.
+        - skip_batches: int, 当前 rank 在 `resume_epoch` 已完成的训练 batch 数.
+        - batch_size: int, 当前 rank 每个 batch 的样本数; 跳过样本数等于 `skip_batches * batch_size`.
+        - resume_epoch: int, 应用跳过量的 epoch 编号; 其他 epoch 保留底层 sampler 的完整顺序.
+
+    长度语义:
+        - `__len__` 故意返回底层 sampler 的原长度, 使 Lightning 恢复的 batch 进度与本次 iterator 的剩余样本共同抵达原 epoch 末尾.
+    """
+
+    def __init__(
+        self,
+        sampler: Sampler[int],
+        *,
+        skip_batches: int,
+        batch_size: int,
+        resume_epoch: int,
+    ) -> None:
+        self.sampler = sampler
+        self.skip_batches = int(skip_batches)
+        self.batch_size = int(batch_size)
+        self.resume_epoch = int(resume_epoch)
+
+    @property
+    def epoch(self) -> int:
+        """返回底层确定性 sampler 当前使用的 epoch."""
+
+        return int(getattr(self.sampler, "epoch", 0))
+
+    def set_epoch(self, epoch: int) -> None:
+        """同步底层 sampler 与动态 Stage1 请求源的 epoch."""
+
+        set_epoch = getattr(self.sampler, "set_epoch", None)
+        if callable(set_epoch):
+            set_epoch(int(epoch))
+
+    def __iter__(self):
+        iterator = iter(self.sampler)
+        if self.epoch != self.resume_epoch or self.skip_batches == 0:
+            return iterator
+        return islice(iterator, self.skip_batches * self.batch_size, None)
+
+    def __len__(self) -> int:
+        # Lightning 已恢复 batch 进度; 保留原长度, 使剩余 iterator 与已完成 batch 共同抵达原 epoch 末尾.
+        return len(self.sampler)
+
+
+class CompletedValidationResumeGuard(Callback):
+    """
+    让完整 validation 后保存的 checkpoint 从下一个训练位置继续.
+
+    接受边界:
+        - Lightning 正在恢复 epoch, 当前 rank 的训练四阶段计数相等且大于 0, validation 四阶段计数等于完整 DataLoader batch 数, validation 已结束且训练进度尚未标为最后一个 batch.
+
+    调度行为:
+        - `on_train_start` 暂时把 `trainer.val_check_batch` 设为无穷大, 阻止 Lightning 重放刚完成的 validation.
+        - 恢复 epoch 尚有样本时, 第一个新训练 batch 开始前还原原调度; 恢复 epoch 已无样本时, 下一 epoch 开始前还原原调度.
+
+    责任边界:
+        - 本回调不跳过训练样本, 不恢复 DataLoader worker 的随机状态; 两项职责分别属于 `ResumeSkippingSampler` 和具体运行契约.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._original_val_check_batch: int | float | None = None
+        self._resume_epoch: int | None = None
+
+    @staticmethod
+    def _progress_counts(progress: object) -> tuple[int, int, int, int]:
+        """读取 Lightning progress 的 ready、started、processed 和 completed 计数."""
+
+        return tuple(
+            int(getattr(progress, field_name))
+            for field_name in ("ready", "started", "processed", "completed")
+        )
+
+    def _restore_validation_schedule(self, trainer: pl.Trainer) -> None:
+        """恢复首个新训练位置前暂时关闭的 validation 调度."""
+
+        if self._original_val_check_batch is not None:
+            trainer.val_check_batch = self._original_val_check_batch
+            self._original_val_check_batch = None
+
+    def on_train_start(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
+        """验证恢复边界, 并屏蔽对已完成 validation 的第一次重复调度."""
+
+        del pl_module
+        epoch_loop = trainer.fit_loop.epoch_loop
+        train_progress = epoch_loop.batch_progress
+        validation_progress = epoch_loop.val_loop.batch_progress
+        train_counts = self._progress_counts(train_progress.current)
+        validation_counts = self._progress_counts(validation_progress.current)
+        num_validation_batches = trainer.num_val_batches
+        if isinstance(num_validation_batches, (list, tuple)):
+            expected_validation_batches = sum(
+                int(value) for value in num_validation_batches
+            )
+        else:
+            expected_validation_batches = int(num_validation_batches)
+        val_check_batch = trainer.val_check_batch
+        boundary_is_complete = (
+            bool(epoch_loop.restarting)
+            and len(set(train_counts)) == 1
+            and train_counts[0] > 0
+            and len(set(validation_counts)) == 1
+            and validation_counts[0] == expected_validation_batches
+            and bool(validation_progress.is_last_batch)
+            and not bool(train_progress.is_last_batch)
+            and val_check_batch != float("inf")
+            and train_counts[0] % int(val_check_batch) == 0
+        )
+        if not boundary_is_complete:
+            raise RuntimeError(
+                "历史续训 checkpoint 不是已完整完成 validation 的中途训练边界："
+                f"epoch_loop.restarting={epoch_loop.restarting}, "
+                f"train_counts={train_counts}, validation_counts={validation_counts}, "
+                f"expected_validation_batches={expected_validation_batches}, "
+                f"validation_is_last_batch={validation_progress.is_last_batch}, "
+                f"train_is_last_batch={train_progress.is_last_batch}, val_check_batch={val_check_batch}。"
+            )
+
+        self._resume_epoch = int(trainer.current_epoch)
+        self._original_val_check_batch = val_check_batch
+        trainer.val_check_batch = float("inf")
+        if bool(getattr(trainer, "is_global_zero", True)):
+            print(
+                "[Train] 已识别完整 validation 后的 checkpoint；"
+                "恢复后的首个新训练位置不会重复 validation。"
+            )
+
+    def on_train_epoch_start(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
+        """恢复 epoch 已无剩余 batch 时, 在下一 epoch 开始前恢复 validation 调度."""
+
+        del pl_module
+        if self._resume_epoch is not None and int(trainer.current_epoch) > self._resume_epoch:
+            self._restore_validation_schedule(trainer)
+
+    def on_train_batch_start(
+        self,
+        trainer: pl.Trainer,
+        pl_module: pl.LightningModule,
+        batch: object,
+        batch_idx: int,
+    ) -> None:
+        """首个恢复训练 batch 开始时还原原 validation 调度."""
+
+        del pl_module, batch, batch_idx
+        self._restore_validation_schedule(trainer)
+
+    def on_exception(
+        self,
+        trainer: pl.Trainer,
+        pl_module: pl.LightningModule,
+        exception: BaseException,
+    ) -> None:
+        """异常退出前还原 Trainer 内部调度值."""
+
+        del pl_module, exception
+        self._restore_validation_schedule(trainer)
+
+
 class DatasetEpochController(Callback):
     """在每个训练 epoch 开始前同步动态请求源与 sampler 的 epoch. """
 
@@ -873,6 +1096,17 @@ def main(cfg: DictConfig):
         - None
     """
     
+    init_from = cfg.get("init_from", None)
+    resume_from_checkpoint = cfg.get("resume_from_checkpoint", None)
+    if init_from is not None and resume_from_checkpoint is not None:
+        raise ValueError("init_from 与 resume_from_checkpoint 不能同时使用。")
+    resume_checkpoint_path = (
+        _resolve_resume_checkpoint(str(resume_from_checkpoint))
+        if resume_from_checkpoint is not None
+        else None
+    )
+    _validate_resume_configuration(cfg.train, resume_checkpoint_path)
+
     if os.environ.get("RANK") is not None:
         print(
             f"[Train] Dist Env: RANK={os.environ.get('RANK')}, "
@@ -998,10 +1232,27 @@ def main(cfg: DictConfig):
             world_size = int(getattr(self.trainer, "world_size", 1) or 1)
 
             if world_size > 1:
-                return EpochAwareDistributedSampler(ds, shuffle=(stage == "train" and shuffle), seed=stage_seed)
-            if stage == "train" and shuffle:
-                return SeededEpochRandomSampler(ds, seed=stage_seed)
-            return None
+                sampler = EpochAwareDistributedSampler(
+                    ds,
+                    shuffle=(stage == "train" and shuffle),
+                    seed=stage_seed,
+                )
+            elif stage == "train" and shuffle:
+                sampler = SeededEpochRandomSampler(ds, seed=stage_seed)
+            else:
+                return None
+
+            skip_batches = int(self.train_cfg.get("resume_skip_train_batches", 0))
+            if stage != "train" or skip_batches == 0:
+                return sampler
+            resume_epoch = int(self.train_cfg.get("resume_skip_epoch", 0))
+            sampler.set_epoch(resume_epoch)
+            return ResumeSkippingSampler(
+                sampler,
+                skip_batches=skip_batches,
+                batch_size=int(self.train_cfg.batch_size),
+                resume_epoch=resume_epoch,
+            )
 
         def _get_dataloader(self, ds, stage: str, shuffle: bool = False):
             """
@@ -1096,7 +1347,15 @@ def main(cfg: DictConfig):
         compile=False,
     )
     _initialize_lazy_modules_before_ddp(model, dm, verbose=exp_manager.is_rank_zero)
-    init_from = cfg.get("init_from", None)
+    if resume_checkpoint_path is not None:
+        if exp_manager.is_rank_zero:
+            print(
+                "[Train] 完整恢复 Lightning checkpoint："
+                f"path={resume_checkpoint_path}, "
+                f"skip_epoch={int(cfg.train.get('resume_skip_epoch', 0))}, "
+                "skip_rank_local_batches="
+                f"{int(cfg.train.get('resume_skip_train_batches', 0))}"
+            )
     if init_from is not None:
         if str(init_from).strip() == "***" and exp_manager.is_rank_zero:
             print("[Train] [WARN] init_from='***'，将按当前 SLURM_JOB_ID 自动解析上一阶段 checkpoints/BEST.ckpt。")
@@ -1193,6 +1452,12 @@ def main(cfg: DictConfig):
     )
     # 建立最初的回调列表
     callbacks = [checkpoint_callback, best_alias_callback, DatasetEpochController()]
+    if bool(cfg.train.get("resume_after_completed_validation", False)):
+        if resume_checkpoint_path is None:
+            raise ValueError("resume_after_completed_validation 只能与 resume_from_checkpoint 一起使用。")
+        callbacks.append(CompletedValidationResumeGuard())
+        if exp_manager.is_rank_zero:
+            print("[Train] 已启用完整 validation 边界续训保护。")
 
     # ------ 额外开启周期性保存 ------
     # 从配置中获取 save_every_n_epochs (例如: 10)
@@ -1470,7 +1735,15 @@ def main(cfg: DictConfig):
         # 4. 每次 validation 结束: wrapper 聚合 payload; train.py 的 callbacks 负责 checkpoint、plateau 与 small-increment 停训
         _fix_gloo_socket_ifname()
         _log_distributed_launch_state("即将调用trainer.fit")
-        trainer.fit(model, datamodule=dm)
+        trainer.fit(
+            model,
+            datamodule=dm,
+            ckpt_path=(
+                str(resume_checkpoint_path)
+                if resume_checkpoint_path is not None
+                else None
+            ),
+        )
     except Exception as e:
         print(f"[Train] Critical Exception occurred(严重异常): {e}")
         exp_manager.check_and_cleanup(error=e)
