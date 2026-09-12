@@ -349,6 +349,16 @@
       "date": "2026-09-09",
       "summary": "Find_1 PDB-centric-2 Job 368455 的 attempt a1 因周期 checkpoint 只由 rank 0 调用而发生 DDP collective 顺序死锁。最小修复提交 fa01b8d 已通过 65 项相关测试并部署到隔离根；attempt a2 从可靠 last.ckpt 恢复，成功写出新的 PERIODIC_epoch_02.ckpt 后继续进入 epoch 3。用户接受恢复边界重复 7 个 microbatch 所造成的一次性非逐位偏差；双 H100 allocation 与 after_lock 保留。",
       "handoff": "CLAUDE/memory/handoffs/2026-09-09-find1-pdb-centric2-periodic-checkpoint-recovered.md"
+    },
+    {
+      "date": "2026-09-12",
+      "summary": "Find_1 双节点 A800 历史续训 Job 366277 已由用户执行 scancel 暂时停止，Slurm 终态为 CANCELLED by 1351，allocation 与三类活动锁均已清理。未来续训边界已固化为 epoch 0、global_step 37248、每 rank 训练 microbatch 148995、完整 validation 551/551 的 checkpoint；其 SHA-256 为 191795e3...7d405。取消前 W&B 只记录到 step 38375，超出 checkpoint 的 1127 个 optimizer steps 不可恢复。",
+      "handoff": "CLAUDE/memory/handoffs/2026-09-12-find1-historical-a800-paused.md"
+    },
+    {
+      "date": "2026-09-12",
+      "summary": "用户已把 Find_1 PDB-centric-1 与 PDB-centric-2 两条训练暂时停止并判定为阶段性完成，而非失败；现有 checkpoint 已足够近期使用，未来仍可续训。PDB-centric-1 的最后可恢复端点为 epoch 1、global_step 17860、当前 epoch 28575 个训练批次、完整验证 1250/1250，最佳 PRAUC 0.5602477；PDB-centric-2 的端点为 epoch 4、global_step 42030、每个 rank 在当前 epoch 完成 22715 个训练批次、完整验证 543/543，最佳 PRAUC 0.6673。长期记忆只保存训练与产物事实，不保存容易过时的 allocation 或锁状态。",
+      "handoff": "CLAUDE/memory/handoffs/2026-09-12-find1-pdb-centric-training-stage-complete.md"
     }
   ],
   "blockers": [

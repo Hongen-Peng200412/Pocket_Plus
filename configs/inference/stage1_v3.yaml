@@ -14,7 +14,7 @@ pending_centered_pdbs: 3  # int, 尚未完成 centered 打包与发布的 PDB �
 window:
   stride_zyx: [30, 30, 30]  # int[3], 完整图 ZYX 无 padding 滑窗步长
   gaussian_sigma: 0.5  # float, 每轴归一化到 [-1, 1] 后的 Gaussian 标准差
-  batch_size: 16  # int, 一次 GPU 前向的 80³ 窗口数
+  batch_size: 24  # int, 一次 GPU 前向的 80³ 窗口数
   workers: 12  # int, CPU 滑窗请求物化线程数
   prefetch_batches: 12  # int, GPU 前方准备的 CPU batch 数量上限
   pending_fusion_batches: 8  # int, GPU 后方等待有序融合的 batch 数量上限
@@ -23,7 +23,7 @@ window:
 # --- centered 完整前向 ---
 # 所有 producer 都保存 voxel_final, auxiliary 和三张 48³ 稠密数组; Find_* 另外保存 A/P 表.
 centered:
-  batch_size: 8  # int, 一次 GPU 前向的 centered 80³ BOX 数
+  batch_size: 24  # int, 一次 GPU 前向的 centered 80³ BOX 数
   workers: 8  # int, CPU centered 请求物化线程数
   prefetch_batches: 3  # int, GPU 前方准备的 centered batch 数量上限
   pending_cpu_batches: 3  # int, GPU 后方等待 CPU 字段整理的 batch 数量上限
