@@ -44,7 +44,7 @@ def test_find1_shell_uses_official_stages_and_two_gpu_resource_profile() -> None
 
 
 def test_find1_scored_centered_shell_reuses_frozen_parameters() -> None:
-    """Stage2/Stage3 入口应只产生冻结 F2 Gaussian scored-centered 产物."""
+    """Stage2/Stage3 入口应复用冻结 F2 阈值和 Gaussian 参数, 且不调参或评估."""
 
     shell_path = (
         PROJECT_ROOT
@@ -55,12 +55,6 @@ def test_find1_scored_centered_shell_reuses_frozen_parameters() -> None:
     )
     shell_text = shell_path.read_text(encoding="utf-8")
     config = OmegaConf.load(PROJECT_ROOT / "configs" / "inference" / "stage1_v3.yaml")
-
-    calibration_score = 'run_score_only "${CALIBRATION_JSON}" calibration'
-    validation_probability = 'run_probability "${VALIDATION_JSON}" validation'
-    validation_blobs = 'run_f2_blobs "${VALIDATION_JSON}" validation'
-    validation_centered = 'run_centered "${VALIDATION_JSON}" validation'
-    validation_score = 'run_score_only "${VALIDATION_JSON}" validation'
 
     assert "训练与运行/sh/infer/stage1_v3.sh" in shell_text
     assert "TOP_epoch_04_score_0.6654.ckpt" in shell_text
@@ -75,10 +69,38 @@ def test_find1_scored_centered_shell_reuses_frozen_parameters() -> None:
     assert "--fit-semantic" not in shell_text
     assert " tune " not in shell_text
     assert " evaluate " not in shell_text
-    assert shell_text.index(calibration_score) < shell_text.index(validation_probability)
-    assert shell_text.index(validation_probability) < shell_text.index(validation_blobs)
-    assert shell_text.index(validation_blobs) < shell_text.index(validation_centered)
-    assert shell_text.index(validation_centered) < shell_text.index(validation_score)
+
+    calibration_score = shell_text.index("run_two_gpu_shards centered")
+    validation_probability = shell_text.index(
+        "run_two_gpu_shards probability", calibration_score
+    )
+    validation_blobs = shell_text.index("stage1 blobs", validation_probability)
+    validation_centered = shell_text.index(
+        "run_two_gpu_shards centered", validation_blobs
+    )
+    validation_score = shell_text.index(
+        "run_two_gpu_shards centered", validation_centered + 1
+    )
+    assert (
+        '--pdb-json "${CALIBRATION_JSON}"'
+        in shell_text[calibration_score:validation_probability]
+    )
+    assert (
+        '--pdb-json "${VALIDATION_JSON}"'
+        in shell_text[validation_probability:validation_blobs]
+    )
+    assert (
+        '--semantic-parameters "${F2_SEMANTIC_PARAMETERS}"'
+        in shell_text[validation_blobs:validation_centered]
+    )
+    assert (
+        "--forward-min-voxels 8"
+        in shell_text[validation_centered:validation_score]
+    )
+    assert (
+        '--selection-parameters "${F2_GAUSSIAN_PARAMETERS}"'
+        in shell_text[validation_score:]
+    )
     assert int(config.window.batch_size) == 18
     assert int(config.window.workers) == 26
     assert int(config.centered.batch_size) == 12

@@ -1,10 +1,9 @@
 #!/usr/bin/env bash
 
-# 使用已冻结的 Find_1 F2 Gaussian 参数生成 Stage2, Stage3 所需的 scored-centered 产物.
-#
-# calibration 只复用已有 F2 centered 字段并回填 score/selected, 不执行模型前向.
-# validation 依次生成 probability, 应用冻结阈值的 F2 blobs, F2 centered, 再回填同一组 score/selected.
-# 本入口不重新调参, 也不生成 calibration 或 validation 评估指标.
+# 使用 tuning/F2_semantic.json 与 tuning/F2_gaussian.json 中已冻结的 Find_1 参数生成 Stage2, Stage3 输入.
+# calibration 在 OUTPUT_ROOT/PRODUCER/calibration/<pdb_id>/centered/F2_centered.npz 原位回填 score/selected, 不执行模型前向.
+# validation 在 OUTPUT_ROOT/PRODUCER/validation/<pdb_id>/ 下生成 probability/probability.npz, blobs/F2_blobs.npz 和 centered/F2_centered.npz.
+# 本入口不重新调参, 不生成 calibration 或 validation 评估指标.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
@@ -21,7 +20,7 @@ PRODUCER="Find_1"
 F2_SEMANTIC_PARAMETERS="${OUTPUT_ROOT}/${PRODUCER}/tuning/F2_semantic.json"
 F2_GAUSSIAN_PARAMETERS="${OUTPUT_ROOT}/${PRODUCER}/tuning/F2_gaussian.json"
 export STAGE1_INFERENCE_CONFIG="${PROJECT_ROOT}/configs/inference/stage1_v3.yaml"
-# 两个 GPU 进程各自管理 26 个请求物化线程, BLAS 不再扩展子线程.
+# probability 与正常 centered 的两个 GPU 进程各自管理 26 个请求物化线程, BLAS 不再扩展子线程.
 export OMP_NUM_THREADS=1
 export MKL_NUM_THREADS=1
 export OPENBLAS_NUM_THREADS=1
@@ -46,66 +45,59 @@ run_two_gpu_shards() {
     fi
 }
 
-run_probability() {
-    # validation 完整图概率使用与 calibration/test 相同的 checkpoint 与训练快照代码.
-    local pdb_json="$1"
-    local split="$2"
-    run_two_gpu_shards probability \
-        --producer "${PRODUCER}" \
-        --checkpoint "${CHECKPOINT}" \
-        --resolved-config "${RESOLVED_CONFIG}" \
-        --model-code-source training_snapshot \
-        --pdb-json "${pdb_json}" \
-        --split "${split}" \
-        --output-root "${OUTPUT_ROOT}"
-}
+# source_blob_index: int32, (N_candidate,), score/selected 与 F2 blob 编号均与该候选轴逐项对齐.
+# voxel_offsets: int64, (N_candidate + 1,), 同步切分 voxel_index_local_zyx, source_probability, centered_probability 和 voxel_final; 首值为 0, 末值为全部候选局部体素总数.
+# voxel_aux_offsets: int64, (N_candidate + 1,), 同步切分 voxel_aux_index_local_zyx 和 voxel_aux_probability; 首值为 0, 末值为全部候选受体占据体素总数.
+# A_offsets: int64, (N_candidate + 1,), 同步切分 A_global_index, A_coord_local_xyz, A_coord_centered_world, A_probability 和 A_feat_L0/L1/L2/L3; 首值为 0, 末值为全部候选 A 原子总数.
+# P_offsets: int64, (N_candidate + 1,), 同步切分 P_coord_local_xyz, P_probability 和 P_feat_L2/L3; 首值为 0, 末值为全部候选 P 锚点总数.
+# score-only 只替换 score/selected, 上述候选轴和稀疏字段切片契约保持不变.
+run_two_gpu_shards centered \
+    --producer "${PRODUCER}" \
+    --pdb-json "${CALIBRATION_JSON}" \
+    --split calibration \
+    --output-root "${OUTPUT_ROOT}" \
+    --alpha 2 \
+    --selection-parameters "${F2_GAUSSIAN_PARAMETERS}" \
+    --score-only
 
-run_f2_blobs() {
-    # 不访问 validation 标签; 直接应用 calibration 冻结的 F2 语义概率阈值.
-    local pdb_json="$1"
-    local split="$2"
-    stage1 blobs \
-        --producer "${PRODUCER}" \
-        --pdb-json "${pdb_json}" \
-        --split "${split}" \
-        --output-root "${OUTPUT_ROOT}" \
-        --alpha 2 \
-        --semantic-parameters "${F2_SEMANTIC_PARAMETERS}"
-}
+# validation 完整图概率使用与第一阶段 calibration 和 held_out_test_0 相同的 checkpoint 与训练快照代码.
+run_two_gpu_shards probability \
+    --producer "${PRODUCER}" \
+    --checkpoint "${CHECKPOINT}" \
+    --resolved-config "${RESOLVED_CONFIG}" \
+    --model-code-source training_snapshot \
+    --pdb-json "${VALIDATION_JSON}" \
+    --split validation \
+    --output-root "${OUTPUT_ROOT}"
 
-run_centered() {
-    # 来源体素数至少为 8 的候选进入前向; 超过 1,000 个 blob 时仍保留该 PDB.
-    local pdb_json="$1"
-    local split="$2"
-    run_two_gpu_shards centered \
-        --producer "${PRODUCER}" \
-        --checkpoint "${CHECKPOINT}" \
-        --resolved-config "${RESOLVED_CONFIG}" \
-        --model-code-source training_snapshot \
-        --pdb-json "${pdb_json}" \
-        --split "${split}" \
-        --output-root "${OUTPUT_ROOT}" \
-        --alpha 2 \
-        --forward-min-voxels 8 \
-        --continue-on-blob-exceed
-}
+# 不访问 validation 标签; 直接应用 calibration 冻结的 F2 语义概率阈值.
+stage1 blobs \
+    --producer "${PRODUCER}" \
+    --pdb-json "${VALIDATION_JSON}" \
+    --split validation \
+    --output-root "${OUTPUT_ROOT}" \
+    --alpha 2 \
+    --semantic-parameters "${F2_SEMANTIC_PARAMETERS}"
 
-run_score_only() {
-    # 只按冻结 Gaussian 参数替换 score/selected, 其他 centered 数组, 候选顺序和 offsets 保持不变.
-    local pdb_json="$1"
-    local split="$2"
-    run_two_gpu_shards centered \
-        --producer "${PRODUCER}" \
-        --pdb-json "${pdb_json}" \
-        --split "${split}" \
-        --output-root "${OUTPUT_ROOT}" \
-        --alpha 2 \
-        --selection-parameters "${F2_GAUSSIAN_PARAMETERS}" \
-        --score-only
-}
+# 来源体素数至少为 8 的 F2 blob 候选进入前向; 超过 1,000 个 blob 时仍保留该 PDB.
+run_two_gpu_shards centered \
+    --producer "${PRODUCER}" \
+    --checkpoint "${CHECKPOINT}" \
+    --resolved-config "${RESOLVED_CONFIG}" \
+    --model-code-source training_snapshot \
+    --pdb-json "${VALIDATION_JSON}" \
+    --split validation \
+    --output-root "${OUTPUT_ROOT}" \
+    --alpha 2 \
+    --forward-min-voxels 8 \
+    --continue-on-blob-exceed
 
-run_score_only "${CALIBRATION_JSON}" calibration
-run_probability "${VALIDATION_JSON}" validation
-run_f2_blobs "${VALIDATION_JSON}" validation
-run_centered "${VALIDATION_JSON}" validation
-run_score_only "${VALIDATION_JSON}" validation
+# validation 使用与 calibration 相同的冻结 Gaussian 参数, 只向 F2_centered.npz 写入 score/selected.
+run_two_gpu_shards centered \
+    --producer "${PRODUCER}" \
+    --pdb-json "${VALIDATION_JSON}" \
+    --split validation \
+    --output-root "${OUTPUT_ROOT}" \
+    --alpha 2 \
+    --selection-parameters "${F2_GAUSSIAN_PARAMETERS}" \
+    --score-only
