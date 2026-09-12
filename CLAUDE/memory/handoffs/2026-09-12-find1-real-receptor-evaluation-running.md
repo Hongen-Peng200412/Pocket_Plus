@@ -33,6 +33,8 @@ attempt 4 已完成 100/100 个 calibration probability，并冻结 F1 语义阈
 - 启动时间：2026-09-12 23:09；只删除了 `try_lock_368455`，`after_lock_368455` 保留；
 - 23:17 已完成 34/100 个 calibration `F2_centered.npz` 及对应 `_COMPLETE`，两个 centered 分片均存活，显存约为 44.6/43.2 GiB，没有新 traceback 或 OOM。
 - 23:37 已完成 100/100 个 calibration F2 centered，并冻结 Gaussian 参数：`score_threshold=0.9002149105072021`、`lambda_positive=0.064`、`lambda_negative=0.0128`、`tau_angstrom=1.25`、`min_voxels=27`、`prefiltered_min_voxel=8`、`objective_beta=1`。正式入口已进入 179-PDB `test_0` probability，首批 2 个 PDB 的四件套产物完整；双 H100 利用率为 100%/99%，无失败标记或新异常。
+- 2026-09-13 06:07，attempt 5 正式成功并停回 `try_lock_368455`。`test_0` 的 probability、F1/F2 blobs、F2 centered 和两套逐 PDB evaluation NPZ 均为 179/179；基础与 Gaussian 全局 JSONL/metrics 已生成，`after_lock_368455` 保留。
+- 06:24 的计算节点只读门控已通过：PDB 成员与顺序、完成标记、文件集合、冻结选择掩码、`forward_min_voxels=8` 的 centered 保序子序列、offsets、macro 均值、micro F1、top-K 计数/分母及正式聚合重算全部一致。正式产物拓扑 SHA-256 为 `62d8d6bd43a7c80e3a9c7295fa559e28be39e847d405d7ddd03f5d462ddfa5f9`。
 
 ## Frozen Scientific Identity
 
@@ -58,10 +60,9 @@ release 中的关键 SHA-256：
 
 ## Next Actions
 
-1. 继续守护 attempt 5。完成 calibration Gaussian 调参后，核对冻结参数；随后验收两套 `test_0` 的 179-PDB probability、blobs、centered、逐 PDB评估和汇总。
-2. attempt 5 成功并重新创建 `try_lock_368455` 后，原子改写动态命令为执行记录中的一次性 `derive_test1.py` 命令，仅删除该 try lock；派生结束后核对两套 149-PDB JSONL、metrics 与 provenance。
-3. 第一阶段日志、映射和 handoff 收口后，按 `talk/global/global_9.12.md` 第 (3) 项继续生成 Stage2/Stage3 所需 scored-centered 产物：calibration 只做冻结 Gaussian score-only，validation 依次做 probability、冻结阈值 F2 blobs、centered 和冻结 Gaussian score-only，不生成 cal/val 评估。
-4. 始终保留 `after_lock_368455`，未经用户新授权不触碰该锁或执行 `scancel`。仅在启动稳定、失败、try_lock、阶段完成或最终完成等关键事件更新执行记录与本 handoff。
+1. 原子改写动态命令为执行记录中的一次性 `derive_test1.py` 命令，仅删除 `try_lock_368455`；派生结束后核对两套 149-PDB JSONL、metrics 与 provenance。
+2. 完成第一阶段日志、映射和 handoff 收口后，按 `talk/global/global_9.12.md` 第 (3) 项继续生成 Stage2/Stage3 所需 scored-centered 产物：calibration 只做冻结 Gaussian score-only，validation 依次做 probability、冻结阈值 F2 blobs、centered 和冻结 Gaussian score-only，不生成 cal/val 评估。
+3. 始终保留 `after_lock_368455`，未经用户新授权不触碰该锁或执行 `scancel`。仅在启动稳定、失败、try_lock、阶段完成或最终完成等关键事件更新执行记录与本 handoff。
 
 ## Files To Reopen
 
