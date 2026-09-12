@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""验证 Find_1 真实受体正式入口与 test_1 派生边界."""
+"""验证 Find_1 真实受体评估, test_1 派生和冻结 scored-centered 编排边界."""
 
 from __future__ import annotations
 
@@ -44,7 +44,7 @@ def test_find1_shell_uses_official_stages_and_two_gpu_resource_profile() -> None
 
 
 def test_find1_scored_centered_shell_reuses_frozen_parameters() -> None:
-    """Stage2/Stage3 入口应复用冻结 F2 阈值和 Gaussian 参数, 且不调参或评估."""
+    """Stage2/Stage3 入口应复用冻结 F2 语义概率阈值和 Gaussian 参数, 且不调参或评估."""
 
     shell_path = (
         PROJECT_ROOT

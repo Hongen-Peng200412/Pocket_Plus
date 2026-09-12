@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 
 # 使用 tuning/F2_semantic.json 与 tuning/F2_gaussian.json 中已冻结的 Find_1 参数生成 Stage2, Stage3 输入.
-# calibration 在 OUTPUT_ROOT/PRODUCER/calibration/<pdb_id>/centered/F2_centered.npz 原位回填 score/selected, 不执行模型前向.
-# validation 在 OUTPUT_ROOT/PRODUCER/validation/<pdb_id>/ 下生成 probability/probability.npz, blobs/F2_blobs.npz 和 centered/F2_centered.npz.
+# calibration 在 OUTPUT_ROOT/PRODUCER/calibration/<pdb_id>/centered/F2_centered.npz 的同一正式路径原子替换 score/selected, 不执行模型前向.
+# validation 在 OUTPUT_ROOT/PRODUCER/validation/<pdb_id>/ 下生成 probability/probability_map.npz, blobs/F2_blobs.npz 和 centered/F2_centered.npz.
 # 本入口不重新调参, 不生成 calibration 或 validation 评估指标.
 set -euo pipefail
 
@@ -45,12 +45,14 @@ run_two_gpu_shards() {
     fi
 }
 
-# source_blob_index: int32, (N_candidate,), score/selected 与 F2 blob 编号均与该候选轴逐项对齐.
-# voxel_offsets: int64, (N_candidate + 1,), 同步切分 voxel_index_local_zyx, source_probability, centered_probability 和 voxel_final; 首值为 0, 末值为全部候选局部体素总数.
-# voxel_aux_offsets: int64, (N_candidate + 1,), 同步切分 voxel_aux_index_local_zyx 和 voxel_aux_probability; 首值为 0, 末值为全部候选受体占据体素总数.
-# A_offsets: int64, (N_candidate + 1,), 同步切分 A_global_index, A_coord_local_xyz, A_coord_centered_world, A_probability 和 A_feat_L0/L1/L2/L3; 首值为 0, 末值为全部候选 A 原子总数.
-# P_offsets: int64, (N_candidate + 1,), 同步切分 P_coord_local_xyz, P_probability 和 P_feat_L2/L3; 首值为 0, 末值为全部候选 P 锚点总数.
-# score-only 只替换 score/selected, 上述候选轴和稀疏字段切片契约保持不变.
+# N_candidate 是当前 PDB 的 F2_centered.npz 中已执行 centered 前向的候选数.
+# source_blob_index: int32, (N_candidate,), 数组顺序定义 centered 候选轴; 每个值索引同一 PDB F2_blobs.npz 中以 blob_index 为代表的候选级数组第一维.
+# voxel_offsets: int64, (N_candidate + 1,), voxel_offsets[i]:voxel_offsets[i + 1] 是第 i 个 centered 候选在 voxel_index_local_zyx, source_probability, centered_probability 和 voxel_final 中的同步半开区间; 首值为 0, 末值为全部候选局部体素总数.
+# voxel_aux_offsets: int64, (N_candidate + 1,), voxel_aux_offsets[i]:voxel_aux_offsets[i + 1] 是第 i 个 centered 候选在 voxel_aux_index_local_zyx 和 voxel_aux_probability 中的同步半开区间; 首值为 0, 末值为全部候选受体占据体素总数.
+# A_offsets: int64, (N_candidate + 1,), A_offsets[i]:A_offsets[i + 1] 是第 i 个 centered 候选在 A_global_index, A_coord_local_xyz, A_coord_centered_world, A_probability 和 A_feat_L0/L1/L2/L3 中的同步半开区间; 首值为 0, 末值为全部候选 A 原子总数.
+# P_offsets: int64, (N_candidate + 1,), P_offsets[i]:P_offsets[i + 1] 是第 i 个 centered 候选在 P_coord_local_xyz, P_probability 和 P_feat_L2/L3 中的同步半开区间; 首值为 0, 末值为全部候选 P 锚点总数.
+# score: float32, (N_candidate,), 冻结 Gaussian 参数计算的逐候选分数.
+# selected: bool, (N_candidate,), True 表示同时达到冻结 score_threshold, prefiltered_min_voxel 和 min_voxels.
 run_two_gpu_shards centered \
     --producer "${PRODUCER}" \
     --pdb-json "${CALIBRATION_JSON}" \
@@ -92,7 +94,7 @@ run_two_gpu_shards centered \
     --forward-min-voxels 8 \
     --continue-on-blob-exceed
 
-# validation 使用与 calibration 相同的冻结 Gaussian 参数, 只向 F2_centered.npz 写入 score/selected.
+# validation 使用与 calibration 相同的冻结 Gaussian 参数, 只向 F2_centered.npz 写入上述 score/selected.
 run_two_gpu_shards centered \
     --producer "${PRODUCER}" \
     --pdb-json "${VALIDATION_JSON}" \
