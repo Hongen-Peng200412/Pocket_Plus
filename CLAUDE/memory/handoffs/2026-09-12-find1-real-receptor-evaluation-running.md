@@ -32,6 +32,7 @@ attempt 4 已完成 100/100 个 calibration probability，并冻结 F1 语义阈
 - launch：`/home/penghongen/Feedback/Pocket_Plus/launches/368455/Find_1_pdb_centric_2_job368455_20260912T230920_a5`；
 - 启动时间：2026-09-12 23:09；只删除了 `try_lock_368455`，`after_lock_368455` 保留；
 - 23:17 已完成 34/100 个 calibration `F2_centered.npz` 及对应 `_COMPLETE`，两个 centered 分片均存活，显存约为 44.6/43.2 GiB，没有新 traceback 或 OOM。
+- 23:37 已完成 100/100 个 calibration F2 centered，并冻结 Gaussian 参数：`score_threshold=0.9002149105072021`、`lambda_positive=0.064`、`lambda_negative=0.0128`、`tau_angstrom=1.25`、`min_voxels=27`、`prefiltered_min_voxel=8`、`objective_beta=1`。正式入口已进入 179-PDB `test_0` probability，首批 2 个 PDB 的四件套产物完整；双 H100 利用率为 100%/99%，无失败标记或新异常。
 
 ## Frozen Scientific Identity
 
