@@ -1,6 +1,6 @@
 # Stage1 V3 推理提交入口
 
-`stage1_v3.sh` 是五个阶段共用的官方入口：它激活 Pocket Plus 环境并调用 `python -m src.inference.cli`，不把完整推理固定成一个长命令。`unet_c1_sampling_comparison.sh` 只编排三种 `unet_c1` 采样模型已经冻结的 F1 blobs+basic 校准与 held-out 测试；其内部仍逐阶段调用 `stage1_v3.sh`。
+`stage1_v3.sh` 是五个阶段共用的官方入口：它激活 Pocket Plus 环境并调用 `python -m src.inference.cli`，不把完整推理固定成一个长命令。`unet_c1_sampling_comparison.sh` 只编排三种 `unet_c1` 采样模型已经冻结的 F1 blobs+basic 校准与 held-out 测试。`find1_real_receptor_evaluation.sh` 编排一套冻结 `Find_1` checkpoint 的基础打分与 Gaussian 打分。两个编排脚本内部仍逐阶段调用 `stage1_v3.sh`。
 
 旧 `calibrate`、`run`、固定 `F1_basic`、固定 `F3_centered`、Selector、CLG、组件森林和 Li 入口已经退出活动代码树。需要考察旧行为时使用 Git 历史。
 
@@ -118,7 +118,7 @@ bash 训练与运行/sh/infer/stage1_v3.sh centered \
 
 `tune --score-mode gaussian` 对 Find centered 应用同一预过滤，再读取 A 原子表并依次执行 Gaussian 粗搜索、细搜索和最小体素数搜索。输出为 `tuning/F{alpha}_gaussian.json`。
 
-两个模式都读取当前通过 `STAGE1_INFERENCE_CONFIG` 激活配置中的 `calibration.workers`；通用/A100 配置为 16，A800 配置为 24。该值同时用于候选/occurrence 文件读取、逐 PDB 事实构造和相互独立的参数目标计算；basic 的实际 float32 分数阈值扫描仍按降序串行累计。脚本把 OMP、MKL 与 OpenBLAS 内部线程固定为 1，由调参线程池提供外层并发。并发结果按 YAML 列表原顺序收集，目标并列时仍由原列表中的首项获胜。
+两个模式都读取当前通过 `STAGE1_INFERENCE_CONFIG` 激活配置中的 `calibration.workers`；默认双卡配置为 56，A100 配置为 16，A800 配置为 24。该值同时用于候选/occurrence 文件读取、逐 PDB 事实构造和相互独立的参数目标计算；basic 的实际 float32 分数阈值扫描仍按降序串行累计。脚本把 OMP、MKL 与 OpenBLAS 内部线程固定为 1，由调参线程池提供外层并发。并发结果按 YAML 列表原顺序收集，目标并列时仍由原列表中的首项获胜。
 
 ```bash
 bash 训练与运行/sh/infer/stage1_v3.sh tune \
@@ -192,7 +192,19 @@ exec bash "${TASK_PROJECT_ROOT}/训练与运行/sh/infer/unet_c1_sampling_compar
 exec bash "${TASK_PROJECT_ROOT}/训练与运行/sh/infer/unet_c1_sampling_comparison.sh" pdb_centric_2
 ```
 
-occurrence 模式读取 `stage1_v3_a100_16cpu.yaml`，完整图 batch 为 16；两个 pdb-centric 模式读取 `stage1_v3_a800_24cpu.yaml`，完整图 batch 为 32。`stage1_v3.sh` 也接受环境变量 `STAGE1_INFERENCE_CONFIG` 选择其他同契约配置，未设置时仍使用通用 `stage1_v3.yaml`。
+occurrence 模式读取 `stage1_v3_a100_16cpu.yaml`，完整图 batch 为 12；两个 pdb-centric 模式读取 `stage1_v3_a800_24cpu.yaml`，完整图 batch 为 24。`stage1_v3.sh` 也接受环境变量 `STAGE1_INFERENCE_CONFIG` 选择其他同契约配置，未设置时仍使用 `stage1_v3.yaml`。
+
+## Find_1 真实受体固定入口
+
+`find1_real_receptor_evaluation.sh` 固定使用 Job `368455` 在 W&B 已完成步编号 `38622` 对应的 checkpoint。基础打分先在 100-PDB calibration 上拟合 F1 semantic，再以 `objective_beta=1` 调整 basic 参数；Gaussian 打分复用同一 probability，拟合 F2 semantic、执行 Find centered，再以 `objective_beta=1` 调整 Gaussian 参数。两种评分都完整评估 179-PDB `test_0`。149-PDB `test_1` 在该正式入口成功结束后，由执行记录中单独列出的任务临时命令从同一批逐 PDB 事实保序派生。
+
+```bash
+exec bash "${TASK_PROJECT_ROOT}/训练与运行/sh/infer/find1_real_receptor_evaluation.sh"
+```
+
+正式入口把 probability 与 centered 固定分成两个互斥 PDB 子序列，分别绑定 `CUDA_VISIBLE_DEVICES=0/1`。每个进程读取 `stage1_v3.yaml`，使用完整图 batch 24、centered batch 12 和每张 GPU 26 个请求物化线程；单进程 blobs 与 tune 使用 56 个外层线程。centered 显式传入 `--continue-on-blob-exceed`，因此候选数严格大于 1,000 时只保留提示标记，不排除该 PDB。
+
+基础评估名为 `f1_blobs_basic_macro_selected`，Gaussian 评估名为 `f2_centered_gaussian_macro_selected`。长期正式入口不调用 `tmp/`。首个动态命令完成 `test_0` 并重新进入 `try_lock` 后，执行记录中的一次性派生命令才运行 `tmp/find1_real_receptor_evaluation_20260912/derive_test1.py`；`held_out_test_1/evaluation/` 只保存两套全局 JSON、逐 PDB JSONL 与 provenance，不重复保存 probability、blobs、centered 或逐 PDB evaluation NPZ。
 
 ## 发布与复用
 
