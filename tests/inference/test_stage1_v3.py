@@ -581,7 +581,7 @@ def test_find_gaussian_score_uses_five_angstrom_cutoff() -> None:
 
 
 def test_find_centered_keeps_atom_at_ten_angstrom_boundary(tmp_path: Path) -> None:
-    """Find centered 的 A 表保留距来源体素中心恰好 10 Å 的原子."""
+    """Find centered 补齐无监督标签占位, 并保留距来源体素中心恰好 10 Å 的原子."""
 
     density_root = tmp_path / "density" / "demo"
     density_root.mkdir(parents=True)
@@ -611,6 +611,9 @@ def test_find_centered_keeps_atom_at_ten_angstrom_boundary(tmp_path: Path) -> No
         def __call__(self, batch):
             """构造一个候选所需的体素, A 原子与空 P 点输出."""
 
+            assert batch["atom_label"].dtype == torch.bool
+            assert batch["atom_label"].shape == batch["atom_global_indices"].shape
+            assert not bool(batch["atom_label"].any())
             batch_size = int(batch["hardmask"].shape[0])
             box_shape = (batch_size, 1, 80, 80, 80)
             return {
