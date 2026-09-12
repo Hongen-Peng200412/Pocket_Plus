@@ -141,7 +141,7 @@ checkpoint、resolved config、代码摘要或哈希。
 
 ## Find centered A/P 扩展字段
 
-`Find_*` producer 在共同字段上增加本节 A/P 字段；`unet_*` 不产生 A 原子或 P 点字段。`N_A/N_P` 是 A 原子与 P 点总数。
+`Find_*` producer 在共同字段上增加本节 A/P 字段；`unet_*` 不产生 A 原子或 P 点字段。`N_A/N_P` 是 A 原子与 P 点总数。无监督 centered 请求不读取真实结合位点标签；`infer_centered_boxes()` 在模型调用前补充与真实原子轴对齐的全假 bool `atom_label`，只满足训练快照构造真实原子与 P anchor 交错布局的输入要求，不进入归档字段或评分。
 
 | 字段 | dtype 与形状 | 含义 |
 | --- | --- | --- |
