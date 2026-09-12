@@ -271,12 +271,13 @@ def infer_centered_boxes(
         - K_full: 单个完整来源 blob 的体素数.
         - K_box: 单个来源 blob 中实际落入所选 80³ BOX 的体素数, 满足 ``K_box <= K_full``.
         - K_aux: 单个 80³ BOX 中 Dataset `hardmask=True` 的受体占据体素数.
+        - N_A_batch: 当前 Find 模型批次中的真实受体原子总数.
         - C_voxel: Stage1 `voxel_final` 的 V 特征通道数.
 
     输入参数:
         - dataset: Stage1Dataset, 根据 ``ResolvedStage1Crop`` 物化当前 PDB 的 80³ 模型输入; `dataset.root` 还定位 ``density/<pdb_id>/exp.npy`` 和 ``sim.npy``.
         - collator: `dataset.collate_fn`, 把保持候选顺序的 B_entry 个样本拼成 Stage1 模型批次.
-        - wrapper: Stage1 模型包装器, 接收 collator 批次并返回体素 logits, V 特征以及 Find producer 的 A/P 字段.
+        - wrapper: Stage1 模型包装器, 接收 collator 批次并返回体素 logits, V 特征以及 Find producer 的 A/P 字段; Find 无监督请求缺少真实 `atom_label` 时, 本函数在调用 wrapper 前补充全假占位.
         - pdb_id: 字符串, 当前 PDB 的小写标识, 如 `1abc`.
         - producer: 字符串, 当前 Stage1 producer 名称; `Find_*` 额外归档 A 原子表和 P 锚点表, `unet_*` 只归档共同字段.
         - blobs.voxel_offsets: int64, ``(N_blob + 1,)``, 同步切分 `voxel_index_global_zyx` 和 `source_probability` 的第一维; 第 i 个半开区间对应第 i 个来源 blob, 首值为 0, 末值为 L_source.
@@ -312,6 +313,7 @@ def infer_centered_boxes(
         - `fits_centered_box=False` 的来源 blob 使用完整 K_full 个体素的质心确定合法 80³ BOX, 仍与普通 blob 一样执行完整 Stage1 前向.
         - centered NPZ 的 `source_voxel_count` 保留 K_full, 但稀疏概率和 V 特征只归档实际落入 BOX 的 K_box 个来源体素.
         - BOX 起点和体素索引使用 ZYX 顺序, A/P 局部坐标和世界坐标使用 XYZ 顺序.
+        - Find 无监督 centered 前向不读取真实结合位点标签; 全假 `atom_label` 只满足训练快照构造真实原子与 P anchor 交错布局的输入要求, 不参与模型特征、归档字段或评分.
 
     副作用:
         - 只读 mmap 当前 PDB 的实验密度和模拟密度 NPY, 启动并关闭请求物化与字段整理线程池, 并在 `device` 上执行模型前向.
@@ -814,6 +816,12 @@ def infer_centered_boxes(
                 source_indices, sample_futures = prepared.popleft()
                 # cpu_batch: collator 按来源候选顺序拼装的 Stage1 模型字段映射.
                 cpu_batch = collator([future.result() for future in sample_futures])
+                if is_find and "atom_label" not in cpu_batch:
+                    # torch.Tensor bool, (N_A_batch,), 与 atom_global_indices 的真实受体原子轴对齐的全假占位; 仅供 Find 训练快照构造真实原子与 P anchor 交错布局.
+                    cpu_batch["atom_label"] = torch.zeros_like(
+                        cpu_batch["atom_global_indices"],
+                        dtype=torch.bool,
+                    )
                 if target_device.type == "cuda":
                     cpu_batch = {
                         name: value.pin_memory() if torch.is_tensor(value) else value
