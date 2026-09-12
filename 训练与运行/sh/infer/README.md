@@ -1,6 +1,6 @@
 # Stage1 V3 推理提交入口
 
-`stage1_v3.sh` 是五个阶段共用的官方入口：它激活 Pocket Plus 环境并调用 `python -m src.inference.cli`，不把完整推理固定成一个长命令。`unet_c1_sampling_comparison.sh` 只编排三种 `unet_c1` 采样模型已经冻结的 F1 blobs+basic 校准与 held-out 测试。`find1_real_receptor_evaluation.sh` 编排一套冻结 `Find_1` checkpoint 的基础打分与 Gaussian 打分。两个编排脚本内部仍逐阶段调用 `stage1_v3.sh`。
+`stage1_v3.sh` 是五个阶段共用的官方入口：它激活 Pocket Plus 环境并调用 `python -m src.inference.cli`，不把完整推理固定成一个长命令。`unet_c1_sampling_comparison.sh` 只编排三种 `unet_c1` 采样模型已经冻结的 F1 blobs+basic 校准与 held-out 测试。`find1_real_receptor_evaluation.sh` 编排一套冻结 `Find_1` checkpoint 的基础打分与 Gaussian 打分；`find1_real_receptor_scored_centered.sh` 复用同一套已冻结参数，为 Stage2 和 Stage3 生成 calibration/validation scored-centered 产物。所有编排脚本内部仍逐阶段调用 `stage1_v3.sh`。
 
 旧 `calibrate`、`run`、固定 `F1_basic`、固定 `F3_centered`、Selector、CLG、组件森林和 Li 入口已经退出活动代码树。需要考察旧行为时使用 Git 历史。
 
@@ -205,6 +205,16 @@ exec bash "${TASK_PROJECT_ROOT}/训练与运行/sh/infer/find1_real_receptor_eva
 正式入口把 probability 与 centered 固定分成两个互斥 PDB 子序列，分别绑定 `CUDA_VISIBLE_DEVICES=0/1`。每个进程读取 `stage1_v3.yaml`，使用完整图 batch 18、centered batch 12 和每张 GPU 26 个请求物化线程；单进程 blobs 与 tune 使用 56 个外层线程。centered 显式传入 `--continue-on-blob-exceed`，因此候选数严格大于 1,000 时只保留提示标记，不排除该 PDB。
 
 基础评估名为 `f1_blobs_basic_macro_selected`，Gaussian 评估名为 `f2_centered_gaussian_macro_selected`。长期正式入口不调用 `tmp/`。首个动态命令完成 `test_0` 并重新进入 `try_lock` 后，执行记录中的一次性派生命令才运行 `tmp/find1_real_receptor_evaluation_20260912/derive_test1.py`；`held_out_test_1/evaluation/` 只保存两套全局 JSON、逐 PDB JSONL 与 provenance，不重复保存 probability、blobs、centered 或逐 PDB evaluation NPZ。
+
+### Stage2、Stage3 scored-centered 入口
+
+`find1_real_receptor_scored_centered.sh` 只使用上述 calibration 冻结的 F2 语义概率阈值和 `objective_beta=1` Gaussian 选择参数。calibration 不重新前向：它通过 `centered --score-only` 向已有 `F2_centered.npz` 替换 `score` 和 `selected`，其他数组、候选顺序与 offsets 保持不变。validation 使用 `stage1_preparation_box_pool_3/split/pdb_split/validation.json`，依次生成 probability、冻结阈值 F2 blobs、centered，然后以同一组 Gaussian 参数写入 `score/selected`。该入口不执行 tune 或 evaluate，不访问 validation 标签。
+
+```bash
+exec bash "${TASK_PROJECT_ROOT}/训练与运行/sh/infer/find1_real_receptor_scored_centered.sh"
+```
+
+两个 GPU 分片继续使用完整图 batch 18、centered batch 12，每个 GPU 进程使用 26 个请求物化线程。`forward_min_voxels=8` 与前一阶段保持一致；`--continue-on-blob-exceed` 保证 blob 数严格大于 1,000 时仍保留该 PDB 并执行 centered 前向。产物继续位于 `/storage/penghongen/AdaLigand_stage1_inference/Find_1/真实受体/artifacts/Find_1/{calibration,validation}`。
 
 ## 发布与复用
 
