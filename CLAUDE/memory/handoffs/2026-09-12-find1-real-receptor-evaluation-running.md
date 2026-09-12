@@ -37,6 +37,7 @@ attempt 4 已完成 100/100 个 calibration probability，并冻结 F1 语义阈
 - 06:24 的计算节点只读门控已通过：PDB 成员与顺序、完成标记、文件集合、冻结选择掩码、`forward_min_voxels=8` 的 centered 保序子序列、offsets、macro 均值、micro F1、top-K 计数/分母及正式聚合重算全部一致。正式产物拓扑 SHA-256 为 `62d8d6bd43a7c80e3a9c7295fa559e28be39e847d405d7ddd03f5d462ddfa5f9`。
 - 06:27 原子切换为一次性 `derive_test1.py` 正式命令并只删除 try lock，启动 attempt 6；release 仍为 `Pocket_Plus_d24c9e99c664`，launch 为 `/home/penghongen/Feedback/Pocket_Plus/launches/368455/Find_1_pdb_centric_2_job368455_20260913T062754_a6`。
 - 06:29 attempt 6 成功并停回 `try_lock_368455`。两套 `test_1` 各有 149 行 JSONL、metrics 和 provenance；成员顺序、逐行父记录等价、聚合关系、全部 provenance 哈希及父产物哈希均通过最终门控。`held_out_test_1` 没有 probability、blobs、centered 或逐 PDB evaluation NPZ。
+- 07:16 原子切换为 `find1_real_receptor_scored_centered.sh` 正式命令并只删除 try lock，启动 attempt 7；release 为 `Pocket_Plus_102ff18970ec`，launch 为 `/home/penghongen/Feedback/Pocket_Plus/launches/368455/Find_1_pdb_centric_2_job368455_20260913T071602_a7`。calibration 预映像 manifest SHA-256 为 `329cdb02e2d4f028441c9048ae79b10624a973b65a6f0ed447e440a11a04551f`，两个分片已进入 `centered --score-only`；`after_lock_368455` 保留。
 
 ## Frozen Scientific Identity
 
@@ -62,8 +63,8 @@ release 中的关键 SHA-256：
 
 ## Next Actions
 
-1. 第一阶段已经完成。核对 `talk/global/global_9.12.md` 第 (3) 项与现有官方 score-only 入口，冻结 validation 清单数量及 SHA-256，并建立最短正式编排命令。
-2. calibration 只做冻结 Gaussian score-only；validation 依次做 probability、冻结阈值 F2 blobs、centered 和冻结 Gaussian score-only，不生成 cal/val 评估。完成实现门控和必要审查后，原子改写动态命令并只删除 try lock。
+1. 守护 attempt 7 从 calibration score-only 进入 200-PDB validation probability、F2 blobs、centered 和 score-only；稳定后以 60 或 90 分钟静默窗口间隔查看。
+2. attempt 7 停回 try lock 后，在计算节点执行预映像对比与 validation 完整性门控；不生成 cal/val 评估。
 3. 始终保留 `after_lock_368455`，未经用户新授权不触碰该锁或执行 `scancel`。仅在启动稳定、失败、try_lock、阶段完成或最终完成等关键事件更新执行记录与本 handoff。
 
 ## Files To Reopen

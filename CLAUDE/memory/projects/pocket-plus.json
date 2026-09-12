@@ -362,7 +362,7 @@
     },
     {
       "date": "2026-09-12",
-      "summary": "Job 368455 的双 H100、64 CPU allocation 已按用户授权从 Find_1 PDB-centric-2 训练接管为真实受体评估。Find centered 无监督 atom_label 占位问题已最小修复并通过双线等价核验、三类窄复核和真实 H100 前向。第一阶段已完成 100-PDB calibration、F1 basic/Gaussian 选参、两套 179-PDB test_0 正式评估及两套 149-PDB test_1 保序派生；成员、候选轴、冻结选择、指标重算、provenance 和父子哈希门控全部通过。Job 停回 try_lock、after_lock 保留，下一步生成 calibration/validation 的冻结 Gaussian scored-centered 产物。",
+      "summary": "Job 368455 的双 H100、64 CPU allocation 已按用户授权从 Find_1 PDB-centric-2 训练接管为真实受体评估。第一阶段已完成并验收 100-PDB calibration、F1 basic/Gaussian 选参、两套 179-PDB test_0 评估与两套 149-PDB test_1 保序派生。第二阶段 attempt 7 已启动：calibration 只做冻结 Gaussian score-only，随后对 200-PDB validation 生成 probability、冻结 F2 blobs、centered 与冻结 Gaussian score/selected；不重新调参也不生成 cal/val 评估。after_lock 继续保留。",
       "handoff": "CLAUDE/memory/handoffs/2026-09-12-find1-real-receptor-evaluation-running.md"
     }
   ],
