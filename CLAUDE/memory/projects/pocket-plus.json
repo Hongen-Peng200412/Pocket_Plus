@@ -359,6 +359,11 @@
       "date": "2026-09-12",
       "summary": "用户已把 Find_1 PDB-centric-1 与 PDB-centric-2 两条训练暂时停止并判定为阶段性完成，而非失败；现有 checkpoint 已足够近期使用，未来仍可续训。PDB-centric-1 的最后可恢复端点为 epoch 1、global_step 17860、当前 epoch 28575 个训练批次、完整验证 1250/1250，最佳 PRAUC 0.5602477；PDB-centric-2 的端点为 epoch 4、global_step 42030、每个 rank 在当前 epoch 完成 22715 个训练批次、完整验证 543/543，最佳 PRAUC 0.6673。长期记忆只保存训练与产物事实，不保存容易过时的 allocation 或锁状态。",
       "handoff": "CLAUDE/memory/handoffs/2026-09-12-find1-pdb-centric-training-stage-complete.md"
+    },
+    {
+      "date": "2026-09-12",
+      "summary": "Job 368455 的双 H100、64 CPU allocation 已按用户授权从 Find_1 PDB-centric-2 训练接管为真实受体评估。Learn/CUMULATIVE 端点 506f84c 与实现端点 tree 等价；正式 attempt a3 的两个 probability 分片在 batch 24 首次前向时同时 CUDA OOM，未写任何产物并安全回到 try_lock，after_lock 保留。下一步按用户预授权把完整图 batch 精确降到 18，经双线与新 release 门控后重启。",
+      "handoff": "CLAUDE/memory/handoffs/2026-09-12-find1-real-receptor-evaluation-running.md"
     }
   ],
   "blockers": [
