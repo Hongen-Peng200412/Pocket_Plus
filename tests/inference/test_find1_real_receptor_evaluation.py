@@ -34,7 +34,7 @@ def test_find1_shell_uses_official_stages_and_two_gpu_resource_profile() -> None
     assert "f1_blobs_basic_macro_selected" in shell_text
     assert "f2_centered_gaussian_macro_selected" in shell_text
     assert "derive_test1.py" not in shell_text
-    assert int(config.window.batch_size) == 24
+    assert int(config.window.batch_size) == 18
     assert int(config.window.workers) == 26
     assert int(config.window.prefetch_batches) == 26
     assert int(config.centered.batch_size) == 12
