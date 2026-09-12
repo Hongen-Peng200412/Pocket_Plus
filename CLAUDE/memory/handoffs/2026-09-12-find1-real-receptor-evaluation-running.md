@@ -15,7 +15,14 @@ Job `368455` 的双 H100、64 CPU allocation 已从 PDB-centric-2 训练接管�
 
 attempt 3 的两个 calibration probability 分片均完成数据加载，但完整图 batch 24 在第一次模型前向时同时发生 CUDA OOM。每张卡当时已有约 71.72 GiB 显存占用，继续申请 11.72 GiB 时只剩 7.16 GiB；attempt 以退出码 1 结束，重新创建了 `try_lock_368455`。正式输出根的文件数仍为 0，因此没有需要清理或混用的半成品；`after_lock_368455` 保持不变。
 
-用户已预先授权 batch 24 OOM 后降到 18。当前应先完成该精确配置回退及 Learn/实现端点等价核验，再安全同步并由新 release 重启，不应直接复用 attempt 3 release。
+用户预先授权的 batch 24 到 18 回退已经完成。attempt 4 于 2026-09-12 19:10 触发：
+
+- release：`/home/penghongen/Feedback/Pocket_Plus/releases/Pocket_Plus_bcb995435809/Pocket_Plus`；
+- launch：`/home/penghongen/Feedback/Pocket_Plus/launches/368455/Find_1_pdb_centric_2_job368455_20260912T191102_a4`；
+- 完整图 batch 为 18，centered batch 仍为 12，每个 GPU 进程仍使用 26 个请求物化线程；
+- release 中配置 SHA-256 为 `937aecc3b473c2caf415685583f1a6793c7bb228dd650c0844010a1178395f80`，其余四个关键文件哈希与 attempt 3 相同。
+
+截至 19:20，两个 calibration probability 分片已经连续运行约 9 分钟，两张 H100 显存均约 74.05 GiB、利用率 100%，没有新 OOM、traceback 或进程退出。首个 PDB 尚未发布；当前按长时间前向且资源活动稳定处理，尚不能替代首个产物验收。`after_lock_368455` 始终保留。
 
 ## Frozen Scientific Identity
 
@@ -29,22 +36,21 @@ attempt 3 的两个 calibration probability 分片均完成数据加载，但完
 
 ## Code And Release Identity
 
-Learn/CUMULATIVE 已快进到 `506f84cf1f013ee58bc70166c50f6c10bda93688`。实现端点 `41c8f4f` 与学习端点的 Git tree 均为 `ae6af1ef56f6092adeb9d30f904b236da0be44d0`。两轮三角色全面审查和遗留问题窄复核全部批准；定向正式测试 47 项通过，临时派生测试 1 项通过。
+Learn/CUMULATIVE 已快进到 OOM 回退学习端点 `3a546325059e8d120aa1d8ffff939a6624a0ffd3`。对应实现端点 `96ae78cc021aaaac1aafc280e44e3a4e21373518` 与学习端点的 Git tree 均为 `7be35a4a2a92e0f1f5373862e3395b46691fc352`。原实现的两轮三角色全面审查和遗留问题窄复核全部批准；batch 18 窄修复再次通过 47 项定向测试、shell 语法、YAML 资源断言和补丁格式门控，未重新扩大审查范围。
 
 release 中的关键 SHA-256：
 
 - `src/inference/evaluation.py`：`2c966c9933abfde81ec6c08236a5a86a497e901b191a7aade07c5150655c72cd`；
-- `configs/inference/stage1_v3.yaml`：`8b5589db971e94748fc983cb11f3dbe5a47be48f4b9b751205600ba4a7e55b66`；
+- `configs/inference/stage1_v3.yaml`：`937aecc3b473c2caf415685583f1a6793c7bb228dd650c0844010a1178395f80`；
 - `find1_real_receptor_evaluation.sh`：`95e4afe5925a7a8cf389ccb803b5be36e00fa1ed7e3bb37b052c522185a5e754`；
 - `tmp/find1_real_receptor_evaluation_20260912/derive_test1.py`：`72e0e2d6d4715e1f9d4a702cf281a3496a86227f16e536fe4f27d2d8bceb3984`。
 
 ## Next Actions
 
-1. 把 `configs/inference/stage1_v3.yaml` 的完整图 batch 从 24 精确降到 18，同步更新 README 与定向测试；完成双线端点等价和门控后，从 Learn 工作区安全同步。
-2. 核对共享目录后保持同一短动态命令，只删除 `try_lock_368455` 启动新 release；确认首个 PDB 正常落盘、无新 OOM 后，再使用多次 `Start-Sleep -Seconds 300` 组成 60 或 90 分钟静默等待。
-3. 新 attempt 成功完成两套 `test_0` 评估并重新创建 `try_lock_368455` 后，先核对 179-PDB probability、blobs、centered、逐 PDB评估及两份汇总，再原子改写动态命令为执行记录中的一次性 `derive_test1.py` 命令，仅删除该 try lock 触发下一次 attempt。
-4. 派生 attempt 结束后核对两套 149-PDB JSONL、metrics 与 provenance。始终保留 `after_lock_368455`，未经用户新授权不触碰该锁或执行 `scancel`。
-5. 仅在启动稳定、OOM/失败、try_lock 或全部结果完成等关键事件更新执行记录与本 handoff。
+1. 当前执行一次由连续 `Start-Sleep -Seconds 300` 组成的 60 分钟静默等待；醒来后核对首个完整 probability、进程、GPU、锁和错误日志。
+2. attempt 4 成功完成两套 `test_0` 评估并重新创建 `try_lock_368455` 后，先核对 179-PDB probability、blobs、centered、逐 PDB评估及两份汇总，再原子改写动态命令为执行记录中的一次性 `derive_test1.py` 命令，仅删除该 try lock 触发下一次 attempt。
+3. 派生 attempt 结束后核对两套 149-PDB JSONL、metrics 与 provenance。始终保留 `after_lock_368455`，未经用户新授权不触碰该锁或执行 `scancel`。
+4. 仅在启动稳定、OOM/失败、try_lock 或全部结果完成等关键事件更新执行记录与本 handoff。
 
 ## Files To Reopen
 

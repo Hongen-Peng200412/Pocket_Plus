@@ -362,7 +362,7 @@
     },
     {
       "date": "2026-09-12",
-      "summary": "Job 368455 的双 H100、64 CPU allocation 已按用户授权从 Find_1 PDB-centric-2 训练接管为真实受体评估。Learn/CUMULATIVE 端点 506f84c 与实现端点 tree 等价；正式 attempt a3 的两个 probability 分片在 batch 24 首次前向时同时 CUDA OOM，未写任何产物并安全回到 try_lock，after_lock 保留。下一步按用户预授权把完整图 batch 精确降到 18，经双线与新 release 门控后重启。",
+      "summary": "Job 368455 的双 H100、64 CPU allocation 已按用户授权从 Find_1 PDB-centric-2 训练接管为真实受体评估。attempt a3 的 batch 24 双卡前向 OOM 且零产物；精确回退到 batch 18 后，Learn/实现端点 tree 等价，47 项定向测试与 release 哈希门控通过。attempt a4 已在两张 H100 上稳定执行 calibration probability，显存约 74.05 GiB、利用率 100%，after_lock 保留。",
       "handoff": "CLAUDE/memory/handoffs/2026-09-12-find1-real-receptor-evaluation-running.md"
     }
   ],
