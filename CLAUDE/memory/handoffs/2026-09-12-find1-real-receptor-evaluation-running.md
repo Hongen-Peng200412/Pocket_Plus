@@ -22,7 +22,9 @@ attempt 3 的两个 calibration probability 分片均完成数据加载，但完
 - 完整图 batch 为 18，centered batch 仍为 12，每个 GPU 进程仍使用 26 个请求物化线程；
 - release 中配置 SHA-256 为 `937aecc3b473c2caf415685583f1a6793c7bb228dd650c0844010a1178395f80`，其余四个关键文件哈希与 attempt 3 相同。
 
-截至 20:26，batch 18 已通过首批真实产物验收：calibration 中 41/100 个 PDB 分别具有一份 `probability_map.npz`、`geometry.json`、`performance.json` 和 `_COMPLETE`，没有失败标记。两张 H100 显存约 74.08 GiB、利用率 100%，两个分片进程均存活；`try_lock_368455` 不存在，`after_lock_368455` 始终保留。
+attempt 4 已完成 100/100 个 calibration probability，并冻结 F1 语义阈值 `0.733612060546875`、F1 basic 参数 `score_threshold=0.7737352252006531`、`prefiltered_min_voxel=8`、`min_voxels=13`，以及 F2 语义阈值 `0.431304931640625`；F1/F2 blobs 均为 100/100。首次 F2 centered 前向在两张卡上都因输入缺少 `atom_label` 抛出 `KeyError`，centered NPZ 与完成标记均为 0。attempt 以退出码 1 回到 `try_lock_368455`，`after_lock_368455` 始终保留。
+
+根因边界已经核实：无监督 centered 请求按 Dataset 契约不读取真实 binding 标签；当前 Find 训练快照只用 `atom_label` 的 dtype 和真实原子轴构造 P anchor 占位，前向特征和本任务评分不消费标签值。最小修复是在 centered 推理批次内补充与 `atom_global_indices` 对齐的全假 bool 占位；不得改成读取 calibration 或测试标签。
 
 ## Frozen Scientific Identity
 
@@ -47,10 +49,11 @@ release 中的关键 SHA-256：
 
 ## Next Actions
 
-1. 当前继续执行一次由连续 `Start-Sleep -Seconds 300` 组成的 60 分钟静默等待；醒来后核对 calibration 是否完成以及流程是否进入 F1/F2 blobs、调参或 held-out probability。
-2. attempt 4 成功完成两套 `test_0` 评估并重新创建 `try_lock_368455` 后，先核对 179-PDB probability、blobs、centered、逐 PDB评估及两份汇总，再原子改写动态命令为执行记录中的一次性 `derive_test1.py` 命令，仅删除该 try lock 触发下一次 attempt。
-3. 派生 attempt 结束后核对两套 149-PDB JSONL、metrics 与 provenance。始终保留 `after_lock_368455`，未经用户新授权不触碰该锁或执行 `scancel`。
-4. 仅在启动稳定、OOM/失败、try_lock 或全部结果完成等关键事件更新执行记录与本 handoff。
+1. 在独立实现工作树内只修复 Find centered 的无监督 `atom_label` 占位契约，补充定向测试与 README；完成主代理两遍自查及既有三角色的窄复核后，再建立独立学习端点并核验 Git tree 等价。
+2. 从最新 Learn 状态安全同步并核对新 release；保持同一条极短正式命令，只删除 `try_lock_368455` 启动下一 attempt。既有 probability、F1/F2 blobs 和 tuning 文件应按完成标记复用，不加 `--overwrite`。
+3. 下一 attempt 成功完成两套 `test_0` 评估并重新创建 `try_lock_368455` 后，先核对 179-PDB probability、blobs、centered、逐 PDB评估及两份汇总，再原子改写动态命令为执行记录中的一次性 `derive_test1.py` 命令，仅删除该 try lock 触发下一次 attempt。
+4. 派生 attempt 结束后核对两套 149-PDB JSONL、metrics 与 provenance。始终保留 `after_lock_368455`，未经用户新授权不触碰该锁或执行 `scancel`。
+5. 仅在启动稳定、OOM/失败、try_lock 或全部结果完成等关键事件更新执行记录与本 handoff。
 
 ## Files To Reopen
 
