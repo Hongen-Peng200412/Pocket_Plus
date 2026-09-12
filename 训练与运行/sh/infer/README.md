@@ -202,7 +202,7 @@ occurrence 模式读取 `stage1_v3_a100_16cpu.yaml`，完整图 batch 为 12；�
 exec bash "${TASK_PROJECT_ROOT}/训练与运行/sh/infer/find1_real_receptor_evaluation.sh"
 ```
 
-正式入口把 probability 与 centered 固定分成两个互斥 PDB 子序列，分别绑定 `CUDA_VISIBLE_DEVICES=0/1`。每个进程读取 `stage1_v3.yaml`，使用完整图 batch 24、centered batch 12 和每张 GPU 26 个请求物化线程；单进程 blobs 与 tune 使用 56 个外层线程。centered 显式传入 `--continue-on-blob-exceed`，因此候选数严格大于 1,000 时只保留提示标记，不排除该 PDB。
+正式入口把 probability 与 centered 固定分成两个互斥 PDB 子序列，分别绑定 `CUDA_VISIBLE_DEVICES=0/1`。每个进程读取 `stage1_v3.yaml`，使用完整图 batch 18、centered batch 12 和每张 GPU 26 个请求物化线程；单进程 blobs 与 tune 使用 56 个外层线程。centered 显式传入 `--continue-on-blob-exceed`，因此候选数严格大于 1,000 时只保留提示标记，不排除该 PDB。
 
 基础评估名为 `f1_blobs_basic_macro_selected`，Gaussian 评估名为 `f2_centered_gaussian_macro_selected`。长期正式入口不调用 `tmp/`。首个动态命令完成 `test_0` 并重新进入 `try_lock` 后，执行记录中的一次性派生命令才运行 `tmp/find1_real_receptor_evaluation_20260912/derive_test1.py`；`held_out_test_1/evaluation/` 只保存两套全局 JSON、逐 PDB JSONL 与 provenance，不重复保存 probability、blobs、centered 或逐 PDB evaluation NPZ。
 
