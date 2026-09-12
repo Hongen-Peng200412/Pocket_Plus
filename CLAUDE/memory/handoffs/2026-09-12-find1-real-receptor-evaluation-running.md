@@ -26,6 +26,13 @@ attempt 4 已完成 100/100 个 calibration probability，并冻结 F1 语义阈
 
 根因边界已经核实：无监督 centered 请求按 Dataset 契约不读取真实 binding 标签；当前 Find 训练快照只用 `atom_label` 的 dtype 和真实原子轴构造 P anchor 占位，前向特征和本任务评分不消费标签值。最小修复是在 centered 推理批次内补充与 `atom_global_indices` 对齐的全假 bool 占位；不得改成读取 calibration 或测试标签。
 
+该修复已经进入正式 attempt 5 并通过真实前向验证：
+
+- release：`/home/penghongen/Feedback/Pocket_Plus/releases/Pocket_Plus_d24c9e99c664/Pocket_Plus`；
+- launch：`/home/penghongen/Feedback/Pocket_Plus/launches/368455/Find_1_pdb_centric_2_job368455_20260912T230920_a5`；
+- 启动时间：2026-09-12 23:09；只删除了 `try_lock_368455`，`after_lock_368455` 保留；
+- 23:17 已完成 34/100 个 calibration `F2_centered.npz` 及对应 `_COMPLETE`，两个 centered 分片均存活，显存约为 44.6/43.2 GiB，没有新 traceback 或 OOM。
+
 ## Frozen Scientific Identity
 
 - checkpoint：`/home/penghongen/Feedback/Pocket_Plus/logs/AdaLigand_Stage1_pdb_centric_resume-Find_1-pdb_centric_2/Find_1-pdb_centric_2_resume____Find_1_pdb_centric_2_job368455_20260909T071535_a2_pdb_centric_2_resume/checkpoints/TOP_epoch_04_score_0.6654.ckpt`；
@@ -38,22 +45,22 @@ attempt 4 已完成 100/100 个 calibration probability，并冻结 F1 语义阈
 
 ## Code And Release Identity
 
-Learn/CUMULATIVE 已快进到 OOM 回退学习端点 `3a546325059e8d120aa1d8ffff939a6624a0ffd3`。对应实现端点 `96ae78cc021aaaac1aafc280e44e3a4e21373518` 与学习端点的 Git tree 均为 `7be35a4a2a92e0f1f5373862e3395b46691fc352`。原实现的两轮三角色全面审查和遗留问题窄复核全部批准；batch 18 窄修复再次通过 47 项定向测试、shell 语法、YAML 资源断言和补丁格式门控，未重新扩大审查范围。
+Learn/CUMULATIVE 已快进到 Find centered 修复的学习端点 `b76c61ede6f8373e972875eaea203d53c9761f41`。对应实现端点 `1aeeb2217362617f183201914b4a6d2fe139155d` 与学习端点的 Git tree 均为 `78ae22176fea95a3fd063034e82aae0d097c190c`。修复只在缺键时补充与 `atom_global_indices` 同形的全假 bool `atom_label`；47 项定向测试及 Git/代码布局、中文注释、科学逻辑三类窄复核均已批准。
 
 release 中的关键 SHA-256：
 
-- `src/inference/evaluation.py`：`2c966c9933abfde81ec6c08236a5a86a497e901b191a7aade07c5150655c72cd`；
+- `src/inference/centered.py`：`ec13ac7b46d5db42e9523d6ba9781a24c5b4d1a231516c187cf312d18497856b`；
+- `src/inference/evaluation.py`：`da076afb3cb75efda1c1f615c472cc5dbf55bd37b72fc7ce7e98440595249999`；
 - `configs/inference/stage1_v3.yaml`：`937aecc3b473c2caf415685583f1a6793c7bb228dd650c0844010a1178395f80`；
 - `find1_real_receptor_evaluation.sh`：`95e4afe5925a7a8cf389ccb803b5be36e00fa1ed7e3bb37b052c522185a5e754`；
 - `tmp/find1_real_receptor_evaluation_20260912/derive_test1.py`：`72e0e2d6d4715e1f9d4a702cf281a3496a86227f16e536fe4f27d2d8bceb3984`。
 
 ## Next Actions
 
-1. 在独立实现工作树内只修复 Find centered 的无监督 `atom_label` 占位契约，补充定向测试与 README；完成主代理两遍自查及既有三角色的窄复核后，再建立独立学习端点并核验 Git tree 等价。
-2. 从最新 Learn 状态安全同步并核对新 release；保持同一条极短正式命令，只删除 `try_lock_368455` 启动下一 attempt。既有 probability、F1/F2 blobs 和 tuning 文件应按完成标记复用，不加 `--overwrite`。
-3. 下一 attempt 成功完成两套 `test_0` 评估并重新创建 `try_lock_368455` 后，先核对 179-PDB probability、blobs、centered、逐 PDB评估及两份汇总，再原子改写动态命令为执行记录中的一次性 `derive_test1.py` 命令，仅删除该 try lock 触发下一次 attempt。
-4. 派生 attempt 结束后核对两套 149-PDB JSONL、metrics 与 provenance。始终保留 `after_lock_368455`，未经用户新授权不触碰该锁或执行 `scancel`。
-5. 仅在启动稳定、OOM/失败、try_lock 或全部结果完成等关键事件更新执行记录与本 handoff。
+1. 继续守护 attempt 5。完成 calibration Gaussian 调参后，核对冻结参数；随后验收两套 `test_0` 的 179-PDB probability、blobs、centered、逐 PDB评估和汇总。
+2. attempt 5 成功并重新创建 `try_lock_368455` 后，原子改写动态命令为执行记录中的一次性 `derive_test1.py` 命令，仅删除该 try lock；派生结束后核对两套 149-PDB JSONL、metrics 与 provenance。
+3. 第一阶段日志、映射和 handoff 收口后，按 `talk/global/global_9.12.md` 第 (3) 项继续生成 Stage2/Stage3 所需 scored-centered 产物：calibration 只做冻结 Gaussian score-only，validation 依次做 probability、冻结阈值 F2 blobs、centered 和冻结 Gaussian score-only，不生成 cal/val 评估。
+4. 始终保留 `after_lock_368455`，未经用户新授权不触碰该锁或执行 `scancel`。仅在启动稳定、失败、try_lock、阶段完成或最终完成等关键事件更新执行记录与本 handoff。
 
 ## Files To Reopen
 
