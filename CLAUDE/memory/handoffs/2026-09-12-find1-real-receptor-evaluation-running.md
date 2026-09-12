@@ -22,7 +22,7 @@ attempt 3 的两个 calibration probability 分片均完成数据加载，但完
 - 完整图 batch 为 18，centered batch 仍为 12，每个 GPU 进程仍使用 26 个请求物化线程；
 - release 中配置 SHA-256 为 `937aecc3b473c2caf415685583f1a6793c7bb228dd650c0844010a1178395f80`，其余四个关键文件哈希与 attempt 3 相同。
 
-截至 19:20，两个 calibration probability 分片已经连续运行约 9 分钟，两张 H100 显存均约 74.05 GiB、利用率 100%，没有新 OOM、traceback 或进程退出。首个 PDB 尚未发布；当前按长时间前向且资源活动稳定处理，尚不能替代首个产物验收。`after_lock_368455` 始终保留。
+截至 20:26，batch 18 已通过首批真实产物验收：calibration 中 41/100 个 PDB 分别具有一份 `probability_map.npz`、`geometry.json`、`performance.json` 和 `_COMPLETE`，没有失败标记。两张 H100 显存约 74.08 GiB、利用率 100%，两个分片进程均存活；`try_lock_368455` 不存在，`after_lock_368455` 始终保留。
 
 ## Frozen Scientific Identity
 
@@ -47,7 +47,7 @@ release 中的关键 SHA-256：
 
 ## Next Actions
 
-1. 当前执行一次由连续 `Start-Sleep -Seconds 300` 组成的 60 分钟静默等待；醒来后核对首个完整 probability、进程、GPU、锁和错误日志。
+1. 当前继续执行一次由连续 `Start-Sleep -Seconds 300` 组成的 60 分钟静默等待；醒来后核对 calibration 是否完成以及流程是否进入 F1/F2 blobs、调参或 held-out probability。
 2. attempt 4 成功完成两套 `test_0` 评估并重新创建 `try_lock_368455` 后，先核对 179-PDB probability、blobs、centered、逐 PDB评估及两份汇总，再原子改写动态命令为执行记录中的一次性 `derive_test1.py` 命令，仅删除该 try lock 触发下一次 attempt。
 3. 派生 attempt 结束后核对两套 149-PDB JSONL、metrics 与 provenance。始终保留 `after_lock_368455`，未经用户新授权不触碰该锁或执行 `scancel`。
 4. 仅在启动稳定、OOM/失败、try_lock 或全部结果完成等关键事件更新执行记录与本 handoff。
