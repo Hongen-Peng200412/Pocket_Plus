@@ -1,6 +1,6 @@
 # Stage1 V3 推理提交入口
 
-`stage1_v3.sh` 是五个阶段共用的官方入口：它激活 Pocket Plus 环境并调用 `python -m src.inference.cli`，不把完整推理固定成一个长命令。`unet_c1_sampling_comparison.sh` 只编排三种 `unet_c1` 采样模型已经冻结的 F1 blobs+basic 校准与 held-out 测试。`find1_real_receptor_evaluation.sh` 编排一套冻结 `Find_1` checkpoint 的基础打分与 Gaussian 打分；`find1_real_receptor_scored_centered.sh` 复用同一套已冻结参数，为 Stage2 和 Stage3 生成 calibration/validation scored-centered 产物。所有编排脚本内部仍逐阶段调用 `stage1_v3.sh`。
+`stage1_v3.sh` 是五个阶段共用的官方入口：它激活 Pocket Plus 环境并调用 `python -m src.inference.cli`，不把完整推理固定成一个长命令。`unet_c1_sampling_comparison.sh` 只编排三种 `unet_c1` 采样模型已经冻结的 F1 blobs+basic 校准与 held-out 测试。`find1_real_receptor_evaluation.sh` 编排一套冻结 `Find_1` checkpoint 的基础打分与 Gaussian 打分；`find1_real_receptor_scored_centered.sh` 复用同一套已冻结参数，为 Stage2 和 Stage3 生成 calibration/validation scored-centered 产物；`find1_real_receptor_train_shards.sh` 使用同一冻结身份为训练 PDB 的一个双卡四片批次生成 scored-centered 产物。所有编排脚本内部仍逐阶段调用 `stage1_v3.sh`。
 
 旧 `calibrate`、`run`、固定 `F1_basic`、固定 `F3_centered`、Selector、CLG、组件森林和 Li 入口已经退出活动代码树。需要考察旧行为时使用 Git 历史。
 
@@ -215,6 +215,16 @@ exec bash "${TASK_PROJECT_ROOT}/训练与运行/sh/infer/find1_real_receptor_sco
 ```
 
 两个 GPU 分片继续使用完整图 batch 18、centered batch 12，每个 GPU 进程使用 26 个请求物化线程。`forward_min_voxels=8` 与前一阶段保持一致；`--continue-on-blob-exceed` 保证 blob 数严格大于 1,000 时仍保留该 PDB 并执行 centered 前向。产物继续位于 `/storage/penghongen/AdaLigand_stage1_inference/Find_1/真实受体/artifacts/Find_1/{calibration,validation}`。
+
+### 训练 PDB 固定 50 片入口
+
+`find1_real_receptor_train_shards.sh` 使用 `stage1_preparation_box_pool_3/split/pdb_split/train.json`。片身份与 `src.inference.cli` 相同：先以 `random.Random(3407)` 打乱完整 PDB 清单，再以 `[shard_index::50]` 取片；入口接收用户可读片号 `1..50`，传给 CLI 前严格减一。四个位置依次是 GPU 0 的两个片号和 GPU 1 的两个片号，下面命令因此让 GPU 0 顺序处理第 1、2 片，让 GPU 1 顺序处理第 3、4 片。
+
+```bash
+exec bash "${TASK_PROJECT_ROOT}/训练与运行/sh/infer/find1_real_receptor_train_shards.sh" 1 2 3 4
+```
+
+当前入口是双卡四片入口，必须恰好给出四个互不重复的片号。每一对分片依次执行 probability、冻结 F2 阈值 blobs、`forward_min_voxels=8` centered 和冻结 Gaussian score-only；一对全部成功后才进入两张卡的下一片。两个 GPU 阶段进程各使用 26 个请求物化线程；同一对分片的 blobs 串行使用 56 个 worker，避免在 64 CPU allocation 内同时建立 112 个 blobs 线程。入口不执行 tune、evaluate 或 overwrite。probability、F2 blobs 和正常 centered 已有完成标记时直接跳过；score-only 仍幂等重算 `score/selected`，并通过同目录临时文件原子替换 `F2_centered.npz` 和对应完成标记。正式产物位于 `/storage/penghongen/AdaLigand_stage1_inference/Find_1/真实受体/artifacts/Find_1/train/<pdb_id>`。
 
 ## 发布与复用
 
