@@ -364,6 +364,11 @@
       "date": "2026-09-13",
       "summary": "Job 368455 的双 H100、64 CPU allocation 已完成 Find_1 真实受体任务。第一阶段已验收 100-PDB calibration、F1 basic/Gaussian 选参、两套 179-PDB test_0 评估与两套 149-PDB test_1 保序派生；第二阶段仅给 calibration 既有 centered 增补冻结 Gaussian score/selected，并完成 200-PDB validation 的 probability、冻结 F2 blobs、centered 与冻结 Gaussian score/selected。最终门控确认冻结重算、候选顺序、四组 offsets、12 个超大 blob 的稀疏落盘边界和非破坏性回填一致，且没有 cal/val 评估。Job 已停回 try_lock，after_lock 继续保留。",
       "handoff": "CLAUDE/memory/handoffs/2026-09-12-find1-real-receptor-evaluation-running.md"
+    },
+    {
+      "date": "2026-09-13",
+      "summary": "Job 368455 的双 H100、64 CPU allocation 已启动 Find_1 真实受体训练集固定 50 片中的第 1—4 片。四片共 1,100 个 PDB，身份清单无重复并覆盖冻结成员；第 8 次执行使用 release Pocket_Plus_8160a29cc7ca，GPU 0/1 正在稳定并行处理第 1/3 片 probability。F2 语义阈值、Gaussian 参数、checkpoint、候选与 offsets 契约均冻结，after_lock 保留。",
+      "handoff": "CLAUDE/memory/handoffs/2026-09-13-find1-real-receptor-train-shards-01-04-running.md"
     }
   ],
   "blockers": [
