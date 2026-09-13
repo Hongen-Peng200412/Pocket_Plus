@@ -1,6 +1,6 @@
 # Stage1 V3 推理测试
 
-本目录验证 `src/inference/` 的正式科学和执行契约。`test_stage1_v3.py` 运行 CPU 科学契约测试，`test_calibration_parallel.py` 验证 basic/Gaussian 外层并发与串行结果等价，`test_stage1_cuda.py` 在可用 GPU 上运行真实 CUDA 异步 smoke；旧 Selector、组件森林、CLG、Li、固定 `F1_basic/F3_centered` 和 `calibrate/run` 流程的专项测试已经删除，历史行为只通过 Git 查阅。
+本目录验证 `src/inference/` 的正式科学和执行契约。`test_stage1_v3.py` 运行 CPU 科学契约测试，`test_calibration_parallel.py` 验证 basic/Gaussian 外层并发与串行结果等价，`test_find1_real_receptor_evaluation.py` 核对 Find_1 真实受体评估、scored-centered 与训练固定 50 片 Shell 入口，`test_stage1_cuda.py` 在可用 GPU 上运行真实 CUDA 异步 smoke；旧 Selector、组件森林、CLG、Li、固定 `F1_basic/F3_centered` 和 `calibrate/run` 流程的专项测试已经删除，历史行为只通过 Git 查阅。
 
 `test_stage1_v3.py` 覆盖以下边界：
 
@@ -34,10 +34,12 @@
 运行命令：
 
 ```powershell
-D:\Anaconda\envs\Pocket_Plus_windows\python.exe -m pytest -q tests/inference/test_stage1_v3.py tests/inference/test_calibration_parallel.py
+D:\Anaconda\envs\Pocket_Plus_windows\python.exe -m pytest -q tests/inference/test_stage1_v3.py tests/inference/test_calibration_parallel.py tests/inference/test_find1_real_receptor_evaluation.py
 ```
 
 测试使用 CPU 构造最小数组和临时目录，不需要正式 checkpoint。真实 checkpoint、CUDA 显存和 GPU 利用率属于 `ops/stage1_inference_benchmark/` 的实战验证。
+
+`test_find1_real_receptor_evaluation.py` 的 Shell 行为测试需要 Bash；Windows 下还需要同一 MSYS2 或 Git Bash 安装中的 `cygpath`。测试先查找 `PATH`，再查找项目约定的 `D:\msys64\usr\bin\bash.exe` 和标准 Git Bash 路径；均不存在时才跳过该用例。
 
 CUDA smoke 单独运行，覆盖 probability 与 centered 的真实 CUDA 前向、异步 D2H 和 CPU 收口：
 
@@ -45,4 +47,4 @@ CUDA smoke 单独运行，覆盖 probability 与 centered 的真实 CUDA 前向�
 D:\Anaconda\envs\Pocket_Plus_windows\python.exe -m pytest -q tests/inference/test_stage1_cuda.py
 ```
 
-完整 CPU 回归同时运行 `tests/inference/test_stage1_v3.py`、`tests/inference/test_calibration_parallel.py` 与 `tests/datasets/test_stage1_dataset.py`。`run_centered_stage()` 的首次发布和 score-only 更新，以及 `run_tune_stage()` 的 basic/Gaussian 并行加载、字段转换与 JSON 发布，都由正式入口测试覆盖，不保留只测试薄包装的单独用例。实际测试次数、GPU 型号和运行结果记录在 AdaLigand 的对应执行记录。
+完整 CPU 回归同时运行 `tests/inference/test_stage1_v3.py`、`tests/inference/test_calibration_parallel.py`、`tests/inference/test_find1_real_receptor_evaluation.py` 与 `tests/datasets/test_stage1_dataset.py`。`run_centered_stage()` 的首次发布和 score-only 更新，以及 `run_tune_stage()` 的 basic/Gaussian 并行加载、字段转换与 JSON 发布，都由正式入口测试覆盖。Find_1 Shell 测试使用伪 `stage1_v3.sh` 验证双卡分片顺序、阶段屏障和失败传播，不读取正式数据或 checkpoint。实际测试次数、GPU 型号和运行结果记录在 AdaLigand 的对应执行记录。
