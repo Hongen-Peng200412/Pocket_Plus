@@ -1,10 +1,12 @@
-# Handoff: Find_1 真实受体推理与评估运行中
+# Handoff: Find_1 真实受体推理与 scored-centered 产物已完成
 
-Date: 2026-09-12
+Date: 2026-09-13
 
 ## Current State
 
 Job `368455` 的双 H100、64 CPU allocation 已从 PDB-centric-2 训练接管为 `Find_1` 真实受体推理。训练进程由用户授权的 `kill_lock_368455` 终止；该锁已被 runner 消费并删除。`after_lock_368455` 必须继续保留，不得释放资源或执行 `scancel`。
+
+第一阶段的 calibration、两套 `test_0` 正式评估与两套 `test_1` 保序派生，以及第二阶段的 calibration/validation scored-centered 产物均已完成并通过最终门控。Job 当前停在 `try_lock_368455`，GPU 空闲；`after_lock_368455` 仍存在。
 
 正式推理 attempt 3 已于 2026-09-12 18:58 启动：
 
@@ -38,6 +40,9 @@ attempt 4 已完成 100/100 个 calibration probability，并冻结 F1 语义阈
 - 06:27 原子切换为一次性 `derive_test1.py` 正式命令并只删除 try lock，启动 attempt 6；release 仍为 `Pocket_Plus_d24c9e99c664`，launch 为 `/home/penghongen/Feedback/Pocket_Plus/launches/368455/Find_1_pdb_centric_2_job368455_20260913T062754_a6`。
 - 06:29 attempt 6 成功并停回 `try_lock_368455`。两套 `test_1` 各有 149 行 JSONL、metrics 和 provenance；成员顺序、逐行父记录等价、聚合关系、全部 provenance 哈希及父产物哈希均通过最终门控。`held_out_test_1` 没有 probability、blobs、centered 或逐 PDB evaluation NPZ。
 - 07:16 原子切换为 `find1_real_receptor_scored_centered.sh` 正式命令并只删除 try lock，启动 attempt 7；release 为 `Pocket_Plus_102ff18970ec`，launch 为 `/home/penghongen/Feedback/Pocket_Plus/launches/368455/Find_1_pdb_centric_2_job368455_20260913T071602_a7`。calibration 预映像 manifest SHA-256 为 `329cdb02e2d4f028441c9048ae79b10624a973b65a6f0ed447e440a11a04551f`，两个分片已进入 `centered --score-only`；`after_lock_368455` 保留。
+- 14:43 attempt 7 正式成功并停回 `try_lock_368455`。calibration 100/100 份既有 `F2_centered.npz` 仅增加 `score/selected`，2,792 个候选中选中 2,194 个；validation 200/200 个 PDB 的 probability、冻结 F2 blobs、centered 和冻结 Gaussian `score/selected` 全部闭合，7,619 个 F2 blobs 中 7,413 个进入 centered，选中 5,554 个。没有 validation evaluation 文件。
+- 完成门控输出 `VERIFY_OK`：calibration 非评分字段与预映像的成员大小和 CRC 完全一致；validation 清单成员、三阶段完成标记、`source_blob_index` 保序关系以及冻结 Gaussian 分数与选择掩码全部一致。第二阶段验收集合的产物拓扑 SHA-256 为 `ef852d353403266fb8bfa271924a4433107c7623d23f1bdc3f5946feb4f6df9b`，NPZ 中央目录契约摘要为 `1121617e7a2b1d98d53f26f160e91c48cd3ffc27110997dc3687683ba1e3db17`。
+- 数组契约门控通过 300 份 centered 文件和 10,205 个候选，摘要为 `cba67424a079d1e2d1263f04ae447bf9b89646a2a6e9cf298a654c88ffaa5ce9`。calibration 7 个、validation 5 个无法由单个 80³ BOX 完整容纳的 blob 均完成前向；完整来源体素数与四组 offsets 的稀疏落盘边界符合正式契约。validation 每个 PDB 的 F2 blob 总数最多为 `8jdk` 的 408 个，没有样本达到 `_BLOB_EXCEED` 条件；正式入口仍显式保留 `--continue-on-blob-exceed`。
 
 ## Frozen Scientific Identity
 
@@ -45,7 +50,7 @@ attempt 4 已完成 100/100 个 calibration probability，并冻结 F1 语义阈
 - checkpoint SHA-256：`3f5dd715da76a2337ddb94017f442783798566cac584b8dd16882d8afd792ee4`；
 - checkpoint 内部 `global_step=38623`，对应 W&B 已完成步编号 `38622`；
 - resolved config SHA-256：`9a4ea5cf95d50deb3d42c8420e4dddf1d3a7eb0ebb6d0ee4edbff0388f1884da`；
-- calibration/test_0/test_1 清单数分别为 100/179/149，SHA-256 分别为 `b14c9f44...0fe7a`、`12473392...c887`、`ee0697aa...0df0`。
+- calibration/validation/test_0/test_1 清单数分别为 100/200/179/149，SHA-256 分别为 `b14c9f44...0fe7a`、`86a8e897...4cdf`、`12473392...c887`、`ee0697aa...0df0`。
 
 基础路径为 F1 semantic blobs、basic 调参、`objective_beta=1` 和完整 `test_0` 评估。Gaussian 路径复用 probability，使用 F2 semantic blobs、centered 前向、Gaussian 调参、`objective_beta=1` 和完整 `test_0` 评估。任何 PDB 即使超过 1,000 个 blob 也只记录标识，不被排除；centered 只前向来源体素数至少为 8 的 blob。
 
@@ -61,15 +66,17 @@ release 中的关键 SHA-256：
 - `find1_real_receptor_evaluation.sh`：`95e4afe5925a7a8cf389ccb803b5be36e00fa1ed7e3bb37b052c522185a5e754`；
 - `tmp/find1_real_receptor_evaluation_20260912/derive_test1.py`：`72e0e2d6d4715e1f9d4a702cf281a3496a86227f16e536fe4f27d2d8bceb3984`。
 
+第二阶段的实现端点为 `8b7f770937e82973b4c78cb6335c380e0a68c564`，学习端点为 `1f96e7934b130ba2d2679dec01c1bf6a1e08fbd4`，两端 Git tree 均为 `f68264742e212a33f133d1bb1c046c2574f41a4b`；三类独立审查及窄复核均已批准。attempt 7 release 中 `find1_real_receptor_scored_centered.sh` 的 SHA-256 为 `769dfbf0aa49dbeb8a0575333c5b57a236c793990c4b1752360059ba825207b1`，动态正式命令的 SHA-256 为 `bf42a829532d82ece3e22d6b8ca5ef6960debf56032621f02fb3a4617c64a13a`。
+
 ## Next Actions
 
-1. 守护 attempt 7 从 calibration score-only 进入 200-PDB validation probability、F2 blobs、centered 和 score-only；稳定后以 60 或 90 分钟静默窗口间隔查看。
-2. attempt 7 停回 try lock 后，在计算节点执行预映像对比与 validation 完整性门控；不生成 cal/val 评估。
-3. 始终保留 `after_lock_368455`，未经用户新授权不触碰该锁或执行 `scancel`。仅在启动稳定、失败、try_lock、阶段完成或最终完成等关键事件更新执行记录与本 handoff。
+1. 当前任务没有待执行的正式推理、调参或评估步骤；`talk/global/global_9.12.md` 第 (4) 项不属于本轮范围。
+2. 始终保留 `after_lock_368455`，未经用户新授权不触碰该锁、删除 `try_lock_368455` 或执行 `scancel`。
 
 ## Files To Reopen
 
 - `文档/exec_plan/2026-09-12_Find_1真实受体推理与评估.md`
 - `训练与运行/sh/infer/find1_real_receptor_evaluation.sh`
+- `训练与运行/sh/infer/find1_real_receptor_scored_centered.sh`
 - `tmp/find1_real_receptor_evaluation_20260912/derive_test1.py`
 - `CLAUDE/memory/handoffs/2026-09-12-find1-pdb-centric-training-stage-complete.md`
