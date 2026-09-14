@@ -367,7 +367,7 @@
     },
     {
       "date": "2026-09-13",
-      "summary": "Job 368455 的双 H100、64 CPU allocation 已启动 Find_1 真实受体训练集固定 50 片中的第 1—4 片。四片共 1,100 个 PDB，身份清单无重复并覆盖冻结成员；第 8 次执行使用 release Pocket_Plus_8160a29cc7ca，GPU 0/1 正在稳定并行处理第 1/3 片 probability。2026-09-14 00:59 本地 Codex 服务重启，恢复核验确认远端 PID、日志基线、产物连续性和锁均未中断。F2 语义阈值、Gaussian 参数、checkpoint、候选与 offsets 契约均冻结，after_lock 保留。",
+      "summary": "Job 368455 的双 H100、64 CPU allocation 正在处理 Find_1 真实受体训练集固定 50 片中的第 1—4 片。四片共 1,100 个 PDB，身份清单无重复并覆盖冻结成员；第 8 次执行使用 release Pocket_Plus_8160a29cc7ca。第一轮第 1、3 片共 550 个 PDB 已全部完成 probability 与冻结阈值 F2 blobs，并已进入 centered 前向；2026-09-14 12:46 时 centered 为 204/550。F2 语义阈值、Gaussian 参数、checkpoint、候选与 offsets 契约均冻结，after_lock 保留。",
       "handoff": "CLAUDE/memory/handoffs/2026-09-13-find1-real-receptor-train-shards-01-04-running.md"
     }
   ],
