@@ -1,10 +1,10 @@
-# Handoff: Find_1 真实受体训练集第 2、4 片已进入 probability
+# Handoff: Find_1 真实受体训练集第 2、4 片已进入 centered
 
 Date: 2026-09-13
 
 ## Current State
 
-Job `368455` 在 hnode01 提供 H100×2 与 64 CPU。第 8 次执行已于 2026-09-13 17:31:45 启动固定训练集 50 片中的用户第 1、2、3、4 片：GPU 0 顺序处理第 1、2 片，GPU 1 顺序处理第 3、4 片。第一轮第 1、3 片的 550 个 PDB 已全部完成 probability、冻结阈值 F2 blobs、centered 与冻结 Gaussian score-only；550 份 `F2_centered.npz` 均包含 `score` 和 `selected`。截至 2026-09-14 13:53，第二轮第 2、4 片的 probability 进程 PID 为 `365716`、`365729`，两张 H100 利用率为 97% 与 100%，未见本轮新增错误。
+Job `368455` 在 hnode01 提供 H100×2 与 64 CPU。第 8 次执行已于 2026-09-13 17:31:45 启动固定训练集 50 片中的用户第 1、2、3、4 片：GPU 0 顺序处理第 1、2 片，GPU 1 顺序处理第 3、4 片。四片累计 1,100 个 PDB 的 probability 与冻结阈值 F2 blobs 已全部完成；第一轮第 1、3 片也已完成 centered 与冻结 Gaussian score-only。2026-09-15 08:58 的一致快照显示，第二轮第 2、4 片进入 centered 后，四片累计 `F2_centered.npz` 与完成标记均为 760/1,100。当前两个 centered 进程 PID 为 `403697`、`403687`，未见本轮新增错误。
 
 根目录 `try_lock_368455` 已按用户授权删除，Job 子目录中的 `after_lock_368455` 仍存在。不得删除该 `after_lock`，不得使用 `scancel`。只有正式入口成功或失败后，runner 才会重新创建 `try_lock_368455`。
 
@@ -13,6 +13,8 @@ Job `368455` 在 hnode01 提供 H100×2 与 64 CPU。第 8 次执行已于 2026-
 2026-09-14 12:46 核验到第一轮阶段切换：probability、F2 blobs 的产物文件和完成标记均已达到 550/550；centered 的产物文件和完成标记为 204/550。锁状态没有变化，正式入口仍在同一 release 与 launch 中继续运行。
 
 2026-09-14 13:53 核验到第一轮完整结束并进入第二轮：第 1、3 片的 centered、`score` 和 `selected` 均为 550/550；第 2、4 片的两个 probability 进程已经占用双卡。该切换由正式入口自行完成，没有人工改写动态命令或重新触发锁。
+
+2026-09-15 08:58 核验到第二轮进入 centered：四片累计 probability、F2 blobs 均为 1,100/1,100；四片累计 centered 为 760/1,100。正式入口、冻结参数与锁状态没有变化。
 
 ## Completed
 
@@ -34,7 +36,7 @@ Job `368455` 在 hnode01 提供 H100×2 与 64 CPU。第 8 次执行已于 2026-
 ## Next Actions
 
 1. 稳定运行期间按用户要求，以连续 `Start-Sleep -Seconds 300` 组成 60 或 90 分钟静默等待；不得创建 heartbeat。
-2. 醒来后核验 Job、锁、两个 GPU 进程和四片累计阶段完成数量。只在失败、第二轮 probability/blobs/centered/score-only 阶段切换、锁状态变化或全部完成时更新执行记录与 handoff。
+2. 醒来后核验 Job、锁、两个 GPU 进程和四片累计阶段完成数量。只在失败、第二轮 centered 或 score-only 完成、锁状态变化或全部完成时更新执行记录与 handoff。
 3. 正式入口结束后，按 manifest 的 1,100 个成员验收 probability、F2 blobs、F2 centered、`score/selected`、候选顺序与 offsets；检查四片无遗漏、无重复且没有额外训练 PDB 目录。
 4. 即使任务完成也必须保留 `after_lock_368455`，让 allocation 停回 `try_lock_368455`。
 
