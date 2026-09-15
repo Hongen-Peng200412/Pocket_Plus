@@ -5,6 +5,7 @@
     "Maintain a reusable CLAUDE workspace for planning, memory, and session continuity in this repository."
   ],
   "progress": [
+    "2026-09-16：Job 368455 双 H100、64 CPU 已完成 Find_1 使用 CryoAtom2 最终预测受体的 Stage1 calibration、F1 basic/F2 Gaussian 选参、calibration score-only 回填、179-PDB test_0 正式评估和 149-PDB test_1 保序派生。最终门控确认 358 份逐 PDB evaluation NPZ、两套 JSONL/provenance 和 100 份 scored-centered 全部符合契约；test_1 basic/Gaussian semantic micro F1 为 0.5406947/0.5266402。Job 停回 try_lock，after_lock 保留。详见 CLAUDE/memory/handoffs/2026-09-16-find1-cryoatom2-receptor-evaluation-complete.md。",
     {
       "date": "2026-05-29",
       "summary": "Stage1 wrapper refactor first phase: topk candidate mode, helper module skeletons, restored wrapper entrypoint, receptor log rename, and focused tests passing; full CPC diagnostics and end-to-end smoke remain open.",
