@@ -1,30 +1,26 @@
-# Handoff: Find_1 真实受体训练集第 2、4 片已进入 centered
+# Handoff: Find_1 真实受体训练集第 1—4 片已完成
 
-Date: 2026-09-13
+Date: 2026-09-15
 
 ## Current State
 
-Job `368455` 在 hnode01 提供 H100×2 与 64 CPU。第 8 次执行已于 2026-09-13 17:31:45 启动固定训练集 50 片中的用户第 1、2、3、4 片：GPU 0 顺序处理第 1、2 片，GPU 1 顺序处理第 3、4 片。四片累计 1,100 个 PDB 的 probability 与冻结阈值 F2 blobs 已全部完成；第一轮第 1、3 片也已完成 centered 与冻结 Gaussian score-only。2026-09-15 08:58 的一致快照显示，第二轮第 2、4 片进入 centered 后，四片累计 `F2_centered.npz` 与完成标记均为 760/1,100。当前两个 centered 进程 PID 为 `403697`、`403687`，未见本轮新增错误。
+Job `368455` 的第 8 次执行已完成固定训练集 50 片中的用户第 1、2、3、4 片：GPU 0 顺序处理第 1、2 片，GPU 1 顺序处理第 3、4 片。四片共 1,100 个唯一 PDB，全部完成 probability、冻结阈值 F2 blobs、centered 和冻结 Gaussian score-only。正式产物根恰好包含清单中的 1,100 个 PDB，没有遗漏、重复或额外目录。
 
-根目录 `try_lock_368455` 已按用户授权删除，Job 子目录中的 `after_lock_368455` 仍存在。不得删除该 `after_lock`，不得使用 `scancel`。只有正式入口成功或失败后，runner 才会重新创建 `try_lock_368455`。
+2026-09-15 09:57，正式入口成功返回，runner 重新创建根目录 `try_lock_368455`。Job 子目录中的 `after_lock_368455` 始终存在，因此 Job 仍以 `RUNNING|hnode01|64|gres:gpu:h100:2` 保留双 H100 allocation；正式推理进程已经结束。不得删除该 `after_lock`，不得使用 `scancel`。
 
-2026-09-14 00:59 本地 Codex 服务发生重启。01:00 恢复守护后的远端核验确认任务未中断：Job、release、launch 和 probability Python PID `317866/317867` 均连续不变；两个进程已运行约 7 小时 29 分，第 1、3 片合计已有 235 份 probability 完成标记；两卡利用率为 99% 与 100%。allocation 的 `out`/`err` 字节数及修改时间仍与正式启动瞬间一致，`try_lock_368455` 不存在，`after_lock_368455` 存在。
-
-2026-09-14 12:46 核验到第一轮阶段切换：probability、F2 blobs 的产物文件和完成标记均已达到 550/550；centered 的产物文件和完成标记为 204/550。锁状态没有变化，正式入口仍在同一 release 与 launch 中继续运行。
-
-2026-09-14 13:53 核验到第一轮完整结束并进入第二轮：第 1、3 片的 centered、`score` 和 `selected` 均为 550/550；第 2、4 片的两个 probability 进程已经占用双卡。该切换由正式入口自行完成，没有人工改写动态命令或重新触发锁。
-
-2026-09-15 08:58 核验到第二轮进入 centered：四片累计 probability、F2 blobs 均为 1,100/1,100；四片累计 centered 为 760/1,100。正式入口、冻结参数与锁状态没有变化。
+2026-09-15 10:36，全量最终验收通过。报告位于 `/storage/penghongen/tmp/find1_real_receptor_train_shards_20260913/final_verification.json`，SHA-256 为 `c6de80244af2db776feffb2739ba732f79c26697ec4d139cea80d6dfc85cfade`。验收逐 PDB 核对三阶段文件、完成标记、数组模式、候选顺序、四组 offsets、超框候选和冻结 Gaussian 精确重算；正式产物根没有 tuning、evaluation、JSONL、metrics、临时文件或失败标记。
 
 ## Completed
 
 - 四片身份门控已通过：训练清单共有 13,717 个唯一 PDB，前四片各 275 个，共 1,100 个；片内、片间均无重复，完整 50 片无重复且覆盖清单全集。
 - 训练清单 SHA-256 为 `8e7f975ea49ee94e6819f2b35bf596c9bc4abacac9afc0aaebe2018b90d94d00`。门控 manifest 为 `/storage/penghongen/tmp/find1_real_receptor_train_shards_20260913/preflight.json`，SHA-256 为 `0efd579fda05029125ee087cae993aa8cb09d966b58fd5bc22efc69e22227c74`。
-- 实现端点为 `0e5787298a2e97bb56cc80633786da4aee5bb2b0`；学习端点与 `Learn/CUMULATIVE` 为 `2b15853edecdd8b4193ee38a1c5e77e49f4f9945`，其标题为 `——————开始训练集真实受体推理——————`。两端任务文件逐字节一致，学习端点只额外包含用户原样暂存的 `talk/global/global_9.12.md`。
+- 正式实现的首个端点为 `0e5787298a2e97bb56cc80633786da4aee5bb2b0`；对应的首个学习提交为 `2b15853edecdd8b4193ee38a1c5e77e49f4f9945`，标题严格使用 `——————开始训练集真实受体推理——————`。两端任务文件逐字节一致，学习端点只额外包含用户原样暂存的 `talk/global/global_9.12.md`。
 - Windows 与 Linux allocation 内的三个相关测试文件均为 50 项通过。代码与 Git 布局、中文注释和科学逻辑三类审查均完成两轮全面核查及问题对应的窄复核。
 - 旧动态命令 SHA-256 为 `bf42a829532d82ece3e22d6b8ca5ef6960debf56032621f02fb3a4617c64a13a`；新动态命令 SHA-256 为 `ebfa6b4483a4ced4ba8f8580e6291f748d00e43a8b4e5b2701354de50b5a4dbd`。两者分别保存在服务器临时证据目录的 `run_cmd_368455.preimage.sh` 和 `run_cmd_368455.launch.sh`。
 - release 为 `/home/penghongen/Feedback/Pocket_Plus/releases/Pocket_Plus_8160a29cc7ca/Pocket_Plus`，内容 SHA-256 为 `8160a29cc7cad4b2405ce269a8bfd899bea5ef522150fa8cc1d304349bd5554d`。
 - launch 为 `/home/penghongen/Feedback/Pocket_Plus/launches/368455/Find_1_pdb_centric_2_job368455_20260913T173145_a8`。launch 保存的 H100×2、64 CPU、hnode01、release 和动态命令均已核验。
+- 最终产物统计为 1,100 份 probability、1,100 份 F2 blobs、1,100 份 F2 centered 和 1,100 份带 `score/selected` 的 centered 文件；共 39,878 个 blobs、38,797 个 centered 候选和 29,452 个冻结阈值入选候选。
+- 24 个候选无法由单个 80³ BOX 完整容纳；另有 1 个 PDB 因来源 blobs 总数超过 1,000 而带有 `_BLOB_EXCEED` 标识。验收确认超框候选的完整来源体素数、框内稀疏归档、候选顺序和 Gaussian 分数均符合既定契约，超量 PDB 也未被过滤。
 
 ## Decisions
 
@@ -35,10 +31,8 @@ Job `368455` 在 hnode01 提供 H100×2 与 64 CPU。第 8 次执行已于 2026-
 
 ## Next Actions
 
-1. 稳定运行期间按用户要求，以连续 `Start-Sleep -Seconds 300` 组成 60 或 90 分钟静默等待；不得创建 heartbeat。
-2. 醒来后核验 Job、锁、两个 GPU 进程和四片累计阶段完成数量。只在失败、第二轮 centered 或 score-only 完成、锁状态变化或全部完成时更新执行记录与 handoff。
-3. 正式入口结束后，按 manifest 的 1,100 个成员验收 probability、F2 blobs、F2 centered、`score/selected`、候选顺序与 offsets；检查四片无遗漏、无重复且没有额外训练 PDB 目录。
-4. 即使任务完成也必须保留 `after_lock_368455`，让 allocation 停回 `try_lock_368455`。
+1. 本轮第 1—4 片没有剩余运行或验收动作；下批片号只有在用户明确指定后才能启动。
+2. 保留 `after_lock_368455` 和当前 `try_lock_368455`。未经用户明确要求，不改写动态命令、不删除锁，也不使用 `scancel`。
 
 ## Files To Reopen
 
@@ -46,4 +40,4 @@ Job `368455` 在 hnode01 提供 H100×2 与 64 CPU。第 8 次执行已于 2026-
 - `训练与运行/sh/infer/find1_real_receptor_train_shards.sh`
 - `tmp/find1_real_receptor_train_shards_20260913/capture_shards.py`
 - `/storage/penghongen/tmp/find1_real_receptor_train_shards_20260913/preflight.json`
-- `CLAUDE/memory/handoffs/2026-09-12-find1-real-receptor-evaluation-running.md`
+- `/storage/penghongen/tmp/find1_real_receptor_train_shards_20260913/final_verification.json`
