@@ -241,3 +241,20 @@ exec bash "${TASK_PROJECT_ROOT}/训练与运行/sh/infer/find1_real_receptor_tra
 NPZ、JSON 和 JSONL 先写同目录临时文件，再以 `os.replace` 原子替换。角色 `_COMPLETE` 只表示当前文件发布完成，不保存 checkpoint、配置、代码摘要或哈希。同一 `output_root` 可以复用 probability 并逐次增加多个 alpha；如果同一 checkpoint 的 F3 最优与 F2 最优属于两个科学版本，由调用者使用两个易读目录区分，不由代码推断版本身份。
 
 正式任务仍经 `训练与运行/submit_task.sh` 提交，以保存 release、launch、资源和 Slurm 日志。`stage1_v3.sh` 本身不申请资源，也不操作锁。
+
+# Emap2lig 官方 Find held-out 入口
+
+`emap2lig_official_find_li.sh` 依次执行 Emap2lig v0.3.4 官方 Find 和 Pocket Plus
+标准 Stage1 评估。正式前向只覆盖 179-PDB `test_0`；149-PDB `test_1` 从同一批
+逐 PDB 交集、匹配和语义 PRAUC 事实保序派生，不重复模型前向。
+
+该入口固定使用官方 Li 阈值、官方少于 32 体素过滤和 detection batch size 16。
+每个官方保留实例都进入指标，分数为实例在 Emap2lig 原生 ligand probability
+中的平均概率。概率图以线性插值映射到 Pocket Plus V3 网格，实例以最近体素
+映射并保留原官方编号；不同实例映射后可以重叠。
+
+正式命令：
+
+```bash
+exec bash "${TASK_PROJECT_ROOT}/训练与运行/sh/infer/emap2lig_official_find_li.sh"
+```
