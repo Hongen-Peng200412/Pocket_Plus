@@ -1,10 +1,10 @@
-# Handoff: Emap2lig 官方 Find held-out 评估运行中
+# Handoff: Emap2lig 官方 Find held-out 评估已完成
 
 Date: 2026-09-16
 
 ## Current State
 
-Job `383986` 正在 `gnode09` 使用 A800×1、4 CPU 和 Emap2lig 局部裁剪优化 release 执行 179-PDB `test_0`。用户已授权并完成锁协议接管：旧进程由 `kill_lock_383986` 停止，第 3 次执行从 launch `/home/penghongen/Feedback/AdaLigand/launches/383986/allocation_runner_job383986_20260916T125406_a3` 启动；`after_lock_383986` 始终保留。截至 12:56，`9ifc` 已复用既有 probability 与 Li mask，约 30 秒完整重建 1,105 个实例并写出 `status=ok`，任务随后继续正常 GPU 前向。
+Job `383986` 已完成 Emap2lig 官方 Find 的 179-PDB `test_0` 与 149-PDB `test_1` 派生评估。第 3 次执行使用 launch `/home/penghongen/Feedback/AdaLigand/launches/383986/allocation_runner_job383986_20260916T125406_a3` 和局部裁剪优化 release 完成全部正式产物；任务成功退出后 Job 已停回 `try_lock_383986`，`after_lock_383986` 继续保留。
 
 ## Completed
 
@@ -21,6 +21,11 @@ Job `383986` 正在 `gnode09` 使用 A800×1、4 CPU 和 Emap2lig 局部裁剪�
 - 正式 Pocket Plus release 为 `/home/penghongen/Feedback/Pocket_Plus/releases/Pocket_Plus_5570cf8a0b7a/Pocket_Plus`。
 - 正式 Emap2lig release 为 `/home/penghongen/Feedback/Emap2lig/releases/Emap2lig_60e34f30b989/Emap2lig`。
 - 正式 launch 为 `/home/penghongen/Feedback/AdaLigand/launches/383986/allocation_runner_job383986_20260916T094030_a2`。
+- 正式完成 launch 为 `/home/penghongen/Feedback/AdaLigand/launches/383986/allocation_runner_job383986_20260916T125406_a3`。`test_0` 的 Find、映射和逐 PDB evaluation 均为 179/179；`test_1` 严格按清单顺序派生 149/149，未重复模型前向。
+- 最终验收覆盖 63,342 个官方保留实例，其中 117 个 PDB 超过 100 个实例，最大样本 `11jb` 为 5,100 个。报告 `/storage/penghongen/tmp/emap2lig_local_blob_crop_gate_20260916/final_validation.json` 的 SHA-256 为 `e70e748321597ba8978e8aca3d4473956ee4e14fb9fd5eefb0e84881061405fa`。
+- `test_0` metrics/JSONL SHA-256 分别为 `19a0bca8380ea2ea708cc0eb1b1867b8d7b4c2c94e6c810bdeed6446a361d100` 和 `0f0a9bae817ef57e21caf1b3b0eb986765d559cc293775483dcb273b9cb6c0b0`。
+- `test_1` metrics/JSONL/provenance SHA-256 分别为 `d76c4e3d3284b1386ee585a9176d0731715b6623fd5c807b2b402f8a7aa79668`、`fec1084cc4bf9c86a816b1bc1b8090f813ca78f903d3d95a26586e2c760338df` 和 `55b1d5b3d654368278c5a1b1a3387e166910e5013b9c1656e4c5464935fa845d`。
+- AdaLigand 本地结果文档为 `收口の结果/Stage1/Emap2lig/主要结果.md`、`说明.md`、`补充结果.md`，提交为 `e7d80db`；指标和 top-K 已与最终 JSON 自动核对，文档未上传服务器。
 
 ## Decisions
 
@@ -32,9 +37,8 @@ Job `383986` 正在 `gnode09` 使用 A800×1、4 CPU 和 Emap2lig 局部裁剪�
 
 ## Next Actions
 
-1. 继续守护第 3 次执行；稳定运行期间不触碰锁，不使用 `scancel`。
-2. Find 完成后核验 179 个官方状态，再等待 4-worker CPU 评估与 149-PDB `test_1` 派生。
-3. 执行全量只读验收，生成 AdaLigand `收口の结果/Stage1/Emap2lig/` 下三份文档；最终让 Job 停回 `try_lock_383986` 并继续保留 `after_lock_383986`。
+1. 等待用户审阅 AdaLigand 下的三份结果文档；只有用户明确要求后才同步到服务器。
+2. 继续保留 `after_lock_383986`，不主动删除 `try_lock_383986`，也不释放 allocation。
 
 ## Files To Reopen
 
