@@ -385,6 +385,11 @@
       "date": "2026-09-15",
       "summary": "Job 368455 的双 H100、64 CPU allocation 已完成 Find_1 真实受体训练集固定 50 片中的第 1—4 片。四片共 1,100 个唯一 PDB，probability、冻结阈值 F2 blobs、centered 和冻结 Gaussian score/selected 均为 1,100/1,100；全量验收确认正式产物根没有遗漏、重复或额外 PDB，39,878 个 blobs、38,797 个 centered 候选、24 个超框候选的顺序、offsets、稀疏来源体素和冻结分数均符合契约。最终报告 SHA-256 为 c6de8024...cfade。Job 已停回 try_lock，after_lock 继续保留。",
       "handoff": "CLAUDE/memory/handoffs/2026-09-13-find1-real-receptor-train-shards-01-04-running.md"
+    },
+    {
+      "date": "2026-09-16",
+      "summary": "Job 378587 已通过 kill_lock 从 PocketXMol F-5 接管为 Find_1 真实受体训练第 5 片推理。275-PDB 固定身份、冻结参数、单片入口、H100/32 CPU 配置和 Learn release 均已通过门控；attempt a2 已进入 probability 的 CLI shard-index 4，after_lock 保留，未使用 scancel。",
+      "handoff": "CLAUDE/memory/handoffs/2026-09-16-find1-real-receptor-train-shard-05-running.md"
     }
   ],
   "blockers": [
