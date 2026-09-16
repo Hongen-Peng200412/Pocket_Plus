@@ -9,8 +9,10 @@
 - Job `383986` 第 1 次执行完成单 PDB 隔离门控。`9ter` 的官方 Find 共保存 279 个不少于 32 体素的实例；超过 100 个实例后仅产生告警，没有退出。随后同一批产物完成完整概率线性映射、279 个实例的保身份稀疏映射、逐实例交集与匹配事实计算和标准指标聚合。门控根为 `/storage/penghongen/tmp/emap2lig_official_find_li_gate_20260916/allocation_runner_job383986_20260916T092204_a1`。Job 已停回 `try_lock_383986`，`after_lock_383986` 保留。
 - 09:40 关键事件：Job `383986` 第 2 次执行启动正式任务。AdaLigand allocation launch 为 `/home/penghongen/Feedback/AdaLigand/launches/383986/allocation_runner_job383986_20260916T094030_a2`；Pocket Plus release 为 `/home/penghongen/Feedback/Pocket_Plus/releases/Pocket_Plus_5570cf8a0b7a/Pocket_Plus`，Emap2lig release 为 `/home/penghongen/Feedback/Emap2lig/releases/Emap2lig_60e34f30b989/Emap2lig`。首个 `9ter` 已正常进入 512 个 ROI 的 GPU 前向，尚无异常；`after_lock_383986` 保留。
 - 12:18 关键事件：Emap2lig 实例裁剪的结果等价优化通过完整 `9ter` 门控。原实现和串行局部实现都从同一份 `unified.mrc` 与 `ligand_mask.mrc` 读取 776 个原始连通域，均过滤 497 个少于 32 体素的连通域，并按相同顺序保存 279 个实例。全部 `blob_N.npz` 字段和数组，以及全部 `mask_N.mrc` 数组、原点、体素尺寸和数据类型均逐项使用 `np.array_equal()` 核验一致。原实现与优化实现的实例后处理墙钟时间分别为 70.714508 秒和 8.065864 秒，串行提升 8.767134 倍；优化后的 279 个实例只需约 8 秒，因此没有引入多进程写盘。
-- Emap2lig 双线历史已经收口：实现端点为 `aff2c5f`，学习端点和 `Learn/CUMULATIVE` 为 `4e20f19`，两个端点的 Git tree 哈希均为 `96258424077f788639488cc711c7eca9ff38c6cd`。新 release 为 `/home/penghongen/Feedback/Emap2lig/releases/Emap2lig_eb7a32a0ee70/Emap2lig`，manifest 内容哈希为 `eb7a32a0ee702eff52e85734c7279b4bc7ad6c05db2a57192573e3ccaad5a5b8`。该 release 尚未用于 Job `383986`。
+- Emap2lig 双线历史已经收口：实现端点为 `aff2c5f`，学习端点和 `Learn/CUMULATIVE` 为 `4e20f19`，两个端点的 Git tree 哈希均为 `96258424077f788639488cc711c7eca9ff38c6cd`。新 release 为 `/home/penghongen/Feedback/Emap2lig/releases/Emap2lig_eb7a32a0ee70/Emap2lig`，manifest 内容哈希为 `eb7a32a0ee702eff52e85734c7279b4bc7ad6c05db2a57192573e3ccaad5a5b8`。
 - 12:29 只读状态：旧 release 的正式任务已经完成 25 个 `status=ok` 的 PDB，其中 `30yu` 已完整保存 1,878 个实例；当前日志正在处理 `9nnc`。Job `383986` 仍为 RUNNING，`after_lock_383986` 与原动态命令保留，`kill_lock_383986` 不存在。本阶段等待用户明确授权后才允许停止当前动态命令并切换到新 release。
+- 12:54—12:56 关键事件：用户授权后，先冻结旧动态命令及进度证据，再创建 `kill_lock_383986`。旧进程以退出码 137 停止，allocation 随即创建 `try_lock_383986`；Job 始终为 RUNNING，`after_lock_383986` 始终保留。停止时已有 30 个 PDB 为 `status=ok`，实际未完成样本为 `9ifc`，其不完整 `find_blobs` 含 77 对 NPZ/MRC，已移动到 `find_blobs.incomplete_before_local_crop_20260916T125538`，没有删除。
+- 第 3 次执行已从 launch `/home/penghongen/Feedback/AdaLigand/launches/383986/allocation_runner_job383986_20260916T125406_a3` 使用新 Emap2lig release 启动。`9ifc` 检测到全部既有 label maps/masks 后跳过模型前向；`ligand.mrc` 与 `ligand_mask.mrc` 的 SHA-256 在重启前后分别保持 `4167353c...d0799` 与 `3b9f4443...573e`。新实现从 12:54:51 至 12:55:21 保存 1,105 个实例并写出 `status=ok`，随后进入下一 PDB 的正常 GPU 前向。接管证据位于 `/storage/penghongen/tmp/emap2lig_local_blob_crop_gate_20260916/takeover_383986/`。
 
 ## 冻结范围
 
@@ -44,6 +46,7 @@ exec bash "${TASK_PROJECT_ROOT}/训练与运行/sh/infer/emap2lig_official_find_
 - Pocket Plus 适配器：`dfc6a6ae903b9a8f919a341e3f910ed696ccdd84e803c265bc64b2e97bcd61e6`
 - Pocket Plus 正式 shell：`5bfafe963ed51e4dde110fdae28713105883b82bbcd26a7d7d54a2d56fb28eff`
 - Emap2lig `main.py`：`a65cc21d35603174e4cc22a51de4eb8713455674192558b02f60435cb61d44b6`
+- Emap2lig 局部裁剪优化版 `main.py`：`8f8f538af0c1c91426c67292e5d7cebea42f06cb16876dd87e09c7c844c95b66`
 - Emap2lig held-out runner：`7f95e3cd0f78cf2a0652ac42034c652674966ca9e6008c5abecf352dff3ecd28`
 
 本节不混入单元测试、只读门控或临时核查命令。产物哈希在最终验收后补充。

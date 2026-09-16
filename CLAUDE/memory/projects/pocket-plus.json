@@ -17,6 +17,11 @@
       "handoff": "CLAUDE/memory/handoffs/2026-09-16-emap2lig-official-find-running.md"
     },
     {
+      "date": "2026-09-16",
+      "summary": "Job 383986 已按用户授权通过 kill_lock 从旧 Emap2lig release 切换到局部裁剪优化 release Emap2lig_eb7a32a0ee70。接管时 30 个 status=ok PDB 全部复用；实际未完成的 9ifc 仅备份 77 对不完整实例文件，既有 ligand probability 与 Li mask 哈希保持不变，新实现约 30 秒完整重建并保存 1,105 个实例，随后继续正常 GPU 前向。after_lock_383986 始终保留。",
+      "handoff": "CLAUDE/memory/handoffs/2026-09-16-emap2lig-official-find-running.md"
+    },
+    {
       "date": "2026-05-29",
       "summary": "Stage1 wrapper refactor first phase: topk candidate mode, helper module skeletons, restored wrapper entrypoint, receptor log rename, and focused tests passing; full CPC diagnostics and end-to-end smoke remain open.",
       "handoff": "CLAUDE/memory/handoffs/2026-05-29-stage1-wrapper-refactor-current-state.md"
