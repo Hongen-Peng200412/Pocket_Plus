@@ -12,6 +12,11 @@
       "handoff": "CLAUDE/memory/handoffs/2026-09-16-emap2lig-official-find-running.md"
     },
     {
+      "date": "2026-09-16",
+      "summary": "Emap2lig 实例裁剪已改为基于 regionprops bbox/image 的局部落盘，并通过完整 9ter 的 279 实例严格等价门控：NPZ 全字段和 MRC 数组、原点、体素尺寸、数据类型均一致，墙钟时间由 70.714508 秒降至 8.065864 秒。双线端点 tree 等价，Learn/CUMULATIVE 为 4e20f19，新 release 为 Emap2lig_eb7a32a0ee70。Job 383986 仍使用旧 release 运行，等待用户明确授权 kill_lock 后才切换；after_lock 保留。",
+      "handoff": "CLAUDE/memory/handoffs/2026-09-16-emap2lig-official-find-running.md"
+    },
+    {
       "date": "2026-05-29",
       "summary": "Stage1 wrapper refactor first phase: topk candidate mode, helper module skeletons, restored wrapper entrypoint, receptor log rename, and focused tests passing; full CPC diagnostics and end-to-end smoke remain open.",
       "handoff": "CLAUDE/memory/handoffs/2026-05-29-stage1-wrapper-refactor-current-state.md"
