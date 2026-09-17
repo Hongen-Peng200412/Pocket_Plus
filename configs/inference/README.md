@@ -9,7 +9,7 @@ stage1_v3.yaml
 → full_map / blobs / centered / tuning / evaluation
 ```
 
-`训练与运行/sh/infer/stage1_v3.sh` 默认读取 `stage1_v3.yaml`；环境变量 `STAGE1_INFERENCE_CONFIG` 可以指向同契约的资源配置。三模型比较入口分别选择 A800/24 CPU 与 A100/16 CPU 文件，Find_1 训练第 5 片入口选择 H100/32 CPU 文件，不在命令行临时拼接并行覆盖值。
+`训练与运行/sh/infer/stage1_v3.sh` 默认读取 `stage1_v3.yaml`；环境变量 `STAGE1_INFERENCE_CONFIG` 可以指向同契约的资源配置。三模型比较入口分别选择 A800/24 CPU 与 A100/16 CPU 文件；`find1_real_receptor_train_shard_05.sh` 和 `find1_real_receptor_train_shard_06.sh` 均选择 `stage1_v3_h100_32cpu.yaml`，不在命令行临时拼接并行覆盖值。
 
 ## 顶层字段
 
