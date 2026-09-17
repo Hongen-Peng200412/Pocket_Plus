@@ -331,15 +331,32 @@ fi
     assert all("|probability " in line for line in failed_calls)
 
 
-def test_find1_train_shard_shell_preserves_one_frozen_shard() -> None:
-    """单卡入口应只接受用户片号 5, 核验五个冻结输入, 使用专用配置并保持四阶段顺序."""
+@pytest.mark.parametrize(
+    ("shell_name", "user_shard"),
+    (
+        ("find1_real_receptor_train_shard_05.sh", 5),
+        ("find1_real_receptor_train_shard_06.sh", 6),
+    ),
+)
+def test_find1_train_shard_shell_preserves_one_frozen_shard(
+    shell_name: str,
+    user_shard: int,
+) -> None:
+    """核对每个单卡入口只接受自身片号, 并保持固定输入、资源配置和阶段顺序.
+
+    入口在运行前核验训练 ``train.json``, checkpoint, 已解析训练 ``config.yaml``,
+    ``F2_semantic.json`` 和 ``F2_gaussian.json`` 的 SHA-256, 并使用
+    ``stage1_v3_h100_32cpu.yaml``. 四个阶段依次是 probability, F2 blobs,
+    centered 完整前向和 centered score-only. 四次调用必须使用同一个由用户片号
+    减一得到的 CLI 分片下标.
+    """
 
     shell_path = (
         PROJECT_ROOT
         / "训练与运行"
         / "sh"
         / "infer"
-        / "find1_real_receptor_train_shard_05.sh"
+        / shell_name
     )
     shell_text = shell_path.read_text(encoding="utf-8")
     config = OmegaConf.load(
@@ -374,7 +391,8 @@ def test_find1_train_shard_shell_preserves_one_frozen_shard() -> None:
         "6f116ba857b578aa5a70bade8af9fa6e47790a7ad55020636194747e1a062f23"
         in shell_text
     )
-    assert '[[ "$1" != "5" ]]' in shell_text
+    assert f'[[ "$1" != "{user_shard}" ]]' in shell_text
+    assert f"SHARD_NUMBER={user_shard}" in shell_text
     assert "SHARD_INDEX=$((SHARD_NUMBER - 1))" in shell_text
     assert shell_text.count("--shard-count 50") == 4
     assert shell_text.count('--shard-index "${SHARD_INDEX}"') == 4
@@ -408,8 +426,24 @@ def test_find1_train_shard_shell_preserves_one_frozen_shard() -> None:
     assert probability < blobs < centered < score_only
 
 
-def test_find1_train_shard_shell_executes_only_requested_shard(tmp_path: Path) -> None:
-    """伪官方入口应观测到用户第 5 片的四个顺序阶段, 并拒绝未授权片号及传播阶段失败."""
+@pytest.mark.parametrize(
+    ("shell_name", "user_shard", "cli_index"),
+    (
+        ("find1_real_receptor_train_shard_05.sh", 5, 4),
+        ("find1_real_receptor_train_shard_06.sh", 6, 5),
+    ),
+)
+def test_find1_train_shard_shell_executes_only_requested_shard(
+    tmp_path: Path,
+    shell_name: str,
+    user_shard: int,
+    cli_index: int,
+) -> None:
+    """用伪造的 ``stage1_v3.sh`` 核对单卡入口的片号映射和失败传播.
+
+    测试覆盖用户片号到 CLI 下标的四阶段映射, 非法片号拒绝, 冻结输入的
+    SHA-256 校验失败在正式阶段前终止, 以及任一正式阶段退出码向调用者传播.
+    """
 
     bash_path = shutil.which("bash")
     if bash_path is None and os.name == "nt":
@@ -429,7 +463,7 @@ def test_find1_train_shard_shell_executes_only_requested_shard(tmp_path: Path) -
     fake_project_root = tmp_path / "fake_project"
     fake_infer_root = fake_project_root / "训练与运行" / "sh" / "infer"
     fake_entry = fake_infer_root / "stage1_v3.sh"
-    fake_shell = fake_infer_root / "find1_real_receptor_train_shard_05.sh"
+    fake_shell = fake_infer_root / shell_name
     fake_infer_root.mkdir(parents=True)
     fake_entry.write_text(
         """#!/usr/bin/env bash
@@ -447,7 +481,7 @@ fi
         / "训练与运行"
         / "sh"
         / "infer"
-        / "find1_real_receptor_train_shard_05.sh"
+        / shell_name
     )
     shutil.copyfile(source_shell, fake_shell)
     fake_bin = tmp_path / "fake_bin"
@@ -510,7 +544,7 @@ fi
     environment["TASK_PROJECT_ROOT"] = "/wrong/PocketXMol/release"
 
     completed = subprocess.run(
-        [bash_path, shell_argument, "5"],
+        [bash_path, shell_argument, str(user_shard)],
         check=False,
         capture_output=True,
         encoding="utf-8",
@@ -563,14 +597,15 @@ fi
         assert "--overwrite" not in arguments
         calls.append((device, command, shard_index, "--score-only" in arguments))
     assert calls == [
-        ("0", "probability", "4", False),
-        ("none", "blobs", "4", False),
-        ("0", "centered", "4", False),
-        ("0", "centered", "4", True),
+        ("0", "probability", str(cli_index), False),
+        ("none", "blobs", str(cli_index), False),
+        ("0", "centered", str(cli_index), False),
+        ("0", "centered", str(cli_index), True),
     ]
 
+    rejected_shard = 6 if user_shard == 5 else 5
     rejected = subprocess.run(
-        [bash_path, shell_argument, "6"],
+        [bash_path, shell_argument, str(rejected_shard)],
         check=False,
         capture_output=True,
         encoding="utf-8",
@@ -590,7 +625,7 @@ fi
     hash_log.unlink()
     environment["FAIL_HASH_MATCH"] = "F2_semantic.json"
     rejected_hash = subprocess.run(
-        [bash_path, shell_argument, "5"],
+        [bash_path, shell_argument, str(user_shard)],
         check=False,
         capture_output=True,
         encoding="utf-8",
@@ -604,7 +639,7 @@ fi
     environment.pop("FAIL_HASH_MATCH")
     environment["FAIL_MATCH"] = "blobs"
     failed = subprocess.run(
-        [bash_path, shell_argument, "5"],
+        [bash_path, shell_argument, str(user_shard)],
         check=False,
         capture_output=True,
         encoding="utf-8",
