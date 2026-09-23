@@ -122,3 +122,62 @@ exec env PYTHONPATH="/storage/penghongen/tmp/find1_cryoatom2_adapter_candidate_2
 - 中性差异：正式适配代码不保存或校验文件哈希；哈希只出现在隔离门控和追溯记录中。
 - 中性差异：`test_1` 按既定方案从 `test_0` 逐 PDB 事实保序派生，不重新执行 probability、blobs、centered 或 evaluate。
 - 当前没有未完成范围。
+
+## 2026-09-17 F2–F1–basic 方法消融
+
+### 状态快照
+
+- 新方法复用 CryoAtom2 受体实验已冻结的 `F2_semantic.json`、100 个 calibration F2 blobs、179 个 `test_0` F2 blobs、两批 F2 centered 和共享 probability，不重新执行 GPU 前向，也不重新拟合语义阈值。
+- 只读候选轴门控已覆盖 calibration 100 个 PDB 和 `test_0` 179 个 PDB。`voxel_count >= 8` 的 F2 blob 分别为 2,678 和 2,407 个；来源 blob 编号、完整来源体素数和 `source_probability_mean` 均与 centered 候选轴逐项完全相同。
+- Job `385002` 已提交到 `cpu` partition，QOS=`Cpu96`，申请 8 CPU；`pre_hold=0`、`after_hold=0`。2026-09-17 当前状态为 `PENDING (Priority)`，尚未创建 release、launch 或正式结果。一次任务配置把 `calibration.workers` 固定为 8；体素门槛搜索网格、coverage 阈值轴和 top-K 轴与正式 `stage1_v3.yaml` 相同。
+- 首次提交的 Job `384992` 请求 64 CPU，因单节点必须同时空闲 64 核而长时间排队。用户要求改为 8 CPU 后，该 Job 在获得节点前取消，终态为 `CANCELLED by 1351`、运行时间 `00:00:00`；没有创建 release、launch、预映像或正式产物。
+- 本次唯一允许新增的正式结果为 `tuning/F2_basic.json`、179 份 `f2_centered_basic_macro_selected.npz`、`test_0` 的 metrics/JSONL，以及派生 `test_1` 的 metrics/JSONL/provenance。运行前后会以文件大小和纳秒修改时间核对既有 calibration、tuning、`test_0` 与 `test_1` 文件未被修改。
+- 2026-09-17 23:27，Job `385002` 在 cnode01 启动。release 为 `/home/penghongen/Feedback/Pocket_Plus/releases/Pocket_Plus_10765b4330e6/Pocket_Plus`，launch 为 `/home/penghongen/Feedback/Pocket_Plus/launches/385002/run_f2_basic_job385002_20260917T232747_a1`；8 CPU、无 GPU，运行前既有文件快照包含 3,443 个受保护文件。
+- calibration 已冻结独立 F2-basic 参数：`score_threshold=0.7009013295173645`、`prefiltered_min_voxel=8`、`min_voxels=26`、`objective_beta=1`、`score_mode=basic`。23:42 状态快照为 `test_0` 逐 PDB evaluation NPZ 179/179，evaluate 已处理完整清单并进入全局汇总或 `test_1` 派生交界，未出现 traceback。
+
+### 正式运行命令
+
+```bash
+exec bash "${TASK_PROJECT_ROOT}/tmp/find1_f2_basic_ablation_20260917/run_f2_basic.sh" cryoatom2
+```
+
+该命令依次通过 `训练与运行/sh/infer/stage1_v3.sh` 执行 `tune` 与 `evaluate`，随后从新产生的 179-PDB `test_0` 逐 PDB事实保序派生 149-PDB `test_1`。调参固定 `alpha=2`、`score_mode=basic`、`objective_beta=1`、`prefiltered_min_voxel=8`；测试固定 `artifact=centered` 和评估名 `f2_centered_basic_macro_selected`。
+
+### 提交命令
+
+```bash
+bash 训练与运行/submit_task.sh --sh tmp/find1_f2_basic_ablation_20260917/run_f2_basic.sh --resource cpu --cpus 8 --job-name F2B_cryo -- cryoatom2
+```
+
+### 门控命令
+
+候选轴门控使用服务器共享项目中的以下临时脚本；该命令只读正式产物，不属于正式运行命令。
+
+```bash
+/home/penghongen/anaconda3/envs/Pocket_Plus_centos7_cu121_allgpu/bin/python -u /home/penghongen/My_Project/Pocket_Plus/tmp/find1_f2_basic_ablation_20260917/gate_candidate_axes.py
+```
+
+### 23:43 关键事件与恢复命令
+
+Job `385002` 已成功写出独立 `F2_basic.json`、179 份 `test_0` 逐 PDB评估、metrics JSON 和 JSONL。随后，一次任务脚本在正式 `stage1_v3.sh` 返回后使用了未固定环境的 `python`，`derive_test1.py` 因该环境缺少 `scipy` 而退出。失败未影响已经生成的调参与 `test_0` 结果，也没有执行任何 GPU 前向。
+
+恢复任务只派生 149-PDB `test_1` 并执行既有文件保护校验，不重复调参或 `test_0` 评估：
+
+```bash
+exec bash "${TASK_PROJECT_ROOT}/tmp/find1_f2_basic_ablation_20260917/resume_after_test0.sh" cryoatom2
+```
+
+该命令是本次中断后的正式恢复命令。窄修复只把一次任务脚本的 Python 解释器固定为 Pocket Plus 正式环境；生产推理代码、科学参数和已有正式产物均不改变。
+
+恢复 Job `385054` 已按 `cpu` partition、QOS=`Cpu96`、8 CPU 提交，`pre_hold=0`、`after_hold=0`。提交前已经用固定解释器完成 `scipy` 与正式聚合模块导入门控，并通过恢复脚本语法检查。
+
+```bash
+bash 训练与运行/submit_task.sh --sh tmp/find1_f2_basic_ablation_20260917/resume_after_test0.sh --resource cpu --cpus 8 --job-name F2B_cryo_r -- cryoatom2
+```
+
+### 完成与验收
+
+- Job `385054` 于 2026-09-17 23:55 成功完成：`test_1` JSONL 为 149 行，保护校验报告 `protected_count=3443`、`new_count=185`、`status=PASS`。
+- 最终只读总门控通过清单顺序、`test_1` 精确子集关系、P/R–F1、macro 平均、top-K 与 provenance 验收。
+- `test_0` semantic micro/macro F1 为 `0.5596455116747411/0.48126304754496363`；`test_1` 为 `0.535072500247211/0.48769792005280893`。
+- 正式结果和完整指标已增量写入 AdaLigand 本地目录 `收口の结果/Stage1/Find_1(pdb_centric_v2)/使用cryoatom2预测的受体/` 的三份文档，仍保持未提交且未上传服务器。

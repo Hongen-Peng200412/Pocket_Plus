@@ -393,8 +393,28 @@
     },
     {
       "date": "2026-09-16",
-      "summary": "Job 378587 已通过 kill_lock 从 PocketXMol F-5 接管为 Find_1 真实受体训练第 5 片推理。275-PDB 固定身份、冻结参数、单片入口、H100/32 CPU 配置和 Learn release 均已通过门控；attempt a2 已进入 probability 的 CLI shard-index 4，after_lock 保留，未使用 scancel。",
+      "summary": "Job 378587 的 Find_1 真实受体训练第 5 片 probability、冻结阈值 F2 blobs 与 centered 前向均已完成 275/275，attempt a2 已进入冻结 Gaussian score-only，并为 173/275 个 NPZ 写入 score/selected；CLI shard-index 4、严格错误为 0，after_lock 保留。用户第 6 片已获后续授权，但必须等待第 5 片全量验收通过且 Job 停回 try_lock 后才能启动 CLI shard-index 5；不得扩大到第 7 片。",
       "handoff": "CLAUDE/memory/handoffs/2026-09-16-find1-real-receptor-train-shard-05-running.md"
+    },
+    {
+      "date": "2026-09-17",
+      "summary": "Job 378587 的 Find_1 真实受体训练第 5 片已完成 probability、冻结 F2 blobs、centered 和冻结 Gaussian score-only，275/275 个成员通过全量数组契约验收；最终报告 SHA-256 为 2626a2e2...5537。Job 已停回 try_lock，after_lock 保留。用户第 6 片固定为 CLI shard-index 5，275 个唯一成员及其与第 1—5 片无交集关系已通过门控，正在准备只允许第 6 片的新 Learn release；第 7 片不在授权范围。",
+      "handoff": "CLAUDE/memory/handoffs/2026-09-17-find1-real-receptor-train-shard-05-complete.md"
+    },
+    {
+      "date": "2026-09-17",
+      "summary": "Job 378587 attempt a3 已从干净 Learn release Pocket_Plus_268637d112a5 启动 Find_1 真实受体训练第 6 片；固定 275 个成员使用 CLI shard-index 5。probability 启动约 101 秒时 H100 显存 67,732 MiB、利用率 100%，严格错误为 0；after_lock 保留，没有创建新的 kill lock，第 7 片不在授权范围。",
+      "handoff": "CLAUDE/memory/handoffs/2026-09-17-find1-real-receptor-train-shard-06-running.md"
+    },
+    {
+      "date": "2026-09-18",
+      "summary": "Find_1 真实受体与 CryoAtom2 受体的 F2–F1–basic 方法消融已完成。两种条件各自独立冻结 F2_basic 参数，发布 179-PDB test_0 和 149-PDB 保序派生 test_1；两次 8 CPU 主任务完成调参与 test_0 后因临时 Python 环境缺少 scipy 退出，窄恢复 Jobs 385054/385055 只派生 test_1 并完成保护校验。两种条件各有 3,443 个既有文件零变化、185 个新增文件完整存在，最终总门控通过；AdaLigand 六份本地文档已增量更新，保持未提交且未上传服务器。",
+      "handoff": "CLAUDE/memory/handoffs/2026-09-17-find1-f2-basic-ablation-running.md"
+    },
+    {
+      "date": "2026-09-18",
+      "summary": "Job 378587 attempt a3 已完成 Find_1 真实受体训练第 6 片的 probability、冻结 F2 blobs、centered 与冻结 Gaussian score-only，275/275 个成员通过全量数组契约验收；报告 SHA-256 为 bad622fa...6cec。train 根目录恰好包含固定第 1—6 片的 1,650 个成员，与第 7 片交集为 0。Job 已停回生效的 try_lock，after_lock 保留，GPU 空闲且没有残留推理进程。",
+      "handoff": "CLAUDE/memory/handoffs/2026-09-18-find1-real-receptor-train-shard-06-complete.md"
     }
   ],
   "blockers": [
